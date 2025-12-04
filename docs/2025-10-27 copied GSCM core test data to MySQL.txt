@@ -1,0 +1,13 @@
+10/27/2025
+
+
+The file "ChatCEO-database-structure-Oct2025.sql" contains the structure of the Supabase database. In the Instructor Dashboard, I need to transfer the data from those Supabase tables into a local mysql database called "ceochat". How do you suggest I do that?
+
+
+
+
+Create a button on the "Instructor Dashboard" below the list of "Course Sections", the button to "Download to mysql" which (after a confirm) will download all data in the Supabase files into the mysql data tables, inserting or replacing records based on their id values. Note that the "admins" are stored in Supabase and do not need to be copied to mysql.
+
+
+source C:\Users\ses3\Downloads\ceochat-upsert-20251027-2037.sql
+

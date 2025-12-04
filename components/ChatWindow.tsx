@@ -30,11 +30,20 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ messages, isLoading, ceoPersona
     scrollToBottom();
   }, [messages, isLoading]);
 
+  const handleCopyPaste = (e: React.ClipboardEvent) => {
+    e.preventDefault();
+    alert('Sorry, cut-and-paste are disabled while using this simulation.');
+  };
+
   const personaName = ceoPersona.charAt(0).toUpperCase() + ceoPersona.slice(1);
   const ceoTitle = `Kent Beck, ${personaName} CEO of Malawi's Pizza (AI model: ${chatModelName || '...'})`;
 
   return (
-    <div className="flex-1 p-6 space-y-6 overflow-y-auto">
+    <div 
+      className="flex-1 p-6 space-y-6 overflow-y-auto"
+      onCopy={handleCopyPaste}
+      onCut={handleCopyPaste}
+    >
       {messages.map((msg, index) => (
         <div
           key={index}

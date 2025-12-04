@@ -12,6 +12,11 @@ interface BusinessCaseProps {
 const BusinessCase: React.FC<BusinessCaseProps> = ({ fontSize, onFontSizeChange, fontSizes, defaultFontSize }) => {
   const paragraphs = BUSINESS_CASE_TEXT.trim().split('\n').filter(p => p.trim() !== '');
 
+  const handleCopyPaste = (e: React.ClipboardEvent) => {
+    e.preventDefault();
+    alert('Sorry, cut-and-paste are disabled while using this simulation.');
+  };
+
   const formattedText = paragraphs.map((p, i) => {
     // A simple heuristic for a heading: it's a short line with no period at the end.
     if (p.length < 50 && !p.endsWith('.') && !p.endsWith('?')) {
@@ -25,7 +30,11 @@ const BusinessCase: React.FC<BusinessCaseProps> = ({ fontSize, onFontSizeChange,
   });
 
   return (
-    <div className="bg-white p-6 rounded-xl shadow-lg h-full overflow-y-auto">
+    <div 
+      className="bg-white p-6 rounded-xl shadow-lg h-full overflow-y-auto"
+      onCopy={handleCopyPaste}
+      onCut={handleCopyPaste}
+    >
       <div className="flex justify-between items-center border-b pb-3 mb-4">
         <h2 className="text-2xl font-bold text-gray-900">Malawi's Pizza Catering Case</h2>
         <FontSizeControl
