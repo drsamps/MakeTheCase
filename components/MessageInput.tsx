@@ -16,7 +16,7 @@ const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     // Expose the textarea ref to the parent component
-    useImperativeHandle(ref, () => textareaRef.current as HTMLTextAreaElement);
+    useImperativeHandle(ref, () => textareaRef.current as HTMLTextAreaElement, []);
 
     // Auto-resize textarea based on content
     const adjustTextareaHeight = () => {

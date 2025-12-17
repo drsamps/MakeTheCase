@@ -21,6 +21,22 @@ interface Model {
 const FONT_SIZES = ['text-xs', 'text-sm', 'text-base', 'text-lg', 'text-xl'];
 const DEFAULT_FONT_SIZE = 'text-base';
 
+// Play a subtle double-beep sound to alert instructor of API errors
+const playErrorSound = () => {
+  const ctx = new AudioContext();
+  [0, 0.12].forEach(delay => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 440;
+    gain.gain.setValueAtTime(0.2, ctx.currentTime + delay);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + delay + 0.08);
+    osc.start(ctx.currentTime + delay);
+    osc.stop(ctx.currentTime + delay + 0.08);
+  });
+};
+
 const useMediaQuery = (query: string): boolean => {
     const [matches, setMatches] = useState(() => {
         if (typeof window !== 'undefined') {
@@ -73,6 +89,7 @@ const App: React.FC = () => {
   const [chatFontSize, setChatFontSize] = useState<string>('text-sm');
   const [caseFontSize, setCaseFontSize] = useState<string>('text-sm');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [models, setModels] = useState<Model[]>([]);
   const [defaultModel, setDefaultModel] = useState<string | null>(null);
   const [selectedChatModel, setSelectedChatModel] = useState<string | null>(null);
@@ -224,17 +241,45 @@ const App: React.FC = () => {
         setError(null);
 
         try {
+            // Clear any pending retry before making a new request
+            if (retryTimeoutRef.current) {
+                clearTimeout(retryTimeoutRef.current);
+                retryTimeoutRef.current = null;
+            }
             const response = await chatSession.sendMessage({ message: userMessage });
             const modelMessage: Message = { role: MessageRole.MODEL, content: response.text };
             setMessages((prev) => [...prev, modelMessage]);
         } catch (e) {
             console.error("Failed to send message:", e);
-            setError("An error occurred while communicating with the API.");
+            playErrorSound();
+            setError("Sorry, there is a delay in AI model response. Please wait 30 seconds.");
             const errorMessage: Message = {
                 role: MessageRole.MODEL,
-                content: "I seem to be having trouble connecting. Please try again in a moment.",
+                content: "Sorry, I have been interrupted for a moment taking care of another matter. Can you please hold on for about 30 seconds and I will get back with you.",
             };
             setMessages((prev) => [...prev, errorMessage]);
+            
+            // Schedule automatic retry after 25 seconds
+            retryTimeoutRef.current = setTimeout(async () => {
+                if (!chatSession) return;
+                try {
+                    const retryResponse = await chatSession.sendMessage({ message: userMessage });
+                    // Success - remove the "interrupted" message and add success messages
+                    setMessages((prev) => {
+                        const withoutError = prev.slice(0, -1); // Remove the "interrupted" message
+                        return [
+                            ...withoutError,
+                            { role: MessageRole.MODEL, content: "Thank you for your patience." },
+                            { role: MessageRole.MODEL, content: retryResponse.text }
+                        ];
+                    });
+                    setError(null);
+                } catch (retryError) {
+                    console.error("Retry failed:", retryError);
+                    // Update the error message to indicate continued failure
+                    setError("The AI model is still busy. Please wait 30 seconds and try again.");
+                }
+            }, 25000);
         } finally {
             setIsLoading(false);
         }
@@ -446,6 +491,11 @@ const App: React.FC = () => {
   };
 
   const handleRestart = () => {
+    // Clear any pending retry timeout
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
     setStudentFirstName(null);
     setStudentDBId(null);
     setTempFirstName('');

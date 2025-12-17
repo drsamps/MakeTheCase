@@ -46,6 +46,14 @@ The app collects student feedback including:
 - Tracks students, evaluations, transcripts, and sections
 - Can export to MySQL for analysis
 
+### 8. Graceful API Error Handling
+When the AI model is temporarily unavailable (e.g., due to rate limiting during high-traffic classroom sessions):
+- Students see a friendly in-character message from the CEO asking them to wait
+- The app automatically retries the request after 25 seconds
+- On success, the conversation continues seamlessly with a "Thank you for your patience" message
+- A subtle audio alert (double-beep) notifies the instructor that errors are occurring
+- No technical jargon is shown to students
+
 ## Tech Stack
 - **Frontend**: React + TypeScript + Tailwind CSS
 - **AI**: Google Gemini API
