@@ -9,8 +9,8 @@ sampsonsclass@gmail.com
 
 
 Loaded on sampson1
-sampson@sampson1:/var/www/services_root/html$ git clone git@github.com:drsamps/ChatWithCEO.git
-Cloning into 'ChatWithCEO'...
+sampson@sampson1:/var/www/services_root/html$ git clone git@github.com:drsamps/MakeTheCase.git
+Cloning into 'MakeTheCase'...
 remote: Enumerating objects: 70, done.
 remote: Counting objects: 100% (70/70), done.
 remote: Compressing objects: 100% (63/63), done.

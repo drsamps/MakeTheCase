@@ -1,4 +1,4 @@
--- MySQL database structure for ChatWithCEO
+-- MySQL database structure for MakeTheCase
 -- Converted from Supabase PostgreSQL schema
 -- Note: This is designed for the 'ceochat' database
 

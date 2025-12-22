@@ -1,8 +1,8 @@
-# About ChatWithCEO
+# About MakeTheCase
 
 ## Purpose
 
-**ChatWithCEO** is an **educational AI-powered case teaching tool** designed for business students. It simulates a conversation with a CEO (Kent Beck, CEO of Malawi's Pizza) to help students practice analyzing a business case study and developing recommendations.
+**MakeTheCase** is an **educational AI-powered case teaching tool** designed for business students. It simulates a conversation with a case study protagonist (e.g., Kent Beck, CEO of Malawi's Pizza) to help students practice analyzing a business case study and developing recommendations.
 
 ## Main Functionality
 

@@ -1,4 +1,4 @@
-# MySQL Migration Notes for ChatWithCEO
+# MySQL Migration Notes for MakeTheCase
 
 ## Overview
 This document explains how to migrate data from Supabase (PostgreSQL) to MySQL.

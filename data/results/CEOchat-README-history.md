@@ -1,11 +1,11 @@
 10/27/2025
 
-I created ChatWithCEO using Google AI Studio.
+I created MakeTheCase (originally ChatWithCEO) using Google AI Studio.
 It appears to have defaulted to using Node.js for the backend.
 I deployed it to the Google Cloud using AI Studio's "Deploy" button.
 https://ceo-business-case-chat-simulator-962957134935.us-west1.run.app/#/admin
 
-October 2025 I tested ChatWithCEO on undergrad GSCM students in the core.
+October 2025 I tested MakeTheCase on undergrad GSCM students in the core.
 Students went to https://services.byu.edu/gscm
 which was a landing page that linked to the deployed version.
 
@@ -15,7 +15,7 @@ I synced the latest Google AI Studio version to my home computer using Cursor.
 Changed it so that it would run locally...
 - needed to install Node.js on the home office computer
 - needed to restart Cursor to get Node.js in the path
-- cd "C:\Users\ses3\OneDrive - Brigham Young University\Apps\ChatWithCEO"
+- cd "C:\Users\ses3\OneDrive - Brigham Young University\Apps\MakeTheCase"
 - npm install
 - npm run dev
 which produces
@@ -49,7 +49,7 @@ It appears that the Gemini-2.5-Flash-Pro cost me about $1.60 for one section of 
 
 ## 12/3/2025 trial run in MBA 530 classes
 
-I ran ChatWithCEO it on two sections of Dan's MBA 530 classes
+I ran MakeTheCase it on two sections of Dan's MBA 530 classes
 Section 2 - Gemini-2.5-Flash
 Section 1 - Gemini-2.5-Pro
 -> these burnt through $4.55 (but free for now), probably mostly Gemini-2.5-Pro

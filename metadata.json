@@ -1,5 +1,5 @@
 {
-  "name": "CEO Business Case Chat Simulator",
-  "description": "An interactive chat application where students engage with a simulated CEO to analyze a business case, defending their strategic recommendations based on provided data.",
+  "name": "MakeTheCase",
+  "description": "An interactive chat application where students engage with a simulated case study protagonist to analyze a business case, defending their strategic recommendations based on provided data.",
   "requestFramePermissions": []
 }
