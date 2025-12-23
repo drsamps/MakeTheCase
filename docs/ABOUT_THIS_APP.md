@@ -42,9 +42,9 @@ The app collects student feedback including:
 - Manages course sections and AI model settings
 
 ### 7. Data Persistence
-- Uses **Supabase** for cloud storage
+- Uses **MySQL** database for local storage
 - Tracks students, evaluations, transcripts, and sections
-- Can export to MySQL for analysis
+- Express.js backend API server for database operations
 
 ### 8. Graceful API Error Handling
 When the AI model is temporarily unavailable (e.g., due to rate limiting during high-traffic classroom sessions):
@@ -56,8 +56,9 @@ When the AI model is temporarily unavailable (e.g., due to rate limiting during 
 
 ## Tech Stack
 - **Frontend**: React + TypeScript + Tailwind CSS
+- **Backend**: Node.js + Express.js
 - **AI**: Google Gemini API
-- **Database**: Supabase (with MySQL export capability)
+- **Database**: MySQL
 - **Build**: Vite
 
 ## Use Cases
@@ -67,16 +68,47 @@ The app has been tested with:
 
 ## Running Locally
 
-**Prerequisites:** Node.js
+**Prerequisites:** Node.js, MySQL Server
 
 1. Install dependencies:
    ```
    npm install
    ```
-2. Set the `GEMINI_API_KEY` in `.env.local` to your Gemini API key
-3. Run the app:
+
+2. Set up MySQL database:
+   ```sql
+   mysql -u root -p < docs/mysql-database-structure-Oct2025.sql
+   ```
+
+3. Copy `env.local.example` to `.env.local` and configure:
+   - `GEMINI_API_KEY` - Your Gemini API key
+   - `MYSQL_USER` - Your MySQL username
+   - `MYSQL_PASSWORD` - Your MySQL password
+   - `JWT_SECRET` - A random string for JWT token signing
+
+4. Run the database migration to add auth columns:
+   ```sql
+   mysql -u root -p < server/migrations/add_admin_auth.sql
+   ```
+
+5. Create an admin user:
+   ```
+   npm run create-admin admin@example.com yourpassword
+   ```
+
+6. Start the backend server:
+   ```
+   npm run server
+   ```
+
+7. In a separate terminal, start the frontend:
    ```
    npm run dev
+   ```
+
+Or run both together:
+   ```
+   npm run dev:all
    ```
 
 The app will be available at `http://localhost:3000/`
@@ -84,7 +116,7 @@ The app will be available at `http://localhost:3000/`
 ## Accessing the Instructor Dashboard
 
 - Navigate to `#/admin` or Ctrl+click on the header title
-- Requires authentication via Supabase
+- Requires authentication with admin email/password stored in MySQL
 
 ---
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { supabase } from '../services/supabaseClient';
+import { api } from '../services/apiClient';
 
 interface LoginProps {
   onLoginSuccess: () => void;
@@ -16,7 +16,7 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     setIsLoading(true);
     setError(null);
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
+    const { error: signInError } = await api.auth.signInWithPassword({
       email,
       password,
     });

@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { Chat } from '@google/genai';
 import { Message, MessageRole, ConversationPhase, EvaluationResult, CEOPersona, Section } from './types';
 import { createChatSession, getEvaluation } from './services/geminiService';
-import { supabase } from './services/supabaseClient';
+import { api } from './services/apiClient';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
 import MessageInput from './components/MessageInput';
@@ -102,7 +102,7 @@ const App: React.FC = () => {
   useEffect(() => {
     // Handles client-side routing and auth state
     const handleRouteChange = async () => {
-        const { data: { session } } = await supabase.auth.getSession();
+        const { data: { session } } = await api.auth.getSession();
         const urlParams = new URLSearchParams(window.location.search);
         
         // Use hash-based routing for robust SPA navigation.
@@ -138,7 +138,7 @@ const App: React.FC = () => {
   
   useEffect(() => {
     const fetchSections = async () => {
-        const { data, error: fetchError } = await supabase
+        const { data, error: fetchError } = await api
             .from('sections')
             .select('section_id, section_title, year_term, chat_model, super_model')
             .eq('enabled', true)
@@ -148,7 +148,7 @@ const App: React.FC = () => {
         if (fetchError) {
             console.error('Error fetching sections:', fetchError);
             setError('Could not load course sections from the database.');
-        } else {
+        } else if (data) {
             setSections(data as Section[]);
             if (data.length === 0) {
                 setSelectedSection('other');
@@ -157,7 +157,7 @@ const App: React.FC = () => {
     };
     
     const fetchModels = async () => {
-        const { data, error: modelError } = await supabase
+        const { data, error: modelError } = await api
             .from('models')
             .select('model_id, model_name, default')
             .eq('enabled', true);
@@ -165,14 +165,14 @@ const App: React.FC = () => {
         if (modelError) {
             console.error('Error fetching models:', modelError);
             setError('Could not load AI models from the database.');
-        } else {
-            setModels(data);
-            const defaultM = data.find(m => m.default);
+        } else if (data) {
+            setModels(data as Model[]);
+            const defaultM = (data as any[]).find(m => m.default);
             let initialModelId = null;
             if (defaultM) {
                 initialModelId = defaultM.model_id;
             } else if (data.length > 0) {
-                initialModelId = data[0].model_id;
+                initialModelId = (data as Model[])[0].model_id;
             }
             
             if (initialModelId) {
@@ -364,7 +364,7 @@ const App: React.FC = () => {
   const sanitizeFeedback = (text: string | null): string | null => {
     if (!text) return null;
     // Light sanitization to remove common SQL injection characters as a defense-in-depth measure.
-    // Supabase client library already provides protection against SQL injection.
+    // The API backend uses parameterized queries for protection against SQL injection.
     return text.replace(/;/g, '').replace(/--/g, '');
   };
 
@@ -395,7 +395,7 @@ const App: React.FC = () => {
 
         const finishedTimestamp = new Date().toISOString();
 
-        const { error: evaluationError } = await supabase
+        const { error: evaluationError } = await api
           .from('evaluations')
           .insert({
             student_id: studentDBId,
@@ -416,7 +416,7 @@ const App: React.FC = () => {
           console.error("Error saving evaluation:", evaluationError);
         } else {
           // If evaluation is saved, try to update the student's finished_at timestamp
-          const { error: studentUpdateError } = await supabase
+          const { error: studentUpdateError } = await api
             .from('students')
             .update({ finished_at: finishedTimestamp })
             .eq('id', studentDBId);
@@ -465,7 +465,7 @@ const App: React.FC = () => {
         sectionToSave = selectedSection;
     }
 
-    const { data, error: insertError } = await supabase
+    const { data, error: insertError } = await api
       .from('students')
       .insert({
         first_name: trimmedFirstName,
@@ -479,12 +479,12 @@ const App: React.FC = () => {
     
     if (insertError) {
       console.error("Error saving student to database:", insertError);
-      setError("Could not connect to the database to save session. Please check your Supabase configuration.");
+      setError("Could not connect to the database to save session. Please check your MySQL configuration.");
       setIsLoading(false);
       return;
     }
     
-    setStudentDBId(data.id);
+    setStudentDBId((data as any).id);
     setStudentFirstName(trimmedFirstName);
     await startConversation(trimmedFirstName, ceoPersona, selectedChatModel);
     setIsLoading(false);
@@ -536,7 +536,7 @@ const App: React.FC = () => {
   const handleAdminLogin = () => setIsAdminAuthenticated(true);
   
   const handleAdminLogout = async () => {
-    await supabase.auth.signOut();
+    await api.auth.signOut();
     setIsAdminAuthenticated(false);
     // Redirect to student view after logout
     window.location.hash = '';

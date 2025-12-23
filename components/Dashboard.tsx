@@ -1,7 +1,7 @@
 
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { supabase } from '../services/supabaseClient';
+import { api } from '../services/apiClient';
 
 interface DashboardProps {
   onLogout: () => void;
@@ -57,14 +57,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
 
   useEffect(() => {
     const fetchModels = async () => {
-        const { data, error } = await supabase
+        const { data, error } = await api
             .from('models')
             .select('model_id, model_name');
         
         if (error) {
             console.error('Failed to fetch models', error);
-        } else {
-            setModelsMap(new Map(data.map(m => [m.model_id, m.model_name])));
+        } else if (data) {
+            setModelsMap(new Map((data as any[]).map(m => [m.model_id, m.model_name])));
         }
     };
     fetchModels();
@@ -74,7 +74,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setIsLoadingSections(true);
     setError(null);
 
-    const { data: sections, error: sectionsError } = await supabase
+    const { data: sections, error: sectionsError } = await api
       .from('sections')
       .select('section_id, section_title, year_term, chat_model, super_model')
       .eq('enabled', true)
@@ -83,37 +83,37 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
 
     if (sectionsError) {
       console.error(sectionsError);
-      setError('Failed to fetch sections. Check RLS policies.');
+      setError('Failed to fetch sections. Check database connection.');
       setIsLoadingSections(false);
       return;
     }
 
-    const { data: students, error: studentsError } = await supabase
+    const { data: students, error: studentsError } = await api
       .from('students')
       .select('id, section_id');
 
     if (studentsError) {
       console.error(studentsError);
-      setError('Failed to fetch student data. Check RLS policies.');
+      setError('Failed to fetch student data. Check database connection.');
       setIsLoadingSections(false);
       return;
     }
 
-    const { data: evaluations, error: evaluationsError } = await supabase
+    const { data: evaluations, error: evaluationsError } = await api
         .from('evaluations')
         .select('student_id');
 
     if (evaluationsError) {
         console.error(evaluationsError);
-        setError('Failed to fetch evaluation data. Check RLS policies.');
+        setError('Failed to fetch evaluation data. Check database connection.');
         setIsLoadingSections(false);
         return;
     }
     
-    const completedStudentIds = new Set(evaluations.map(e => e.student_id));
+    const completedStudentIds = new Set((evaluations as any[] || []).map(e => e.student_id));
 
-    const stats: SectionStat[] = sections.map(section => {
-      const sectionStudents = students.filter(s => s.section_id === section.section_id);
+    const stats: SectionStat[] = (sections as any[] || []).map(section => {
+      const sectionStudents = (students as any[] || []).filter(s => s.section_id === section.section_id);
       const completions = sectionStudents.filter(s => completedStudentIds.has(s.id)).length;
       return {
         ...section,
@@ -122,8 +122,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       };
     });
 
-    const assignedStudentSectionIds = new Set(sections.map(s => s.section_id));
-    const unassignedStudents = students.filter(s => !s.section_id || !assignedStudentSectionIds.has(s.section_id));
+    const assignedStudentSectionIds = new Set((sections as any[] || []).map(s => s.section_id));
+    const unassignedStudents = (students as any[] || []).filter(s => !s.section_id || !assignedStudentSectionIds.has(s.section_id));
 
     if (unassignedStudents.length > 0) {
         const unassignedCompletions = unassignedStudents.filter(s => completedStudentIds.has(s.id)).length;
@@ -155,7 +155,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     let studentsError: any = null;
 
     if (sectionId === 'unassigned') {
-        const { data: allStudents, error: allStudentsError } = await supabase
+        const { data: allStudents, error: allStudentsError } = await api
             .from('students')
             // FIX: Add section_id to the select statement to allow filtering on it.
             .select('id, full_name, persona, finished_at, section_id');
@@ -164,7 +164,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
             studentsData = null;
             studentsError = allStudentsError;
         } else {
-            const { data: sections, error: sectionsError } = await supabase
+            const { data: sections, error: sectionsError } = await api
                 .from('sections')
                 .select('section_id')
                 .eq('enabled', true);
@@ -175,17 +175,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                 return;
             }
 
-            const assignedSectionIds = new Set(sections.map(s => s.section_id));
-            studentsData = allStudents.filter(s => !s.section_id || !assignedSectionIds.has(s.section_id));
+            const assignedSectionIds = new Set((sections as any[] || []).map(s => s.section_id));
+            studentsData = (allStudents as any[] || []).filter(s => !s.section_id || !assignedSectionIds.has(s.section_id));
             studentsError = null;
         }
     } else {
-        const { data, error } = await supabase
+        const { data, error } = await api
             .from('students')
             // FIX: Add section_id to maintain type consistency for studentsData.
             .select('id, full_name, persona, finished_at, section_id')
             .eq('section_id', sectionId);
-        studentsData = data;
+        studentsData = data as any;
         studentsError = error;
     }
   
@@ -204,13 +204,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   
     // Step 2: Fetch evaluations for the loaded students.
     const studentIds = studentsData.map(s => s.id);
-    const { data: evaluationsData, error: evaluationsError } = await supabase
+    const { data: evaluationsData, error: evaluationsError } = await api
       .from('evaluations')
       .select('student_id, score, hints, helpful, created_at, chat_model, super_model')
       .in('student_id', studentIds);
   
     if (evaluationsError) {
-      console.error("Supabase error fetching evaluations:", evaluationsError);
+      console.error("MySQL error fetching evaluations:", evaluationsError);
       // Graceful handling: show students but indicate evaluations failed with a more specific error.
       const detailedMessage = `Loaded students, but failed to get their evaluations. DB Error: ${evaluationsError.message}`;
       setError(detailedMessage);
@@ -350,10 +350,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     try {
       // Fetch all tables (exclude admins)
       const [modelsRes, sectionsRes, studentsRes, evalsRes] = await Promise.all([
-        supabase.from('models').select('*'),
-        supabase.from('sections').select('*'),
-        supabase.from('students').select('*'),
-        supabase.from('evaluations').select('*'),
+        api.from('models').select('*'),
+        api.from('sections').select('*'),
+        api.from('students').select('*'),
+        api.from('evaluations').select('*'),
       ]);
 
       const errors: string[] = [];
@@ -362,7 +362,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       if (studentsRes.error) errors.push(`students: ${studentsRes.error.message}`);
       if (evalsRes.error) errors.push(`evaluations: ${evalsRes.error.message}`);
       if (errors.length) {
-        alert('Failed to fetch some data from Supabase:\n' + errors.join('\n'));
+        alert('Failed to fetch some data from database:\n' + errors.join('\n'));
         setIsExporting(false);
         return;
       }
@@ -494,14 +494,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       <header className="flex-shrink-0 flex justify-between items-center px-6 py-3 bg-white border-b border-gray-200 shadow-sm">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold text-gray-900">Instructor Dashboard</h1>
-          <a
-            href="https://supabase.com/dashboard/project/mytexuyqwuoyncdlaflq"
-            target="supabase"
-            rel="noopener noreferrer"
-            className="text-xs font-medium text-gray-500 hover:text-blue-600 hover:underline"
-          >
-            (to Supabase)
-          </a>
+          <span className="text-xs font-medium text-gray-500">(MySQL Database)</span>
         </div>
         <div className="flex items-center gap-4">
           <a
