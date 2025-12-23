@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { testConnection } from './db.js';
+// Admin dashboard enhancements - December 2025 - v2
 
 // Import routes
 import authRoutes from './routes/auth.js';

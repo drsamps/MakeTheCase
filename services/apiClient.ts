@@ -207,10 +207,10 @@ class QueryBuilder<T> {
         body: JSON.stringify(this.insertData),
       });
     } else if (this.updateData) {
-      // PATCH request - need an ID from filters
-      const idFilter = this.filters.find(f => f.column === 'id' && f.op === 'eq');
+      // PATCH request - need an ID from filters (supports both 'id' and 'section_id')
+      const idFilter = this.filters.find(f => (f.column === 'id' || f.column === 'section_id') && f.op === 'eq');
       if (!idFilter) {
-        result = { data: null, error: { message: 'Update requires an id filter' } };
+        result = { data: null, error: { message: 'Update requires an id or section_id filter' } };
       } else {
         result = await apiFetch<T>(`/${this.tableName}/${idFilter.value}`, {
           method: 'PATCH',
@@ -221,8 +221,8 @@ class QueryBuilder<T> {
       // GET request
       const queryString = this.buildQueryString();
       
-      // Check if we're querying by ID
-      const idFilter = this.filters.find(f => f.column === 'id' && f.op === 'eq');
+      // Check if we're querying by ID (supports both 'id' and 'section_id')
+      const idFilter = this.filters.find(f => (f.column === 'id' || f.column === 'section_id') && f.op === 'eq');
       
       if (idFilter && this.isSingle) {
         result = await apiFetch<T>(`/${this.tableName}/${idFilter.value}`);

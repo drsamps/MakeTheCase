@@ -8,5 +8,8 @@ Configrue the app to use MySQL and this "ceochat" database.
 In the .env.local file allow me to enter the mysql username and password to access that database.
 
 
-[] The admin tool reports on student by course section, but otherwise could be more useful.
+[x] The admin tool reports on student by course section, but otherwise could be more useful.
 Please recommend some admin tool features that might be useful for setting up case chats and monitoring student progress.
+
+[] I don't think we need to list the Course Sections and the student results in the same screen. How about the main screen of the Instructor Dashboard just showing the list of Course Sections, displaying either enabled sections (the default) or all sections. That screen would allow creating new sections, activating sections, editing sections (including models), and, of course, reporting on the section results.
+Then, when the admin selects a given section it will display the student results for that section.  Would that work?
