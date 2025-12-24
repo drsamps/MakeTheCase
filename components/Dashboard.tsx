@@ -94,7 +94,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [showAllSections, setShowAllSections] = useState(false);
   
   // Section list view mode: tiles (cards) or list (table)
-  const [sectionViewMode, setSectionViewMode] = useState<'tiles' | 'list'>('tiles');
+  const [sectionViewMode, setSectionViewMode] = useState<'tiles' | 'list'>('list');
   
   // Modal states
   const [showTranscriptModal, setShowTranscriptModal] = useState(false);
@@ -719,7 +719,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       year_term: section.year_term,
       chat_model: section.chat_model || '',
       super_model: section.super_model || '',
-      enabled: section.enabled !== false
+      enabled: !!section.enabled
     });
     setShowSectionModal(true);
   };
@@ -796,6 +796,43 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     } catch (err: any) {
       console.error('Failed to duplicate section:', err);
       alert(`Failed to duplicate section: ${err.message}`);
+    }
+  };
+
+  const handleToggleStatus = async (section: SectionStat, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (section.section_id === 'unassigned' || section.section_id === 'other_courses') return;
+    
+    // MySQL returns 0/1 as numbers, not booleans, so we need to convert
+    const newStatus = !section.enabled;
+    
+    try {
+      const authToken = localStorage.getItem('auth_token');
+      const response = await fetch(`/api/sections/${section.section_id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ enabled: newStatus }),
+      });
+      
+      if (!response.ok) {
+        const text = await response.text();
+        console.error('Response error:', response.status, text);
+        throw new Error(`Server returned ${response.status}: ${text.substring(0, 100)}`);
+      }
+      
+      const result = await response.json();
+      
+      if (result.error) {
+        throw new Error(result.error.message || 'Update failed');
+      }
+      
+      fetchSectionStats();
+    } catch (err: any) {
+      console.error('Failed to toggle section status:', err);
+      alert(`Failed to toggle section status: ${err.message}`);
     }
   };
 
@@ -956,21 +993,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                   </button>
                 </div>
 
-                {/* View Mode Toggle: Tiles / List */}
+                {/* View Mode Toggle: List / Tiles */}
                 <div className="flex items-center bg-gray-100 rounded-lg p-1">
-                  <button
-                    onClick={() => setSectionViewMode('tiles')}
-                    className={`p-1.5 rounded-md transition-colors ${
-                      sectionViewMode === 'tiles' 
-                        ? 'bg-white text-gray-900 shadow-sm' 
-                        : 'text-gray-500 hover:text-gray-900'
-                    }`}
-                    title="Tile view"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
-                      <path d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-                    </svg>
-                  </button>
                   <button
                     onClick={() => setSectionViewMode('list')}
                     className={`p-1.5 rounded-md transition-colors ${
@@ -982,6 +1006,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
                       <path fillRule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clipRule="evenodd" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => setSectionViewMode('tiles')}
+                    className={`p-1.5 rounded-md transition-colors ${
+                      sectionViewMode === 'tiles' 
+                        ? 'bg-white text-gray-900 shadow-sm' 
+                        : 'text-gray-500 hover:text-gray-900'
+                    }`}
+                    title="Tile view"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
+                      <path d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
                     </svg>
                   </button>
                 </div>
@@ -1048,7 +1085,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                   <div
                     key={section.section_id}
                     className={`bg-white rounded-xl shadow-sm border border-gray-200 p-5 hover:shadow-md transition-shadow cursor-pointer ${
-                      section.enabled === false ? 'opacity-75' : ''
+                      !section.enabled ? 'opacity-75' : ''
                     }`}
                     onClick={() => handleSectionClick(section)}
                   >
@@ -1057,15 +1094,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
                           <h3 className={`font-semibold text-lg truncate ${
-                            section.enabled === false ? 'text-gray-500' : 'text-gray-900'
+                            !section.enabled ? 'text-gray-500' : 'text-gray-900'
                           }`}>
                             {section.section_title}
                           </h3>
-                          {section.enabled === false && section.section_id !== 'unassigned' && (
-                            <span className="px-2 py-0.5 text-xs font-medium bg-gray-200 text-gray-600 rounded-full flex-shrink-0">
-                              disabled
-                            </span>
-                          )}
                         </div>
                         <span className="inline-block px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
                           {section.year_term}
@@ -1100,7 +1132,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
 
                     {/* Stats */}
                     <div className="flex items-center gap-4 text-sm mb-3">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5" title="completed/started">
                         <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
                           <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
                         </svg>
@@ -1108,14 +1140,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                           <span className="font-semibold text-gray-900">{section.completions}</span>/{section.starts}
                         </span>
                       </div>
-                      {section.inProgress > 0 && (
-                        <span className="flex items-center gap-1.5 text-yellow-600 font-medium">
-                          <span className="flex h-2 w-2">
-                            <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-yellow-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
-                          </span>
-                          {section.inProgress} active
-                        </span>
+                      {section.section_id !== 'unassigned' && section.section_id !== 'other_courses' && (
+                        <button
+                          onClick={(e) => handleToggleStatus(section, e)}
+                          className={`px-2 py-0.5 text-xs font-medium rounded-full transition-colors ${
+                            section.enabled
+                              ? 'bg-green-100 text-green-800 hover:bg-green-200 border border-green-200'
+                              : 'bg-pink-100 text-pink-800 hover:bg-pink-200 border border-pink-200'
+                          }`}
+                          title={`Click to ${section.enabled ? 'disable' : 'enable'}`}
+                        >
+                          {section.enabled ? 'Enabled' : 'Disabled'}
+                        </button>
                       )}
                     </div>
 
@@ -1163,20 +1199,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                       <tr 
                         key={section.section_id}
                         className={`hover:bg-gray-50 cursor-pointer transition-colors ${
-                          section.enabled === false ? 'opacity-70' : ''
+                          !section.enabled ? 'opacity-70' : ''
                         }`}
                         onClick={() => handleSectionClick(section)}
                       >
                         <td className="px-4 py-3 whitespace-nowrap">
                           <div className="flex items-center gap-2">
-                            <span className={`font-medium ${section.enabled === false ? 'text-gray-500' : 'text-gray-900'}`}>
+                            <span className={`font-medium ${!section.enabled ? 'text-gray-500' : 'text-gray-900'}`}>
                               {section.section_title}
                             </span>
-                            {section.enabled === false && section.section_id !== 'unassigned' && (
-                              <span className="px-1.5 py-0.5 text-xs font-medium bg-gray-200 text-gray-600 rounded">
-                                disabled
-                              </span>
-                            )}
                           </div>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
@@ -1184,18 +1215,22 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                             {section.year_term}
                           </span>
                         </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600" title="completed/started">
                           <span className="font-semibold text-gray-900">{section.completions}</span>/{section.starts}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
-                          {section.inProgress > 0 ? (
-                            <span className="flex items-center gap-1.5 text-yellow-600 text-sm font-medium">
-                              <span className="flex h-2 w-2">
-                                <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-yellow-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
-                              </span>
-                              {section.inProgress} active
-                            </span>
+                          {section.section_id !== 'unassigned' && section.section_id !== 'other_courses' ? (
+                            <button
+                              onClick={(e) => handleToggleStatus(section, e)}
+                              className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
+                                section.enabled
+                                  ? 'bg-green-100 text-green-800 hover:bg-green-200 border border-green-200'
+                                  : 'bg-pink-100 text-pink-800 hover:bg-pink-200 border border-pink-200'
+                              }`}
+                              title={`Click to ${section.enabled ? 'disable' : 'enable'}`}
+                            >
+                              {section.enabled ? 'Enabled' : 'Disabled'}
+                            </button>
                           ) : (
                             <span className="text-sm text-gray-400">-</span>
                           )}
