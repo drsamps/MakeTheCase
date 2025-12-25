@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api } from '../services/apiClient'; // Dashboard with tiles/list view toggle 
+import { detectProvider } from '../services/llmService';
 
 interface DashboardProps {
   onLogout: () => void;
@@ -58,6 +59,11 @@ interface Model {
   model_id: string;
   model_name: string;
   enabled: boolean;
+  default?: boolean;
+  input_cost?: number | null;
+  output_cost?: number | null;
+  temperature?: number | null;
+  reasoning_effort?: string | null;
 }
 
 interface SectionStats {
@@ -80,6 +86,31 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [studentDetails, setStudentDetails] = useState<StudentDetail[]>([]);
   const [modelsMap, setModelsMap] = useState<Map<string, string>>(new Map());
   const [modelsList, setModelsList] = useState<Model[]>([]);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
+  const [testingModelId, setTestingModelId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'sections' | 'models'>('sections');
+  const [showModelModal, setShowModelModal] = useState(false);
+  const [editingModel, setEditingModel] = useState<Model | null>(null);
+  const [modelForm, setModelForm] = useState<{
+    model_id: string;
+    model_name: string;
+    enabled: boolean;
+    default: boolean;
+    input_cost: string;
+    output_cost: string;
+    temperature: string;
+    reasoning_effort: string;
+  }>({
+    model_id: '',
+    model_name: '',
+    enabled: true,
+    default: false,
+    input_cost: '',
+    output_cost: '',
+    temperature: '',
+    reasoning_effort: '',
+  });
+  const [isSavingModel, setIsSavingModel] = useState(false);
   const [isLoadingSections, setIsLoadingSections] = useState(true);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -113,22 +144,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     enabled: true
   });
 
-  // Fetch models
-  useEffect(() => {
-    const fetchModels = async () => {
-      const { data, error } = await api
-        .from('models')
-        .select('model_id, model_name, enabled');
-      
-      if (error) {
-        console.error('Failed to fetch models', error);
-      } else if (data) {
-        setModelsMap(new Map((data as any[]).map(m => [m.model_id, m.model_name])));
-        setModelsList(data as Model[]);
-      }
-    };
-    fetchModels();
+  const fetchModels = useCallback(async () => {
+    setIsLoadingModels(true);
+    const { data, error } = await api
+      .from('models')
+      .select('model_id, model_name, enabled, default, input_cost, output_cost, temperature, reasoning_effort');
+    
+    if (error) {
+      console.error('Failed to fetch models', error);
+    } else if (data) {
+      setModelsMap(new Map((data as any[]).map(m => [m.model_id, m.model_name])));
+      setModelsList(data as Model[]);
+    }
+    setIsLoadingModels(false);
   }, []);
+
+  useEffect(() => {
+    fetchModels();
+  }, [fetchModels]);
 
   const fetchSectionStats = useCallback(async () => {
     setIsLoadingSections(true);
@@ -411,6 +444,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setSortDirection('desc');
     setSearchQuery('');
     setFilterMode('all');
+  };
+
+  const handleTabChange = (tab: 'sections' | 'models') => {
+    setActiveTab(tab);
+    if (tab === 'models') {
+      setSelectedSection(null);
+    }
   };
 
   const handleBackToSections = () => {
@@ -836,6 +876,232 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     }
   };
 
+  const openCreateModelModal = () => {
+    setEditingModel(null);
+    setModelForm({
+      model_id: '',
+      model_name: '',
+      enabled: true,
+      default: false,
+      input_cost: '',
+      output_cost: '',
+      temperature: '',
+      reasoning_effort: '',
+    });
+    setShowModelModal(true);
+  };
+
+  const openEditModelModal = (model: Model) => {
+    setEditingModel(model);
+    setModelForm({
+      model_id: model.model_id,
+      model_name: model.model_name,
+      enabled: !!model.enabled,
+      default: !!model.default,
+      input_cost: model.input_cost !== null && model.input_cost !== undefined ? String(model.input_cost) : '',
+      output_cost: model.output_cost !== null && model.output_cost !== undefined ? String(model.output_cost) : '',
+      temperature: model.temperature !== null && model.temperature !== undefined ? String(model.temperature) : '',
+      reasoning_effort: model.reasoning_effort || '',
+    });
+    setShowModelModal(true);
+  };
+
+  const handleSaveModel = async () => {
+    if (!modelForm.model_id.trim() || !modelForm.model_name.trim()) {
+      alert('Model ID and Model Name are required.');
+      return;
+    }
+    const authToken = localStorage.getItem('auth_token');
+    if (!authToken) {
+      alert('You must be signed in to manage models.');
+      return;
+    }
+
+    const parseCost = (val: string) => {
+      const trimmed = val.trim();
+      if (!trimmed) return null;
+      const parsed = parseFloat(trimmed);
+      if (Number.isNaN(parsed)) {
+        throw new Error('Input/output cost must be a number.');
+      }
+      return parsed;
+    };
+
+    const parseTemperature = (val: string) => {
+      const trimmed = val.trim();
+      if (!trimmed) return null;
+      const parsed = parseFloat(trimmed);
+      if (Number.isNaN(parsed)) {
+        throw new Error('Temperature must be a number.');
+      }
+      return parsed;
+    };
+
+    const isReasoningModel = (id: string) => id.toLowerCase().startsWith('o1');
+
+    const payload = {
+      model_id: modelForm.model_id.trim(),
+      model_name: modelForm.model_name.trim(),
+      enabled: modelForm.enabled,
+      default: modelForm.default,
+      input_cost: parseCost(modelForm.input_cost),
+      output_cost: parseCost(modelForm.output_cost),
+      temperature: parseTemperature(modelForm.temperature),
+      reasoning_effort: modelForm.reasoning_effort || null,
+    };
+
+    setIsSavingModel(true);
+    try {
+      const response = await fetch(editingModel ? `/api/models/${editingModel.model_id}` : '/api/models', {
+        method: editingModel ? 'PATCH' : 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        const message = result?.error?.message || `Server returned ${response.status}`;
+        throw new Error(message);
+      }
+
+      setShowModelModal(false);
+      setEditingModel(null);
+      await fetchModels();
+    } catch (err: any) {
+      console.error('Failed to save model:', err);
+      alert(`Failed to save model: ${err.message}`);
+    } finally {
+      setIsSavingModel(false);
+    }
+  };
+
+  const handleToggleModel = async (model: Model) => {
+    const authToken = localStorage.getItem('auth_token');
+    if (!authToken) {
+      alert('You must be signed in to manage models.');
+      return;
+    }
+    try {
+      const response = await fetch(`/api/models/${model.model_id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ enabled: !model.enabled }),
+      });
+      const result = await parseApiResponse(response);
+      if (!response.ok || result.error) {
+        const message = result?.error?.message || `Server returned ${response.status}`;
+        throw new Error(message);
+      }
+      await fetchModels();
+    } catch (err: any) {
+      console.error('Failed to toggle model:', err);
+      alert(`Failed to toggle model: ${err.message}`);
+    }
+  };
+
+  const handleMakeDefault = async (model: Model) => {
+    const authToken = localStorage.getItem('auth_token');
+    if (!authToken) {
+      alert('You must be signed in to manage models.');
+      return;
+    }
+    try {
+      const response = await fetch(`/api/models/${model.model_id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ default: true }),
+      });
+      const result = await parseApiResponse(response);
+      if (!response.ok || result.error) {
+        const message = result?.error?.message || `Server returned ${response.status}`;
+        throw new Error(message);
+      }
+      await fetchModels();
+    } catch (err: any) {
+      console.error('Failed to set default model:', err);
+      alert(`Failed to set default model: ${err.message}`);
+    }
+  };
+
+  const handleTestModel = async (model: Model) => {
+    const authToken = localStorage.getItem('auth_token');
+    if (!authToken) {
+      alert('You must be signed in to test models.');
+      return;
+    }
+    const prompt = 'What is the capital of France?';
+    setTestingModelId(model.model_id);
+    try {
+      const response = await fetch('/api/llm/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          modelId: model.model_id,
+          systemPrompt: 'You are a quick connectivity test agent. Respond concisely.',
+          history: [],
+          message: prompt,
+        }),
+      });
+      const result = await parseApiResponse(response);
+      if (!response.ok || result.error) {
+        const msg = result?.error?.message || `Server returned ${response.status}`;
+        throw new Error(msg);
+      }
+      const text = result?.data?.text || '';
+      const meta = result?.data?.meta || {};
+      const parts = [];
+      if (meta.provider) parts.push(`provider=${meta.provider}`);
+      if (meta.temperature !== null && meta.temperature !== undefined) parts.push(`temperature=${meta.temperature}`);
+      if (meta.reasoning_effort) parts.push(`reasoning_effort=${meta.reasoning_effort}`);
+      const metaText = parts.length ? ` (params: ${parts.join(', ')})` : '';
+      alert(`Success: ${model.model_name} reports that the capital of France is: ${text || 'Received empty response.'}${metaText}`);
+    } catch (err: any) {
+      console.error('Failed to test model:', err);
+      alert(`Failed to test model: ${err.message}`);
+    } finally {
+      setTestingModelId(null);
+    }
+  };
+
+  const handleDeleteModel = async (model: Model) => {
+    const confirmed = window.confirm(`Delete model "${model.model_name}"? This cannot be undone.`);
+    if (!confirmed) return;
+    const authToken = localStorage.getItem('auth_token');
+    if (!authToken) {
+      alert('You must be signed in to manage models.');
+      return;
+    }
+    try {
+      const response = await fetch(`/api/models/${model.model_id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        const message = result?.error?.message || `Server returned ${response.status}`;
+        throw new Error(message);
+      }
+      await fetchModels();
+    } catch (err: any) {
+      console.error('Failed to delete model:', err);
+      alert(`Failed to delete model: ${err.message}`);
+    }
+  };
+
   // Status badge component
   const StatusBadge = ({ status }: { status: 'completed' | 'in_progress' | 'not_started' }) => {
     const styles = {
@@ -898,6 +1164,169 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     </th>
   );
 
+  const providerLabel = (modelId: string) => {
+    const provider = detectProvider(modelId);
+    if (provider === 'openai') return 'OpenAI';
+    if (provider === 'anthropic') return 'Anthropic';
+    return 'Google';
+  };
+
+  const formatModelDisplay = (modelId?: string | null) => {
+    if (!modelId) return 'Default';
+    const name = modelsMap.get(modelId) || modelId;
+    return `${providerLabel(modelId)} • ${name}`;
+  };
+
+  const formatCost = (val: number | null | undefined) => {
+    if (val === null || val === undefined) return '—';
+    const num = typeof val === 'string' ? parseFloat(val) : val;
+    if (Number.isNaN(num)) return '—';
+    return `$${num.toFixed(2)}`;
+  };
+
+  const parseApiResponse = async (response: Response) => {
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      return response.json();
+    }
+    const text = await response.text();
+    return { data: null, error: { message: text } };
+  };
+
+  const renderModelsTab = () => (
+    <div className="p-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">AI Models</h2>
+          <p className="text-sm text-gray-500">{sortedModels.length} model{sortedModels.length !== 1 ? 's' : ''} configured</p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={fetchModels}
+            className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+          >
+            Refresh
+          </button>
+          <button
+            onClick={openCreateModelModal}
+            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+          >
+            Add Model
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+        {isLoadingModels ? (
+          <div className="p-6 text-sm text-gray-600">Loading models...</div>
+        ) : sortedModels.length === 0 ? (
+          <div className="p-6 text-sm text-gray-600">No models found. Add a model to get started.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Model</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Provider</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Default</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Input Cost</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Output Cost</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {sortedModels.map(model => (
+                  <tr key={model.model_id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3">
+                      <div className="text-sm font-semibold text-gray-900">{model.model_name}</div>
+                      <div className="text-xs text-gray-500">{model.model_id}</div>
+                      {(model.temperature !== null && model.temperature !== undefined) || model.reasoning_effort ? (
+                        <div className="text-[11px] text-gray-500 mt-1 space-x-2">
+                          {model.temperature !== null && model.temperature !== undefined && (
+                            <span>temp: {model.temperature}</span>
+                          )}
+                          {model.reasoning_effort && (
+                            <span>effort: {model.reasoning_effort}</span>
+                          )}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-center px-2 py-1 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
+                        {providerLabel(model.model_id)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      {model.default ? (
+                        <span className="px-2 py-1 text-xs font-semibold text-green-700 bg-green-100 rounded-full border border-green-200">
+                          Default
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => handleMakeDefault(model)}
+                          disabled={!model.enabled}
+                          className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                            model.enabled
+                              ? 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                              : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                          }`}
+                        >
+                          Make default
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => handleToggleModel(model)}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-full border ${
+                          model.enabled
+                            ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'
+                            : 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'
+                        }`}
+                      >
+                        {model.enabled ? 'Enabled' : 'Disabled'}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-700">{formatCost(model.input_cost)}</td>
+                    <td className="px-4 py-3 text-sm text-gray-700">{formatCost(model.output_cost)}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => handleTestModel(model)}
+                          disabled={testingModelId === model.model_id}
+                          className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                            testingModelId === model.model_id
+                              ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                          }`}
+                        >
+                          {testingModelId === model.model_id ? 'Testing...' : 'Test'}
+                        </button>
+                        <button
+                          onClick={() => openEditModelModal(model)}
+                          className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDeleteModel(model)}
+                          className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   // Incomplete students count for alerts
   const incompleteCount = useMemo(() => {
     return studentDetails.filter(s => s.status === 'in_progress').length;
@@ -907,6 +1336,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const disabledSectionsCount = useMemo(() => {
     return sectionStats.filter(s => !s.enabled && s.section_id !== 'unassigned' && s.section_id !== 'other_courses').length;
   }, [sectionStats]);
+
+  const sortedModels = useMemo(() => {
+    return [...modelsList].sort((a, b) => {
+      const defaultDiff = Number(!!b.default) - Number(!!a.default);
+      if (defaultDiff !== 0) return defaultDiff;
+      return a.model_name.localeCompare(b.model_name);
+    });
+  }, [modelsList]);
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 text-gray-800 font-sans">
@@ -954,7 +1391,33 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
 
       {/* Main Content - Two Screen Layout */}
       <main className="flex-1 overflow-y-auto">
-        {!selectedSection ? (
+        <div className="px-6 pt-4">
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleTabChange('sections')}
+              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                activeTab === 'sections'
+                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+              }`}
+            >
+              Sections
+            </button>
+            <button
+              onClick={() => handleTabChange('models')}
+              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                activeTab === 'models'
+                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+              }`}
+            >
+              Models
+            </button>
+          </div>
+        </div>
+        {activeTab === 'models' ? (
+          renderModelsTab()
+        ) : !selectedSection ? (
           /* ==================== SCREEN 1: SECTION LIST ==================== */
           <div className="p-6 max-w-7xl mx-auto">
             {/* Section List Header */}
@@ -1159,10 +1622,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                     {(section.chat_model || section.super_model) && (
                       <div className="text-xs text-gray-500 space-y-0.5 border-t border-gray-100 pt-3">
                         {section.chat_model && (
-                          <div className="truncate">Chat: {modelsMap.get(section.chat_model) || section.chat_model}</div>
+                          <div className="truncate">Chat: {formatModelDisplay(section.chat_model)}</div>
                         )}
                         {section.super_model && (
-                          <div className="truncate">Super: {modelsMap.get(section.super_model) || section.super_model}</div>
+                          <div className="truncate">Super: {formatModelDisplay(section.super_model)}</div>
                         )}
                       </div>
                     )}
@@ -1236,10 +1699,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                           )}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">
-                          {section.chat_model ? (modelsMap.get(section.chat_model) || section.chat_model) : <span className="text-gray-300">default</span>}
+                          {formatModelDisplay(section.chat_model)}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">
-                          {section.super_model ? (modelsMap.get(section.super_model) || section.super_model) : <span className="text-gray-300">default</span>}
+                          {formatModelDisplay(section.super_model)}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-right">
                           <div className="flex justify-end gap-1">
@@ -1597,6 +2060,138 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                   )}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Model Modal */}
+      {showModelModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
+            <div className="flex justify-between items-center p-4 border-b">
+              <h3 className="text-lg font-bold text-gray-900">
+                {editingModel ? 'Edit Model' : 'Create Model'}
+              </h3>
+              <button
+                onClick={() => setShowModelModal(false)}
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+                aria-label="Close"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Model ID</label>
+                <input
+                  type="text"
+                  value={modelForm.model_id}
+                  onChange={(e) => setModelForm({ ...modelForm, model_id: e.target.value })}
+                  disabled={!!editingModel}
+                  placeholder="e.g., gemini-1.5-pro, gpt-4o, claude-3.5-sonnet"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
+                <input
+                  type="text"
+                  value={modelForm.model_name}
+                  onChange={(e) => setModelForm({ ...modelForm, model_name: e.target.value })}
+                  placeholder="e.g., Gemini 1.5 Pro"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Input Cost</label>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={modelForm.input_cost}
+                    onChange={(e) => setModelForm({ ...modelForm, input_cost: e.target.value })}
+                    placeholder="per 1K tokens"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Output Cost</label>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={modelForm.output_cost}
+                    onChange={(e) => setModelForm({ ...modelForm, output_cost: e.target.value })}
+                    placeholder="per 1K tokens"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+              </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Temperature (non-reasoning models)</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                max="2"
+                value={modelForm.temperature}
+                onChange={(e) => setModelForm({ ...modelForm, temperature: e.target.value })}
+                placeholder="e.g., 0.7"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Reasoning Effort (o1 models)</label>
+              <select
+                value={modelForm.reasoning_effort}
+                onChange={(e) => setModelForm({ ...modelForm, reasoning_effort: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">(none)</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </div>
+          </div>
+              <div className="flex flex-col gap-2">
+                <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={modelForm.enabled}
+                    onChange={(e) => setModelForm({ ...modelForm, enabled: e.target.checked })}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  Enabled (available for selection)
+                </label>
+                <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={modelForm.default}
+                    onChange={(e) => setModelForm({ ...modelForm, default: e.target.checked })}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  Default model
+                </label>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 p-4 border-t bg-gray-50 rounded-b-xl">
+              <button
+                onClick={() => setShowModelModal(false)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveModel}
+                disabled={isSavingModel}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
+              >
+                {isSavingModel ? 'Saving...' : editingModel ? 'Save Changes' : 'Create Model'}
+              </button>
             </div>
           </div>
         </div>

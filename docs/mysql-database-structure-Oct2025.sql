@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS models (
   default_model BOOLEAN NOT NULL DEFAULT FALSE,
   input_cost DECIMAL(10, 8),
   output_cost DECIMAL(10, 8),
+  temperature DECIMAL(3, 2),
+  reasoning_effort ENUM('low','medium','high'),
   PRIMARY KEY (model_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

@@ -1,9 +1,9 @@
 
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import type { Chat } from '@google/genai';
 import { Message, MessageRole, ConversationPhase, EvaluationResult, CEOPersona, Section } from './types';
-import { createChatSession, getEvaluation } from './services/geminiService';
+import { createChatSession, getEvaluation } from './services/llmService';
+import type { LLMChatSession } from './services/llmService';
 import { api } from './services/apiClient';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
@@ -16,6 +16,10 @@ import ResizablePanes from './components/ResizablePanes';
 interface Model {
     model_id: string;
     model_name: string;
+    enabled?: boolean;
+    default?: boolean;
+    input_cost?: number | null;
+    output_cost?: number | null;
 }
 
 const FONT_SIZES = ['text-xs', 'text-sm', 'text-base', 'text-lg', 'text-xl'];
@@ -79,7 +83,7 @@ const App: React.FC = () => {
   const [otherSectionText, setOtherSectionText] = useState<string>('');
   const [ceoPersona, setCeoPersona] = useState<CEOPersona>(CEOPersona.MODERATE);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [chatSession, setChatSession] = useState<Chat | null>(null);
+  const [chatSession, setChatSession] = useState<LLMChatSession | null>(null);
   const [conversationPhase, setConversationPhase] = useState<ConversationPhase>(ConversationPhase.PRE_CHAT);
   const [evaluationResult, setEvaluationResult] = useState<EvaluationResult | null>(null);
   const [helpfulScore, setHelpfulScore] = useState<number | null>(null);
@@ -159,7 +163,7 @@ const App: React.FC = () => {
     const fetchModels = async () => {
         const { data, error: modelError } = await api
             .from('models')
-            .select('model_id, model_name, default')
+            .select('model_id, model_name, default, enabled')
             .eq('enabled', true);
         
         if (modelError) {

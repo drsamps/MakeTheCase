@@ -8,6 +8,7 @@ import { testConnection } from './db.js';
 import authRoutes from './routes/auth.js';
 import modelsRoutes from './routes/models.js';
 import sectionsRoutes from './routes/sections.js';
+import llmRoutes from './routes/llm.js';
 import studentsRoutes from './routes/students.js';
 import evaluationsRoutes from './routes/evaluations.js';
 
@@ -30,6 +31,7 @@ app.use('/api/models', modelsRoutes);
 app.use('/api/sections', sectionsRoutes);
 app.use('/api/students', studentsRoutes);
 app.use('/api/evaluations', evaluationsRoutes);
+app.use('/api/llm', llmRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

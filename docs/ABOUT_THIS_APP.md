@@ -48,6 +48,13 @@ The app collects student feedback including:
     - Disabled sections show with pink badge and dimmed appearance
   - Create, edit, and duplicate sections
   - Assign specific AI models per section
+- **AI Model Management (Admin):**
+  - Create, edit, enable/disable, set default, and delete models in the `models` table
+  - Works with Google Gemini, OpenAI, and Anthropic model IDs (provider is auto-detected from the model_id)
+  - Prevents deleting models that are still assigned to sections
+- **LLM Keys & Security:**
+  - All provider calls are proxied through the backend; keys are server-side env vars (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`)
+  - No Vite-exposed keys are required on the client
 - **Student Details:**
   - View individual student transcripts and evaluations
   - Sort by name, score, hints, or completion time

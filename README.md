@@ -25,7 +25,8 @@ An interactive business case study simulator where students chat with an AI-powe
 
 3. **Configure environment:**
    - Copy `env.local.example` to `.env.local`
-   - Set `GEMINI_API_KEY`, `MYSQL_USER`, `MYSQL_PASSWORD`, `JWT_SECRET`
+   - Set `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
+   - Set `MYSQL_USER`, `MYSQL_PASSWORD`, `JWT_SECRET`
 
 4. **Create admin account:**
    ```bash
@@ -47,6 +48,12 @@ An interactive business case study simulator where students chat with an AI-powe
 6. **Access the app:**
    - Student view: `http://localhost:3000/`
    - Instructor dashboard: `http://localhost:3000/#/admin` (or Ctrl+click header)
+
+## Model management
+- Sign in to the instructor dashboard and open the **Models** tab.
+- Create/edit/enable/disable/delete models; setting a model as default clears previous defaults.
+- Model IDs can be Gemini, OpenAI (gpt-*/o*), or Anthropic (claude-*); provider is auto-detected.
+- Models assigned to sections must be reassigned before deletion.
 
 ## Troubleshooting
 
