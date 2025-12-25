@@ -40,6 +40,18 @@ The app collects student feedback including:
 - Protected admin view (`#/admin`) for instructors
 - Allows downloading student data to MySQL
 - Manages course sections and AI model settings
+- **Course Sections Features:**
+  - View all sections in list or tile view (list is default)
+  - See student progress: completed/started count with tooltip
+  - Toggle section status with clickable Enabled/Disabled buttons
+    - Enabled sections show with green badge
+    - Disabled sections show with pink badge and dimmed appearance
+  - Create, edit, and duplicate sections
+  - Assign specific AI models per section
+- **Student Details:**
+  - View individual student transcripts and evaluations
+  - Sort by name, score, hints, or completion time
+  - See completion status and persona used
 
 ### 7. Data Persistence
 - Uses **MySQL** database for local storage

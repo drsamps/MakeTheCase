@@ -2,7 +2,7 @@
 
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { api } from '../services/apiClient'; // Dashboard with tiles/list view toggle
+import { api } from '../services/apiClient'; // Dashboard with tiles/list view toggle 
 
 interface DashboardProps {
   onLogout: () => void;
@@ -433,7 +433,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       return sectionStats;
     }
     // Show only enabled sections (plus always show unassigned and other_courses if they have students)
-    return sectionStats.filter(s => s.enabled !== false || s.section_id === 'unassigned' || s.section_id === 'other_courses');
+    return sectionStats.filter(s => s.enabled || s.section_id === 'unassigned' || s.section_id === 'other_courses');
   }, [sectionStats, showAllSections]);
 
   // Calculate section statistics
@@ -905,7 +905,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   
   // Count of disabled sections for showing in toggle
   const disabledSectionsCount = useMemo(() => {
-    return sectionStats.filter(s => s.enabled === false && s.section_id !== 'unassigned').length;
+    return sectionStats.filter(s => !s.enabled && s.section_id !== 'unassigned' && s.section_id !== 'other_courses').length;
   }, [sectionStats]);
 
   return (
@@ -1303,7 +1303,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                 </li>
                 <li className="text-gray-400">/</li>
                 <li className="text-gray-900 font-medium">{selectedSection.section_title}</li>
-                {selectedSection.enabled === false && selectedSection.section_id !== 'unassigned' && (
+                {!selectedSection.enabled && selectedSection.section_id !== 'unassigned' && (
                   <li>
                     <span className="px-2 py-0.5 text-xs font-medium bg-gray-200 text-gray-600 rounded-full">
                       disabled
