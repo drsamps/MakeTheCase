@@ -34,7 +34,7 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       <div className="w-full max-w-sm p-8 space-y-6 bg-white rounded-2xl shadow-xl">
         <div className="text-center">
           <h1 className="text-3xl font-bold text-gray-900">Instructor Dashboard</h1>
-          <p className="mt-2 text-gray-600">Please sign in to continue</p>
+          <p className="mt-2 text-gray-600">Sign in with BYU CAS or email/password</p>
         </div>
         <form onSubmit={handleLogin} className="space-y-6">
           <div>
@@ -74,6 +74,15 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
             {isLoading ? 'Signing In...' : 'Sign In'}
           </button>
         </form>
+        <div className="text-center">
+          <button
+            type="button"
+            onClick={() => api.auth.beginCasLogin()}
+            className="w-full px-4 py-2 font-semibold text-blue-700 bg-blue-100 rounded-lg hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+          >
+            Login with BYU CAS
+          </button>
+        </div>
         <div className="text-center">
           <button
             onClick={() => window.location.hash = ''}

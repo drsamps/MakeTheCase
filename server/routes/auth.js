@@ -33,13 +33,14 @@ router.post('/login', async (req, res) => {
     }
 
     // Generate JWT token
-    const token = generateToken(admin.id, admin.email);
+    const token = generateToken(admin.id, admin.email, 'admin');
 
     res.json({
       token,
       user: {
         id: admin.id,
-        email: admin.email
+        email: admin.email,
+        role: 'admin'
       }
     });
   } catch (error) {
@@ -52,8 +53,13 @@ router.post('/login', async (req, res) => {
 router.get('/session', verifyToken, (req, res) => {
   res.json({
     user: {
-      id: req.admin.id,
-      email: req.admin.email
+      id: req.user.id,
+      email: req.user.email,
+      role: req.user.role,
+      first_name: req.user.first_name,
+      last_name: req.user.last_name,
+      full_name: req.user.full_name,
+      section_id: req.user.section_id,
     }
   });
 });

@@ -1,11 +1,12 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
+import { verifyToken, requireRole } from '../middleware/auth.js';
 
 const router = express.Router();
 
 // GET /api/students - Get all students (optionally filter by section_id)
-router.get('/', async (req, res) => {
+router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { section_id } = req.query;
     
@@ -28,7 +29,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/students/:id - Get single student
-router.get('/:id', async (req, res) => {
+router.get('/:id', verifyToken, requireRole(['admin', 'student']), async (req, res) => {
   try {
     const [rows] = await pool.execute(
       'SELECT id, created_at, first_name, last_name, full_name, persona, section_id, finished_at FROM students WHERE id = ?',
@@ -47,7 +48,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/students - Create new student
-router.post('/', async (req, res) => {
+router.post('/', verifyToken, requireRole(['admin', 'student']), async (req, res) => {
   try {
     const { first_name, last_name, full_name, persona, section_id } = req.body;
     
@@ -76,7 +77,7 @@ router.post('/', async (req, res) => {
 });
 
 // PATCH /api/students/:id - Update student
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', verifyToken, requireRole(['admin', 'student']), async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;

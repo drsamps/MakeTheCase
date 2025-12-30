@@ -8,7 +8,7 @@ const API_BASE = '/api';
 // Auth token management
 let authToken: string | null = localStorage.getItem('auth_token');
 
-function setAuthToken(token: string | null) {
+export function setAuthToken(token: string | null) {
   authToken = token;
   if (token) {
     localStorage.setItem('auth_token', token);
@@ -74,11 +74,35 @@ export const auth = {
 
     return {
       data: {
-        session: { access_token: result.token },
+        session: { access_token: result.token, role: result.user?.role || 'admin' },
         user: result.user,
       },
       error: null,
     };
+  },
+
+  async beginCasLogin() {
+    window.location.href = `${API_BASE}/cas/login`;
+  },
+
+  applyCasCallbackFromUrl() {
+    const url = new URL(window.location.href);
+    const token = url.searchParams.get('token');
+    const role = url.searchParams.get('role');
+    const fullName = url.searchParams.get('fullName');
+    const email = url.searchParams.get('email');
+
+    if (token) {
+      setAuthToken(token);
+      url.searchParams.delete('token');
+      url.searchParams.delete('role');
+      url.searchParams.delete('fullName');
+      url.searchParams.delete('email');
+      const newUrl = `${url.pathname}${url.searchParams.toString() ? `?${url.searchParams.toString()}` : ''}${url.hash}`;
+      window.history.replaceState({}, '', newUrl);
+      return { token, role: role || null, fullName: fullName || null, email: email || null };
+    }
+    return null;
   },
 
   async getSession() {

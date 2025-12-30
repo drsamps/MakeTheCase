@@ -11,6 +11,7 @@ import sectionsRoutes from './routes/sections.js';
 import llmRoutes from './routes/llm.js';
 import studentsRoutes from './routes/students.js';
 import evaluationsRoutes from './routes/evaluations.js';
+import casRoutes from './routes/cas.js';
 
 // Load environment variables
 dotenv.config({ path: '.env.local' });
@@ -27,6 +28,7 @@ app.use(express.json({ limit: '10mb' }));
 
 // API Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/cas', casRoutes);
 app.use('/api/models', modelsRoutes);
 app.use('/api/sections', sectionsRoutes);
 app.use('/api/students', studentsRoutes);

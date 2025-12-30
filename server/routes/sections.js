@@ -1,5 +1,6 @@
 import express from 'express';
 import { pool } from '../db.js';
+import { verifyToken, requireRole } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -47,7 +48,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/sections - Create new section
-router.post('/', async (req, res) => {
+router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { section_id, section_title, year_term, enabled, chat_model, super_model } = req.body;
     
@@ -91,7 +92,7 @@ router.post('/', async (req, res) => {
 });
 
 // PATCH /api/sections/:id - Update section
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
@@ -142,7 +143,7 @@ router.patch('/:id', async (req, res) => {
 });
 
 // DELETE /api/sections/:id - Delete section
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { id } = req.params;
     

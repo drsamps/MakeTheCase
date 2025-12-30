@@ -137,6 +137,27 @@ The app will be available at `http://localhost:3000/`
 - Navigate to `#/admin` or Ctrl+click on the header title
 - Requires authentication with admin email/password stored in MySQL
 
+## BYU CAS Authentication (Admins & Students)
+
+- Enable CAS by setting `CAS_ENABLED=true` in `.env.local`.
+- Configure CAS endpoints:
+  - `CAS_SERVER_URL` (e.g., `https://cas.byu.edu/cas`, trailing `/` preferred)
+  - `CAS_SERVICE_BASE_URL` (public URL where the app is reachable, no trailing slash; include sub-path like `/chatwithceo` if hosted under one)
+  - `SESSION_COOKIE_PATH` should match the app path (e.g., `/chatwithceo`).
+- Attribute mappings (override if your CAS uses different names):
+  - `CAS_ATTR_EMAIL_FIELD` (default `emailAddress`)
+  - `CAS_ATTR_NETID_FIELD` (default `user`)
+  - `CAS_ATTR_FIRSTNAME_FIELD` (default `givenName`)
+  - `CAS_ATTR_LASTNAME_FIELD` (default `sn`)
+- Flow:
+  - Admins: can log in with CAS **or** existing email/password; CAS issues the same JWT format.
+  - Students: must log in with CAS; the backend auto-creates/updates a student record keyed to the CAS netid and then requires section/persona selection before chatting.
+- CAS routes:
+  - `/api/cas/login` (redirects to CAS)
+  - `/api/cas/verify` (CAS callback, issues JWT, redirects to app with token)
+  - `/api/cas/logout` (returns CAS logout URL; client removes JWT)
+- Restart note: on Windows any file change restarts the app automatically; on Linux you can `touch wsgi.py` (not needed here unless deployed similarly).
+
 ---
 
 *This is an innovative teaching tool that uses AI to create an interactive, personalized case study experience where students practice executive-level business discussions.*

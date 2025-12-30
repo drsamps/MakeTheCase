@@ -72,6 +72,7 @@ const App: React.FC = () => {
   const [isReady, setIsReady] = useState(false);
   const [view, setView] = useState<'student' | 'admin'>('student');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [sessionUser, setSessionUser] = useState<any>(null);
   
   // Student-specific state
   const [studentFirstName, setStudentFirstName] = useState<string | null>(null);
@@ -106,14 +107,16 @@ const App: React.FC = () => {
   useEffect(() => {
     // Handles client-side routing and auth state
     const handleRouteChange = async () => {
+        api.auth.applyCasCallbackFromUrl();
         const { data: { session } } = await api.auth.getSession();
+        setSessionUser(session?.user || null);
         const urlParams = new URLSearchParams(window.location.search);
         
         // Use hash-based routing for robust SPA navigation.
         // Fallback to query param for AI Studio Preview compatibility.
         if (window.location.hash === '#/admin' || urlParams.get('view') === 'admin') {
             setView('admin');
-            setIsAdminAuthenticated(!!session);
+            setIsAdminAuthenticated(!!session && session.user?.role === 'admin');
         } else {
             setView('student');
         }
@@ -377,8 +380,9 @@ const App: React.FC = () => {
     setConversationPhase(ConversationPhase.EVALUATION_LOADING);
     setError(null);
     try {
-      const fullName = `${tempFirstName.trim()} ${tempLastName.trim()}`;
-      const result = await getEvaluation(messages, studentFirstName, fullName, selectedSuperModel);
+    const fullName = sessionUser?.full_name || `${studentFirstName}`;
+    const lastName = sessionUser?.last_name || '';
+    const result = await getEvaluation(messages, studentFirstName, fullName, selectedSuperModel);
       setEvaluationResult(result);
       
       if (studentDBId) {
@@ -393,7 +397,7 @@ const App: React.FC = () => {
           }).join('\n\n');
 
           // Anonymize the transcript
-          const nameRegex = new RegExp(`\\b(${fullName}|${tempFirstName.trim()}|${tempLastName.trim()})\\b`, 'gi');
+          const nameRegex = new RegExp(`\\b(${fullName}|${studentFirstName}|${lastName})\\b`, 'gi');
           transcriptToSave = transcript.replace(nameRegex, 'STUDENT');
         }
 
@@ -437,21 +441,25 @@ const App: React.FC = () => {
 
   const handleNameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!tempFirstName.trim() || !tempLastName.trim() || !selectedChatModel) return;
-    
-    // Prompt Injection Prevention: Validate names for allowed characters.
-    const nameRegex = /^[\p{L}\s'-]+$/u;
-    if (!nameRegex.test(tempFirstName.trim()) || !nameRegex.test(tempLastName.trim())) {
-        setError("Names can only contain letters, spaces, hyphens (-), and apostrophes (').");
-        setIsLoading(false);
-        return;
+    if (!sessionUser || sessionUser.role !== 'student') {
+      setError('Please login with BYU CAS first.');
+      return;
     }
+
+    if (!selectedChatModel) return;
 
     setIsLoading(true);
     setError(null);
-    const trimmedFirstName = tempFirstName.trim();
-    const trimmedLastName = tempLastName.trim();
-    const fullName = `${trimmedFirstName} ${trimmedLastName}`;
+
+    const trimmedFirstName =
+      (sessionUser.first_name && sessionUser.first_name.trim()) ||
+      (sessionUser.full_name ? sessionUser.full_name.split(' ')[0] : '') ||
+      sessionUser.email ||
+      'Student';
+    const trimmedLastName = sessionUser.last_name || '';
+    const fullName =
+      sessionUser.full_name ||
+      `${trimmedFirstName}${trimmedLastName ? ` ${trimmedLastName}` : ''}`;
     
     let sectionToSave: string;
     if (selectedSection === '') {
@@ -469,29 +477,33 @@ const App: React.FC = () => {
         sectionToSave = selectedSection;
     }
 
-    const { data, error: insertError } = await api
-      .from('students')
-      .insert({
-        first_name: trimmedFirstName,
-        last_name: trimmedLastName,
-        full_name: fullName,
-        persona: ceoPersona,
-        section_id: sectionToSave,
-      })
-      .select('id')
-      .single();
-    
-    if (insertError) {
-      console.error("Error saving student to database:", insertError);
-      setError("Could not connect to the database to save session. Please check your MySQL configuration.");
+    try {
+      const { data, error: updateError } = await api
+        .from('students')
+        .update({
+          first_name: trimmedFirstName,
+          last_name: trimmedLastName,
+          full_name: fullName,
+          persona: ceoPersona,
+          section_id: sectionToSave,
+        })
+        .eq('id', sessionUser.id)
+        .select('id')
+        .single();
+
+      if (updateError) {
+        console.error("Error saving student to database:", updateError);
+        setError("Could not connect to the database to save session. Please check your MySQL configuration.");
+        setIsLoading(false);
+        return;
+      }
+
+      setStudentDBId((data as any).id);
+      setStudentFirstName(trimmedFirstName);
+      await startConversation(trimmedFirstName, ceoPersona, selectedChatModel);
+    } finally {
       setIsLoading(false);
-      return;
     }
-    
-    setStudentDBId((data as any).id);
-    setStudentFirstName(trimmedFirstName);
-    await startConversation(trimmedFirstName, ceoPersona, selectedChatModel);
-    setIsLoading(false);
   };
 
   const handleRestart = () => {
@@ -546,6 +558,12 @@ const App: React.FC = () => {
     window.location.hash = '';
   };
 
+  const handleStudentLogout = async () => {
+    await api.auth.signOut();
+    setSessionUser(null);
+    handleRestart();
+  };
+
   if (!isReady) {
     return <div className="flex items-center justify-center min-h-screen">Loading...</div>;
   }
@@ -559,11 +577,46 @@ const App: React.FC = () => {
 
   // --- Student View Rendering ---
 
+  const displayFullName = (sessionUser?.full_name ||
+    `${sessionUser?.first_name || ''} ${sessionUser?.last_name || ''}`.trim()) || sessionUser?.email || 'Student';
+  const displayUsername = sessionUser?.email || sessionUser?.id || '';
+  const logoutButton = sessionUser ? (
+    <button
+      onClick={handleStudentLogout}
+      className="fixed top-4 right-4 px-3 py-2 text-sm font-semibold text-gray-700 bg-white border border-gray-300 rounded-md shadow-sm hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+    >
+      Logout
+    </button>
+  ) : null;
+
+  if (!sessionUser || sessionUser.role !== 'student') {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-200">
+        <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-2xl shadow-xl">
+          <div className="text-center">
+            <h1 className="text-3xl font-bold text-gray-900">Chat with the CEO</h1>
+            <p className="mt-2 text-gray-600">Please sign in with your BYU CAS account to begin.</p>
+          </div>
+          <div className="space-y-4">
+            <button
+              onClick={() => api.auth.beginCasLogin()}
+              className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+            >
+              Login with BYU CAS
+            </button>
+            {error && <p className="text-sm text-red-600 text-center">{error}</p>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (conversationPhase === ConversationPhase.PRE_CHAT) {
     const isSectionValid = (selectedSection === 'other' && otherSectionText.trim() !== '') || (selectedSection !== 'other' && selectedSection !== '');
 
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-200">
+      <div className="flex items-center justify-center min-h-screen bg-gray-200 relative">
+        {logoutButton}
         <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-2xl shadow-xl">
           <div className="text-center">
             <h1
@@ -577,18 +630,13 @@ const App: React.FC = () => {
             >
               Chat with the CEO
             </h1>
-            <p className="mt-2 text-gray-600">You will have a brief opportunity to chat with the (AI simulated) CEO about the case. Enter your name and course section and choose a CEO persona to begin.</p>
+            <p className="mt-2 text-gray-600">You will have a brief opportunity to chat with the (AI simulated) CEO about the case. You are signed in with BYU CAS below. Choose your course section and CEO persona to begin.</p>
           </div>
           <form onSubmit={handleNameSubmit} className="space-y-6">
-            <div className="flex flex-col sm:flex-row gap-4">
-                <div className="flex-1">
-                  <label htmlFor="firstName" className="block text-sm font-medium text-gray-700">First name</label>
-                  <input id="firstName" type="text" value={tempFirstName} onChange={(e) => setTempFirstName(e.target.value)} className="w-full px-4 py-2 mt-1 text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" placeholder="e.g., Alex" required />
-                </div>
-                <div className="flex-1">
-                  <label htmlFor="lastName" className="block text-sm font-medium text-gray-700">Last name</label>
-                  <input id="lastName" type="text" value={tempLastName} onChange={(e) => setTempLastName(e.target.value)} className="w-full px-4 py-2 mt-1 text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" placeholder="e.g., Chen" required />
-                </div>
+            <div className="p-3 bg-blue-50 rounded-lg border border-blue-100">
+              <p className="text-sm text-gray-800">
+                Signed in as <span className="font-semibold">{displayFullName}{displayUsername ? ` (${displayUsername})` : ''}</span>
+              </p>
             </div>
             <div>
               <label htmlFor="section" className="block text-sm font-medium text-gray-700">What course section are you in?</label>
@@ -617,7 +665,7 @@ const App: React.FC = () => {
             </div>
             <p className="text-xs text-gray-500 italic px-2">You can optionally and anonymously share your chat conversation with the developers to improve the dialog for future students. You will be asked about this later.</p>
             {error && <p className="text-sm text-red-600">{error}</p>}
-            <button type="submit" disabled={isLoading || !tempFirstName.trim() || !tempLastName.trim() || !isSectionValid} className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400">
+            <button type="submit" disabled={isLoading || !isSectionValid} className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400">
               {isLoading ? 'Initializing...' : 'Start Chat'}
             </button>
           </form>
@@ -629,12 +677,9 @@ const App: React.FC = () => {
   const chatModelName = models.find(m => m.model_id === selectedChatModel)?.model_name || selectedChatModel;
   const superModelName = models.find(m => m.model_id === selectedSuperModel)?.model_name || selectedSuperModel;
 
-  if (conversationPhase === ConversationPhase.EVALUATION_LOADING || conversationPhase === ConversationPhase.EVALUATING) {
-    return <Evaluation result={evaluationResult} studentName={`${tempFirstName.trim()} ${tempLastName.trim()}` || 'Student'} onRestart={handleRestart} superModelName={superModelName} />;
-  }
-
-  return (
-    <div className="h-screen w-screen p-4 lg:p-6 font-sans bg-gray-100 overflow-hidden">
+  const studentShell = (
+    <div className="h-screen w-screen p-4 lg:p-6 font-sans bg-gray-100 overflow-hidden relative">
+      {logoutButton}
       <ResizablePanes direction={direction} initialSize={initialSize}>
         <div className="w-full h-full">
           <BusinessCase 
@@ -671,6 +716,13 @@ const App: React.FC = () => {
       </ResizablePanes>
     </div>
   );
+
+  if (conversationPhase === ConversationPhase.EVALUATION_LOADING || conversationPhase === ConversationPhase.EVALUATING) {
+    const displayName = sessionUser?.full_name || studentFirstName || 'Student';
+    return <Evaluation result={evaluationResult} studentName={displayName} onRestart={handleRestart} superModelName={superModelName} />;
+  }
+
+  return studentShell;
 };
 
 export default App;

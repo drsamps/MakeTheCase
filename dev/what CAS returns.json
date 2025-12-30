@@ -1,0 +1,26 @@
+12/29/2025
+What CAS returns on localhost:3000 (chatwithceo)
+
+{
+  "attrs": {
+    "credentialType": "DuoSecurityUniversalPromptCredential",
+    "isFromNewLogin": "false",
+    "authenticationDate": "2025-12-30T00:38:34.680015498Z",
+    "bypassMultifactorAuthentication": "false",
+    "netId": "ses3",
+    "authenticationMethod": "DuoSecurityAuthenticationHandler",
+    "geoLocation": "unknown",
+    "authnContextClass": "mfa-duo",
+    "successfulAuthenticationHandlers": "DuoSecurityAuthenticationHandler",
+    "longTermAuthenticationRequestTokenUsed": "false"
+  },
+  "mapped": {
+    "netid": "ses3",
+    "email": "ses3@byu.edu",
+    "firstName": "ses3",
+    "lastName": "",
+    "fullName": "ses3"
+  },
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6ImNhczpzZXMzIiwiZW1haWwiOiJzZXMzQGJ5dS5lZHUiLCJyb2xlIjoic3R1ZGVudCIsImZpcnN0X25hbWUiOiJzZXMzIiwibGFzdF9uYW1lIjoiIiwiZnVsbF9uYW1lIjoic2VzMyIsImlhdCI6MTc2NzA2NTY2NywiZXhwIjoxNzY3MTUyMDY3fQ._NBc9_rP2NuNyjoUfVh8Dv8N3XrafoAHRaFWC0VDfGI",
+  "role": "student"
+}
