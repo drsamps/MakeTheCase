@@ -401,7 +401,8 @@ const App: React.FC = () => {
           transcriptToSave = transcript.replace(nameRegex, 'STUDENT');
         }
 
-        const finishedTimestamp = new Date().toISOString();
+        const finishedTimestamp = new Date();
+        const mysqlTimestamp = finishedTimestamp.toISOString().slice(0, 19).replace('T', ' ');
 
         const { error: evaluationError } = await api
           .from('evaluations')
@@ -426,7 +427,7 @@ const App: React.FC = () => {
           // If evaluation is saved, try to update the student's finished_at timestamp
           const { error: studentUpdateError } = await api
             .from('students')
-            .update({ finished_at: finishedTimestamp })
+            .update({ finished_at: mysqlTimestamp })
             .eq('id', studentDBId);
           if (studentUpdateError) console.error("Error updating student finished_at timestamp:", studentUpdateError);
         }

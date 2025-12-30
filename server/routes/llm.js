@@ -47,6 +47,11 @@ router.post('/eval', async (req, res) => {
       return res.status(404).json({ data: null, error: { message: 'Model not found' } });
     }
     const text = await evaluateWithLLM({ modelId, prompt, config: modelConfig });
+
+    // Debug logging to diagnose empty/zeroed evaluations
+    const preview = typeof text === 'string' ? text.slice(0, 400) : '';
+    console.log('[eval] model:', modelId, '| len:', preview.length, '| preview:', preview);
+
     res.json({ data: text, error: null });
   } catch (error) {
     console.error('LLM eval error:', error);

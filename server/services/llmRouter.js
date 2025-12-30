@@ -186,7 +186,7 @@ export async function evaluateWithLLM({ modelId, prompt, config = {} }) {
 
   if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set on the server');
   const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-  const response = await ai.models.generateContent({
+  const generation = await ai.models.generateContent({
     model: modelId,
     contents: prompt,
     config: {
@@ -194,6 +194,25 @@ export async function evaluateWithLLM({ modelId, prompt, config = {} }) {
       ...(temperature !== null && temperature !== undefined ? { temperature: Number(temperature) } : {}),
     },
   });
-  return response.text;
+
+  // Normalize across SDK shapes.
+  const candidate =
+    typeof generation?.response?.text === 'function'
+      ? generation.response.text()
+      : typeof generation?.response?.text === 'string'
+        ? generation.response.text
+        : generation?.response?.candidates?.[0]?.content?.parts?.[0]?.text
+          || (typeof generation?.text === 'function' ? generation.text() : generation?.text)
+          || '';
+
+  if (!candidate) {
+    throw new Error('Gemini returned an empty evaluation response');
+  }
+
+  // Debug visibility into what the model returned (truncated).
+  console.log('[eval] Gemini candidate len:', typeof candidate === 'string' ? candidate.length : 'n/a', '| preview:', String(candidate).slice(0, 400));
+
+  // Ensure we always return a string (text() may already be a string).
+  return typeof candidate === 'string' ? candidate : String(candidate);
 }
 
