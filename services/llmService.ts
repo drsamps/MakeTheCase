@@ -77,7 +77,22 @@ const normalizeEvaluationResult = (raw: any): EvaluationResult => {
       }))
     : null;
 
-  const criteria = criteriaFromSchema || criteriaFromEvalArray || buildCriteriaFromAltSchema(raw) || [];
+  let criteria =
+    criteriaFromSchema || criteriaFromEvalArray || buildCriteriaFromAltSchema(raw) || [];
+
+  // Fallback: if evaluation_criteria exists but did not map (e.g., non-array shape), coerce values.
+  if (criteria.length === 0 && raw?.evaluation_criteria) {
+    const list = Array.isArray(raw.evaluation_criteria)
+      ? raw.evaluation_criteria
+      : Object.values(raw.evaluation_criteria);
+    criteria = list
+      .filter(Boolean)
+      .map((c: any) => ({
+        question: String(c?.question || c?.criterion || 'Question'),
+        score: Number.isFinite(Number(c?.score)) ? Number(c.score) : 0,
+        feedback: String(c?.feedback || ''),
+      }));
+  }
 
   const totalScoreCandidate =
     raw?.totalScore ?? raw?.total_score ?? raw?.overall_score ?? raw?.score ?? null;

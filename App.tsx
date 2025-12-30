@@ -720,7 +720,16 @@ const App: React.FC = () => {
 
   if (conversationPhase === ConversationPhase.EVALUATION_LOADING || conversationPhase === ConversationPhase.EVALUATING) {
     const displayName = sessionUser?.full_name || studentFirstName || 'Student';
-    return <Evaluation result={evaluationResult} studentName={displayName} onRestart={handleRestart} superModelName={superModelName} />;
+    return (
+      <Evaluation
+        result={evaluationResult}
+        studentName={displayName}
+        onRestart={handleRestart}
+        superModelName={superModelName}
+        onLogout={handleStudentLogout}
+        onTitleContextNav={handleRestart}
+      />
+    );
   }
 
   return studentShell;

@@ -6,6 +6,8 @@ interface EvaluationProps {
   studentName: string;
   onRestart: () => void;
   superModelName: string | null;
+  onLogout?: () => void;
+  onTitleContextNav?: () => void;
 }
 
 const LoadingSpinner: React.FC<{ modelName: string | null }> = ({ modelName }) => (
@@ -18,7 +20,7 @@ const LoadingSpinner: React.FC<{ modelName: string | null }> = ({ modelName }) =
 );
 
 // FIX: Correctly type the component's props using React.FC<EvaluationProps> to resolve type errors.
-const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart, superModelName }) => {
+const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart, superModelName, onLogout, onTitleContextNav }) => {
   if (!result) {
     return (
         <div className="flex items-center justify-center min-h-screen bg-gray-200">
@@ -31,7 +33,15 @@ const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart,
     <div className="flex items-center justify-center min-h-screen bg-gray-200 p-4">
       <div className="w-full max-w-3xl p-8 space-y-6 bg-white rounded-2xl shadow-xl transform transition-all animate-fade-in">
         <div className="text-center border-b pb-4">
-          <h1 className="text-3xl font-bold text-gray-900">Performance Review</h1>
+          <h1
+            className="text-3xl font-bold text-gray-900 cursor-pointer"
+            onContextMenu={(e) => {
+              e.preventDefault();
+              onTitleContextNav?.();
+            }}
+          >
+            Performance Review
+          </h1>
           <p className="mt-2 text-lg text-gray-600">Evaluation for {studentName}</p>
         </div>
         
@@ -68,10 +78,10 @@ const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart,
                 Total Score: {result.totalScore} / 15
              </div>
             <button
-              onClick={onRestart}
+              onClick={onLogout || onRestart}
               className="w-full max-w-xs px-6 py-3 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-transform transform hover:scale-105"
             >
-              Start Over
+              Logout
             </button>
         </div>
       </div>
