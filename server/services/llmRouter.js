@@ -209,9 +209,6 @@ export async function evaluateWithLLM({ modelId, prompt, config = {} }) {
     throw new Error('Gemini returned an empty evaluation response');
   }
 
-  // Debug visibility into what the model returned (truncated).
-  console.log('[eval] Gemini candidate len:', typeof candidate === 'string' ? candidate.length : 'n/a', '| preview:', String(candidate).slice(0, 400));
-
   // Ensure we always return a string (text() may already be a string).
   return typeof candidate === 'string' ? candidate : String(candidate);
 }
