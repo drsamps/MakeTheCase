@@ -399,7 +399,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     // If filtering by case, only fetch evaluations for that specific case
     let evaluationsQuery = api
       .from('evaluations')
-      .select('id, student_id, case_id, score, hints, helpful, created_at, chat_model, super_model, summary, criteria, transcript, liked, improve, allow_rechat')
+      .select('id, student_id, case_id, score, hints, helpful, created_at, chat_model, super_model, summary, criteria, transcript, liked, improve, allow_rechat, persona')
       .in('student_id', studentIds);
     
     if (caseIdFilter && caseIdFilter !== 'all') {
@@ -448,56 +448,88 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       return;
     }
     
-    const evaluationsMap = new Map<string, EvaluationData>();
-    if (Array.isArray(evaluationsData)) {
-      for (const e of evaluationsData) {
-        if (e && e.student_id) {
-          evaluationsMap.set(e.student_id, e as EvaluationData);
-        }
-      }
-    }
-    
     // Build a map of case_id -> case_title for display
     const caseIdToTitle = new Map<string, string>();
     for (const sc of sectionCasesForFilter) {
       caseIdToTitle.set(sc.case_id, sc.case_title);
     }
     
-    const combinedDetails = studentsData.map(student => {
-      const evaluation = evaluationsMap.get(student.id);
-      const hasEvaluation = evaluation !== undefined;
-      const hasStarted = student.finished_at !== null || hasEvaluation;
-      
-      let status: 'completed' | 'in_progress' | 'not_started' = 'not_started';
-      if (hasEvaluation) {
-        status = 'completed';
-      } else if (hasStarted) {
-        status = 'in_progress';
+    // Build a map of student_id -> student data for quick lookup
+    const studentsMap = new Map<string, typeof studentsData[0]>();
+    for (const student of studentsData) {
+      studentsMap.set(student.id, student);
+    }
+    
+    // Create rows for all evaluations (one row per evaluation)
+    const evaluationRows: StudentDetail[] = [];
+    if (Array.isArray(evaluationsData)) {
+      for (const evaluation of evaluationsData) {
+        if (evaluation && evaluation.student_id) {
+          const student = studentsMap.get(evaluation.student_id);
+          if (student) {
+            evaluationRows.push({
+              id: student.id,
+              full_name: student.full_name,
+              persona: evaluation.persona || student.persona,
+              completion_time: evaluation.created_at,
+              score: evaluation.score ?? null,
+              hints: evaluation.hints ?? null,
+              helpful: evaluation.helpful ?? null,
+              chat_model: evaluation.chat_model ?? null,
+              super_model: evaluation.super_model ?? null,
+              summary: evaluation.summary ?? null,
+              criteria: evaluation.criteria ?? null,
+              transcript: evaluation.transcript ?? null,
+              liked: evaluation.liked ?? null,
+              improve: evaluation.improve ?? null,
+              created_at: evaluation.created_at,
+              status: 'completed' as const,
+              case_id: evaluation.case_id ?? null,
+              case_title: evaluation.case_id ? (caseIdToTitle.get(evaluation.case_id) || evaluation.case_id) : null,
+              evaluation_id: evaluation.id ?? null,
+              allow_rechat: evaluation.allow_rechat ?? false,
+            });
+          }
+        }
       }
-      
-      return {
-        id: student.id,
-        full_name: student.full_name,
-        persona: student.persona,
-        completion_time: evaluation?.created_at ?? student.finished_at,
-        score: evaluation?.score ?? null,
-        hints: evaluation?.hints ?? null,
-        helpful: evaluation?.helpful ?? null,
-        chat_model: evaluation?.chat_model ?? null,
-        super_model: evaluation?.super_model ?? null,
-        summary: evaluation?.summary ?? null,
-        criteria: evaluation?.criteria ?? null,
-        transcript: evaluation?.transcript ?? null,
-        liked: evaluation?.liked ?? null,
-        improve: evaluation?.improve ?? null,
-        created_at: student.created_at,
-        status,
-        case_id: evaluation?.case_id ?? null,
-        case_title: evaluation?.case_id ? (caseIdToTitle.get(evaluation.case_id) || evaluation.case_id) : null,
-        evaluation_id: evaluation?.id ?? null,
-        allow_rechat: evaluation?.allow_rechat ?? false,
-      };
+    }
+    
+    // Find students who have no evaluations and add them as "not_started" rows
+    const studentsWithEvaluations = new Set(evaluationsData?.map(e => e.student_id) || []);
+    const studentsWithoutEvaluations = studentsData.filter(student => !studentsWithEvaluations.has(student.id));
+    
+    const notStartedRows: StudentDetail[] = studentsWithoutEvaluations.map(student => ({
+      id: student.id,
+      full_name: student.full_name,
+      persona: student.persona,
+      completion_time: student.finished_at,
+      score: null,
+      hints: null,
+      helpful: null,
+      chat_model: null,
+      super_model: null,
+      summary: null,
+      criteria: null,
+      transcript: null,
+      liked: null,
+      improve: null,
+      created_at: student.created_at,
+      status: student.finished_at ? 'in_progress' as const : 'not_started' as const,
+      case_id: null,
+      case_title: null,
+      evaluation_id: null,
+      allow_rechat: false,
+    }));
+    
+    // Sort evaluation rows by date (most recent first)
+    evaluationRows.sort((a, b) => {
+      const dateA = a.completion_time ? new Date(a.completion_time).getTime() : 0;
+      const dateB = b.completion_time ? new Date(b.completion_time).getTime() : 0;
+      return dateB - dateA; // Most recent first
     });
+    
+    // Combine all rows: evaluations first (sorted by date), then students without evaluations
+    const combinedDetails = [...evaluationRows, ...notStartedRows];
   
     setStudentDetails(combinedDetails);
     setIsLoadingDetails(false);
