@@ -12,6 +12,9 @@ import llmRoutes from './routes/llm.js';
 import studentsRoutes from './routes/students.js';
 import evaluationsRoutes from './routes/evaluations.js';
 import casRoutes from './routes/cas.js';
+import casesRoutes from './routes/cases.js';
+import sectionCasesRoutes from './routes/sectionCases.js';
+import chatOptionsRoutes from './routes/chatOptions.js';
 
 // Load environment variables
 dotenv.config({ path: '.env.local' });
@@ -34,6 +37,9 @@ app.use('/api/sections', sectionsRoutes);
 app.use('/api/students', studentsRoutes);
 app.use('/api/evaluations', evaluationsRoutes);
 app.use('/api/llm', llmRoutes);
+app.use('/api/cases', casesRoutes);
+app.use('/api/sections', sectionCasesRoutes); // Section-case assignments (nested under sections)
+app.use('/api/chat-options', chatOptionsRoutes); // Chat options schema and defaults
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

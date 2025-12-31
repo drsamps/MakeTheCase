@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Message, MessageRole, ConversationPhase, EvaluationResult, CEOPersona, Section } from './types';
 import { createChatSession, getEvaluation } from './services/llmService';
 import type { LLMChatSession } from './services/llmService';
+import { CaseData, DEFAULT_CASE_DATA } from './constants';
 import { api } from './services/apiClient';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
@@ -99,6 +100,28 @@ const App: React.FC = () => {
   const [defaultModel, setDefaultModel] = useState<string | null>(null);
   const [selectedChatModel, setSelectedChatModel] = useState<string | null>(null);
   const [selectedSuperModel, setSelectedSuperModel] = useState<string | null>(null);
+  const [activeCaseData, setActiveCaseData] = useState<CaseData | null>(null);
+  const [isLoadingCase, setIsLoadingCase] = useState(false);
+  
+  // Chat options from section-case assignment (Phase 2)
+  const [chatOptions, setChatOptions] = useState<any>(null);
+  
+  // Default chat options
+  const defaultChatOptions = {
+    hints_allowed: 3,
+    free_hints: 1,
+    ask_for_feedback: false,
+    ask_save_transcript: false,
+    allowed_personas: 'moderate,strict,liberal,leading,sycophantic',
+    default_persona: 'moderate'
+  };
+
+  // Available cases for selected section
+  const [availableCases, setAvailableCases] = useState<any[]>([]);
+  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  const [isLoadingAvailableCases, setIsLoadingAvailableCases] = useState(false);
+  const [studentSavedSectionId, setStudentSavedSectionId] = useState<string | null>(null);
+  const [hasFetchedStudentSection, setHasFetchedStudentSection] = useState(false);
 
   const isLargeScreen = useMediaQuery('(min-width: 1024px)');
   const direction = isLargeScreen ? 'vertical' : 'horizontal';
@@ -196,6 +219,131 @@ const App: React.FC = () => {
     }
   }, [conversationPhase, view]);
 
+  // Fetch student's saved section when they log in
+  useEffect(() => {
+    const fetchStudentSection = async () => {
+      if (!sessionUser || sessionUser.role !== 'student' || hasFetchedStudentSection) return;
+      
+      try {
+        const { data, error } = await api
+          .from('students')
+          .select('section_id')
+          .eq('id', sessionUser.id)
+          .single();
+        
+        if (!error && data && data.section_id && !data.section_id.startsWith('other:')) {
+          setStudentSavedSectionId(data.section_id);
+          setSelectedSection(data.section_id);
+        }
+      } catch (err) {
+        console.error('Error fetching student section:', err);
+      } finally {
+        setHasFetchedStudentSection(true);
+      }
+    };
+    
+    if (sessionUser && conversationPhase === ConversationPhase.PRE_CHAT) {
+      fetchStudentSection();
+    }
+  }, [sessionUser, conversationPhase, hasFetchedStudentSection]);
+
+  // Fetch available cases for the selected section
+  const fetchAvailableCases = async (sectionId: string) => {
+    if (!sectionId || sectionId === 'other') {
+      setAvailableCases([]);
+      setSelectedCaseId(null);
+      return;
+    }
+    
+    setIsLoadingAvailableCases(true);
+    try {
+      const { data, error } = await api.from(`sections/${sectionId}/cases`).select('*');
+      
+      if (error) {
+        console.error('Error fetching section cases:', error);
+        setAvailableCases([]);
+      } else {
+        // Filter to only show active cases
+        const activeCases = (data || []).filter((c: any) => c.active && c.case_enabled !== false);
+        setAvailableCases(activeCases);
+        
+        // Auto-select if only one case available
+        if (activeCases.length === 1) {
+          setSelectedCaseId(activeCases[0].case_id);
+        } else {
+          setSelectedCaseId(null);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching available cases:', err);
+      setAvailableCases([]);
+    } finally {
+      setIsLoadingAvailableCases(false);
+    }
+  };
+
+  // Fetch cases when section changes
+  useEffect(() => {
+    if (selectedSection && selectedSection !== 'other') {
+      fetchAvailableCases(selectedSection);
+    } else {
+      setAvailableCases([]);
+      setSelectedCaseId(null);
+    }
+  }, [selectedSection]);
+
+  // Fetch case data when a case is selected from available cases
+  useEffect(() => {
+    const fetchSelectedCaseData = async () => {
+      if (!selectedCaseId) {
+        setActiveCaseData(null);
+        setChatOptions(defaultChatOptions);
+        return;
+      }
+      
+      // Find the selected case from available cases to get chat_options
+      const selectedCase = availableCases.find(c => c.case_id === selectedCaseId);
+      if (selectedCase) {
+        // Extract and set chat options
+        const options = selectedCase.chat_options || defaultChatOptions;
+        setChatOptions(options);
+        
+        // Set default persona from chat options
+        if (options.default_persona) {
+          const personaMap: Record<string, CEOPersona> = {
+            moderate: CEOPersona.MODERATE,
+            strict: CEOPersona.STRICT,
+            liberal: CEOPersona.LIBERAL,
+            leading: CEOPersona.LEADING,
+            sycophantic: CEOPersona.SYCOPHANTIC
+          };
+          setCeoPersona(personaMap[options.default_persona] || CEOPersona.MODERATE);
+        }
+      }
+      
+      setIsLoadingCase(true);
+      try {
+        // Fetch case content from the API
+        const caseResponse = await fetch(`/api/llm/case-data/${selectedCaseId}`);
+        const caseResult = await caseResponse.json();
+        
+        if (caseResult.data) {
+          setActiveCaseData(caseResult.data as CaseData);
+        } else {
+          console.log('Could not fetch case content');
+          setActiveCaseData(null);
+        }
+      } catch (err) {
+        console.error('Error fetching case data:', err);
+        setActiveCaseData(null);
+      } finally {
+        setIsLoadingCase(false);
+      }
+    };
+    
+    fetchSelectedCaseData();
+  }, [selectedCaseId, availableCases]);
+
   useEffect(() => {
     const lastMessage = messages[messages.length - 1];
     if (
@@ -211,10 +359,15 @@ const App: React.FC = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const firstMessageContent = `Hello ${name}, I am Kent Beck, the CEO of Malawi's Pizza. Thank you for meeting with me today. Our time is limited so let's get straight to my quandary: **Should we stay in the catering business, or is pizza catering a distraction from our core restaurant operations?**`;
+      // Use active case data or default
+      const caseData = activeCaseData || DEFAULT_CASE_DATA;
+      
+      // Build first message using case protagonist and question
+      const firstMessageContent = `Hello ${name}, I am ${caseData.protagonist}, the protagonist of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
       const initialHistory: Message[] = [{ role: MessageRole.MODEL, content: firstMessageContent }];
 
-      const session = createChatSession(name, persona, modelId, initialHistory);
+      // Create chat session with case data for cache-optimized prompts
+      const session = createChatSession(name, persona, modelId, initialHistory, caseData);
       setChatSession(session);
       setMessages(initialHistory);
       setConversationPhase(ConversationPhase.CHATTING);
@@ -224,19 +377,43 @@ const App: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [activeCaseData]);
   
   const handleSendMessage = async (userMessage: string) => {
     if (conversationPhase === ConversationPhase.CHATTING) {
         const lowerCaseMessage = userMessage.toLowerCase();
         if (lowerCaseMessage.includes("time is up") || lowerCaseMessage.includes("time's up")) {
             const finalUserMessage: Message = { role: MessageRole.USER, content: userMessage };
-            const ceoPermissionRequest: Message = {
-                role: MessageRole.MODEL,
-                content: `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. **Would you be willing to provide feedback by answering a few questions about our interaction?**`
-            };
-            setMessages(prev => [...prev, finalUserMessage, ceoPermissionRequest]);
-            setConversationPhase(ConversationPhase.AWAITING_HELPFUL_PERMISSION);
+            
+            // Check chat options to determine next phase
+            const askForFeedback = chatOptions?.ask_for_feedback ?? false;
+            const askSaveTranscript = chatOptions?.ask_save_transcript ?? false;
+            
+            if (askForFeedback) {
+                // Ask for feedback (existing behavior)
+                const ceoPermissionRequest: Message = {
+                    role: MessageRole.MODEL,
+                    content: `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. **Would you be willing to provide feedback by answering a few questions about our interaction?**`
+                };
+                setMessages(prev => [...prev, finalUserMessage, ceoPermissionRequest]);
+                setConversationPhase(ConversationPhase.AWAITING_HELPFUL_PERMISSION);
+            } else if (askSaveTranscript) {
+                // Skip feedback, ask for transcript permission
+                const ceoTranscriptRequest: Message = {
+                    role: MessageRole.MODEL,
+                    content: `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** The conversation will be completely anonymized (your name will be removed).`
+                };
+                setMessages(prev => [...prev, finalUserMessage, ceoTranscriptRequest]);
+                setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
+            } else {
+                // Skip both feedback and transcript permission
+                const ceoFarewell: Message = {
+                    role: MessageRole.MODEL,
+                    content: `${studentFirstName}, thank you for meeting with me today. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. Click the button below to proceed to the evaluation.`
+                };
+                setMessages(prev => [...prev, finalUserMessage, ceoFarewell]);
+                setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
+            }
             return;
         }
 
@@ -304,13 +481,25 @@ const App: React.FC = () => {
             setMessages(prev => [...prev, ceoScoreRequest]);
             setConversationPhase(ConversationPhase.AWAITING_HELPFUL_SCORE);
         } else {
-            // Student declined feedback, proceed to ask for transcript permission.
-            const ceoTranscriptRequest: Message = {
-                role: MessageRole.MODEL,
-                content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** The conversation will be completely anonymized (your name will be removed). This would be **a big help** in developing this AI chat case teaching tool 😊."
-            };
-            setMessages(prev => [...prev, ceoTranscriptRequest]);
-            setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
+            // Student declined feedback - check if we should ask for transcript permission
+            const askSaveTranscript = chatOptions?.ask_save_transcript ?? false;
+            
+            if (askSaveTranscript) {
+                const ceoTranscriptRequest: Message = {
+                    role: MessageRole.MODEL,
+                    content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** The conversation will be completely anonymized (your name will be removed). This would be **a big help** in developing this AI chat case teaching tool 😊."
+                };
+                setMessages(prev => [...prev, ceoTranscriptRequest]);
+                setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
+            } else {
+                // Skip transcript permission
+                const ceoFarewell: Message = {
+                    role: MessageRole.MODEL,
+                    content: "It has been a delight talking with you today. Click the button below to proceed to the evaluation."
+                };
+                setMessages(prev => [...prev, ceoFarewell]);
+                setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
+            }
         }
     } else if (conversationPhase === ConversationPhase.AWAITING_HELPFUL_SCORE) {
         const userScoreReply: Message = { role: MessageRole.USER, content: userMessage };
@@ -345,12 +534,25 @@ const App: React.FC = () => {
         const userImproveReply: Message = { role: MessageRole.USER, content: userMessage };
         setImproveFeedback(userMessage);
 
-        const ceoTranscriptRequest: Message = {
-            role: MessageRole.MODEL,
-            content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** The conversation will be completely anonymized (your name will be removed). This would be **a big help** in developing this AI chat case teaching tool 😊.",
-        };
-        setMessages(prev => [...prev, userImproveReply, ceoTranscriptRequest]);
-        setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
+        // Check if we should ask for transcript permission
+        const askSaveTranscript = chatOptions?.ask_save_transcript ?? false;
+        
+        if (askSaveTranscript) {
+            const ceoTranscriptRequest: Message = {
+                role: MessageRole.MODEL,
+                content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** The conversation will be completely anonymized (your name will be removed). This would be **a big help** in developing this AI chat case teaching tool 😊.",
+            };
+            setMessages(prev => [...prev, userImproveReply, ceoTranscriptRequest]);
+            setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
+        } else {
+            // Skip transcript permission
+            const ceoFarewell: Message = {
+                role: MessageRole.MODEL,
+                content: "Thank you for your valuable feedback! Click the button below to proceed to the evaluation.",
+            };
+            setMessages(prev => [...prev, userImproveReply, ceoFarewell]);
+            setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
+        }
     } else if (conversationPhase === ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION) {
         const userTranscriptReply: Message = { role: MessageRole.USER, content: userMessage };
         
@@ -382,7 +584,9 @@ const App: React.FC = () => {
     try {
     const fullName = sessionUser?.full_name || `${studentFirstName}`;
     const lastName = sessionUser?.last_name || '';
-    const result = await getEvaluation(messages, studentFirstName, fullName, selectedSuperModel);
+    // Pass case data for cache-optimized evaluation prompt
+    const caseData = activeCaseData || DEFAULT_CASE_DATA;
+    const result = await getEvaluation(messages, studentFirstName, fullName, selectedSuperModel, caseData);
       setEvaluationResult(result);
       
       if (studentDBId) {
@@ -467,15 +671,15 @@ const App: React.FC = () => {
         setError('Please select a course section.');
         setIsLoading(false);
         return;
-    } else if (selectedSection === 'other') {
-        if (!otherSectionText.trim()) {
-            setError('Please enter your course section name.');
-            setIsLoading(false);
-            return;
-        }
-        sectionToSave = `other:${otherSectionText.trim().substring(0, 14)}`;
     } else {
         sectionToSave = selectedSection;
+    }
+    
+    // Validate case selection
+    if (!selectedCaseId || !activeCaseData) {
+        setError('Please select a case to chat about.');
+        setIsLoading(false);
+        return;
     }
 
     try {
@@ -524,9 +728,14 @@ const App: React.FC = () => {
     setConversationPhase(ConversationPhase.PRE_CHAT);
     setEvaluationResult(null);
     setCeoPersona(CEOPersona.MODERATE);
-    setSelectedSection('');
+    // Keep section selected if student has a saved section
+    if (!studentSavedSectionId) {
+      setSelectedSection('');
+    }
     setOtherSectionText('');
     setHelpfulScore(null);
+    setSelectedCaseId(null);
+    setActiveCaseData(null);
     setLikedFeedback(null);
     setImproveFeedback(null);
     setShareTranscript(false);
@@ -537,6 +746,10 @@ const App: React.FC = () => {
   const handleSectionChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
       const sectionId = e.target.value;
       setSelectedSection(sectionId);
+      // Reset case selection when section changes
+      setSelectedCaseId(null);
+      setActiveCaseData(null);
+      setChatOptions(defaultChatOptions);
 
       if (sectionId === 'other' || !sectionId) {
           setSelectedChatModel(defaultModel);
@@ -595,8 +808,8 @@ const App: React.FC = () => {
       <div className="flex items-center justify-center min-h-screen bg-gray-200">
         <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-2xl shadow-xl">
           <div className="text-center">
-            <h1 className="text-3xl font-bold text-gray-900">Chat with the CEO</h1>
-            <p className="mt-2 text-gray-600">Please sign in with your BYU CAS account to begin.</p>
+            <h1 className="text-3xl font-bold text-gray-900">Make The Case</h1>
+            <p className="mt-2 text-gray-600">Please sign in with your BYU CAS account to begin chatting with an AI case protagonist.</p>
           </div>
           <div className="space-y-4">
             <button
@@ -613,12 +826,14 @@ const App: React.FC = () => {
   }
 
   if (conversationPhase === ConversationPhase.PRE_CHAT) {
-    const isSectionValid = (selectedSection === 'other' && otherSectionText.trim() !== '') || (selectedSection !== 'other' && selectedSection !== '');
+    const isSectionValid = selectedSection !== '' && selectedSection !== 'other';
+    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase;
+    const sectionName = sections.find(s => s.section_id === selectedSection)?.section_title || selectedSection;
 
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-200 relative">
         {logoutButton}
-        <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-2xl shadow-xl">
+        <div className="w-full max-w-lg p-8 space-y-6 bg-white rounded-2xl shadow-xl">
           <div className="text-center">
             <h1
               className="text-3xl font-bold text-gray-900"
@@ -629,45 +844,134 @@ const App: React.FC = () => {
                 }
               }}
             >
-              Chat with the CEO
+              Make The Case
             </h1>
-            <p className="mt-2 text-gray-600">You will have a brief opportunity to chat with the (AI simulated) CEO about the case. You are signed in with BYU CAS below. Choose your course section and CEO persona to begin.</p>
+            <p className="mt-2 text-gray-600">
+              Welcome <span className="font-semibold">{sessionUser?.first_name || displayFullName.split(' ')[0]}</span>! This tool allows you to chat with an AI simulated protagonist from a case you have studied.
+            </p>
           </div>
-          <form onSubmit={handleNameSubmit} className="space-y-6">
+          <form onSubmit={handleNameSubmit} className="space-y-5">
             <div className="p-3 bg-blue-50 rounded-lg border border-blue-100">
               <p className="text-sm text-gray-800">
                 Signed in as <span className="font-semibold">{displayFullName}{displayUsername ? ` (${displayUsername})` : ''}</span>
               </p>
             </div>
+            
+            {/* Section Selection */}
             <div>
-              <label htmlFor="section" className="block text-sm font-medium text-gray-700">What course section are you in?</label>
-              <select id="section" value={selectedSection} onChange={handleSectionChange} className="w-full px-4 py-2 mt-1 text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
-                <option value="" disabled>Click to select...</option>
-                {sections.map((sec) => (<option key={sec.section_id} value={sec.section_id}>{sec.section_title} ({sec.year_term})</option>))}
-                <option value="other">Other...</option>
+              <label htmlFor="section" className="block text-sm font-medium text-gray-700">Your Course Section</label>
+              <select 
+                id="section" 
+                value={selectedSection} 
+                onChange={handleSectionChange} 
+                className="w-full px-4 py-2 mt-1 text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="" disabled>Select your course section...</option>
+                {sections.map((sec) => (
+                  <option key={sec.section_id} value={sec.section_id}>
+                    {sec.section_title} ({sec.year_term})
+                  </option>
+                ))}
               </select>
+              {studentSavedSectionId && selectedSection === studentSavedSectionId && (
+                <p className="mt-1 text-xs text-green-600">✓ Previously selected section</p>
+              )}
             </div>
-            {selectedSection === 'other' && (
-              <div>
-                <label htmlFor="otherSection" className="block text-sm font-medium text-gray-700">Please specify your section</label>
-                <input id="otherSection" type="text" value={otherSectionText} onChange={(e) => setOtherSectionText(e.target.value)} className="w-full px-4 py-2 mt-1 text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" placeholder="e.g., BUSM 101" required />
+            
+            {/* Available Cases for Section */}
+            {isSectionValid && (
+              <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <div className="flex items-center justify-between mb-3">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Available case chats for {sectionName}:
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => fetchAvailableCases(selectedSection)}
+                    disabled={isLoadingAvailableCases}
+                    className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className={`w-3 h-3 ${isLoadingAvailableCases ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 110 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+                    </svg>
+                    Refresh
+                  </button>
+                </div>
+                
+                {isLoadingAvailableCases ? (
+                  <div className="text-center py-3 text-gray-500 text-sm">Loading available cases...</div>
+                ) : availableCases.length === 0 ? (
+                  <div className="text-center py-3 text-gray-500 text-sm bg-yellow-50 border border-yellow-200 rounded-lg">
+                    Currently no available case chats for this section. Please check back later or contact your instructor.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {availableCases.map((caseItem) => (
+                      <label 
+                        key={caseItem.case_id}
+                        className={`flex items-center p-3 rounded-lg border cursor-pointer transition-colors ${
+                          selectedCaseId === caseItem.case_id 
+                            ? 'bg-blue-50 border-blue-300' 
+                            : 'bg-white border-gray-200 hover:bg-gray-50'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="selectedCase"
+                          value={caseItem.case_id}
+                          checked={selectedCaseId === caseItem.case_id}
+                          onChange={(e) => setSelectedCaseId(e.target.value)}
+                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+                        />
+                        <div className="ml-3">
+                          <span className="block font-medium text-gray-900">{caseItem.case_title}</span>
+                          <span className="block text-xs text-gray-500">Protagonist: {caseItem.protagonist}</span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                
+                {isLoadingCase && selectedCaseId && (
+                  <p className="mt-2 text-xs text-gray-500">Loading case content...</p>
+                )}
               </div>
             )}
-             <div>
-                <label htmlFor="ceoPersona" className="block text-sm font-medium text-gray-700">CEO Personality</label>
-                <p className="mt-1 text-xs text-gray-500">Determines how strictly the CEO requires you to cite case facts.</p>
+            
+            {/* Protagonist Personality */}
+            {selectedCaseId && activeCaseData && (
+              <div>
+                <label htmlFor="ceoPersona" className="block text-sm font-medium text-gray-700">Protagonist Personality</label>
+                <p className="mt-1 text-xs text-gray-500">Determines how strictly the protagonist requires you to cite case facts.</p>
                 <select id="ceoPersona" value={ceoPersona} onChange={(e) => setCeoPersona(e.target.value as CEOPersona)} className="w-full px-4 py-2 mt-1 text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
-                    <option value={CEOPersona.MODERATE}>Moderate (Recommended)</option>
-                    <option value={CEOPersona.STRICT}>Strict</option>
-                    <option value={CEOPersona.LIBERAL}>Liberal</option>
-                    <option value={CEOPersona.LEADING}>Leading</option>
-                    <option value={CEOPersona.SYCOPHANTIC}>Sycophantic</option>
+                    {/* Filter personas based on allowed_personas from chat options */}
+                    {(() => {
+                      const allowedList = (chatOptions?.allowed_personas || 'moderate,strict,liberal,leading,sycophantic').split(',').map((p: string) => p.trim().toLowerCase());
+                      const personaOptions = [
+                        { value: CEOPersona.MODERATE, label: 'Moderate (Recommended)', key: 'moderate' },
+                        { value: CEOPersona.STRICT, label: 'Strict', key: 'strict' },
+                        { value: CEOPersona.LIBERAL, label: 'Liberal', key: 'liberal' },
+                        { value: CEOPersona.LEADING, label: 'Leading', key: 'leading' },
+                        { value: CEOPersona.SYCOPHANTIC, label: 'Sycophantic', key: 'sycophantic' },
+                      ];
+                      return personaOptions
+                        .filter(p => allowedList.includes(p.key))
+                        .map(p => <option key={p.value} value={p.value}>{p.label}</option>);
+                    })()}
                 </select>
-            </div>
+              </div>
+            )}
+            
             <p className="text-xs text-gray-500 italic px-2">You can optionally and anonymously share your chat conversation with the developers to improve the dialog for future students. You will be asked about this later.</p>
+            
             {error && <p className="text-sm text-red-600">{error}</p>}
-            <button type="submit" disabled={isLoading || !isSectionValid} className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400">
-              {isLoading ? 'Initializing...' : 'Start Chat'}
+            
+            <button 
+              type="submit" 
+              disabled={isLoading || !canStartChat} 
+              className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
+            >
+              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : 'Start Chat'}
             </button>
           </form>
         </div>
@@ -688,11 +992,22 @@ const App: React.FC = () => {
             onFontSizeChange={setCaseFontSize}
             fontSizes={FONT_SIZES}
             defaultFontSize={DEFAULT_FONT_SIZE}
+            caseTitle={activeCaseData?.case_title}
+            caseContent={activeCaseData?.case_content}
           />
         </div>
         <aside className="w-full h-full flex flex-col bg-gray-200 rounded-xl shadow-lg">
           {error && <div className="p-4 bg-red-500 text-white text-center font-semibold rounded-t-xl">{error}</div>}
-          <ChatWindow messages={messages} isLoading={isLoading} ceoPersona={ceoPersona} chatModelName={chatModelName} chatFontSize={chatFontSize} />
+          <ChatWindow 
+            messages={messages} 
+            isLoading={isLoading} 
+            ceoPersona={ceoPersona} 
+            chatModelName={chatModelName} 
+            chatFontSize={chatFontSize}
+            protagonistName={activeCaseData?.protagonist}
+            protagonistInitials={activeCaseData?.protagonist_initials}
+            caseTitle={activeCaseData?.case_title}
+          />
           {conversationPhase === ConversationPhase.FEEDBACK_COMPLETE ? (
               <div className="p-4 bg-white border-t border-gray-200 flex justify-center items-center">
                   <button

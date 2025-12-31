@@ -7,10 +7,24 @@ interface BusinessCaseProps {
   onFontSizeChange: (size: string) => void;
   fontSizes: string[];
   defaultFontSize: string;
+  // Optional props for dynamic case content
+  caseTitle?: string;
+  caseContent?: string;
 }
 
-const BusinessCase: React.FC<BusinessCaseProps> = ({ fontSize, onFontSizeChange, fontSizes, defaultFontSize }) => {
-  const paragraphs = BUSINESS_CASE_TEXT.trim().split('\n').filter(p => p.trim() !== '');
+const BusinessCase: React.FC<BusinessCaseProps> = ({ 
+  fontSize, 
+  onFontSizeChange, 
+  fontSizes, 
+  defaultFontSize,
+  caseTitle,
+  caseContent 
+}) => {
+  // Use provided case content or fall back to hardcoded content
+  const textContent = caseContent || BUSINESS_CASE_TEXT;
+  const title = caseTitle || "Malawi's Pizza Catering Case";
+  
+  const paragraphs = textContent.trim().split('\n').filter(p => p.trim() !== '');
 
   const handleCopyPaste = (e: React.ClipboardEvent) => {
     e.preventDefault();
@@ -36,7 +50,7 @@ const BusinessCase: React.FC<BusinessCaseProps> = ({ fontSize, onFontSizeChange,
       onCut={handleCopyPaste}
     >
       <div className="flex justify-between items-center border-b pb-3 mb-4">
-        <h2 className="text-2xl font-bold text-gray-900">Malawi's Pizza Catering Case</h2>
+        <h2 className="text-2xl font-bold text-gray-900">{title}</h2>
         <FontSizeControl
           currentSize={fontSize}
           onSizeChange={onFontSizeChange}

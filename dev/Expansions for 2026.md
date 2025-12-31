@@ -1,6 +1,6 @@
-[x] This app is called "ChatWithCEO" because the original version was about chatting with a CEO.
+[x] This app is now called "MakeTheCase" because the original version was about chatting with a CEO.
 I am expanding the app to chat with other case study protagonists some being CEOs and others not CEOs.
-How hard would it be to rename the app "MakeTheCase" both locally and on Github?
+The app and repo have already been renamed to "MakeTheCase" locally and on GitHub.
 
 [x] This app uses Supabase as the backend. It would be better if it used MySQL as the database.
 I have installed MySQL server on this computer and set up the database as "ceochat".

@@ -19,6 +19,8 @@ interface SectionStat {
   chat_model: string | null;
   super_model: string | null;
   enabled?: boolean;
+  active_case_id?: string | null;
+  active_case_title?: string | null;
 }
 
 interface StudentDetail {
@@ -66,6 +68,18 @@ interface Model {
   reasoning_effort?: string | null;
 }
 
+interface Case {
+  case_id: string;
+  case_title: string;
+  protagonist: string;
+  protagonist_initials: string;
+  chat_topic?: string | null;
+  chat_question: string;
+  enabled: boolean;
+  created_at?: string;
+  files?: { id: number; filename: string; file_type: string }[];
+}
+
 interface SectionStats {
   avgScore: number | null;
   avgHints: number | null;
@@ -88,7 +102,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [modelsList, setModelsList] = useState<Model[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [testingModelId, setTestingModelId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'sections' | 'models'>('sections');
+  const [activeTab, setActiveTab] = useState<'sections' | 'models' | 'cases'>('sections');
   const [showModelModal, setShowModelModal] = useState(false);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
   const [modelForm, setModelForm] = useState<{
@@ -144,6 +158,45 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     enabled: true
   });
 
+  // Cases management
+  const [casesList, setCasesList] = useState<Case[]>([]);
+  const [isLoadingCases, setIsLoadingCases] = useState(false);
+  const [showCaseModal, setShowCaseModal] = useState(false);
+  const [editingCase, setEditingCase] = useState<Case | null>(null);
+  const [caseForm, setCaseForm] = useState({
+    case_id: '',
+    case_title: '',
+    protagonist: '',
+    protagonist_initials: '',
+    chat_topic: '',
+    chat_question: '',
+    enabled: true
+  });
+  const [isSavingCase, setIsSavingCase] = useState(false);
+  const [caseFileUpload, setCaseFileUpload] = useState<{ type: 'case' | 'teaching_note'; file: File | null }>({ type: 'case', file: null });
+  const [isUploadingCaseFile, setIsUploadingCaseFile] = useState(false);
+
+  // Section-Case management
+  const [showSectionCasesModal, setShowSectionCasesModal] = useState(false);
+  const [managingSectionCases, setManagingSectionCases] = useState<SectionStat | null>(null);
+  const [sectionCasesList, setSectionCasesList] = useState<any[]>([]);
+  const [isLoadingSectionCases, setIsLoadingSectionCases] = useState(false);
+  
+  // Chat options editing (Phase 2)
+  const [expandedCaseOptions, setExpandedCaseOptions] = useState<string | null>(null);
+  const [editingChatOptions, setEditingChatOptions] = useState<any>(null);
+  const [isSavingChatOptions, setIsSavingChatOptions] = useState(false);
+  
+  // Default chat options
+  const defaultChatOptions = {
+    hints_allowed: 3,
+    free_hints: 1,
+    ask_for_feedback: false,
+    ask_save_transcript: false,
+    allowed_personas: 'moderate,strict,liberal,leading,sycophantic',
+    default_persona: 'moderate'
+  };
+
   const fetchModels = useCallback(async () => {
     setIsLoadingModels(true);
     const { data, error } = await api
@@ -169,7 +222,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
 
     const { data: sections, error: sectionsError } = await api
       .from('sections')
-      .select('section_id, section_title, year_term, chat_model, super_model, enabled')
+      .select('section_id, section_title, year_term, chat_model, super_model, enabled, active_case_id, active_case_title')
       .order('year_term', { ascending: false })
       .order('section_title', { ascending: true });
 
@@ -446,11 +499,272 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setFilterMode('all');
   };
 
-  const handleTabChange = (tab: 'sections' | 'models') => {
+  const handleTabChange = (tab: 'sections' | 'models' | 'cases') => {
     setActiveTab(tab);
-    if (tab === 'models') {
+    if (tab === 'models' || tab === 'cases') {
       setSelectedSection(null);
     }
+    if (tab === 'cases' && casesList.length === 0) {
+      fetchCases();
+    }
+  };
+
+  const fetchCases = async () => {
+    setIsLoadingCases(true);
+    try {
+      const { data, error } = await api.from('cases').select('*').order('created_at', { ascending: false });
+      if (error) {
+        console.error('Error fetching cases:', error);
+      } else {
+        setCasesList(data as Case[]);
+      }
+    } finally {
+      setIsLoadingCases(false);
+    }
+  };
+
+  const handleOpenCaseModal = (caseItem?: Case) => {
+    if (caseItem) {
+      setEditingCase(caseItem);
+      setCaseForm({
+        case_id: caseItem.case_id,
+        case_title: caseItem.case_title,
+        protagonist: caseItem.protagonist,
+        protagonist_initials: caseItem.protagonist_initials,
+        chat_topic: caseItem.chat_topic || '',
+        chat_question: caseItem.chat_question,
+        enabled: caseItem.enabled
+      });
+    } else {
+      setEditingCase(null);
+      setCaseForm({
+        case_id: '',
+        case_title: '',
+        protagonist: '',
+        protagonist_initials: '',
+        chat_topic: '',
+        chat_question: '',
+        enabled: true
+      });
+    }
+    setShowCaseModal(true);
+  };
+
+  const handleSaveCase = async () => {
+    if (!caseForm.case_id || !caseForm.case_title || !caseForm.protagonist || !caseForm.protagonist_initials || !caseForm.chat_question) {
+      setError('Please fill in all required fields');
+      return;
+    }
+    setIsSavingCase(true);
+    try {
+      if (editingCase) {
+        const { error } = await api.from('cases').update({
+          case_title: caseForm.case_title,
+          protagonist: caseForm.protagonist,
+          protagonist_initials: caseForm.protagonist_initials,
+          chat_topic: caseForm.chat_topic || null,
+          chat_question: caseForm.chat_question,
+          enabled: caseForm.enabled
+        }).eq('case_id', editingCase.case_id);
+        if (error) throw new Error(error.message);
+      } else {
+        const { error } = await api.from('cases').insert({
+          case_id: caseForm.case_id,
+          case_title: caseForm.case_title,
+          protagonist: caseForm.protagonist,
+          protagonist_initials: caseForm.protagonist_initials,
+          chat_topic: caseForm.chat_topic || null,
+          chat_question: caseForm.chat_question,
+          enabled: caseForm.enabled
+        });
+        if (error) throw new Error(error.message);
+      }
+      setShowCaseModal(false);
+      fetchCases();
+    } catch (err: any) {
+      setError(err.message || 'Failed to save case');
+    } finally {
+      setIsSavingCase(false);
+    }
+  };
+
+  const handleDeleteCase = async (caseId: string) => {
+    if (!confirm(`Are you sure you want to delete case "${caseId}"? This cannot be undone.`)) return;
+    try {
+      const { error } = await api.from('cases').delete().eq('case_id', caseId);
+      if (error) throw new Error(error.message);
+      fetchCases();
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete case');
+    }
+  };
+
+  const handleToggleCaseEnabled = async (caseItem: Case) => {
+    try {
+      const { error } = await api.from('cases').update({ enabled: !caseItem.enabled }).eq('case_id', caseItem.case_id);
+      if (error) throw new Error(error.message);
+      fetchCases();
+    } catch (err: any) {
+      setError(err.message || 'Failed to update case');
+    }
+  };
+
+  const handleUploadCaseFile = async (caseId: string, fileType: 'case' | 'teaching_note', file: File) => {
+    setIsUploadingCaseFile(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('file_type', fileType);
+      
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch(`/api/cases/${caseId}/upload`, {
+        method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        body: formData
+      });
+      
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Upload failed');
+      }
+      
+      alert(`${fileType === 'case' ? 'Case document' : 'Teaching note'} uploaded successfully!`);
+      fetchCases();
+    } catch (err: any) {
+      setError(err.message || 'Failed to upload file');
+    } finally {
+      setIsUploadingCaseFile(false);
+    }
+  };
+
+  // Section-Case management functions
+  const handleOpenSectionCasesModal = async (section: SectionStat) => {
+    setManagingSectionCases(section);
+    setShowSectionCasesModal(true);
+    await fetchSectionCases(section.section_id);
+    // Also ensure cases list is loaded
+    if (casesList.length === 0) {
+      fetchCases();
+    }
+  };
+
+  const fetchSectionCases = async (sectionId: string) => {
+    setIsLoadingSectionCases(true);
+    try {
+      const { data, error } = await api.from(`sections/${sectionId}/cases`).select('*');
+      if (error) throw new Error(error.message);
+      setSectionCasesList(data || []);
+    } catch (err: any) {
+      console.error('Error fetching section cases:', err);
+      setSectionCasesList([]);
+    } finally {
+      setIsLoadingSectionCases(false);
+    }
+  };
+
+  const handleAssignCaseToSection = async (sectionId: string, caseId: string) => {
+    try {
+      const { error } = await api.from(`sections/${sectionId}/cases`).insert({ case_id: caseId, active: false });
+      if (error) throw new Error(error.message);
+      fetchSectionCases(sectionId);
+    } catch (err: any) {
+      setError(err.message || 'Failed to assign case');
+    }
+  };
+
+  const handleRemoveCaseFromSection = async (sectionId: string, caseId: string) => {
+    if (!confirm('Remove this case from the section?')) return;
+    try {
+      const { error } = await api.from(`sections/${sectionId}/cases/${caseId}`).delete();
+      if (error) throw new Error(error.message);
+      fetchSectionCases(sectionId);
+      fetchSectionStats(); // Refresh section list to update active case display
+    } catch (err: any) {
+      setError(err.message || 'Failed to remove case');
+    }
+  };
+
+  const handleActivateSectionCase = async (sectionId: string, caseId: string) => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch(`/api/sections/${sectionId}/cases/${caseId}/activate`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to activate case');
+      }
+      fetchSectionCases(sectionId);
+      fetchSectionStats(); // Refresh section list to update active case display
+    } catch (err: any) {
+      setError(err.message || 'Failed to activate case');
+    }
+  };
+
+  const handleDeactivateSectionCase = async (sectionId: string, caseId: string) => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch(`/api/sections/${sectionId}/cases/${caseId}/deactivate`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to deactivate case');
+      }
+      fetchSectionCases(sectionId);
+      fetchSectionStats(); // Refresh section list to update active case display
+    } catch (err: any) {
+      setError(err.message || 'Failed to deactivate case');
+    }
+  };
+
+  // Chat options functions (Phase 2)
+  const handleExpandChatOptions = (caseId: string, currentOptions: any) => {
+    if (expandedCaseOptions === caseId) {
+      setExpandedCaseOptions(null);
+      setEditingChatOptions(null);
+    } else {
+      setExpandedCaseOptions(caseId);
+      setEditingChatOptions(currentOptions ? { ...currentOptions } : { ...defaultChatOptions });
+    }
+  };
+
+  const handleSaveChatOptions = async (sectionId: string, caseId: string) => {
+    setIsSavingChatOptions(true);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch(`/api/sections/${sectionId}/cases/${caseId}/options`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ chat_options: editingChatOptions })
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to save options');
+      }
+      fetchSectionCases(sectionId);
+      setExpandedCaseOptions(null);
+      setEditingChatOptions(null);
+    } catch (err: any) {
+      setError(err.message || 'Failed to save chat options');
+    } finally {
+      setIsSavingChatOptions(false);
+    }
+  };
+
+  const handleResetChatOptions = () => {
+    setEditingChatOptions({ ...defaultChatOptions });
   };
 
   const handleBackToSections = () => {
@@ -1327,6 +1641,122 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     </div>
   );
 
+  const renderCasesTab = () => (
+    <div className="p-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Business Cases</h2>
+          <p className="text-sm text-gray-500">{casesList.length} case{casesList.length !== 1 ? 's' : ''} available</p>
+        </div>
+        <button
+          onClick={() => handleOpenCaseModal()}
+          className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+        >
+          + New Case
+        </button>
+      </div>
+
+      {isLoadingCases ? (
+        <div className="text-center py-12">
+          <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
+          <p className="mt-2 text-gray-500">Loading cases...</p>
+        </div>
+      ) : casesList.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          <p className="text-gray-500">No cases found. Create your first case to get started.</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Case ID</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Title</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Protagonist</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {casesList.map((caseItem) => (
+                <tr key={caseItem.case_id} className={!caseItem.enabled ? 'bg-gray-50 opacity-60' : 'hover:bg-gray-50'}>
+                  <td className="px-4 py-3 text-sm font-medium text-gray-900">{caseItem.case_id}</td>
+                  <td className="px-4 py-3 text-sm text-gray-700">{caseItem.case_title}</td>
+                  <td className="px-4 py-3 text-sm text-gray-700">
+                    {caseItem.protagonist} <span className="text-gray-400">({caseItem.protagonist_initials})</span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => handleToggleCaseEnabled(caseItem)}
+                      className={`px-2 py-1 text-xs font-medium rounded-full ${
+                        caseItem.enabled
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-gray-100 text-gray-500'
+                      }`}
+                    >
+                      {caseItem.enabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => handleOpenCaseModal(caseItem)}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                      >
+                        Edit
+                      </button>
+                      <label className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-blue-600 border-blue-200 hover:bg-blue-50 cursor-pointer">
+                        Upload Case
+                        <input
+                          type="file"
+                          accept=".pdf,.md,.txt"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) handleUploadCaseFile(caseItem.case_id, 'case', file);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                      <label className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-purple-600 border-purple-200 hover:bg-purple-50 cursor-pointer">
+                        Upload Notes
+                        <input
+                          type="file"
+                          accept=".pdf,.md,.txt"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) handleUploadCaseFile(caseItem.case_id, 'teaching_note', file);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                      <button
+                        onClick={() => handleDeleteCase(caseItem.case_id)}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {isUploadingCaseFile && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl p-6 text-center">
+            <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
+            <p className="mt-2 text-gray-600">Uploading file...</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   // Incomplete students count for alerts
   const incompleteCount = useMemo(() => {
     return studentDetails.filter(s => s.status === 'in_progress').length;
@@ -1413,10 +1843,22 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
             >
               Models
             </button>
+            <button
+              onClick={() => handleTabChange('cases')}
+              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                activeTab === 'cases'
+                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+              }`}
+            >
+              Cases
+            </button>
           </div>
         </div>
         {activeTab === 'models' ? (
           renderModelsTab()
+        ) : activeTab === 'cases' ? (
+          renderCasesTab()
         ) : !selectedSection ? (
           /* ==================== SCREEN 1: SECTION LIST ==================== */
           <div className="p-6 max-w-7xl mx-auto">
@@ -1650,10 +2092,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                     <tr>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Section</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Term</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Active Case</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Students</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chat Model</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Super Model</th>
                       <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                     </tr>
                   </thead>
@@ -1678,6 +2120,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                             {section.year_term}
                           </span>
                         </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          {section.section_id !== 'unassigned' && section.section_id !== 'other_courses' ? (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleOpenSectionCasesModal(section); }}
+                              className={`px-2 py-1 text-xs font-medium rounded-lg border transition-colors ${
+                                section.active_case_title 
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                  : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
+                              }`}
+                              title="Manage case assignments"
+                            >
+                              {section.active_case_title || 'No case'}
+                            </button>
+                          ) : (
+                            <span className="text-xs text-gray-400">-</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600" title="completed/started">
                           <span className="font-semibold text-gray-900">{section.completions}</span>/{section.starts}
                         </td>
@@ -1700,9 +2159,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">
                           {formatModelDisplay(section.chat_model)}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">
-                          {formatModelDisplay(section.super_model)}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-right">
                           <div className="flex justify-end gap-1">
@@ -2297,6 +2753,341 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                 className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
               >
                 {editingSection ? 'Save Changes' : 'Create Section'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Section-Cases Modal */}
+      {showSectionCasesModal && managingSectionCases && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center p-4 border-b sticky top-0 bg-white">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">Manage Cases</h3>
+                <p className="text-sm text-gray-500">{managingSectionCases.section_title}</p>
+              </div>
+              <button
+                onClick={() => { setShowSectionCasesModal(false); setManagingSectionCases(null); }}
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
+            
+            <div className="p-4">
+              {/* Add Case Dropdown */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Add a case to this section:</label>
+                <div className="flex gap-2">
+                  <select
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        handleAssignCaseToSection(managingSectionCases.section_id, e.target.value);
+                        e.target.value = '';
+                      }
+                    }}
+                    defaultValue=""
+                  >
+                    <option value="">Select a case...</option>
+                    {casesList
+                      .filter(c => c.enabled && !sectionCasesList.some(sc => sc.case_id === c.case_id))
+                      .map(c => (
+                        <option key={c.case_id} value={c.case_id}>{c.case_title}</option>
+                      ))
+                    }
+                  </select>
+                </div>
+              </div>
+
+              {/* Assigned Cases List */}
+              <div>
+                <h4 className="text-sm font-medium text-gray-700 mb-2">Assigned Cases:</h4>
+                {isLoadingSectionCases ? (
+                  <div className="text-center py-4 text-gray-500">Loading...</div>
+                ) : sectionCasesList.length === 0 ? (
+                  <div className="text-center py-4 text-gray-500 bg-gray-50 rounded-lg">
+                    No cases assigned to this section yet.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {sectionCasesList.map(sc => (
+                      <div key={sc.case_id} className="border rounded-lg overflow-hidden">
+                        <div 
+                          className={`flex items-center justify-between p-3 ${
+                            sc.active 
+                              ? 'bg-emerald-50 border-emerald-200' 
+                              : 'bg-white'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            {sc.active && (
+                              <span className="flex h-2 w-2">
+                                <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-emerald-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                              </span>
+                            )}
+                            <div>
+                              <p className="font-medium text-gray-900">{sc.case_title}</p>
+                              <p className="text-xs text-gray-500">{sc.protagonist}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleExpandChatOptions(sc.case_id, sc.chat_options)}
+                              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                                expandedCaseOptions === sc.case_id
+                                  ? 'bg-purple-100 text-purple-700 border-purple-200'
+                                  : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-purple-50'
+                              }`}
+                            >
+                              Options
+                            </button>
+                            {sc.active ? (
+                              <button
+                                onClick={() => handleDeactivateSectionCase(managingSectionCases.section_id, sc.case_id)}
+                                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                              >
+                                Active
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleActivateSectionCase(managingSectionCases.section_id, sc.case_id)}
+                                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-600"
+                              >
+                                Set Active
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleRemoveCaseFromSection(managingSectionCases.section_id, sc.case_id)}
+                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
+                              title="Remove from section"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                        
+                        {/* Chat Options Panel (Phase 2) */}
+                        {expandedCaseOptions === sc.case_id && editingChatOptions && (
+                          <div className="p-4 bg-gray-50 border-t border-gray-200 space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <label className="block text-xs font-medium text-gray-700 mb-1">Hints Allowed</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="10"
+                                  value={editingChatOptions.hints_allowed ?? 3}
+                                  onChange={(e) => setEditingChatOptions({...editingChatOptions, hints_allowed: parseInt(e.target.value) || 0})}
+                                  className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-700 mb-1">Free Hints</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="5"
+                                  value={editingChatOptions.free_hints ?? 1}
+                                  onChange={(e) => setEditingChatOptions({...editingChatOptions, free_hints: parseInt(e.target.value) || 0})}
+                                  className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                                />
+                              </div>
+                            </div>
+                            <div className="space-y-2">
+                              <label className="flex items-center gap-2 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={editingChatOptions.ask_for_feedback ?? false}
+                                  onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_for_feedback: e.target.checked})}
+                                  className="rounded border-gray-300"
+                                />
+                                Ask for feedback at end of chat
+                              </label>
+                              <label className="flex items-center gap-2 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={editingChatOptions.ask_save_transcript ?? false}
+                                  onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_save_transcript: e.target.checked})}
+                                  className="rounded border-gray-300"
+                                />
+                                Ask to save anonymized transcript
+                              </label>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-gray-700 mb-1">Default Persona</label>
+                              <select
+                                value={editingChatOptions.default_persona ?? 'moderate'}
+                                onChange={(e) => setEditingChatOptions({...editingChatOptions, default_persona: e.target.value})}
+                                className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                              >
+                                <option value="moderate">Moderate</option>
+                                <option value="strict">Strict</option>
+                                <option value="liberal">Liberal</option>
+                                <option value="leading">Leading</option>
+                                <option value="sycophantic">Sycophantic</option>
+                              </select>
+                            </div>
+                            <div className="flex justify-between pt-2 border-t">
+                              <button
+                                onClick={handleResetChatOptions}
+                                className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-800"
+                              >
+                                Reset to Defaults
+                              </button>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => { setExpandedCaseOptions(null); setEditingChatOptions(null); }}
+                                  className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  onClick={() => handleSaveChatOptions(managingSectionCases.section_id, sc.case_id)}
+                                  disabled={isSavingChatOptions}
+                                  className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                                >
+                                  {isSavingChatOptions ? 'Saving...' : 'Save Options'}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end p-4 border-t bg-gray-50 rounded-b-xl">
+              <button
+                onClick={() => { setShowSectionCasesModal(false); setManagingSectionCases(null); }}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Case Modal */}
+      {showCaseModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center p-4 border-b sticky top-0 bg-white">
+              <h3 className="text-lg font-bold text-gray-900">
+                {editingCase ? 'Edit Case' : 'Create New Case'}
+              </h3>
+              <button
+                onClick={() => setShowCaseModal(false)}
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Case ID *</label>
+                <input
+                  type="text"
+                  value={caseForm.case_id}
+                  onChange={(e) => setCaseForm({ ...caseForm, case_id: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-') })}
+                  disabled={!!editingCase}
+                  placeholder="e.g., malawis-pizza"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
+                />
+                <p className="text-xs text-gray-500 mt-1">Unique identifier (lowercase, hyphens only)</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Case Title *</label>
+                <input
+                  type="text"
+                  value={caseForm.case_title}
+                  onChange={(e) => setCaseForm({ ...caseForm, case_title: e.target.value })}
+                  placeholder="e.g., Malawi's Pizza Catering"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Protagonist Name *</label>
+                  <input
+                    type="text"
+                    value={caseForm.protagonist}
+                    onChange={(e) => setCaseForm({ ...caseForm, protagonist: e.target.value })}
+                    placeholder="e.g., Kent Beck"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Initials *</label>
+                  <input
+                    type="text"
+                    value={caseForm.protagonist_initials}
+                    onChange={(e) => setCaseForm({ ...caseForm, protagonist_initials: e.target.value.toUpperCase().slice(0, 3) })}
+                    placeholder="e.g., KB"
+                    maxLength={3}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">For chat bubbles</p>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Chat Topic</label>
+                <input
+                  type="text"
+                  value={caseForm.chat_topic}
+                  onChange={(e) => setCaseForm({ ...caseForm, chat_topic: e.target.value })}
+                  placeholder="e.g., Catering business strategy"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Chat Question *</label>
+                <textarea
+                  value={caseForm.chat_question}
+                  onChange={(e) => setCaseForm({ ...caseForm, chat_question: e.target.value })}
+                  placeholder="The main question the protagonist asks the student..."
+                  rows={3}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={caseForm.enabled}
+                    onChange={(e) => setCaseForm({ ...caseForm, enabled: e.target.checked })}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  Enabled (available for assignment to sections)
+                </label>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 p-4 border-t bg-gray-50 rounded-b-xl">
+              <button
+                onClick={() => setShowCaseModal(false)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveCase}
+                disabled={isSavingCase}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
+              >
+                {isSavingCase ? 'Saving...' : editingCase ? 'Save Changes' : 'Create Case'}
               </button>
             </div>
           </div>

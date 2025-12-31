@@ -159,6 +159,7 @@ class QueryBuilder<T> {
   private isSingle: boolean = false;
   private insertData: Record<string, any> | null = null;
   private updateData: Record<string, any> | null = null;
+  private isDelete: boolean = false;
 
   constructor(table: string) {
     this.tableName = table;
@@ -204,6 +205,11 @@ class QueryBuilder<T> {
     return this;
   }
 
+  delete() {
+    this.isDelete = true;
+    return this;
+  }
+
   private buildQueryString(): string {
     const params = new URLSearchParams();
 
@@ -231,14 +237,24 @@ class QueryBuilder<T> {
         body: JSON.stringify(this.insertData),
       });
     } else if (this.updateData) {
-      // PATCH request - need an ID from filters (supports both 'id' and 'section_id')
-      const idFilter = this.filters.find(f => (f.column === 'id' || f.column === 'section_id') && f.op === 'eq');
+      // PATCH request - need an ID from filters (supports both 'id', 'section_id', and 'case_id')
+      const idFilter = this.filters.find(f => (f.column === 'id' || f.column === 'section_id' || f.column === 'case_id') && f.op === 'eq');
       if (!idFilter) {
-        result = { data: null, error: { message: 'Update requires an id or section_id filter' } };
+        result = { data: null, error: { message: 'Update requires an id, section_id, or case_id filter' } };
       } else {
         result = await apiFetch<T>(`/${this.tableName}/${idFilter.value}`, {
           method: 'PATCH',
           body: JSON.stringify(this.updateData),
+        });
+      }
+    } else if (this.isDelete) {
+      // DELETE request - need an ID from filters
+      const idFilter = this.filters.find(f => (f.column === 'id' || f.column === 'section_id' || f.column === 'case_id') && f.op === 'eq');
+      if (!idFilter) {
+        result = { data: null, error: { message: 'Delete requires an id, section_id, or case_id filter' } };
+      } else {
+        result = await apiFetch<T>(`/${this.tableName}/${idFilter.value}`, {
+          method: 'DELETE',
         });
       }
     } else {
@@ -276,6 +292,7 @@ export const api = {
       sections: 'sections',
       students: 'students',
       evaluations: 'evaluations',
+      cases: 'cases',
     };
 
     const endpoint = tableMap[table] || table;

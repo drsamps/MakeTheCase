@@ -5,20 +5,27 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 const router = express.Router();
 
 // GET /api/sections - Get all sections (optionally filter by enabled)
+// Includes active case info via LEFT JOIN
 router.get('/', async (req, res) => {
   try {
     const { enabled, orderBy } = req.query;
     
-    let query = 'SELECT section_id, created_at, section_title, year_term, enabled, chat_model, super_model FROM sections';
+    let query = `
+      SELECT s.section_id, s.created_at, s.section_title, s.year_term, s.enabled, s.chat_model, s.super_model,
+             sc.case_id as active_case_id, c.case_title as active_case_title
+      FROM sections s
+      LEFT JOIN section_cases sc ON s.section_id = sc.section_id AND sc.active = TRUE
+      LEFT JOIN cases c ON sc.case_id = c.case_id
+    `;
     const params = [];
     
     if (enabled !== undefined) {
-      query += ' WHERE enabled = ?';
+      query += ' WHERE s.enabled = ?';
       params.push(enabled === 'true' ? 1 : 0);
     }
     
     // Default ordering: year_term DESC, section_title ASC
-    query += ' ORDER BY year_term DESC, section_title ASC';
+    query += ' ORDER BY s.year_term DESC, s.section_title ASC';
     
     const [rows] = await pool.execute(query, params);
     res.json({ data: rows, error: null });
@@ -28,11 +35,16 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/sections/:id - Get single section
+// GET /api/sections/:id - Get single section with active case info
 router.get('/:id', async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      'SELECT section_id, created_at, section_title, year_term, enabled, chat_model, super_model FROM sections WHERE section_id = ?',
+      `SELECT s.section_id, s.created_at, s.section_title, s.year_term, s.enabled, s.chat_model, s.super_model,
+              sc.case_id as active_case_id, c.case_title as active_case_title
+       FROM sections s
+       LEFT JOIN section_cases sc ON s.section_id = sc.section_id AND sc.active = TRUE
+       LEFT JOIN cases c ON sc.case_id = c.case_id
+       WHERE s.section_id = ?`,
       [req.params.id]
     );
     

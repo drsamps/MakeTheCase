@@ -1,6 +1,6 @@
 10/27/2025
 
-I created MakeTheCase (originally ChatWithCEO) using Google AI Studio.
+I created MakeTheCase (originally a CEO chat prototype) using Google AI Studio.
 It appears to have defaulted to using Node.js for the backend.
 I deployed it to the Google Cloud using AI Studio's "Deploy" button.
 https://ceo-business-case-chat-simulator-962957134935.us-west1.run.app/#/admin

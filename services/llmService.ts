@@ -1,4 +1,4 @@
-import { getSystemPrompt, getCoachPrompt } from "../constants";
+import { getSystemPrompt, getCoachPrompt, buildSystemPrompt, buildCoachPrompt, CaseData, DEFAULT_CASE_DATA } from "../constants";
 import { Message, EvaluationResult, CEOPersona } from "../types";
 
 const parseOrThrow = async (response: Response) => {
@@ -127,9 +127,13 @@ export const createChatSession = (
   studentName: string,
   persona: CEOPersona,
   modelId: string,
-  history: Message[] = []
+  history: Message[] = [],
+  caseData?: CaseData  // Optional: if provided, uses dynamic case; otherwise uses default
 ): LLMChatSession => {
-  const systemPrompt = getSystemPrompt(studentName, persona);
+  // Build prompt with case data at the TOP for LLM caching
+  const systemPrompt = caseData 
+    ? buildSystemPrompt(studentName, persona, caseData)
+    : getSystemPrompt(studentName, persona);
   let currentHistory = [...history];
 
   return {
@@ -166,12 +170,18 @@ export const getEvaluation = async (
   messages: Message[],
   studentFirstName: string,
   studentFullName: string,
-  modelId: string
+  modelId: string,
+  caseData?: CaseData  // Optional: if provided, uses dynamic case; otherwise uses default
 ): Promise<EvaluationResult> => {
+  // Use protagonist name from case data if available
+  const protagonistLabel = caseData?.protagonist || 'CEO';
   const chatHistory = messages
-    .map((msg) => `${msg.role === "user" ? "Student" : "CEO"}: ${msg.content}`)
+    .map((msg) => `${msg.role === "user" ? "Student" : protagonistLabel}: ${msg.content}`)
     .join("\n\n");
-  const prompt = getCoachPrompt(chatHistory, studentFullName);
+  // Build prompt with case data at the TOP for LLM caching
+  const prompt = caseData 
+    ? buildCoachPrompt(chatHistory, studentFullName, caseData)
+    : getCoachPrompt(chatHistory, studentFullName);
 
   const response = await fetch('/api/llm/eval', {
     method: 'POST',

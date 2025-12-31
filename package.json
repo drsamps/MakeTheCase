@@ -10,7 +10,8 @@
     "dev:all": "concurrently \"npm run server:watch\" \"npm run dev\"",
     "build": "vite build",
     "preview": "vite preview",
-    "create-admin": "node server/scripts/create-admin.js"
+    "create-admin": "node server/scripts/create-admin.js",
+    "seed-malawis": "node server/scripts/seed-malawis-pizza.js"
   },
   "dependencies": {
     "@google/genai": "^1.25.0",
@@ -19,7 +20,9 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
     "mysql2": "^3.11.0",
+    "pdf-parse": "^2.4.5",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "uuid": "^10.0.0"

@@ -7,6 +7,10 @@ interface ChatWindowProps {
   ceoPersona: CEOPersona;
   chatModelName: string | null;
   chatFontSize: string;
+  // Optional props for dynamic protagonist
+  protagonistName?: string;
+  protagonistInitials?: string;
+  caseTitle?: string;
 }
 
 const renderMessageContent = (content: string) => {
@@ -19,7 +23,16 @@ const renderMessageContent = (content: string) => {
   });
 };
 
-const ChatWindow: React.FC<ChatWindowProps> = ({ messages, isLoading, ceoPersona, chatModelName, chatFontSize }) => {
+const ChatWindow: React.FC<ChatWindowProps> = ({ 
+  messages, 
+  isLoading, 
+  ceoPersona, 
+  chatModelName, 
+  chatFontSize,
+  protagonistName = 'Kent Beck',
+  protagonistInitials = 'KB',
+  caseTitle = "Malawi's Pizza"
+}) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -36,7 +49,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ messages, isLoading, ceoPersona
   };
 
   const personaName = ceoPersona.charAt(0).toUpperCase() + ceoPersona.slice(1);
-  const ceoTitle = `Kent Beck, ${personaName} CEO of Malawi's Pizza (AI model: ${chatModelName || '...'})`;
+  const protagonistTitle = `${protagonistName}, ${personaName} protagonist of ${caseTitle} (AI model: ${chatModelName || '...'})`;
 
   return (
     <div 
@@ -54,9 +67,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ messages, isLoading, ceoPersona
           {msg.role === MessageRole.MODEL && (
             <div 
               className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
-              title={ceoTitle}
+              title={protagonistTitle}
             >
-              KB
+              {protagonistInitials}
             </div>
           )}
           <div
@@ -74,9 +87,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ messages, isLoading, ceoPersona
         <div className="flex items-end gap-3 justify-start">
           <div 
             className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
-            title={ceoTitle}
+            title={protagonistTitle}
           >
-            KB
+            {protagonistInitials}
           </div>
           <div className="max-w-xs p-4 rounded-2xl shadow-md bg-white text-gray-800 rounded-bl-none">
             <div className="flex items-center justify-center space-x-1">
