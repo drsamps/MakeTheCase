@@ -14,9 +14,43 @@ function getServiceBase() {
   return base.endsWith('/') ? base.slice(0, -1) : base;
 }
 
-function getRedirectBase() {
-  const base = process.env.CAS_REDIRECT_BASE_URL || getServiceBase();
-  return base.endsWith('/') ? base.slice(0, -1) : base;
+function getRedirectBase(req) {
+  // First, try to use the environment variable if set (explicit override)
+  if (process.env.CAS_REDIRECT_BASE_URL) {
+    const base = process.env.CAS_REDIRECT_BASE_URL;
+    return base.endsWith('/') ? base.slice(0, -1) : base;
+  }
+  
+  // Otherwise, try to determine from the request
+  // Handle reverse proxy headers (common in production)
+  const protocol = req.get('x-forwarded-proto') || req.protocol || (req.secure ? 'https' : 'http');
+  const host = req.get('x-forwarded-host') || req.get('host') || req.headers.host;
+  
+  if (host) {
+    // Extract the base path from the service URL if it contains a path
+    // The service URL is built from CAS_SERVICE_BASE_URL which may include a path like /makethecase
+    const serviceBase = getServiceBase();
+    try {
+      const serviceUrl = new URL(serviceBase);
+      // If service base has a path (e.g., https://services.byu.edu/makethecase), use it
+      if (serviceUrl.pathname && serviceUrl.pathname !== '/') {
+        return `${protocol}://${host}${serviceUrl.pathname}`;
+      }
+    } catch (e) {
+      // If service base is not a full URL, it might be relative or malformed
+      // Try to extract path from it if it looks like it has one
+      const pathMatch = serviceBase.match(/\/([^\/]+(?:\/[^\/]+)?)$/);
+      if (pathMatch) {
+        return `${protocol}://${host}${pathMatch[0]}`;
+      }
+    }
+    
+    // No path in service base, return just protocol + host
+    return `${protocol}://${host}`;
+  }
+  
+  // Fallback to service base URL (shouldn't happen in normal operation)
+  return getServiceBase();
 }
 
 function buildServiceUrl() {
@@ -55,8 +89,8 @@ async function validateTicket(ticket, serviceUrl) {
   return parseCasResponse(text);
 }
 
-function callbackRedirect(res, payload) {
-  const base = getRedirectBase();
+function callbackRedirect(req, res, payload) {
+  const base = getRedirectBase(req);
   const params = new URLSearchParams({
     token: payload.token,
     role: payload.role,
@@ -124,7 +158,7 @@ router.get('/verify', async (req, res) => {
       if ((req.headers.accept || '').includes('application/json')) {
         return res.json(payload);
       }
-      return callbackRedirect(res, payload);
+      return callbackRedirect(req, res, payload);
     }
 
     // Student path: ensure record exists (id anchored to CAS netid)
@@ -157,7 +191,7 @@ router.get('/verify', async (req, res) => {
     if ((req.headers.accept || '').includes('application/json')) {
       return res.json(payload);
     }
-    return callbackRedirect(res, payload);
+    return callbackRedirect(req, res, payload);
   } catch (err) {
     console.error('CAS verify error:', err);
     return res.status(500).json({ error: err.message || 'CAS verification failed' });

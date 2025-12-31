@@ -30,6 +30,9 @@ dotenv.config({ path: envPath });
 const app = express();
 const PORT = process.env.SERVER_PORT || 3001;
 
+// Trust proxy - important for correct handling of X-Forwarded-* headers in production
+app.set('trust proxy', true);
+
 // Middleware
 app.use(cors({
   origin: ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://services.byu.edu'],
