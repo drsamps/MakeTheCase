@@ -4,9 +4,19 @@
 
 # MakeTheCase - AI-Powered Case Study Teaching Tool
 
-An interactive business case study simulator where students chat with an AI-powered CEO to practice case analysis.
+An interactive business case study simulator where students chat with AI-powered case protagonists to practice case analysis and strategic thinking.
 
-**For detailed documentation, see [docs/ABOUT_THIS_APP.md](docs/ABOUT_THIS_APP.md)**
+## Features
+- 📚 **Multi-Case Support** - Upload and manage multiple business cases
+- 🎭 **Dynamic Protagonists** - Each case has its own protagonist personality
+- ⚙️ **Configurable Chat Options** - Control hints, feedback, and personas per section-case
+- 📊 **Comprehensive Analytics** - Track student performance across cases
+- 🔄 **Flexible Assignment** - Activate different cases for different days
+- 🤖 **Multi-Provider AI** - Works with Google Gemini, OpenAI, and Anthropic
+
+## Documentation
+- **[ABOUT_THIS_APP.md](docs/ABOUT_THIS_APP.md)** - Complete app overview and features
+- **[CASE_MANAGEMENT_GUIDE.md](docs/CASE_MANAGEMENT_GUIDE.md)** - How to create and manage multiple cases
 
 ## Quick Start
 
@@ -21,19 +31,25 @@ An interactive business case study simulator where students chat with an AI-powe
    ```bash
    mysql -u root -p < docs/mysql-database-structure-Oct2025.sql
    mysql -u root -p < server/migrations/add_admin_auth.sql
+   mysql -u root -p < server/migrations/add_cases_tables.sql
    ```
 
-3. **Configure environment:**
+3. **(Optional) Seed initial case:**
+   ```bash
+   npm run seed-malawis
+   ```
+
+4. **Configure environment:**
    - Copy `env.local.example` to `.env.local`
    - Set `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
    - Set `MYSQL_USER`, `MYSQL_PASSWORD`, `JWT_SECRET`
 
-4. **Create admin account:**
+5. **Create admin account:**
    ```bash
    npm run create-admin admin@example.com yourpassword
    ```
 
-5. **Run the app:**
+6. **Run the app:**
    ```bash
    npm run dev:all
    ```
@@ -45,9 +61,17 @@ An interactive business case study simulator where students chat with an AI-powe
    npm run dev       # Frontend on port 3000 (in separate terminal)
    ```
 
-6. **Access the app:**
+7. **Access the app:**
    - Student view: `http://localhost:3000/`
    - Instructor dashboard: `http://localhost:3000/#/admin` (or Ctrl+click header)
+
+## Case Management
+
+See **[CASE_MANAGEMENT_GUIDE.md](docs/CASE_MANAGEMENT_GUIDE.md)** for complete instructions on:
+- Creating and uploading new cases
+- Assigning cases to sections
+- Activating cases for specific days
+- Configuring chat options (hints, feedback, personas)
 
 ## Model management
 - Sign in to the instructor dashboard and open the **Models** tab.

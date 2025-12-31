@@ -171,16 +171,21 @@ export const getEvaluation = async (
   studentFirstName: string,
   studentFullName: string,
   modelId: string,
-  caseData?: CaseData  // Optional: if provided, uses dynamic case; otherwise uses default
+  caseData?: CaseData,  // Optional: if provided, uses dynamic case; otherwise uses default
+  chatOptions?: any  // Optional: chat options including free_hints
 ): Promise<EvaluationResult> => {
   // Use protagonist name from case data if available
   const protagonistLabel = caseData?.protagonist || 'CEO';
   const chatHistory = messages
     .map((msg) => `${msg.role === "user" ? "Student" : protagonistLabel}: ${msg.content}`)
     .join("\n\n");
+  
+  // Get free_hints from chat options (default 1)
+  const freeHints = chatOptions?.free_hints ?? 1;
+  
   // Build prompt with case data at the TOP for LLM caching
   const prompt = caseData 
-    ? buildCoachPrompt(chatHistory, studentFullName, caseData)
+    ? buildCoachPrompt(chatHistory, studentFullName, caseData, freeHints)
     : getCoachPrompt(chatHistory, studentFullName);
 
   const response = await fetch('/api/llm/eval', {

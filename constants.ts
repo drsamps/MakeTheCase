@@ -101,7 +101,8 @@ ${getPersonaInstructions(persona, studentName, caseData.case_title)}
 export const buildCoachPrompt = (
   chatHistory: string,
   studentName: string,
-  caseData: CaseData = DEFAULT_CASE_DATA
+  caseData: CaseData = DEFAULT_CASE_DATA,
+  freeHints: number = 1
 ): string => {
   // STATIC CONTENT FIRST (for caching)
   const staticContent = `
@@ -142,7 +143,7 @@ Your evaluation MUST be based ONLY on the information within the transcript and 
   * Be generous in scores, giving a higher score if it can be justified. But do not give a score that is undeserved.
   * Be kind in your feedback, providing compliments when justified, and presenting criticisms with dignity.
 3.  Calculate the total score.
-4.  Tally how many times the student asked for a hint. A "hint" is counted ONLY when a message from the student (e.g., "Student: ...") explicitly contains the word "hint". Do NOT count hints based on other words like "help" or "clue". Ignore any use of the word "help" or "helpful" from the protagonist. Every student gets one free hint, and forfeits a point for every additional hint. Your calculated total score should reflect this penalty.
+4.  Tally how many times the student asked for a hint. A "hint" is counted ONLY when a message from the student (e.g., "Student: ...") explicitly contains the word "hint". Do NOT count hints based on other words like "help" or "clue". Ignore any use of the word "help" or "helpful" from the protagonist. Every student gets ${freeHints} free hint${freeHints !== 1 ? 's' : ''}, and forfeits a point for every additional hint beyond that. Your calculated total score should reflect this penalty.
 5.  Write a concise overall summary of the student's performance.
 6.  You MUST respond in a valid JSON format that adheres to the provided schema. Do not include any text, markdown, or code fences before or after the JSON object.
 7.  Your JSON response must include a 'hints' field with the total number of hints the student requested.
@@ -170,5 +171,5 @@ export const getSystemPrompt = (studentName: string, persona: CEOPersona): strin
 };
 
 export const getCoachPrompt = (chatHistory: string, studentName: string): string => {
-  return buildCoachPrompt(chatHistory, studentName, DEFAULT_CASE_DATA);
+  return buildCoachPrompt(chatHistory, studentName, DEFAULT_CASE_DATA, 1);
 };

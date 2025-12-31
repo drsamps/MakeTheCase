@@ -40,10 +40,16 @@ interface StudentDetail {
   improve: string | null;
   created_at: string | null;
   status: 'completed' | 'in_progress' | 'not_started';
+  case_id: string | null;
+  case_title: string | null;
+  evaluation_id: string | null;
+  allow_rechat: boolean;
 }
 
 interface EvaluationData {
+  id: string;
   student_id: string;
+  case_id: string | null;
   score: number | null;
   hints: number | null;
   helpful: number | null;
@@ -55,6 +61,7 @@ interface EvaluationData {
   transcript: string | null;
   liked: string | null;
   improve: string | null;
+  allow_rechat: boolean;
 }
 
 interface Model {
@@ -131,6 +138,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [sortKey, setSortKey] = useState<SortKey>('completion_time');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
+  const [filterCaseId, setFilterCaseId] = useState<string>('all');
+  const [sectionCasesForFilter, setSectionCasesForFilter] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const autoRefreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -316,7 +325,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setIsLoadingSections(false);
   }, []);
 
-  const fetchStudentDetails = useCallback(async (sectionId: string) => {
+  const fetchStudentDetails = useCallback(async (sectionId: string, caseIdFilter: string | null = null) => {
     setIsLoadingDetails(true);
     setError(null);
     setStudentDetails([]);
@@ -386,10 +395,29 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     }
   
     const studentIds = studentsData.map(s => s.id);
-    const { data: evaluationsData, error: evaluationsError } = await api
+    
+    // If filtering by case, only fetch evaluations for that specific case
+    let evaluationsQuery = api
       .from('evaluations')
-      .select('student_id, score, hints, helpful, created_at, chat_model, super_model, summary, criteria, transcript, liked, improve')
+      .select('id, student_id, case_id, score, hints, helpful, created_at, chat_model, super_model, summary, criteria, transcript, liked, improve, allow_rechat')
       .in('student_id', studentIds);
+    
+    if (caseIdFilter && caseIdFilter !== 'all') {
+      evaluationsQuery = evaluationsQuery.eq('case_id', caseIdFilter);
+    }
+    
+    const { data: evaluationsData, error: evaluationsError } = await evaluationsQuery;
+    
+    // Also fetch cases for this section for the filter dropdown
+    try {
+      const casesResponse = await fetch(`/api/sections/${sectionId}/cases`);
+      const casesResult = await casesResponse.json();
+      if (casesResult.data) {
+        setSectionCasesForFilter(casesResult.data);
+      }
+    } catch (e) {
+      console.error('Error fetching section cases for filter:', e);
+    }
   
     if (evaluationsError) {
       console.error("MySQL error fetching evaluations:", evaluationsError);
@@ -410,6 +438,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
         improve: null,
         created_at: student.created_at,
         status: 'not_started' as const,
+        case_id: null,
+        case_title: null,
+        evaluation_id: null,
+        allow_rechat: false,
       }));
       setStudentDetails(detailsWithoutScores);
       setIsLoadingDetails(false);
@@ -423,6 +455,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
           evaluationsMap.set(e.student_id, e as EvaluationData);
         }
       }
+    }
+    
+    // Build a map of case_id -> case_title for display
+    const caseIdToTitle = new Map<string, string>();
+    for (const sc of sectionCasesForFilter) {
+      caseIdToTitle.set(sc.case_id, sc.case_title);
     }
     
     const combinedDetails = studentsData.map(student => {
@@ -454,6 +492,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
         improve: evaluation?.improve ?? null,
         created_at: student.created_at,
         status,
+        case_id: evaluation?.case_id ?? null,
+        case_title: evaluation?.case_id ? (caseIdToTitle.get(evaluation.case_id) || evaluation.case_id) : null,
+        evaluation_id: evaluation?.id ?? null,
+        allow_rechat: evaluation?.allow_rechat ?? false,
       };
     });
   
@@ -467,15 +509,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
 
   useEffect(() => {
     if (selectedSection) {
-      fetchStudentDetails(selectedSection.section_id);
+      fetchStudentDetails(selectedSection.section_id, filterCaseId !== 'all' ? filterCaseId : null);
     }
-  }, [selectedSection, fetchStudentDetails]);
+  }, [selectedSection, fetchStudentDetails, filterCaseId]);
 
   // Auto-refresh effect
   useEffect(() => {
     if (autoRefresh && selectedSection) {
       autoRefreshIntervalRef.current = setInterval(() => {
-        fetchStudentDetails(selectedSection.section_id);
+        fetchStudentDetails(selectedSection.section_id, filterCaseId !== 'all' ? filterCaseId : null);
         fetchSectionStats();
       }, 30000); // 30 seconds
     } else {
@@ -489,7 +531,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
         clearInterval(autoRefreshIntervalRef.current);
       }
     };
-  }, [autoRefresh, selectedSection, fetchStudentDetails, fetchSectionStats]);
+  }, [autoRefresh, selectedSection, fetchStudentDetails, fetchSectionStats, filterCaseId]);
 
   const handleSectionClick = (section: SectionStat) => {
     setSelectedSection(section);
@@ -497,6 +539,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setSortDirection('desc');
     setSearchQuery('');
     setFilterMode('all');
+    setFilterCaseId('all');
+    setSectionCasesForFilter([]);
   };
 
   const handleTabChange = (tab: 'sections' | 'models' | 'cases') => {
@@ -767,6 +811,31 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setEditingChatOptions({ ...defaultChatOptions });
   };
 
+  // Toggle allow_rechat for a student's evaluation
+  const handleToggleRechat = async (evaluationId: string, currentAllowRechat: boolean) => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch(`/api/evaluations/${evaluationId}/allow-rechat`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ allow_rechat: !currentAllowRechat })
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to update re-chat status');
+      }
+      // Refresh student details
+      if (selectedSection) {
+        fetchStudentDetails(selectedSection.section_id, filterCaseId !== 'all' ? filterCaseId : null);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to update re-chat status');
+    }
+  };
+
   const handleBackToSections = () => {
     setSelectedSection(null);
     setStudentDetails([]);
@@ -831,6 +900,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       filtered = filtered.filter(student => student.status === filterMode);
     }
     
+    // Note: Case filter is applied at the database level in fetchStudentDetails
+    
     // Apply search query
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
@@ -849,7 +920,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       if (valA > valB) return sortDirection === 'asc' ? 1 : -1;
       return 0;
     });
-  }, [studentDetails, sortKey, sortDirection, filterMode, searchQuery]);
+  }, [studentDetails, sortKey, sortDirection, filterMode, filterCaseId, searchQuery]);
 
   // Export to MySQL helpers
   const [isExporting, setIsExporting] = useState(false);
@@ -2312,6 +2383,22 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                       <option value="not_started">Not Started</option>
                     </select>
 
+                    {/* Case Filter */}
+                    {sectionCasesForFilter.length > 0 && (
+                      <select
+                        value={filterCaseId}
+                        onChange={(e) => setFilterCaseId(e.target.value)}
+                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      >
+                        <option value="all">All Cases</option>
+                        {sectionCasesForFilter.map((sc) => (
+                          <option key={sc.case_id} value={sc.case_id}>
+                            {sc.case_title}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+
                     {/* CSV Export */}
                     <button
                       onClick={handleDownloadCSV}
@@ -2352,6 +2439,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                         <tr>
                           <SortableHeader label="Student" sortableKey="full_name" />
                           <SortableHeader label="Status" sortableKey="status" />
+                          <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Case</th>
                           <SortableHeader label="Persona" sortableKey="persona" />
                           <SortableHeader label="Score" sortableKey="score" />
                           <SortableHeader label="Hints" sortableKey="hints" />
@@ -2368,6 +2456,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                             </td>
                             <td className="p-3 whitespace-nowrap">
                               <StatusBadge status={student.status} />
+                              {!!student.allow_rechat && student.status === 'completed' && (
+                                <span className="ml-1 text-xs text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded">Re-chat</span>
+                              )}
+                            </td>
+                            <td className="p-3 whitespace-nowrap text-sm text-gray-600">
+                              {student.case_title || <span className="text-gray-400">-</span>}
                             </td>
                             <td className="p-3 whitespace-nowrap text-sm text-gray-600">
                               {student.persona ? student.persona.charAt(0).toUpperCase() + student.persona.slice(1) : <span className="text-gray-400">-</span>}
@@ -2409,6 +2503,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                                   >
                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                                       <path fillRule="evenodd" d="M6 2a2 2 0 00-2 2v12a2 2 0 002 2h8a2 2 0 002-2V7.414A2 2 0 0015.414 6L12 2.586A2 2 0 0010.586 2H6zm5 6a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V8z" clipRule="evenodd" />
+                                    </svg>
+                                  </button>
+                                )}
+                                {/* Re-chat toggle button for completed students */}
+                                {student.status === 'completed' && student.evaluation_id && (
+                                  <button
+                                    onClick={() => handleToggleRechat(student.evaluation_id!, student.allow_rechat)}
+                                    className={`p-1.5 rounded ${student.allow_rechat 
+                                      ? 'text-orange-600 hover:text-orange-800 hover:bg-orange-50' 
+                                      : 'text-gray-400 hover:text-orange-600 hover:bg-orange-50'}`}
+                                    title={student.allow_rechat ? 'Disable re-chat (mark as completed)' : 'Allow re-chat'}
+                                  >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                      <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 110 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
                                     </svg>
                                   </button>
                                 )}

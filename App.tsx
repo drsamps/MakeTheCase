@@ -94,6 +94,7 @@ const App: React.FC = () => {
   const [shareTranscript, setShareTranscript] = useState<boolean>(false);
   const [chatFontSize, setChatFontSize] = useState<string>('text-sm');
   const [caseFontSize, setCaseFontSize] = useState<string>('text-sm');
+  const [hintsUsed, setHintsUsed] = useState<number>(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [models, setModels] = useState<Model[]>([]);
@@ -122,6 +123,9 @@ const App: React.FC = () => {
   const [isLoadingAvailableCases, setIsLoadingAvailableCases] = useState(false);
   const [studentSavedSectionId, setStudentSavedSectionId] = useState<string | null>(null);
   const [hasFetchedStudentSection, setHasFetchedStudentSection] = useState(false);
+  
+  // Case completion tracking
+  const [caseCompletionStatus, setCaseCompletionStatus] = useState<Record<string, { completed: boolean; allowRechat: boolean }>>({});
 
   const isLargeScreen = useMediaQuery('(min-width: 1024px)');
   const direction = isLargeScreen ? 'vertical' : 'horizontal';
@@ -267,9 +271,35 @@ const App: React.FC = () => {
         const activeCases = (data || []).filter((c: any) => c.active && c.case_enabled !== false);
         setAvailableCases(activeCases);
         
-        // Auto-select if only one case available
+        // Check completion status for each case
+        if (sessionUser?.id && activeCases.length > 0) {
+          const completionStatuses: Record<string, { completed: boolean; allowRechat: boolean }> = {};
+          for (const caseItem of activeCases) {
+            try {
+              const response = await fetch(`/api/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}`);
+              const result = await response.json();
+              if (result.data) {
+                completionStatuses[caseItem.case_id] = {
+                  completed: result.data.completed,
+                  allowRechat: result.data.allow_rechat
+                };
+              }
+            } catch (e) {
+              console.error('Error checking completion:', e);
+            }
+          }
+          setCaseCompletionStatus(completionStatuses);
+        }
+        
+        // Auto-select if only one case available and not completed (or allow_rechat)
         if (activeCases.length === 1) {
-          setSelectedCaseId(activeCases[0].case_id);
+          const caseId = activeCases[0].case_id;
+          const status = caseCompletionStatus[caseId];
+          if (!status?.completed || status?.allowRechat) {
+            setSelectedCaseId(caseId);
+          } else {
+            setSelectedCaseId(null);
+          }
         } else {
           setSelectedCaseId(null);
         }
@@ -358,6 +388,7 @@ const App: React.FC = () => {
   const startConversation = useCallback(async (name: string, persona: CEOPersona, modelId: string) => {
     setIsLoading(true);
     setError(null);
+    setHintsUsed(0);  // Reset hint counter at start of conversation
     try {
       // Use active case data or default
       const caseData = activeCaseData || DEFAULT_CASE_DATA;
@@ -416,6 +447,23 @@ const App: React.FC = () => {
             }
             return;
         }
+        
+        // Check for hint request and enforce limit
+        const isHintRequest = /\bhint\b/i.test(userMessage);
+        const hintsAllowed = chatOptions?.hints_allowed ?? 3;
+        
+        if (isHintRequest && hintsUsed >= hintsAllowed) {
+            // Hint limit reached - refuse the hint
+            const newUserMessage: Message = { role: MessageRole.USER, content: userMessage };
+            const refusalMessage: Message = {
+                role: MessageRole.MODEL,
+                content: hintsAllowed === 0 
+                    ? "I'm sorry, but hints have been disabled for this conversation. Please try to work through this on your own using the case materials."
+                    : `I'm sorry, but you've already used all ${hintsAllowed} of your allowed hints. You'll need to work through this on your own now.`
+            };
+            setMessages((prev) => [...prev, newUserMessage, refusalMessage]);
+            return;
+        }
 
         if (!chatSession) return;
 
@@ -423,6 +471,11 @@ const App: React.FC = () => {
         setMessages((prev) => [...prev, newUserMessage]);
         setIsLoading(true);
         setError(null);
+        
+        // Track hint usage
+        if (isHintRequest) {
+            setHintsUsed(prev => prev + 1);
+        }
 
         try {
             // Clear any pending retry before making a new request
@@ -584,9 +637,9 @@ const App: React.FC = () => {
     try {
     const fullName = sessionUser?.full_name || `${studentFirstName}`;
     const lastName = sessionUser?.last_name || '';
-    // Pass case data for cache-optimized evaluation prompt
+    // Pass case data and chat options for cache-optimized evaluation prompt
     const caseData = activeCaseData || DEFAULT_CASE_DATA;
-    const result = await getEvaluation(messages, studentFirstName, fullName, selectedSuperModel, caseData);
+    const result = await getEvaluation(messages, studentFirstName, fullName, selectedSuperModel, caseData, chatOptions);
       setEvaluationResult(result);
       
       if (studentDBId) {
@@ -612,6 +665,7 @@ const App: React.FC = () => {
           .from('evaluations')
           .insert({
             student_id: studentDBId,
+            case_id: selectedCaseId,
             score: result.totalScore,
             summary: result.summary,
             criteria: result.criteria,
@@ -827,7 +881,9 @@ const App: React.FC = () => {
 
   if (conversationPhase === ConversationPhase.PRE_CHAT) {
     const isSectionValid = selectedSection !== '' && selectedSection !== 'other';
-    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase;
+    const selectedCaseStatus = selectedCaseId ? caseCompletionStatus[selectedCaseId] : null;
+    const isCaseCompleted = selectedCaseStatus?.completed && !selectedCaseStatus?.allowRechat;
+    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted;
     const sectionName = sections.find(s => s.section_id === selectedSection)?.section_title || selectedSection;
 
     return (
@@ -906,29 +962,52 @@ const App: React.FC = () => {
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {availableCases.map((caseItem) => (
-                      <label 
-                        key={caseItem.case_id}
-                        className={`flex items-center p-3 rounded-lg border cursor-pointer transition-colors ${
-                          selectedCaseId === caseItem.case_id 
-                            ? 'bg-blue-50 border-blue-300' 
-                            : 'bg-white border-gray-200 hover:bg-gray-50'
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="selectedCase"
-                          value={caseItem.case_id}
-                          checked={selectedCaseId === caseItem.case_id}
-                          onChange={(e) => setSelectedCaseId(e.target.value)}
-                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
-                        />
-                        <div className="ml-3">
-                          <span className="block font-medium text-gray-900">{caseItem.case_title}</span>
-                          <span className="block text-xs text-gray-500">Protagonist: {caseItem.protagonist}</span>
-                        </div>
-                      </label>
-                    ))}
+                    {availableCases.map((caseItem) => {
+                      const status = caseCompletionStatus[caseItem.case_id];
+                      const isCompleted = status?.completed && !status?.allowRechat;
+                      const canRechat = status?.completed && status?.allowRechat;
+                      
+                      return (
+                        <label 
+                          key={caseItem.case_id}
+                          className={`flex items-center p-3 rounded-lg border transition-colors ${
+                            isCompleted 
+                              ? 'bg-green-50 border-green-200 cursor-not-allowed opacity-75'
+                              : selectedCaseId === caseItem.case_id 
+                                ? 'bg-blue-50 border-blue-300 cursor-pointer' 
+                                : 'bg-white border-gray-200 hover:bg-gray-50 cursor-pointer'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="selectedCase"
+                            value={caseItem.case_id}
+                            checked={selectedCaseId === caseItem.case_id}
+                            onChange={(e) => !isCompleted && setSelectedCaseId(e.target.value)}
+                            disabled={isCompleted}
+                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 disabled:opacity-50"
+                          />
+                          <div className="ml-3 flex-1">
+                            <div className="flex items-center justify-between">
+                              <span className={`block font-medium ${isCompleted ? 'text-green-800' : 'text-gray-900'}`}>
+                                {caseItem.case_title}
+                              </span>
+                              {isCompleted && (
+                                <span className="text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded">
+                                  ✓ Completed
+                                </span>
+                              )}
+                              {canRechat && (
+                                <span className="text-xs font-medium text-orange-700 bg-orange-100 px-2 py-0.5 rounded">
+                                  Re-chat Available
+                                </span>
+                              )}
+                            </div>
+                            <span className="block text-xs text-gray-500">Protagonist: {caseItem.protagonist}</span>
+                          </div>
+                        </label>
+                      );
+                    })}
                   </div>
                 )}
                 
@@ -971,7 +1050,7 @@ const App: React.FC = () => {
               disabled={isLoading || !canStartChat} 
               className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : 'Start Chat'}
+              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : 'Start Chat'}
             </button>
           </form>
         </div>
