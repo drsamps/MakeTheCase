@@ -33,7 +33,11 @@ async function loadCaseData(caseId) {
   try {
     const casePath = path.join(CASE_FILES_DIR, caseId, 'case.md');
     caseData.case_content = await fs.readFile(casePath, 'utf-8');
+    if (!caseData.case_content || caseData.case_content.trim() === '') {
+      console.warn(`[loadCaseData] Case file is empty: ${casePath}`);
+    }
   } catch (e) {
+    console.error(`[loadCaseData] Failed to read case file: ${path.join(CASE_FILES_DIR, caseId, 'case.md')}`, e.message);
     caseData.case_content = '';
   }
   
@@ -42,6 +46,7 @@ async function loadCaseData(caseId) {
     const notePath = path.join(CASE_FILES_DIR, caseId, 'teaching_note.md');
     caseData.teaching_note = await fs.readFile(notePath, 'utf-8');
   } catch (e) {
+    // Teaching note is optional, so we don't log an error if it's missing
     caseData.teaching_note = '';
   }
   
@@ -52,15 +57,40 @@ const router = express.Router();
 
 // GET /api/llm/case-data/:caseId - Get case data for prompt building (content at top for caching)
 router.get('/case-data/:caseId', async (req, res) => {
+  const caseId = req.params.caseId;
+  console.log(`[case-data] Loading case data for: ${caseId}`);
+  
   try {
-    const caseData = await loadCaseData(req.params.caseId);
+    const caseData = await loadCaseData(caseId);
     if (!caseData) {
-      return res.status(404).json({ data: null, error: { message: 'Case not found' } });
+      console.error(`[case-data] Case not found in database: ${caseId}`);
+      return res.status(404).json({ data: null, error: { message: `Case "${caseId}" not found in database` } });
     }
+    
+    // Check if case content was loaded
+    if (!caseData.case_content || caseData.case_content.trim() === '') {
+      const casePath = path.join(CASE_FILES_DIR, caseId, 'case.md');
+      console.error(`[case-data] Case content is empty. Expected file: ${casePath}`);
+      return res.status(500).json({ 
+        data: null, 
+        error: { 
+          message: `Case content file not found or empty. Expected: case_files/${caseId}/case.md` 
+        } 
+      });
+    }
+    
+    console.log(`[case-data] Successfully loaded case: ${caseId} (${caseData.case_content.length} chars)`);
     res.json({ data: caseData, error: null });
   } catch (error) {
-    console.error('Error loading case data:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
+    console.error(`[case-data] Error loading case data for ${caseId}:`, error);
+    console.error(`[case-data] CASE_FILES_DIR: ${CASE_FILES_DIR}`);
+    console.error(`[case-data] Expected path: ${path.join(CASE_FILES_DIR, caseId, 'case.md')}`);
+    res.status(500).json({ 
+      data: null, 
+      error: { 
+        message: error.message || 'Failed to load case data. Check server logs for details.' 
+      } 
+    });
   }
 });
 

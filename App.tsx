@@ -352,20 +352,41 @@ const App: React.FC = () => {
       }
       
       setIsLoadingCase(true);
+      setError(null); // Clear any previous errors
       try {
         // Fetch case content from the API
         const caseResponse = await fetch(`/api/llm/case-data/${selectedCaseId}`);
+        
+        // Check if response is ok (status 200-299)
+        if (!caseResponse.ok) {
+          const errorText = await caseResponse.text();
+          let errorData;
+          try {
+            errorData = JSON.parse(errorText);
+          } catch {
+            errorData = { error: { message: errorText || `HTTP ${caseResponse.status}` } };
+          }
+          console.error('Case data API error:', caseResponse.status, errorData);
+          setActiveCaseData(null);
+          setError(`Unable to load case content (HTTP ${caseResponse.status}): ${errorData.error?.message || 'Case files may be missing on server. Please check server logs.'}`);
+          setIsLoadingCase(false);
+          return;
+        }
+        
         const caseResult = await caseResponse.json();
         
         if (caseResult.data) {
           setActiveCaseData(caseResult.data as CaseData);
+          setError(null); // Clear any previous errors on success
         } else {
-          console.log('Could not fetch case content');
+          console.error('Could not fetch case content:', caseResult.error);
           setActiveCaseData(null);
+          setError(`Unable to load case content: ${caseResult.error?.message || 'Case files may be missing on server. Please check server logs.'}`);
         }
       } catch (err) {
         console.error('Error fetching case data:', err);
         setActiveCaseData(null);
+        setError(`Failed to load case data: ${err instanceof Error ? err.message : 'Network error. Please check your connection and try again.'}`);
       } finally {
         setIsLoadingCase(false);
       }
@@ -1043,14 +1064,26 @@ const App: React.FC = () => {
             
             <p className="text-xs text-gray-500 italic px-2">You can optionally and anonymously share your chat conversation with the developers to improve the dialog for future students. You will be asked about this later.</p>
             
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {error && (
+              <div className="p-4 bg-red-50 border-2 border-red-300 rounded-lg">
+                <p className="text-sm font-semibold text-red-800 mb-1">⚠️ Error Loading Case</p>
+                <p className="text-sm text-red-700">{error}</p>
+                <p className="text-xs text-red-600 mt-2">Please check the browser console (F12) for more details, or contact your instructor.</p>
+              </div>
+            )}
+            
+            {selectedCaseId && !activeCaseData && !isLoadingCase && !error && (
+              <p className="text-sm text-orange-600 p-3 bg-orange-50 rounded-lg border border-orange-200">
+                ⚠️ Case content failed to load. Please refresh the page or contact your instructor if the problem persists.
+              </p>
+            )}
             
             <button 
               type="submit" 
               disabled={isLoading || !canStartChat} 
               className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : 'Start Chat'}
+              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : 'Start Chat'}
             </button>
           </form>
         </div>
