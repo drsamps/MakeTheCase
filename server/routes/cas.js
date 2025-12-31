@@ -14,42 +14,22 @@ function getServiceBase() {
   return base.endsWith('/') ? base.slice(0, -1) : base;
 }
 
-function getRedirectBase(req) {
-  // First, try to use the environment variable if set (explicit override)
+function getRedirectBase() {
+  // Use explicit CAS_REDIRECT_BASE_URL if set and not a localhost URL in production
   if (process.env.CAS_REDIRECT_BASE_URL) {
     const base = process.env.CAS_REDIRECT_BASE_URL;
-    return base.endsWith('/') ? base.slice(0, -1) : base;
-  }
-  
-  // Otherwise, try to determine from the request
-  // Handle reverse proxy headers (common in production)
-  const protocol = req.get('x-forwarded-proto') || req.protocol || (req.secure ? 'https' : 'http');
-  const host = req.get('x-forwarded-host') || req.get('host') || req.headers.host;
-  
-  if (host) {
-    // Extract the base path from the service URL if it contains a path
-    // The service URL is built from CAS_SERVICE_BASE_URL which may include a path like /makethecase
-    const serviceBase = getServiceBase();
-    try {
-      const serviceUrl = new URL(serviceBase);
-      // If service base has a path (e.g., https://services.byu.edu/makethecase), use it
-      if (serviceUrl.pathname && serviceUrl.pathname !== '/') {
-        return `${protocol}://${host}${serviceUrl.pathname}`;
-      }
-    } catch (e) {
-      // If service base is not a full URL, it might be relative or malformed
-      // Try to extract path from it if it looks like it has one
-      const pathMatch = serviceBase.match(/\/([^\/]+(?:\/[^\/]+)?)$/);
-      if (pathMatch) {
-        return `${protocol}://${host}${pathMatch[0]}`;
-      }
-    }
+    // In production (when CAS_SERVICE_BASE_URL is not localhost), ignore localhost redirect URLs
+    const serviceBase = process.env.CAS_SERVICE_BASE_URL || '';
+    const isProductionService = serviceBase && !serviceBase.includes('localhost');
+    const isLocalhostRedirect = base.includes('localhost');
     
-    // No path in service base, return just protocol + host
-    return `${protocol}://${host}`;
+    if (!(isProductionService && isLocalhostRedirect)) {
+      return base.endsWith('/') ? base.slice(0, -1) : base;
+    }
+    // Fall through to use CAS_SERVICE_BASE_URL if we're in production but redirect is localhost
   }
   
-  // Fallback to service base URL (shouldn't happen in normal operation)
+  // Default: use CAS_SERVICE_BASE_URL (API and frontend share same base in production)
   return getServiceBase();
 }
 
@@ -89,8 +69,8 @@ async function validateTicket(ticket, serviceUrl) {
   return parseCasResponse(text);
 }
 
-function callbackRedirect(req, res, payload) {
-  const base = getRedirectBase(req);
+function callbackRedirect(res, payload) {
+  const base = getRedirectBase();
   const params = new URLSearchParams({
     token: payload.token,
     role: payload.role,
@@ -158,7 +138,7 @@ router.get('/verify', async (req, res) => {
       if ((req.headers.accept || '').includes('application/json')) {
         return res.json(payload);
       }
-      return callbackRedirect(req, res, payload);
+      return callbackRedirect(res, payload);
     }
 
     // Student path: ensure record exists (id anchored to CAS netid)
@@ -191,7 +171,7 @@ router.get('/verify', async (req, res) => {
     if ((req.headers.accept || '').includes('application/json')) {
       return res.json(payload);
     }
-    return callbackRedirect(req, res, payload);
+    return callbackRedirect(res, payload);
   } catch (err) {
     console.error('CAS verify error:', err);
     return res.status(500).json({ error: err.message || 'CAS verification failed' });
