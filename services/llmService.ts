@@ -1,5 +1,6 @@
 import { getSystemPrompt, getCoachPrompt, buildSystemPrompt, buildCoachPrompt, CaseData, DEFAULT_CASE_DATA } from "../constants";
 import { Message, EvaluationResult, CEOPersona } from "../types";
+import { getApiBaseUrl } from "./apiClient";
 
 const parseOrThrow = async (response: Response) => {
   const text = await response.text();
@@ -138,7 +139,7 @@ export const createChatSession = (
 
   return {
     async sendMessage({ message }: { message: string }) {
-      const response = await fetch('/api/llm/chat', {
+      const response = await fetch(`${getApiBaseUrl()}/llm/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -188,7 +189,7 @@ export const getEvaluation = async (
     ? buildCoachPrompt(chatHistory, studentFullName, caseData, freeHints)
     : getCoachPrompt(chatHistory, studentFullName);
 
-  const response = await fetch('/api/llm/eval', {
+  const response = await fetch(`${getApiBaseUrl()}/llm/eval`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ modelId, prompt }),

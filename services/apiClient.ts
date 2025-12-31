@@ -9,6 +9,11 @@ const BASE_URL = import.meta.env.BASE_URL || '/';
 // Remove trailing slash, then add /api
 const API_BASE = BASE_URL.replace(/\/$/, '') + '/api';
 
+// Export API_BASE for use in direct fetch calls
+export function getApiBaseUrl(): string {
+  return API_BASE;
+}
+
 // Auth token management
 let authToken: string | null = localStorage.getItem('auth_token');
 

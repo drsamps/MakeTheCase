@@ -2,7 +2,7 @@
 
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { api } from '../services/apiClient'; // Dashboard with tiles/list view toggle 
+import { api, getApiBaseUrl } from '../services/apiClient'; // Dashboard with tiles/list view toggle 
 import { detectProvider } from '../services/llmService';
 
 interface DashboardProps {
@@ -410,7 +410,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     
     // Also fetch cases for this section for the filter dropdown
     try {
-      const casesResponse = await fetch(`/api/sections/${sectionId}/cases`);
+      const casesResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases`);
       const casesResult = await casesResponse.json();
       if (casesResult.data) {
         setSectionCasesForFilter(casesResult.data);
@@ -661,7 +661,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       formData.append('file_type', fileType);
       
       const token = localStorage.getItem('auth_token');
-      const response = await fetch(`/api/cases/${caseId}/upload`, {
+      const response = await fetch(`${getApiBaseUrl()}/cases/${caseId}/upload`, {
         method: 'POST',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {},
         body: formData
@@ -731,7 +731,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const handleActivateSectionCase = async (sectionId: string, caseId: string) => {
     try {
       const token = localStorage.getItem('auth_token');
-      const response = await fetch(`/api/sections/${sectionId}/cases/${caseId}/activate`, {
+      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/activate`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -752,7 +752,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const handleDeactivateSectionCase = async (sectionId: string, caseId: string) => {
     try {
       const token = localStorage.getItem('auth_token');
-      const response = await fetch(`/api/sections/${sectionId}/cases/${caseId}/deactivate`, {
+      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/deactivate`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -785,7 +785,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setIsSavingChatOptions(true);
     try {
       const token = localStorage.getItem('auth_token');
-      const response = await fetch(`/api/sections/${sectionId}/cases/${caseId}/options`, {
+      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/options`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -815,7 +815,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const handleToggleRechat = async (evaluationId: string, currentAllowRechat: boolean) => {
     try {
       const token = localStorage.getItem('auth_token');
-      const response = await fetch(`/api/evaluations/${evaluationId}/allow-rechat`, {
+      const response = await fetch(`${getApiBaseUrl()}/evaluations/${evaluationId}/allow-rechat`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -1233,7 +1233,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     
     try {
       const authToken = localStorage.getItem('auth_token');
-      const response = await fetch(`/api/sections/${section.section_id}`, {
+      const response = await fetch(`${getApiBaseUrl()}/sections/${section.section_id}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -1370,7 +1370,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       return;
     }
     try {
-      const response = await fetch(`/api/models/${model.model_id}`, {
+      const response = await fetch(`${getApiBaseUrl()}/models/${model.model_id}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -1397,7 +1397,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       return;
     }
     try {
-      const response = await fetch(`/api/models/${model.model_id}`, {
+      const response = await fetch(`${getApiBaseUrl()}/models/${model.model_id}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -1426,7 +1426,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     const prompt = 'What is the capital of France?';
     setTestingModelId(model.model_id);
     try {
-      const response = await fetch('/api/llm/chat', {
+      const response = await fetch(`${getApiBaseUrl()}/llm/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1469,7 +1469,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       return;
     }
     try {
-      const response = await fetch(`/api/models/${model.model_id}`, {
+      const response = await fetch(`${getApiBaseUrl()}/models/${model.model_id}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${authToken}`,

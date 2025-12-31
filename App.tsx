@@ -5,7 +5,7 @@ import { Message, MessageRole, ConversationPhase, EvaluationResult, CEOPersona, 
 import { createChatSession, getEvaluation } from './services/llmService';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
-import { api } from './services/apiClient';
+import { api, getApiBaseUrl } from './services/apiClient';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
 import MessageInput from './components/MessageInput';
@@ -276,7 +276,7 @@ const App: React.FC = () => {
           const completionStatuses: Record<string, { completed: boolean; allowRechat: boolean }> = {};
           for (const caseItem of activeCases) {
             try {
-              const response = await fetch(`/api/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}`);
+              const response = await fetch(`${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}`);
               const result = await response.json();
               if (result.data) {
                 completionStatuses[caseItem.case_id] = {
@@ -355,7 +355,7 @@ const App: React.FC = () => {
       setError(null); // Clear any previous errors
       try {
         // Fetch case content from the API
-        const caseResponse = await fetch(`/api/llm/case-data/${selectedCaseId}`);
+        const caseResponse = await fetch(`${getApiBaseUrl()}/llm/case-data/${selectedCaseId}`);
         
         // Check if response is ok (status 200-299)
         if (!caseResponse.ok) {
