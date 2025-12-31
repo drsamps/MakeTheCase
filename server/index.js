@@ -57,15 +57,14 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Serve static files from the React app (production build)
-// Only serve static files in production mode
-if (process.env.NODE_ENV === 'production') {
+// Static files are served directly by Apache in production for better performance
+// Only serve static files in development mode or if not behind Apache proxy
+if (process.env.NODE_ENV !== 'production') {
   const distPath = path.join(__dirname, '../dist');
-  app.use('/makethecase', express.static(distPath));
+  app.use(express.static(distPath));
   
-  // Catch-all handler: send back React's index.html file for client-side routing
-  // This must be after all API routes
-  app.get('/makethecase/*', (req, res) => {
+  // Catch-all handler for development: send back React's index.html file
+  app.get('*', (req, res) => {
     res.sendFile(path.join(distPath, 'index.html'));
   });
 }
