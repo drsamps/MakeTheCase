@@ -90,6 +90,44 @@ router.get('/check-completion/:studentId/:caseId', async (req, res) => {
   }
 });
 
+// PATCH /api/evaluations/:id/allow-rechat - Toggle allow_rechat status (admin only)
+// IMPORTANT: This route must be defined BEFORE /:id to ensure proper route matching
+router.patch('/:id/allow-rechat', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { allow_rechat } = req.body;
+    
+    if (typeof allow_rechat !== 'boolean') {
+      return res.status(400).json({ data: null, error: { message: 'allow_rechat must be a boolean' } });
+    }
+    
+    await pool.execute(
+      'UPDATE evaluations SET allow_rechat = ? WHERE id = ?',
+      [allow_rechat ? 1 : 0, id]
+    );
+    
+    const [rows] = await pool.execute(
+      `SELECT ${EVAL_FIELDS} FROM evaluations WHERE id = ?`,
+      [id]
+    );
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Evaluation not found' } });
+    }
+    
+    const row = rows[0];
+    const data = {
+      ...row,
+      criteria: row.criteria ? (typeof row.criteria === 'string' ? JSON.parse(row.criteria) : row.criteria) : null
+    };
+    
+    res.json({ data, error: null });
+  } catch (error) {
+    console.error('Error updating allow_rechat:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 // GET /api/evaluations/:id - Get single evaluation
 router.get('/:id', async (req, res) => {
   try {
@@ -153,43 +191,6 @@ router.post('/', async (req, res) => {
     res.status(201).json({ data, error: null });
   } catch (error) {
     console.error('Error creating evaluation:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
-  }
-});
-
-// PATCH /api/evaluations/:id/allow-rechat - Toggle allow_rechat status (admin only)
-router.patch('/:id/allow-rechat', verifyToken, requireRole(['admin']), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { allow_rechat } = req.body;
-    
-    if (typeof allow_rechat !== 'boolean') {
-      return res.status(400).json({ data: null, error: { message: 'allow_rechat must be a boolean' } });
-    }
-    
-    await pool.execute(
-      'UPDATE evaluations SET allow_rechat = ? WHERE id = ?',
-      [allow_rechat ? 1 : 0, id]
-    );
-    
-    const [rows] = await pool.execute(
-      `SELECT ${EVAL_FIELDS} FROM evaluations WHERE id = ?`,
-      [id]
-    );
-    
-    if (rows.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Evaluation not found' } });
-    }
-    
-    const row = rows[0];
-    const data = {
-      ...row,
-      criteria: row.criteria ? (typeof row.criteria === 'string' ? JSON.parse(row.criteria) : row.criteria) : null
-    };
-    
-    res.json({ data, error: null });
-  } catch (error) {
-    console.error('Error updating allow_rechat:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
