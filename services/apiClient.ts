@@ -3,7 +3,11 @@
  * Replaces the Supabase client with calls to our Express API server
  */
 
-const API_BASE = '/api';
+// Use Vite's base URL in production (e.g., '/makethecase/') or '/' in development
+// import.meta.env.BASE_URL is provided by Vite and includes the trailing slash
+const BASE_URL = import.meta.env.BASE_URL || '/';
+// Remove trailing slash, then add /api
+const API_BASE = BASE_URL.replace(/\/$/, '') + '/api';
 
 // Auth token management
 let authToken: string | null = localStorage.getItem('auth_token');

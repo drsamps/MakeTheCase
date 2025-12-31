@@ -23,7 +23,9 @@ import sectionCasesRoutes from './routes/sectionCases.js';
 import chatOptionsRoutes from './routes/chatOptions.js';
 
 // Load environment variables
-dotenv.config({ path: '.env.local' });
+// Use absolute path to ensure .env.local is found regardless of working directory
+const envPath = path.join(__dirname, '..', '.env.local');
+dotenv.config({ path: envPath });
 
 const app = express();
 const PORT = process.env.SERVER_PORT || 3001;

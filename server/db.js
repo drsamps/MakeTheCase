@@ -1,8 +1,16 @@
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Get __dirname equivalent for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Load environment variables
-dotenv.config({ path: '.env.local' });
+// Use absolute path to ensure .env.local is found regardless of working directory
+const envPath = path.join(__dirname, '..', '.env.local');
+dotenv.config({ path: envPath });
 
 // Create connection pool
 const pool = mysql.createPool({
