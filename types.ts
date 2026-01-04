@@ -29,6 +29,29 @@ export enum CEOPersona {
   SYCOPHANTIC = 'sycophantic',
 }
 
+export interface Persona {
+  persona_id: string;
+  persona_name: string;
+  description?: string;
+  instructions: string;
+  enabled: boolean;
+  sort_order: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ChatOptions {
+  hints_allowed: number;
+  free_hints: number;
+  ask_for_feedback: boolean;
+  ask_save_transcript: boolean;
+  allowed_personas: string;
+  default_persona: string;
+  show_case: boolean;
+  do_evaluation: boolean;
+  chatbot_personality: string;
+}
+
 export interface EvaluationCriterion {
   question: string;
   score: number;

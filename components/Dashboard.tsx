@@ -109,7 +109,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [modelsList, setModelsList] = useState<Model[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [testingModelId, setTestingModelId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'sections' | 'models' | 'cases'>('sections');
+  const [activeTab, setActiveTab] = useState<'sections' | 'models' | 'cases' | 'assignments' | 'personas'>('sections');
   const [showModelModal, setShowModelModal] = useState(false);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
   const [modelForm, setModelForm] = useState<{
@@ -203,8 +203,32 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     ask_for_feedback: false,
     ask_save_transcript: false,
     allowed_personas: 'moderate,strict,liberal,leading,sycophantic',
-    default_persona: 'moderate'
+    default_persona: 'moderate',
+    show_case: true,
+    do_evaluation: true,
+    chatbot_personality: ''
   };
+
+  // Personas management
+  const [personasList, setPersonasList] = useState<any[]>([]);
+  const [isLoadingPersonas, setIsLoadingPersonas] = useState(false);
+  const [showPersonaModal, setShowPersonaModal] = useState(false);
+  const [editingPersona, setEditingPersona] = useState<any | null>(null);
+  const [personaForm, setPersonaForm] = useState({
+    persona_id: '',
+    persona_name: '',
+    description: '',
+    instructions: '',
+    enabled: true,
+    sort_order: 0
+  });
+  const [isSavingPersona, setIsSavingPersona] = useState(false);
+
+  // Assignments view state
+  const [assignmentsSectionsList, setAssignmentsSectionsList] = useState<any[]>([]);
+  const [isLoadingAssignments, setIsLoadingAssignments] = useState(false);
+  const [expandedAssignmentSection, setExpandedAssignmentSection] = useState<string | null>(null);
+  const [assignmentCasesList, setAssignmentCasesList] = useState<any[]>([]);
 
   const fetchModels = useCallback(async () => {
     setIsLoadingModels(true);
@@ -575,14 +599,176 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setSectionCasesForFilter([]);
   };
 
-  const handleTabChange = (tab: 'sections' | 'models' | 'cases') => {
+  const handleTabChange = (tab: 'sections' | 'models' | 'cases' | 'assignments' | 'personas') => {
     setActiveTab(tab);
-    if (tab === 'models' || tab === 'cases') {
+    if (tab === 'models' || tab === 'cases' || tab === 'assignments' || tab === 'personas') {
       setSelectedSection(null);
     }
     if (tab === 'cases' && casesList.length === 0) {
       fetchCases();
     }
+    if (tab === 'personas' && personasList.length === 0) {
+      fetchPersonas();
+    }
+    if (tab === 'assignments') {
+      fetchAssignmentsSections();
+      if (casesList.length === 0) {
+        fetchCases();
+      }
+    }
+  };
+
+  // Personas management functions
+  const fetchPersonas = async () => {
+    setIsLoadingPersonas(true);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/personas`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const result = await response.json();
+      if (result.error) {
+        console.error('Error fetching personas:', result.error);
+      } else {
+        setPersonasList(result.data || []);
+      }
+    } catch (err) {
+      console.error('Error fetching personas:', err);
+    } finally {
+      setIsLoadingPersonas(false);
+    }
+  };
+
+  const handleOpenPersonaModal = (persona?: any) => {
+    if (persona) {
+      setEditingPersona(persona);
+      setPersonaForm({
+        persona_id: persona.persona_id,
+        persona_name: persona.persona_name,
+        description: persona.description || '',
+        instructions: persona.instructions,
+        enabled: persona.enabled,
+        sort_order: persona.sort_order || 0
+      });
+    } else {
+      setEditingPersona(null);
+      setPersonaForm({
+        persona_id: '',
+        persona_name: '',
+        description: '',
+        instructions: '',
+        enabled: true,
+        sort_order: personasList.length
+      });
+    }
+    setShowPersonaModal(true);
+  };
+
+  const handleSavePersona = async () => {
+    if (!personaForm.persona_id || !personaForm.persona_name || !personaForm.instructions) {
+      setError('Please fill in persona ID, name, and instructions');
+      return;
+    }
+    setIsSavingPersona(true);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const url = editingPersona
+        ? `${getApiBaseUrl()}/personas/${editingPersona.persona_id}`
+        : `${getApiBaseUrl()}/personas`;
+
+      const response = await fetch(url, {
+        method: editingPersona ? 'PATCH' : 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(personaForm)
+      });
+
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to save persona');
+      }
+
+      setShowPersonaModal(false);
+      fetchPersonas();
+    } catch (err: any) {
+      setError(err.message || 'Failed to save persona');
+    } finally {
+      setIsSavingPersona(false);
+    }
+  };
+
+  const handleDeletePersona = async (personaId: string) => {
+    if (!confirm(`Are you sure you want to delete persona "${personaId}"? This cannot be undone.`)) return;
+    try {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/personas/${personaId}`, {
+        method: 'DELETE',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to delete persona');
+      }
+
+      fetchPersonas();
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete persona');
+    }
+  };
+
+  const handleTogglePersonaEnabled = async (persona: any) => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/personas/${persona.persona_id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ enabled: !persona.enabled })
+      });
+
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to update persona');
+      }
+
+      fetchPersonas();
+    } catch (err: any) {
+      setError(err.message || 'Failed to update persona');
+    }
+  };
+
+  // Assignments tab functions
+  const fetchAssignmentsSections = async () => {
+    setIsLoadingAssignments(true);
+    try {
+      const { data, error } = await api
+        .from('sections')
+        .select('section_id, section_title, year_term, enabled')
+        .order('year_term', { ascending: false })
+        .order('section_title', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching sections for assignments:', error);
+      } else {
+        setAssignmentsSectionsList(data || []);
+      }
+    } finally {
+      setIsLoadingAssignments(false);
+    }
+  };
+
+  const handleExpandAssignmentSection = async (sectionId: string) => {
+    if (expandedAssignmentSection === sectionId) {
+      setExpandedAssignmentSection(null);
+      return;
+    }
+    setExpandedAssignmentSection(sectionId);
+    await fetchSectionCases(sectionId);
   };
 
   const fetchCases = async () => {
@@ -1860,6 +2046,383 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     </div>
   );
 
+  const renderAssignmentsTab = () => (
+    <div className="p-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Case Assignments</h2>
+          <p className="text-sm text-gray-500">Manage which cases are assigned to which sections with custom options</p>
+        </div>
+        <button
+          onClick={fetchAssignmentsSections}
+          className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {isLoadingAssignments ? (
+        <div className="text-center py-12">
+          <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
+          <p className="mt-2 text-gray-500">Loading sections...</p>
+        </div>
+      ) : assignmentsSectionsList.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          <p className="text-gray-500">No sections found. Create sections in the Sections tab first.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {assignmentsSectionsList.map((section) => (
+            <div key={section.section_id} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+              <div
+                className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50"
+                onClick={() => handleExpandAssignmentSection(section.section_id)}
+              >
+                <div className="flex items-center gap-3">
+                  <svg
+                    className={`w-5 h-5 text-gray-400 transition-transform ${expandedAssignmentSection === section.section_id ? 'rotate-90' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                  <div>
+                    <span className="font-medium text-gray-900">{section.section_title}</span>
+                    <span className="ml-2 text-sm text-gray-500">({section.section_id})</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {section.year_term && (
+                    <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded">
+                      {section.year_term}
+                    </span>
+                  )}
+                  <span className={`px-2 py-1 text-xs font-medium rounded ${section.enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                    {section.enabled ? 'Enabled' : 'Disabled'}
+                  </span>
+                </div>
+              </div>
+
+              {expandedAssignmentSection === section.section_id && (
+                <div className="border-t border-gray-200 p-4 bg-gray-50">
+                  {isLoadingSectionCases ? (
+                    <div className="text-center py-4">
+                      <div className="inline-block animate-spin rounded-full h-6 w-6 border-4 border-blue-500 border-t-transparent"></div>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {/* Add Case Dropdown */}
+                      <div className="flex items-center gap-2">
+                        <select
+                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                          value=""
+                          onChange={async (e) => {
+                            if (e.target.value) {
+                              await handleAssignCaseToSection(section.section_id, e.target.value);
+                              e.target.value = '';
+                            }
+                          }}
+                        >
+                          <option value="">+ Assign a case to this section...</option>
+                          {casesList
+                            .filter(c => !sectionCasesList.find(sc => sc.case_id === c.case_id))
+                            .map(c => (
+                              <option key={c.case_id} value={c.case_id}>
+                                {c.case_title} ({c.case_id})
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+
+                      {/* Assigned Cases */}
+                      {sectionCasesList.length === 0 ? (
+                        <p className="text-sm text-gray-500 py-2">No cases assigned to this section yet.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {sectionCasesList.map((sc) => (
+                            <div key={sc.case_id} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                              <div className="p-3 flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium text-gray-900">{sc.case_title}</span>
+                                  <span className="text-sm text-gray-500">({sc.case_id})</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={() => handleExpandChatOptions(sc.case_id, sc.chat_options)}
+                                    className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                                      expandedCaseOptions === sc.case_id
+                                        ? 'bg-purple-100 text-purple-700 border-purple-200'
+                                        : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-purple-50'
+                                    }`}
+                                  >
+                                    Options
+                                  </button>
+                                  {sc.active ? (
+                                    <button
+                                      onClick={() => handleDeactivateSectionCase(section.section_id, sc.case_id)}
+                                      className="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                                    >
+                                      Active
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => handleActivateSectionCase(section.section_id, sc.case_id)}
+                                      className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-600"
+                                    >
+                                      Set Active
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => handleRemoveCaseFromSection(section.section_id, sc.case_id)}
+                                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
+                                    title="Remove from section"
+                                  >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                      <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Expanded Chat Options */}
+                              {expandedCaseOptions === sc.case_id && editingChatOptions && (
+                                <div className="p-4 bg-gray-50 border-t border-gray-200 space-y-4">
+                                  <h4 className="text-sm font-semibold text-gray-800">Chat Options</h4>
+
+                                  {/* Hints Section */}
+                                  <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                      <label className="block text-xs font-medium text-gray-700 mb-1">Hints Allowed</label>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max="10"
+                                        value={editingChatOptions.hints_allowed ?? 3}
+                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, hints_allowed: parseInt(e.target.value) || 0})}
+                                        className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs font-medium text-gray-700 mb-1">Free Hints</label>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max="5"
+                                        value={editingChatOptions.free_hints ?? 1}
+                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, free_hints: parseInt(e.target.value) || 0})}
+                                        className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  {/* Display & Flow Options */}
+                                  <div className="space-y-2">
+                                    <label className="flex items-center gap-2 text-sm">
+                                      <input
+                                        type="checkbox"
+                                        checked={editingChatOptions.show_case ?? true}
+                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, show_case: e.target.checked})}
+                                        className="rounded border-gray-300"
+                                      />
+                                      Show case content in left panel
+                                    </label>
+                                    <label className="flex items-center gap-2 text-sm">
+                                      <input
+                                        type="checkbox"
+                                        checked={editingChatOptions.do_evaluation ?? true}
+                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, do_evaluation: e.target.checked})}
+                                        className="rounded border-gray-300"
+                                      />
+                                      Run evaluation after chat
+                                    </label>
+                                    <label className="flex items-center gap-2 text-sm">
+                                      <input
+                                        type="checkbox"
+                                        checked={editingChatOptions.ask_for_feedback ?? false}
+                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_for_feedback: e.target.checked})}
+                                        className="rounded border-gray-300"
+                                      />
+                                      Ask for feedback at end of chat
+                                    </label>
+                                    <label className="flex items-center gap-2 text-sm">
+                                      <input
+                                        type="checkbox"
+                                        checked={editingChatOptions.ask_save_transcript ?? false}
+                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_save_transcript: e.target.checked})}
+                                        className="rounded border-gray-300"
+                                      />
+                                      Ask to save anonymized transcript
+                                    </label>
+                                  </div>
+
+                                  {/* Persona Options */}
+                                  <div>
+                                    <label className="block text-xs font-medium text-gray-700 mb-1">Default Persona</label>
+                                    <select
+                                      value={editingChatOptions.default_persona ?? 'moderate'}
+                                      onChange={(e) => setEditingChatOptions({...editingChatOptions, default_persona: e.target.value})}
+                                      className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                                    >
+                                      {personasList.length > 0 ? (
+                                        personasList.filter(p => p.enabled).map(p => (
+                                          <option key={p.persona_id} value={p.persona_id}>{p.persona_name}</option>
+                                        ))
+                                      ) : (
+                                        <>
+                                          <option value="moderate">Moderate</option>
+                                          <option value="strict">Strict</option>
+                                          <option value="liberal">Liberal</option>
+                                          <option value="leading">Leading</option>
+                                          <option value="sycophantic">Sycophantic</option>
+                                        </>
+                                      )}
+                                    </select>
+                                  </div>
+
+                                  {/* Chatbot Personality */}
+                                  <div>
+                                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                                      Chatbot Personality (additional instructions)
+                                    </label>
+                                    <textarea
+                                      value={editingChatOptions.chatbot_personality ?? ''}
+                                      onChange={(e) => setEditingChatOptions({...editingChatOptions, chatbot_personality: e.target.value})}
+                                      placeholder="Additional AI instructions to customize chatbot behavior..."
+                                      className="w-full px-2 py-1 border border-gray-300 rounded text-sm h-20 resize-y"
+                                    />
+                                  </div>
+
+                                  {/* Action Buttons */}
+                                  <div className="flex justify-between pt-2 border-t">
+                                    <button
+                                      onClick={handleResetChatOptions}
+                                      className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-800"
+                                    >
+                                      Reset to Defaults
+                                    </button>
+                                    <div className="flex gap-2">
+                                      <button
+                                        onClick={() => { setExpandedCaseOptions(null); setEditingChatOptions(null); }}
+                                        className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
+                                      >
+                                        Cancel
+                                      </button>
+                                      <button
+                                        onClick={() => handleSaveChatOptions(section.section_id, sc.case_id)}
+                                        disabled={isSavingChatOptions}
+                                        className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                                      >
+                                        {isSavingChatOptions ? 'Saving...' : 'Save Options'}
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderPersonasTab = () => (
+    <div className="p-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Chatbot Personas</h2>
+          <p className="text-sm text-gray-500">Manage AI personality configurations for case chats</p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={fetchPersonas}
+            className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+          >
+            Refresh
+          </button>
+          <button
+            onClick={() => handleOpenPersonaModal()}
+            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            + New Persona
+          </button>
+        </div>
+      </div>
+
+      {isLoadingPersonas ? (
+        <div className="text-center py-12">
+          <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
+          <p className="mt-2 text-gray-500">Loading personas...</p>
+        </div>
+      ) : personasList.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          <p className="text-gray-500">No personas found. Run the database migration to add default personas, or create a new one.</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">ID</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Name</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Description</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {personasList.map((persona) => (
+                <tr key={persona.persona_id} className={!persona.enabled ? 'bg-gray-50 opacity-60' : 'hover:bg-gray-50'}>
+                  <td className="px-4 py-3 text-sm font-medium text-gray-900">{persona.persona_id}</td>
+                  <td className="px-4 py-3 text-sm text-gray-700 font-medium">{persona.persona_name}</td>
+                  <td className="px-4 py-3 text-sm text-gray-600 max-w-xs truncate" title={persona.description}>
+                    {persona.description || '-'}
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => handleTogglePersonaEnabled(persona)}
+                      className={`px-2 py-1 text-xs font-medium rounded-full ${
+                        persona.enabled
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-gray-100 text-gray-500'
+                      }`}
+                    >
+                      {persona.enabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleOpenPersonaModal(persona)}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDeletePersona(persona.persona_id)}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+
   // Incomplete students count for alerts
   const incompleteCount = useMemo(() => {
     return studentDetails.filter(s => s.status === 'in_progress').length;
@@ -1956,12 +2519,36 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
             >
               Cases
             </button>
+            <button
+              onClick={() => handleTabChange('assignments')}
+              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                activeTab === 'assignments'
+                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+              }`}
+            >
+              Assignments
+            </button>
+            <button
+              onClick={() => handleTabChange('personas')}
+              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                activeTab === 'personas'
+                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+              }`}
+            >
+              Personas
+            </button>
           </div>
         </div>
         {activeTab === 'models' ? (
           renderModelsTab()
         ) : activeTab === 'cases' ? (
           renderCasesTab()
+        ) : activeTab === 'assignments' ? (
+          renderAssignmentsTab()
+        ) : activeTab === 'personas' ? (
+          renderPersonasTab()
         ) : !selectedSection ? (
           /* ==================== SCREEN 1: SECTION LIST ==================== */
           <div className="p-6 max-w-7xl mx-auto">
@@ -3228,6 +3815,112 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                 className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
               >
                 {isSavingCase ? 'Saving...' : editingCase ? 'Save Changes' : 'Create Case'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Persona Modal */}
+      {showPersonaModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center p-4 border-b sticky top-0 bg-white">
+              <h3 className="text-lg font-bold text-gray-900">
+                {editingPersona ? 'Edit Persona' : 'Create New Persona'}
+              </h3>
+              <button
+                onClick={() => setShowPersonaModal(false)}
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Persona ID *</label>
+                  <input
+                    type="text"
+                    value={personaForm.persona_id}
+                    onChange={(e) => setPersonaForm({ ...personaForm, persona_id: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-') })}
+                    disabled={!!editingPersona}
+                    placeholder="e.g., friendly-mentor"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Lowercase, hyphens only</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Display Name *</label>
+                  <input
+                    type="text"
+                    value={personaForm.persona_name}
+                    onChange={(e) => setPersonaForm({ ...personaForm, persona_name: e.target.value })}
+                    placeholder="e.g., Friendly Mentor"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                <input
+                  type="text"
+                  value={personaForm.description}
+                  onChange={(e) => setPersonaForm({ ...personaForm, description: e.target.value })}
+                  placeholder="Brief description of this persona's behavior"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">AI Instructions *</label>
+                <textarea
+                  value={personaForm.instructions}
+                  onChange={(e) => setPersonaForm({ ...personaForm, instructions: e.target.value })}
+                  placeholder="Detailed instructions for the AI chatbot on how to behave with this persona..."
+                  rows={8}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-y"
+                />
+                <p className="text-xs text-gray-500 mt-1">These instructions guide the chatbot's personality and interaction style</p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Sort Order</label>
+                  <input
+                    type="number"
+                    value={personaForm.sort_order}
+                    onChange={(e) => setPersonaForm({ ...personaForm, sort_order: parseInt(e.target.value) || 0 })}
+                    min="0"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div className="flex items-center pt-6">
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={personaForm.enabled}
+                      onChange={(e) => setPersonaForm({ ...personaForm, enabled: e.target.checked })}
+                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    Enabled (available for selection)
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 p-4 border-t bg-gray-50 rounded-b-xl">
+              <button
+                onClick={() => setShowPersonaModal(false)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSavePersona}
+                disabled={isSavingPersona}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
+              >
+                {isSavingPersona ? 'Saving...' : editingPersona ? 'Save Changes' : 'Create Persona'}
               </button>
             </div>
           </div>

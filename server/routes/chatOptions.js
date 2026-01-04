@@ -1,19 +1,29 @@
 import express from 'express';
+import { pool } from '../db.js';
 
 const router = express.Router();
 
 // Default chat options - used when section_cases.chat_options is NULL
 const DEFAULT_CHAT_OPTIONS = {
+  // Hints configuration
   hints_allowed: 3,
   free_hints: 1,
+  // Feedback options
   ask_for_feedback: false,
   ask_save_transcript: false,
+  // Persona options
   allowed_personas: 'moderate,strict,liberal,leading,sycophantic',
-  default_persona: 'moderate'
+  default_persona: 'moderate',
+  // Display and flow options (new)
+  show_case: true,
+  do_evaluation: true,
+  // Chatbot personality customization (new)
+  chatbot_personality: ''
 };
 
-// Schema describing available options (for UI generation)
-const CHAT_OPTIONS_SCHEMA = [
+// Base schema describing available options (for UI generation)
+// Note: persona options are loaded dynamically from database
+const BASE_CHAT_OPTIONS_SCHEMA = [
   {
     key: 'hints_allowed',
     label: 'Hints Allowed',
@@ -21,7 +31,8 @@ const CHAT_OPTIONS_SCHEMA = [
     default: 3,
     min: 0,
     max: 10,
-    description: 'Maximum hints student can request (0 = disabled)'
+    description: 'Maximum hints student can request (0 = disabled)',
+    category: 'hints'
   },
   {
     key: 'free_hints',
@@ -30,55 +41,106 @@ const CHAT_OPTIONS_SCHEMA = [
     default: 1,
     min: 0,
     max: 5,
-    description: 'Hints without score penalty'
+    description: 'Hints without score penalty',
+    category: 'hints'
   },
   {
     key: 'ask_for_feedback',
     label: 'Ask for Feedback',
     type: 'boolean',
     default: false,
-    description: 'Ask student for feedback at end of chat'
+    description: 'Ask student for feedback at end of chat',
+    category: 'feedback'
   },
   {
     key: 'ask_save_transcript',
     label: 'Ask to Save Transcript',
     type: 'boolean',
     default: false,
-    description: 'Ask permission to save anonymized transcript'
+    description: 'Ask permission to save anonymized transcript',
+    category: 'feedback'
   },
   {
-    key: 'allowed_personas',
-    label: 'Allowed Personas',
-    type: 'multiselect',
-    default: 'moderate,strict,liberal,leading,sycophantic',
-    options: [
-      { value: 'moderate', label: 'Moderate' },
-      { value: 'strict', label: 'Strict' },
-      { value: 'liberal', label: 'Liberal' },
-      { value: 'leading', label: 'Leading' },
-      { value: 'sycophantic', label: 'Sycophantic' }
-    ],
-    description: 'Personas available to students'
+    key: 'show_case',
+    label: 'Show Case Content',
+    type: 'boolean',
+    default: true,
+    description: 'Display case contents in left panel during chat',
+    category: 'display'
   },
   {
-    key: 'default_persona',
-    label: 'Default Persona',
-    type: 'select',
-    default: 'moderate',
-    options: [
-      { value: 'moderate', label: 'Moderate' },
-      { value: 'strict', label: 'Strict' },
-      { value: 'liberal', label: 'Liberal' },
-      { value: 'leading', label: 'Leading' },
-      { value: 'sycophantic', label: 'Sycophantic' }
-    ],
-    description: 'Pre-selected persona for new chats'
+    key: 'do_evaluation',
+    label: 'Run Evaluation',
+    type: 'boolean',
+    default: true,
+    description: 'Run supervisor evaluation after chat completes',
+    category: 'flow'
+  },
+  {
+    key: 'chatbot_personality',
+    label: 'Chatbot Personality',
+    type: 'textarea',
+    default: '',
+    description: 'Additional AI instructions to customize chatbot behavior (appended to persona instructions)',
+    category: 'personality'
   }
 ];
 
-// GET /api/chat-options/schema - Returns schema for UI generation
-router.get('/schema', (req, res) => {
-  res.json({ data: CHAT_OPTIONS_SCHEMA, error: null });
+// Helper to build full schema with dynamic persona options
+async function buildSchemaWithPersonas() {
+  let personaOptions = [
+    { value: 'moderate', label: 'Moderate' },
+    { value: 'strict', label: 'Strict' },
+    { value: 'liberal', label: 'Liberal' },
+    { value: 'leading', label: 'Leading' },
+    { value: 'sycophantic', label: 'Sycophantic' }
+  ];
+
+  try {
+    const [rows] = await pool.execute(
+      'SELECT persona_id, persona_name FROM personas WHERE enabled = 1 ORDER BY sort_order ASC'
+    );
+    if (rows.length > 0) {
+      personaOptions = rows.map(p => ({ value: p.persona_id, label: p.persona_name }));
+    }
+  } catch (error) {
+    console.warn('Could not load personas from database, using defaults:', error.message);
+  }
+
+  const defaultAllowedPersonas = personaOptions.map(p => p.value).join(',');
+
+  return [
+    ...BASE_CHAT_OPTIONS_SCHEMA,
+    {
+      key: 'allowed_personas',
+      label: 'Allowed Personas',
+      type: 'multiselect',
+      default: defaultAllowedPersonas,
+      options: personaOptions,
+      description: 'Personas available to students',
+      category: 'personas'
+    },
+    {
+      key: 'default_persona',
+      label: 'Default Persona',
+      type: 'select',
+      default: personaOptions[0]?.value || 'moderate',
+      options: personaOptions,
+      description: 'Pre-selected persona for new chats',
+      category: 'personas'
+    }
+  ];
+}
+
+// GET /api/chat-options/schema - Returns schema for UI generation (with dynamic personas)
+router.get('/schema', async (req, res) => {
+  try {
+    const schema = await buildSchemaWithPersonas();
+    res.json({ data: schema, error: null });
+  } catch (error) {
+    console.error('Error building chat options schema:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
 });
 
 // GET /api/chat-options/defaults - Returns default options
