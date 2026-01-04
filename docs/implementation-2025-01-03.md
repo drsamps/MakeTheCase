@@ -222,9 +222,171 @@ Or execute the SQL directly in your MySQL client:
 
 ---
 
+### 8. Case Chats Table (Multi-Chat Support)
+
+**Migration file:** `server/migrations/add_case_chats_table.sql`
+
+The new `case_chats` table tracks the full lifecycle of each chat session, enabling multiple chats per student.
+
+**Schema:**
+```sql
+CREATE TABLE case_chats (
+  id CHAR(36) PRIMARY KEY,
+  student_id CHAR(36) NOT NULL,
+  case_id VARCHAR(30) NOT NULL,
+  section_id VARCHAR(20),
+  status VARCHAR(20) NOT NULL DEFAULT 'started',
+  persona VARCHAR(30),
+  hints_used INT DEFAULT 0,
+  chat_model VARCHAR(255),
+  start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  end_time TIMESTAMP NULL,
+  transcript TEXT,
+  evaluation_id CHAR(36)
+);
+```
+
+**Status Values:**
+- `started` - Chat session created
+- `in_progress` - At least one exchange has occurred
+- `abandoned` - No activity for extended period (set by background job)
+- `canceled` - Student explicitly canceled
+- `killed` - Admin terminated the chat
+- `completed` - Chat finished with evaluation
+
+---
+
+### 9. Case Chats API
+
+**File:** `server/routes/caseChats.js`
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/case-chats` | Create new chat session |
+| PATCH | `/api/case-chats/:id/activity` | Update last_activity (heartbeat) |
+| PATCH | `/api/case-chats/:id/status` | Update chat status |
+| PATCH | `/api/case-chats/:id/complete` | Complete chat and link to evaluation |
+| GET | `/api/case-chats` | List chats with filters (admin) |
+| GET | `/api/case-chats/student/:studentId` | Get student's chats |
+| GET | `/api/case-chats/check-repeats/:studentId/:caseId` | Check if can start another chat |
+| PATCH | `/api/case-chats/:id/kill` | Kill a chat (admin) |
+| DELETE | `/api/case-chats/:id` | Delete chat record (admin) |
+| POST | `/api/case-chats/mark-abandoned` | Mark old chats as abandoned |
+
+---
+
+### 10. Chats Admin Tab
+
+A new **Chats** tab has been added to the Admin Dashboard for monitoring and managing chat sessions.
+
+**Features:**
+- Filter by status, section, and search by student/case name
+- Table showing: Student, Case, Section, Status, Started, Duration, Actions
+- View transcript for chats with saved transcripts
+- Kill active (started/in_progress) chats
+- Navigate to linked evaluations
+
+---
+
+### 11. New Chat Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `chat_repeats` | int | `0` | Additional chats allowed (0 = one chat only) |
+| `save_dead_transcripts` | boolean | `false` | Save transcripts for abandoned/canceled/killed chats |
+
+---
+
+### 12. Frontend Chat Lifecycle Tracking
+
+**File:** `App.tsx`
+
+- Creates `case_chat` record when student starts a chat
+- Sends activity heartbeat every 30 seconds during chat
+- Passes `case_chat_id` when creating evaluation
+- Clears heartbeat on restart/logout
+
+---
+
+### 13. Background Job Script
+
+**File:** `server/scripts/mark-abandoned-chats.js`
+
+Marks chat sessions as 'abandoned' if inactive for too long.
+
+**Usage:**
+```bash
+# Run with default 60-minute timeout
+node server/scripts/mark-abandoned-chats.js
+
+# Custom timeout
+node server/scripts/mark-abandoned-chats.js --timeout=30
+
+# Dry run (preview without changes)
+node server/scripts/mark-abandoned-chats.js --dry-run
+```
+
+**Example cron entry (every 15 minutes):**
+```
+*/15 * * * * cd /path/to/MakeTheCase && node server/scripts/mark-abandoned-chats.js
+```
+
+---
+
+## Additional Files Changed
+
+### Backend
+- `server/routes/caseChats.js` - **NEW** - Chat session CRUD API
+- `server/routes/evaluations.js` - Added `case_chat_id` field
+- `server/routes/chatOptions.js` - Added `chat_repeats`, `save_dead_transcripts`
+- `server/index.js` - Registered caseChats route
+- `server/scripts/mark-abandoned-chats.js` - **NEW** - Background job
+
+### Frontend
+- `types.ts` - Added `ChatStatus` enum, `CaseChat` interface, updated `ChatOptions`
+- `App.tsx` - Added chat lifecycle tracking with heartbeat
+- `components/Dashboard.tsx` - Added Chats tab
+
+---
+
+## Database Migration Steps (Updated)
+
+To apply all new tables and modifications:
+
+```bash
+# Apply personas table (if not already done)
+mysql -u [username] -p ceochat < server/migrations/add_personas_table.sql
+
+# Apply case_chats table
+mysql -u [username] -p ceochat < server/migrations/add_case_chats_table.sql
+```
+
+---
+
+## Testing Checklist (Updated)
+
+- [ ] **Case Chats tab:**
+  - [ ] View list of chat sessions
+  - [ ] Filter by status, section, search
+  - [ ] Kill an active chat
+  - [ ] View transcript for completed chat
+- [ ] **Multi-chat support:**
+  - [ ] Start a new chat (verify case_chat record created)
+  - [ ] Complete chat and verify evaluation linked
+  - [ ] With chat_repeats=1, verify can start second chat
+  - [ ] With chat_repeats=0, verify blocked from second chat
+- [ ] **Heartbeat:**
+  - [ ] During chat, verify last_activity updates every 30s
+  - [ ] After 60min inactive, run script and verify marked abandoned
+
+---
+
 ## Notes
 
 - The CEOPersona enum in `types.ts` is maintained for backwards compatibility
 - Legacy hardcoded persona instructions still work when database personas unavailable
 - Chat options are merged with defaults when null or missing fields
 - Persona deletion is blocked if referenced by students or evaluations
+- The `case_chats` table provides complete audit trail for all chat sessions
+- Heartbeat interval is 30 seconds; abandonment timeout is 60 minutes by default

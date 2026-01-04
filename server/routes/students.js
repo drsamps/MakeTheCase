@@ -10,7 +10,7 @@ router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { section_id } = req.query;
     
-    let query = 'SELECT id, created_at, first_name, last_name, full_name, persona, section_id, finished_at FROM students';
+    let query = 'SELECT id, created_at, first_name, last_name, full_name, favorite_persona, section_id, finished_at FROM students';
     const params = [];
     
     if (section_id) {
@@ -32,7 +32,7 @@ router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
 router.get('/:id', verifyToken, requireRole(['admin', 'student']), async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      'SELECT id, created_at, first_name, last_name, full_name, persona, section_id, finished_at FROM students WHERE id = ?',
+      'SELECT id, created_at, first_name, last_name, full_name, favorite_persona, section_id, finished_at FROM students WHERE id = ?',
       [req.params.id]
     );
     
@@ -50,22 +50,22 @@ router.get('/:id', verifyToken, requireRole(['admin', 'student']), async (req, r
 // POST /api/students - Create new student
 router.post('/', verifyToken, requireRole(['admin', 'student']), async (req, res) => {
   try {
-    const { first_name, last_name, full_name, persona, section_id } = req.body;
-    
+    const { first_name, last_name, full_name, favorite_persona, section_id } = req.body;
+
     if (!first_name || !last_name || !full_name) {
       return res.status(400).json({ data: null, error: { message: 'First name, last name, and full name are required' } });
     }
-    
+
     const id = uuidv4();
-    
+
     await pool.execute(
-      'INSERT INTO students (id, first_name, last_name, full_name, persona, section_id) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, first_name, last_name, full_name, persona || null, section_id || null]
+      'INSERT INTO students (id, first_name, last_name, full_name, favorite_persona, section_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, first_name, last_name, full_name, favorite_persona || null, section_id || null]
     );
     
     // Return the created student
     const [rows] = await pool.execute(
-      'SELECT id, created_at, first_name, last_name, full_name, persona, section_id, finished_at FROM students WHERE id = ?',
+      'SELECT id, created_at, first_name, last_name, full_name, favorite_persona, section_id, finished_at FROM students WHERE id = ?',
       [id]
     );
     
@@ -83,7 +83,7 @@ router.patch('/:id', verifyToken, requireRole(['admin', 'student']), async (req,
     const updates = req.body;
     
     // Build dynamic update query
-    const allowedFields = ['first_name', 'last_name', 'full_name', 'persona', 'section_id', 'finished_at'];
+    const allowedFields = ['first_name', 'last_name', 'full_name', 'favorite_persona', 'section_id', 'finished_at'];
     const setClauses = [];
     const params = [];
     
@@ -107,7 +107,7 @@ router.patch('/:id', verifyToken, requireRole(['admin', 'student']), async (req,
     
     // Return updated student
     const [rows] = await pool.execute(
-      'SELECT id, created_at, first_name, last_name, full_name, persona, section_id, finished_at FROM students WHERE id = ?',
+      'SELECT id, created_at, first_name, last_name, full_name, favorite_persona, section_id, finished_at FROM students WHERE id = ?',
       [id]
     );
     

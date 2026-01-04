@@ -29,6 +29,15 @@ export enum CEOPersona {
   SYCOPHANTIC = 'sycophantic',
 }
 
+export enum ChatStatus {
+  STARTED = 'started',
+  IN_PROGRESS = 'in_progress',
+  ABANDONED = 'abandoned',
+  CANCELED = 'canceled',
+  KILLED = 'killed',
+  COMPLETED = 'completed',
+}
+
 export interface Persona {
   persona_id: string;
   persona_name: string;
@@ -38,6 +47,26 @@ export interface Persona {
   sort_order: number;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface CaseChat {
+  id: string;
+  student_id: string;
+  case_id: string;
+  section_id: string | null;
+  status: ChatStatus;
+  persona: string | null;
+  hints_used: number;
+  chat_model: string | null;
+  start_time: string;
+  last_activity: string;
+  end_time: string | null;
+  transcript: string | null;
+  evaluation_id: string | null;
+  // Joined fields
+  student_name?: string;
+  case_title?: string;
+  section_title?: string;
 }
 
 export interface ChatOptions {
@@ -50,6 +79,8 @@ export interface ChatOptions {
   show_case: boolean;
   do_evaluation: boolean;
   chatbot_personality: string;
+  chat_repeats: number;
+  save_dead_transcripts: boolean;
 }
 
 export interface EvaluationCriterion {

@@ -1,7 +1,7 @@
 
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Message, MessageRole, ConversationPhase, EvaluationResult, CEOPersona, Section } from './types';
+import { Message, MessageRole, ConversationPhase, EvaluationResult, CEOPersona, Section, CaseChat, ChatStatus } from './types';
 import { createChatSession, getEvaluation } from './services/llmService';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
@@ -95,6 +95,8 @@ const App: React.FC = () => {
   const [chatFontSize, setChatFontSize] = useState<string>('text-sm');
   const [caseFontSize, setCaseFontSize] = useState<string>('text-sm');
   const [hintsUsed, setHintsUsed] = useState<number>(0);
+  const [currentCaseChatId, setCurrentCaseChatId] = useState<string | null>(null);
+  const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [models, setModels] = useState<Model[]>([]);
@@ -406,6 +408,30 @@ const App: React.FC = () => {
     }
   }, [messages, isLoading, conversationPhase]);
 
+  // Heartbeat effect: update last_activity every 30 seconds during active chat
+  useEffect(() => {
+    if (currentCaseChatId && conversationPhase === ConversationPhase.CHATTING) {
+      // Start heartbeat
+      heartbeatIntervalRef.current = setInterval(async () => {
+        try {
+          await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/activity`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+          });
+        } catch (err) {
+          console.error('Heartbeat failed:', err);
+        }
+      }, 30000); // Every 30 seconds
+
+      return () => {
+        if (heartbeatIntervalRef.current) {
+          clearInterval(heartbeatIntervalRef.current);
+          heartbeatIntervalRef.current = null;
+        }
+      };
+    }
+  }, [currentCaseChatId, conversationPhase]);
+
   const startConversation = useCallback(async (name: string, persona: CEOPersona, modelId: string) => {
     setIsLoading(true);
     setError(null);
@@ -687,6 +713,7 @@ const App: React.FC = () => {
           .insert({
             student_id: studentDBId,
             case_id: selectedCaseId,
+            case_chat_id: currentCaseChatId,
             score: result.totalScore,
             summary: result.summary,
             criteria: result.criteria,
@@ -764,7 +791,7 @@ const App: React.FC = () => {
           first_name: trimmedFirstName,
           last_name: trimmedLastName,
           full_name: fullName,
-          persona: ceoPersona,
+          favorite_persona: ceoPersona,
           section_id: sectionToSave,
         })
         .eq('id', sessionUser.id)
@@ -778,8 +805,32 @@ const App: React.FC = () => {
         return;
       }
 
-      setStudentDBId((data as any).id);
+      const studentId = (data as any).id;
+      setStudentDBId(studentId);
       setStudentFirstName(trimmedFirstName);
+
+      // Create case_chat record to track this chat session
+      try {
+        const caseChatResponse = await fetch(`${getApiBaseUrl()}/case-chats`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            student_id: studentId,
+            case_id: selectedCaseId,
+            section_id: sectionToSave,
+            persona: ceoPersona,
+            chat_model: selectedChatModel,
+          }),
+        });
+        const caseChatResult = await caseChatResponse.json();
+        if (caseChatResult.data?.id) {
+          setCurrentCaseChatId(caseChatResult.data.id);
+        }
+      } catch (err) {
+        console.error('Failed to create case_chat record:', err);
+        // Continue anyway - chat tracking is optional
+      }
+
       await startConversation(trimmedFirstName, ceoPersona, selectedChatModel);
     } finally {
       setIsLoading(false);
@@ -792,6 +843,11 @@ const App: React.FC = () => {
       clearTimeout(retryTimeoutRef.current);
       retryTimeoutRef.current = null;
     }
+    // Clear heartbeat interval
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
     setStudentFirstName(null);
     setStudentDBId(null);
     setTempFirstName('');
@@ -803,6 +859,7 @@ const App: React.FC = () => {
     setConversationPhase(ConversationPhase.PRE_CHAT);
     setEvaluationResult(null);
     setCeoPersona(CEOPersona.MODERATE);
+    setCurrentCaseChatId(null);
     // Keep section selected if student has a saved section
     if (!studentSavedSectionId) {
       setSelectedSection('');

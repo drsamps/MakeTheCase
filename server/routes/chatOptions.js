@@ -14,11 +14,14 @@ const DEFAULT_CHAT_OPTIONS = {
   // Persona options
   allowed_personas: 'moderate,strict,liberal,leading,sycophantic',
   default_persona: 'moderate',
-  // Display and flow options (new)
+  // Display and flow options
   show_case: true,
   do_evaluation: true,
-  // Chatbot personality customization (new)
-  chatbot_personality: ''
+  // Chatbot personality customization
+  chatbot_personality: '',
+  // Multi-chat options
+  chat_repeats: 0,           // 0 = one chat only, 1+ = can repeat N times
+  save_dead_transcripts: false  // Save transcripts for abandoned/canceled/killed chats
 };
 
 // Base schema describing available options (for UI generation)
@@ -83,6 +86,24 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     default: '',
     description: 'Additional AI instructions to customize chatbot behavior (appended to persona instructions)',
     category: 'personality'
+  },
+  {
+    key: 'chat_repeats',
+    label: 'Allowed Repeats',
+    type: 'number',
+    default: 0,
+    min: 0,
+    max: 10,
+    description: 'Number of additional chats allowed (0 = one chat only, 1 = can repeat once, etc.)',
+    category: 'flow'
+  },
+  {
+    key: 'save_dead_transcripts',
+    label: 'Save Dead Transcripts',
+    type: 'boolean',
+    default: false,
+    description: 'Save transcripts for abandoned, canceled, or killed chats',
+    category: 'flow'
   }
 ];
 

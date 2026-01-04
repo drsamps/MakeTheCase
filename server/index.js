@@ -22,6 +22,7 @@ import casesRoutes from './routes/cases.js';
 import sectionCasesRoutes from './routes/sectionCases.js';
 import chatOptionsRoutes from './routes/chatOptions.js';
 import personasRoutes from './routes/personas.js';
+import caseChatsRoutes from './routes/caseChats.js';
 
 // Load environment variables
 // Use absolute path to ensure .env.local is found regardless of working directory
@@ -53,6 +54,7 @@ app.use('/api/cases', casesRoutes);
 app.use('/api/sections', sectionCasesRoutes); // Section-case assignments (nested under sections)
 app.use('/api/chat-options', chatOptionsRoutes); // Chat options schema and defaults
 app.use('/api/personas', personasRoutes); // Persona management
+app.use('/api/case-chats', caseChatsRoutes); // Chat session tracking
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

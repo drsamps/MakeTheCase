@@ -109,7 +109,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [modelsList, setModelsList] = useState<Model[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [testingModelId, setTestingModelId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'sections' | 'models' | 'cases' | 'assignments' | 'personas'>('sections');
+  const [activeTab, setActiveTab] = useState<'sections' | 'models' | 'cases' | 'assignments' | 'personas' | 'chats'>('sections');
   const [showModelModal, setShowModelModal] = useState(false);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
   const [modelForm, setModelForm] = useState<{
@@ -190,6 +190,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [managingSectionCases, setManagingSectionCases] = useState<SectionStat | null>(null);
   const [sectionCasesList, setSectionCasesList] = useState<any[]>([]);
   const [isLoadingSectionCases, setIsLoadingSectionCases] = useState(false);
+
+  // Case Chats management (Chats tab)
+  const [caseChatsList, setCaseChatsList] = useState<any[]>([]);
+  const [isLoadingCaseChats, setIsLoadingCaseChats] = useState(false);
+  const [caseChatsFilter, setCaseChatsFilter] = useState<{ status: string; section_id: string; search: string }>({
+    status: 'all',
+    section_id: 'all',
+    search: ''
+  });
+  const [showChatTranscriptModal, setShowChatTranscriptModal] = useState(false);
+  const [selectedCaseChat, setSelectedCaseChat] = useState<any | null>(null);
   
   // Chat options editing (Phase 2)
   const [expandedCaseOptions, setExpandedCaseOptions] = useState<string | null>(null);
@@ -448,7 +459,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       const detailsWithoutScores = studentsData.map(student => ({
         id: student.id,
         full_name: student.full_name,
-        persona: student.persona,
+        persona: student.favorite_persona,
         completion_time: student.finished_at,
         score: null,
         hints: null,
@@ -494,7 +505,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
             evaluationRows.push({
               id: student.id,
               full_name: student.full_name,
-              persona: evaluation.persona || student.persona,
+              persona: evaluation.persona || student.favorite_persona,
               completion_time: evaluation.created_at,
               score: evaluation.score ?? null,
               hints: evaluation.hints ?? null,
@@ -525,7 +536,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     const notStartedRows: StudentDetail[] = studentsWithoutEvaluations.map(student => ({
       id: student.id,
       full_name: student.full_name,
-      persona: student.persona,
+      persona: student.favorite_persona,
       completion_time: student.finished_at,
       score: null,
       hints: null,
@@ -599,9 +610,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setSectionCasesForFilter([]);
   };
 
-  const handleTabChange = (tab: 'sections' | 'models' | 'cases' | 'assignments' | 'personas') => {
+  const handleTabChange = (tab: 'sections' | 'models' | 'cases' | 'assignments' | 'personas' | 'chats') => {
     setActiveTab(tab);
-    if (tab === 'models' || tab === 'cases' || tab === 'assignments' || tab === 'personas') {
+    if (tab === 'models' || tab === 'cases' || tab === 'assignments' || tab === 'personas' || tab === 'chats') {
       setSelectedSection(null);
     }
     if (tab === 'cases' && casesList.length === 0) {
@@ -616,7 +627,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
         fetchCases();
       }
     }
-  };
+    };
 
   // Personas management functions
   const fetchPersonas = async () => {
@@ -1239,18 +1250,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       }
 
       for (const st of students) {
-        const cols = ['id','created_at','first_name','last_name','full_name','persona','section_id','finished_at'];
+        const cols = ['id','created_at','first_name','last_name','full_name','favorite_persona','section_id','finished_at'];
         const vals = [
           sqlValue(st.id),
           sqlValue(st.created_at),
           sqlValue(st.first_name),
           sqlValue(st.last_name),
           sqlValue(st.full_name),
-          sqlValue(st.persona),
+          sqlValue(st.favorite_persona),
           sqlValue(st.section_id),
           sqlValue(st.finished_at),
         ];
-        const updates = ['created_at=VALUES(created_at)','first_name=VALUES(first_name)','last_name=VALUES(last_name)','full_name=VALUES(full_name)','persona=VALUES(persona)','section_id=VALUES(section_id)','finished_at=VALUES(finished_at)'];
+        const updates = ['created_at=VALUES(created_at)','first_name=VALUES(first_name)','last_name=VALUES(last_name)','full_name=VALUES(full_name)','favorite_persona=VALUES(favorite_persona)','section_id=VALUES(section_id)','finished_at=VALUES(finished_at)'];
         lines.push(`INSERT INTO students (${cols.join(',')}) VALUES (${vals.join(',')}) ON DUPLICATE KEY UPDATE ${updates.join(',')};`);
       }
 
@@ -2423,6 +2434,272 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     </div>
   );
 
+// Fetch case chats for Chats tab
+  const fetchCaseChats = useCallback(async () => {
+    setIsLoadingCaseChats(true);
+    try {
+      // First, mark old chats as abandoned (chats inactive for > 24 hours)
+      // This replaces the need for a cron job
+      try {
+        await fetch(`${getApiBaseUrl()}/case-chats/mark-abandoned`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('adminToken')}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ timeout_minutes: 1440 }) // 24 hours = 1440 minutes
+        });
+      } catch (abandonErr) {
+        console.warn('Could not mark abandoned chats:', abandonErr);
+        // Continue anyway - this is a cleanup step, not critical
+      }
+
+      const params = new URLSearchParams();
+      if (caseChatsFilter.status !== 'all') params.append('status', caseChatsFilter.status);
+      if (caseChatsFilter.section_id !== 'all') params.append('section_id', caseChatsFilter.section_id);
+      params.append('limit', '200');
+
+      const response = await fetch(`${getApiBaseUrl()}/case-chats?${params.toString()}`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('adminToken')}`
+        }
+      });
+      const result = await response.json();
+      if (result.data) {
+        let chats = result.data;
+        // Client-side search filter
+        if (caseChatsFilter.search) {
+          const searchLower = caseChatsFilter.search.toLowerCase();
+          chats = chats.filter((c: any) =>
+            c.student_name?.toLowerCase().includes(searchLower) ||
+            c.case_title?.toLowerCase().includes(searchLower)
+          );
+        }
+        setCaseChatsList(chats);
+      }
+    } catch (err) {
+      console.error('Error fetching case chats:', err);
+      setCaseChatsList([]);
+    } finally {
+      setIsLoadingCaseChats(false);
+    }
+  }, [caseChatsFilter]);
+
+  // Fetch case chats when filters change or chats tab is active
+  useEffect(() => {
+    if (activeTab === 'chats') {
+      fetchCaseChats();
+    }
+  }, [activeTab, caseChatsFilter.status, caseChatsFilter.section_id, fetchCaseChats]);
+
+  // Kill a chat session
+  const handleKillChat = async (chatId: string) => {
+    if (!confirm('Are you sure you want to kill this chat session? The student will not be able to continue.')) return;
+
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/case-chats/${chatId}/kill`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('adminToken')}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (response.ok) {
+        fetchCaseChats();
+      } else {
+        const result = await response.json();
+        alert(result.error?.message || 'Failed to kill chat');
+      }
+    } catch (err) {
+      console.error('Error killing chat:', err);
+      alert('Failed to kill chat');
+    }
+  };
+
+  // Format duration between two timestamps
+  const formatDuration = (startTime: string, endTime: string | null) => {
+    const start = new Date(startTime);
+    const end = endTime ? new Date(endTime) : new Date();
+    const diffMs = end.getTime() - start.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 60) return `${diffMins}m`;
+    const hours = Math.floor(diffMins / 60);
+    const mins = diffMins % 60;
+    return `${hours}h ${mins}m`;
+  };
+
+  const renderChatsTab = () => (
+    <div className="p-6 max-w-7xl mx-auto">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Chat Sessions</h2>
+          <p className="text-sm text-gray-500">Monitor and manage student chat sessions</p>
+        </div>
+        <button
+          onClick={fetchCaseChats}
+          disabled={isLoadingCaseChats}
+          className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+        >
+          {isLoadingCaseChats ? 'Loading...' : 'Refresh'}
+        </button>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3 mb-4">
+        <select
+          value={caseChatsFilter.status}
+          onChange={(e) => setCaseChatsFilter(prev => ({ ...prev, status: e.target.value }))}
+          className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-blue-500 focus:border-blue-500"
+        >
+          <option value="all">All Statuses</option>
+          <option value="started">Started</option>
+          <option value="in_progress">In Progress</option>
+          <option value="completed">Completed</option>
+          <option value="abandoned">Abandoned</option>
+          <option value="canceled">Canceled</option>
+          <option value="killed">Killed</option>
+        </select>
+        <select
+          value={caseChatsFilter.section_id}
+          onChange={(e) => setCaseChatsFilter(prev => ({ ...prev, section_id: e.target.value }))}
+          className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-blue-500 focus:border-blue-500"
+        >
+          <option value="all">All Sections</option>
+          {sectionStats.filter(s => s.section_id !== 'unassigned').map(s => (
+            <option key={s.section_id} value={s.section_id}>{s.section_title}</option>
+          ))}
+        </select>
+        <input
+          type="text"
+          placeholder="Search by student or case..."
+          value={caseChatsFilter.search}
+          onChange={(e) => setCaseChatsFilter(prev => ({ ...prev, search: e.target.value }))}
+          className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-blue-500 focus:border-blue-500 w-64"
+        />
+      </div>
+
+      {/* Chats Table */}
+      {isLoadingCaseChats ? (
+        <div className="text-center py-12">
+          <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
+          <p className="mt-2 text-gray-500">Loading chat sessions...</p>
+        </div>
+      ) : caseChatsList.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          <p className="text-gray-500">No chat sessions found matching your filters.</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Student</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Case</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Section</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Started</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Duration</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {caseChatsList.map((chat) => (
+                <tr key={chat.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 text-sm font-medium text-gray-900">{chat.student_name || 'Unknown'}</td>
+                  <td className="px-4 py-3 text-sm text-gray-700">{chat.case_title || chat.case_id}</td>
+                  <td className="px-4 py-3 text-sm text-gray-600">{chat.section_title || chat.section_id || '-'}</td>
+                  <td className="px-4 py-3">
+                    <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                      chat.status === 'completed' ? 'bg-green-100 text-green-700' :
+                      chat.status === 'in_progress' ? 'bg-blue-100 text-blue-700' :
+                      chat.status === 'started' ? 'bg-yellow-100 text-yellow-700' :
+                      chat.status === 'abandoned' ? 'bg-orange-100 text-orange-700' :
+                      chat.status === 'canceled' ? 'bg-gray-100 text-gray-600' :
+                      chat.status === 'killed' ? 'bg-red-100 text-red-700' :
+                      'bg-gray-100 text-gray-600'
+                    }`}>
+                      {chat.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">
+                    {new Date(chat.start_time).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">
+                    {formatDuration(chat.start_time, chat.end_time)}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex gap-2">
+                      {chat.transcript && (
+                        <button
+                          onClick={() => {
+                            setSelectedCaseChat(chat);
+                            setShowChatTranscriptModal(true);
+                          }}
+                          className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                        >
+                          Transcript
+                        </button>
+                      )}
+                      {chat.evaluation_id && (
+                        <button
+                          onClick={async () => {
+                            // Navigate to the evaluation - could implement a modal here
+                            window.open(`#evaluation/${chat.evaluation_id}`, '_blank');
+                          }}
+                          className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-blue-600 border-blue-200 hover:bg-blue-50"
+                        >
+                          Evaluation
+                        </button>
+                      )}
+                      {['started', 'in_progress'].includes(chat.status) && (
+                        <button
+                          onClick={() => handleKillChat(chat.id)}
+                          className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
+                        >
+                          Kill
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Transcript Modal */}
+      {showChatTranscriptModal && selectedCaseChat && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Chat Transcript</h3>
+                <p className="text-sm text-gray-500">
+                  {selectedCaseChat.student_name} - {selectedCaseChat.case_title}
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setShowChatTranscriptModal(false);
+                  setSelectedCaseChat(null);
+                }}
+                className="text-gray-400 hover:text-gray-600 text-2xl"
+              >
+                &times;
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-6">
+              <pre className="whitespace-pre-wrap text-sm text-gray-700 font-mono bg-gray-50 p-4 rounded-lg">
+                {selectedCaseChat.transcript || 'No transcript available'}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   // Incomplete students count for alerts
   const incompleteCount = useMemo(() => {
     return studentDetails.filter(s => s.status === 'in_progress').length;
@@ -2539,6 +2816,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
             >
               Personas
             </button>
+            <button
+              onClick={() => handleTabChange('chats')}
+              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                activeTab === 'chats'
+                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+              }`}
+            >
+              Chats
+            </button>
           </div>
         </div>
         {activeTab === 'models' ? (
@@ -2549,6 +2836,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
           renderAssignmentsTab()
         ) : activeTab === 'personas' ? (
           renderPersonasTab()
+        ) : activeTab === 'chats' ? (
+          renderChatsTab()
         ) : !selectedSection ? (
           /* ==================== SCREEN 1: SECTION LIST ==================== */
           <div className="p-6 max-w-7xl mx-auto">

@@ -6,7 +6,7 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 const router = express.Router();
 
 // Field list for SELECT queries (keeps things DRY)
-const EVAL_FIELDS = `id, created_at, student_id, case_id, score, summary, criteria, persona, 
+const EVAL_FIELDS = `id, created_at, student_id, case_id, case_chat_id, score, summary, criteria, persona,
                      hints, helpful, liked, improve, chat_model, super_model, transcript, allow_rechat`;
 
 // GET /api/evaluations - Get all evaluations (optionally filter by student_id and/or case_id)
@@ -156,38 +156,46 @@ router.get('/:id', async (req, res) => {
 // POST /api/evaluations - Create new evaluation
 router.post('/', async (req, res) => {
   try {
-    const { 
-      student_id, case_id, score, summary, criteria, persona, 
-      hints, helpful, liked, improve, chat_model, super_model, transcript 
+    const {
+      student_id, case_id, case_chat_id, score, summary, criteria, persona,
+      hints, helpful, liked, improve, chat_model, super_model, transcript
     } = req.body;
-    
+
     if (!student_id || score === undefined) {
       return res.status(400).json({ data: null, error: { message: 'Student ID and score are required' } });
     }
-    
+
     const id = uuidv4();
     const criteriaJson = criteria ? JSON.stringify(criteria) : null;
-    
+
     await pool.execute(
-      `INSERT INTO evaluations (id, student_id, case_id, score, summary, criteria, persona, hints, helpful, liked, improve, chat_model, super_model, transcript, allow_rechat) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)`,
-      [id, student_id, case_id || null, score, summary || null, criteriaJson, persona || null, 
-       hints || 0, helpful || null, liked || null, improve || null, 
+      `INSERT INTO evaluations (id, student_id, case_id, case_chat_id, score, summary, criteria, persona, hints, helpful, liked, improve, chat_model, super_model, transcript, allow_rechat)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)`,
+      [id, student_id, case_id || null, case_chat_id || null, score, summary || null, criteriaJson, persona || null,
+       hints || 0, helpful || null, liked || null, improve || null,
        chat_model || null, super_model || null, transcript || null]
     );
-    
+
+    // If case_chat_id provided, update the case_chat status to completed and link to this evaluation
+    if (case_chat_id) {
+      await pool.execute(
+        `UPDATE case_chats SET status = 'completed', end_time = CURRENT_TIMESTAMP, evaluation_id = ? WHERE id = ?`,
+        [id, case_chat_id]
+      );
+    }
+
     // Return the created evaluation
     const [rows] = await pool.execute(
       `SELECT ${EVAL_FIELDS} FROM evaluations WHERE id = ?`,
       [id]
     );
-    
+
     const row = rows[0];
     const data = {
       ...row,
       criteria: row.criteria ? (typeof row.criteria === 'string' ? JSON.parse(row.criteria) : row.criteria) : null
     };
-    
+
     res.status(201).json({ data, error: null });
   } catch (error) {
     console.error('Error creating evaluation:', error);

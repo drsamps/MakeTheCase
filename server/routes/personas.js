@@ -184,7 +184,7 @@ router.delete('/:personaId', verifyToken, requireRole(['admin']), async (req, re
 
     // Check if persona is in use by any students or evaluations
     const [studentsUsing] = await pool.execute(
-      'SELECT COUNT(*) as count FROM students WHERE persona = ?',
+      'SELECT COUNT(*) as count FROM students WHERE favorite_persona = ?',
       [personaId]
     );
 

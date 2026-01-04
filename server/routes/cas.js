@@ -144,13 +144,13 @@ router.get('/verify', async (req, res) => {
     // Student path: ensure record exists (id anchored to CAS netid)
     const studentId = `cas:${netid}`;
     const [students] = await pool.execute(
-      'SELECT id, full_name, section_id, persona FROM students WHERE id = ?',
+      'SELECT id, full_name, section_id, favorite_persona FROM students WHERE id = ?',
       [studentId]
     );
 
     if (students.length === 0) {
       await pool.execute(
-        'INSERT INTO students (id, first_name, last_name, full_name, persona, section_id) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO students (id, first_name, last_name, full_name, favorite_persona, section_id) VALUES (?, ?, ?, ?, ?, ?)',
         [studentId, firstName, lastName, fullName || netid, null, null]
       );
     }
