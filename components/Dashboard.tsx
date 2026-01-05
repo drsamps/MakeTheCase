@@ -2,8 +2,11 @@
 
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { api, getApiBaseUrl } from '../services/apiClient'; // Dashboard with tiles/list view toggle 
+import { api, getApiBaseUrl } from '../services/apiClient'; // Dashboard with tiles/list view toggle
 import { detectProvider } from '../services/llmService';
+import { PromptManager } from './PromptManager';
+import { SettingsManager } from './SettingsManager';
+import { CasePrepManager } from './CasePrepManager';
 
 interface DashboardProps {
   onLogout: () => void;
@@ -109,7 +112,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [modelsList, setModelsList] = useState<Model[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [testingModelId, setTestingModelId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'sections' | 'models' | 'cases' | 'assignments' | 'personas' | 'chats'>('sections');
+  const [activeTab, setActiveTab] = useState<'sections' | 'models' | 'cases' | 'assignments' | 'personas' | 'chats' | 'caseprep' | 'prompts' | 'settings'>('sections');
   const [showModelModal, setShowModelModal] = useState(false);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
   const [modelForm, setModelForm] = useState<{
@@ -2826,6 +2829,36 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
             >
               Chats
             </button>
+            <button
+              onClick={() => handleTabChange('caseprep')}
+              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                activeTab === 'caseprep'
+                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+              }`}
+            >
+              Case Prep
+            </button>
+            <button
+              onClick={() => handleTabChange('prompts')}
+              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                activeTab === 'prompts'
+                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+              }`}
+            >
+              Prompts
+            </button>
+            <button
+              onClick={() => handleTabChange('settings')}
+              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                activeTab === 'settings'
+                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+              }`}
+            >
+              Settings
+            </button>
           </div>
         </div>
         {activeTab === 'models' ? (
@@ -2838,6 +2871,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
           renderPersonasTab()
         ) : activeTab === 'chats' ? (
           renderChatsTab()
+        ) : activeTab === 'caseprep' ? (
+          <CasePrepManager />
+        ) : activeTab === 'prompts' ? (
+          <PromptManager />
+        ) : activeTab === 'settings' ? (
+          <SettingsManager />
         ) : !selectedSection ? (
           /* ==================== SCREEN 1: SECTION LIST ==================== */
           <div className="p-6 max-w-7xl mx-auto">

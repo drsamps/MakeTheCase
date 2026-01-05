@@ -1,0 +1,456 @@
+{
+  "info": {
+    "name": "MakeTheCase - Case Prep & Prompts API",
+    "description": "API collection for testing Case Prep, Prompts, and Settings endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3001",
+      "type": "string"
+    },
+    {
+      "key": "authToken",
+      "value": "YOUR_JWT_TOKEN_HERE",
+      "type": "string"
+    },
+    {
+      "key": "caseId",
+      "value": "malawis-pizza",
+      "type": "string"
+    },
+    {
+      "key": "fileId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "promptId",
+      "value": "1",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Case Prep",
+      "item": [
+        {
+          "name": "Upload File",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "/path/to/your/file.pdf"
+                },
+                {
+                  "key": "file_type",
+                  "value": "case",
+                  "type": "text",
+                  "description": "Either 'case' or 'notes'"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/case-prep/{{caseId}}/upload",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "case-prep", "{{caseId}}", "upload"]
+            },
+            "description": "Upload a PDF, DOCX, or TXT file for processing. Returns file record with processing_status='pending'"
+          },
+          "response": []
+        },
+        {
+          "name": "Process File with AI",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"file_id\": 1,\n  \"model_id\": \"claude-opus-4\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/case-prep/{{caseId}}/process",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "case-prep", "{{caseId}}", "process"]
+            },
+            "description": "Process uploaded file with AI to generate markdown outline. Updates processing_status to 'completed' or 'failed'"
+          },
+          "response": []
+        },
+        {
+          "name": "List Case Files",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/case-prep/{{caseId}}/files",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "case-prep", "{{caseId}}", "files"]
+            },
+            "description": "Get all uploaded files for a case with processing status"
+          },
+          "response": []
+        },
+        {
+          "name": "Update Outline",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outline_content\": \"## Updated Outline\\n\\n- Key point 1\\n- Key point 2\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/case-prep/files/{{fileId}}/outline",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "case-prep", "files", "{{fileId}}", "outline"]
+            },
+            "description": "Update the outline content after manual editing"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Original File",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/case-prep/files/{{fileId}}/original",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "case-prep", "files", "{{fileId}}", "original"]
+            },
+            "description": "Download the original uploaded file (returns file stream)"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Converted Content",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/case-prep/files/{{fileId}}/content",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "case-prep", "files", "{{fileId}}", "content"]
+            },
+            "description": "Get the converted text content (not the AI-generated outline, just the conversion)"
+          },
+          "response": []
+        }
+      ],
+      "description": "Endpoints for Case Prep file upload, processing, and outline editing"
+    },
+    {
+      "name": "Prompts",
+      "item": [
+        {
+          "name": "Get All Prompts",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/prompts",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "prompts"]
+            },
+            "description": "Get all prompts with active status indicator"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Prompts by Use",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/prompts?use=case_outline_generation",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "prompts"],
+              "query": [
+                {
+                  "key": "use",
+                  "value": "case_outline_generation",
+                  "description": "Filter by prompt use case"
+                }
+              ]
+            },
+            "description": "Get prompts filtered by use case"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Prompt Uses",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/prompts/uses",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "prompts", "uses"]
+            },
+            "description": "Get all unique prompt use cases"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Prompt by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/prompts/{{promptId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "prompts", "{{promptId}}"]
+            },
+            "description": "Get single prompt by ID"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Prompt",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"use\": \"case_outline_generation\",\n  \"version\": \"experimental\",\n  \"description\": \"Experimental prompt for testing\",\n  \"prompt_template\": \"You are an expert. Analyze this case:\\n{case_content}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/prompts",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "prompts"]
+            },
+            "description": "Create a new prompt version. Use and version combination must be unique."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Prompt",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"Updated description\",\n  \"prompt_template\": \"Updated template with {case_content}\",\n  \"enabled\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/prompts/{{promptId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "prompts", "{{promptId}}"]
+            },
+            "description": "Update prompt description, template, or enabled status. Cannot change use or version."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Prompt",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/prompts/{{promptId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "prompts", "{{promptId}}"]
+            },
+            "description": "Soft delete (disable) a prompt. Cannot delete if it's the currently active version."
+          },
+          "response": []
+        }
+      ],
+      "description": "Endpoints for managing AI prompt templates with versioning"
+    },
+    {
+      "name": "Settings",
+      "item": [
+        {
+          "name": "Get All Settings",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/settings",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "settings"]
+            },
+            "description": "Get all application settings as key-value pairs"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Setting by Key",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/settings/active_prompt_case_outline_generation",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "settings", "active_prompt_case_outline_generation"]
+            },
+            "description": "Get a single setting value by key"
+          },
+          "response": []
+        },
+        {
+          "name": "Update Setting",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"setting_value\": \"aggressive\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/settings/active_prompt_case_outline_generation",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "settings", "active_prompt_case_outline_generation"]
+            },
+            "description": "Update a setting value. For active_prompt_* settings, validates that the prompt version exists."
+          },
+          "response": []
+        }
+      ],
+      "description": "Endpoints for managing application configuration settings"
+    },
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "health"]
+        },
+        "description": "Check if the API server is running"
+      },
+      "response": []
+    }
+  ]
+}

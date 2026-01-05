@@ -213,3 +213,110 @@ export async function evaluateWithLLM({ modelId, prompt, config = {} }) {
   return typeof candidate === 'string' ? candidate : String(candidate);
 }
 
+/**
+ * Generate a detailed outline using an LLM
+ * Similar to chatWithLLM but optimized for outline generation with higher token limits
+ * @param {Object} params - {modelId, prompt, config}
+ * @returns {Promise<{text: string, meta: Object}>} - Generated outline and metadata
+ */
+export async function generateOutlineWithLLM({ modelId, prompt, config = {} }) {
+  const provider = detectProvider(modelId);
+  const temperature = config.temperature ?? null;
+  const reasoningEffort = config.reasoning_effort ?? null;
+  const reasoningModel = isOpenAIReasoning(modelId);
+
+  if (provider === 'openai') {
+    if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on the server');
+    const payload = {
+      model: modelId,
+      messages: [
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: 4096, // Higher token limit for outlines
+    };
+    if (!reasoningModel && temperature !== null && temperature !== undefined) {
+      payload.temperature = Number(temperature);
+    }
+    if (reasoningModel && reasoningEffort) {
+      payload.reasoning_effort = reasoningEffort;
+    }
+    const appliedParams = {
+      provider,
+      temperature: payload.temperature ?? null,
+      reasoning_effort: payload.reasoning_effort ?? null,
+    };
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`OpenAI error: ${text}`);
+    }
+    const data = await response.json();
+    const text = data?.choices?.[0]?.message?.content?.trim() || '';
+    return { text, meta: appliedParams };
+  }
+
+  if (provider === 'anthropic') {
+    if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set on the server');
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: modelId,
+        max_tokens: 4096, // Higher token limit for outlines
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: prompt }] },
+        ],
+        ...(temperature !== null && temperature !== undefined ? { temperature: Number(temperature) } : {}),
+      }),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Anthropic error: ${text}`);
+    }
+    const data = await response.json();
+    const text = data?.content?.[0]?.text?.trim() || '';
+    return { text, meta: { provider, temperature: temperature ?? null, reasoning_effort: null } };
+  }
+
+  // Google Gemini
+  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set on the server');
+  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  const generation = await ai.models.generateContent({
+    model: modelId,
+    contents: prompt,
+    config: {
+      maxOutputTokens: 4096, // Higher token limit for outlines
+      ...(temperature !== null && temperature !== undefined ? { temperature: Number(temperature) } : {}),
+      topP: 0.9,
+    },
+  });
+
+  const candidate =
+    typeof generation?.response?.text === 'function'
+      ? generation.response.text()
+      : typeof generation?.response?.text === 'string'
+        ? generation.response.text
+        : generation?.response?.candidates?.[0]?.content?.parts?.[0]?.text
+          || (typeof generation?.text === 'function' ? generation.text() : generation?.text)
+          || '';
+
+  if (!candidate) {
+    throw new Error('Gemini returned an empty outline');
+  }
+
+  const text = typeof candidate === 'string' ? candidate : String(candidate);
+  return { text, meta: { provider, temperature: temperature ?? null, reasoning_effort: null } };
+}
+
