@@ -1063,46 +1063,85 @@ const App: React.FC = () => {
                       const status = caseCompletionStatus[caseItem.case_id];
                       const isCompleted = status?.completed && !status?.allowRechat;
                       const canRechat = status?.completed && status?.allowRechat;
-                      
+
+                      // Check scheduling availability
+                      const checkAvailability = () => {
+                        const now = new Date();
+                        if (caseItem.manual_status === 'manually_opened') {
+                          return { available: true, message: null };
+                        }
+                        if (caseItem.manual_status === 'manually_closed') {
+                          return { available: false, message: 'This case has been manually closed by the instructor.' };
+                        }
+                        // Auto mode
+                        if (caseItem.open_date && new Date(caseItem.open_date) > now) {
+                          return {
+                            available: false,
+                            message: `Opens ${new Date(caseItem.open_date).toLocaleString()}`
+                          };
+                        }
+                        if (caseItem.close_date && new Date(caseItem.close_date) < now) {
+                          return {
+                            available: false,
+                            message: `Closed ${new Date(caseItem.close_date).toLocaleString()}`
+                          };
+                        }
+                        return { available: true, message: null };
+                      };
+
+                      const availability = checkAvailability();
+                      const isDisabled = isCompleted || !availability.available;
+
                       return (
-                        <label 
-                          key={caseItem.case_id}
-                          className={`flex items-center p-3 rounded-lg border transition-colors ${
-                            isCompleted 
-                              ? 'bg-green-50 border-green-200 cursor-not-allowed opacity-75'
-                              : selectedCaseId === caseItem.case_id 
-                                ? 'bg-blue-50 border-blue-300 cursor-pointer' 
-                                : 'bg-white border-gray-200 hover:bg-gray-50 cursor-pointer'
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="selectedCase"
-                            value={caseItem.case_id}
-                            checked={selectedCaseId === caseItem.case_id}
-                            onChange={(e) => !isCompleted && setSelectedCaseId(e.target.value)}
-                            disabled={isCompleted}
-                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 disabled:opacity-50"
-                          />
-                          <div className="ml-3 flex-1">
-                            <div className="flex items-center justify-between">
-                              <span className={`block font-medium ${isCompleted ? 'text-green-800' : 'text-gray-900'}`}>
-                                {caseItem.case_title}
-                              </span>
-                              {isCompleted && (
-                                <span className="text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded">
-                                  ✓ Completed
+                        <div key={caseItem.case_id}>
+                          <label
+                            className={`flex items-center p-3 rounded-lg border transition-colors ${
+                              isDisabled
+                                ? 'bg-gray-50 border-gray-200 cursor-not-allowed opacity-75'
+                                : selectedCaseId === caseItem.case_id
+                                  ? 'bg-blue-50 border-blue-300 cursor-pointer'
+                                  : 'bg-white border-gray-200 hover:bg-gray-50 cursor-pointer'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="selectedCase"
+                              value={caseItem.case_id}
+                              checked={selectedCaseId === caseItem.case_id}
+                              onChange={(e) => !isDisabled && setSelectedCaseId(e.target.value)}
+                              disabled={isDisabled}
+                              className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 disabled:opacity-50"
+                            />
+                            <div className="ml-3 flex-1">
+                              <div className="flex items-center justify-between">
+                                <span className={`block font-medium ${isCompleted ? 'text-green-800' : 'text-gray-900'}`}>
+                                  {caseItem.case_title}
                                 </span>
-                              )}
-                              {canRechat && (
-                                <span className="text-xs font-medium text-orange-700 bg-orange-100 px-2 py-0.5 rounded">
-                                  Re-chat Available
+                                {isCompleted && (
+                                  <span className="text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded">
+                                    ✓ Completed
+                                  </span>
+                                )}
+                                {canRechat && (
+                                  <span className="text-xs font-medium text-orange-700 bg-orange-100 px-2 py-0.5 rounded">
+                                    Re-chat Available
+                                  </span>
+                                )}
+                                {!availability.available && !isCompleted && (
+                                  <span className="text-xs font-medium text-gray-600 bg-gray-200 px-2 py-0.5 rounded">
+                                    Not Available
+                                  </span>
+                                )}
+                              </div>
+                              <span className="block text-xs text-gray-500">Protagonist: {caseItem.protagonist}</span>
+                              {!availability.available && availability.message && (
+                                <span className="block text-xs text-amber-600 mt-1">
+                                  {availability.message}
                                 </span>
                               )}
                             </div>
-                            <span className="block text-xs text-gray-500">Protagonist: {caseItem.protagonist}</span>
-                          </div>
-                        </label>
+                          </label>
+                        </div>
                       );
                     })}
                   </div>

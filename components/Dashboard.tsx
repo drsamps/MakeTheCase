@@ -226,6 +226,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [expandedCaseOptions, setExpandedCaseOptions] = useState<string | null>(null);
   const [editingChatOptions, setEditingChatOptions] = useState<any>(null);
   const [isSavingChatOptions, setIsSavingChatOptions] = useState(false);
+
+  // Scheduling options editing
+  const [expandedScheduling, setExpandedScheduling] = useState<string | null>(null);
+  const [editingScheduling, setEditingScheduling] = useState<any>(null);
+  const [isSavingScheduling, setIsSavingScheduling] = useState(false);
   
   // Default chat options
   const defaultChatOptions = {
@@ -1062,6 +1067,67 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   const handleResetChatOptions = () => {
     setEditingChatOptions({ ...defaultChatOptions });
+  };
+
+  // Scheduling functions
+  const handleExpandScheduling = (caseId: string, currentScheduling: any) => {
+    if (expandedScheduling === caseId) {
+      setExpandedScheduling(null);
+      setEditingScheduling(null);
+    } else {
+      setExpandedScheduling(caseId);
+      // Format dates for datetime-local input
+      const formatDateForInput = (dateStr: string | null) => {
+        if (!dateStr) return '';
+        const date = new Date(dateStr);
+        const offset = date.getTimezoneOffset();
+        const localDate = new Date(date.getTime() - offset * 60 * 1000);
+        return localDate.toISOString().slice(0, 16);
+      };
+
+      setEditingScheduling({
+        open_date: formatDateForInput(currentScheduling?.open_date),
+        close_date: formatDateForInput(currentScheduling?.close_date),
+        manual_status: currentScheduling?.manual_status || 'auto'
+      });
+    }
+  };
+
+  const handleSaveScheduling = async (sectionId: string, caseId: string) => {
+    setIsSavingScheduling(true);
+    try {
+      const token = localStorage.getItem('auth_token');
+
+      // Convert datetime-local values back to ISO strings or null
+      const schedulingData = {
+        open_date: editingScheduling.open_date ? new Date(editingScheduling.open_date).toISOString() : null,
+        close_date: editingScheduling.close_date ? new Date(editingScheduling.close_date).toISOString() : null,
+        manual_status: editingScheduling.manual_status
+      };
+
+      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/scheduling`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(schedulingData)
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to update scheduling');
+      }
+      setExpandedScheduling(null);
+      setEditingScheduling(null);
+      // Refresh the section cases list
+      if (expandedAssignmentSection) {
+        fetchSectionCases(expandedAssignmentSection);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to update scheduling');
+    } finally {
+      setIsSavingScheduling(false);
+    }
   };
 
   // Toggle allow_rechat for a student's evaluation
@@ -2193,6 +2259,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                   >
                                     Options
                                   </button>
+                                  <button
+                                    onClick={() => handleExpandScheduling(sc.case_id, sc)}
+                                    className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                                      expandedScheduling === sc.case_id
+                                        ? 'bg-blue-100 text-blue-700 border-blue-200'
+                                        : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-blue-50'
+                                    }`}
+                                  >
+                                    Scheduling
+                                  </button>
                                   {sc.active ? (
                                     <button
                                       onClick={() => handleDeactivateSectionCase(section.section_id, sc.case_id)}
@@ -2219,6 +2295,80 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                   </button>
                                 </div>
                               </div>
+
+                              {/* Expanded Scheduling */}
+                              {expandedScheduling === sc.case_id && editingScheduling && (
+                                <div className="p-4 bg-blue-50 border-t border-gray-200 space-y-4">
+                                  <h4 className="text-sm font-semibold text-gray-800">Scheduling & Availability</h4>
+
+                                  {/* Manual Status Override */}
+                                  <div>
+                                    <label className="block text-xs font-medium text-gray-700 mb-2">Availability Control</label>
+                                    <select
+                                      value={editingScheduling.manual_status}
+                                      onChange={(e) => setEditingScheduling({...editingScheduling, manual_status: e.target.value})}
+                                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                                    >
+                                      <option value="auto">Auto (use dates below)</option>
+                                      <option value="manually_opened">Always Available (manually opened)</option>
+                                      <option value="manually_closed">Never Available (manually closed)</option>
+                                    </select>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                      {editingScheduling.manual_status === 'auto' && 'Case availability will be determined by the open and close dates below.'}
+                                      {editingScheduling.manual_status === 'manually_opened' && 'Case will be available to students regardless of dates.'}
+                                      {editingScheduling.manual_status === 'manually_closed' && 'Case will not be available to students regardless of dates.'}
+                                    </p>
+                                  </div>
+
+                                  {/* Date/Time Controls - only show if auto mode */}
+                                  {editingScheduling.manual_status === 'auto' && (
+                                    <>
+                                      <div>
+                                        <label className="block text-xs font-medium text-gray-700 mb-1">Open Date & Time</label>
+                                        <input
+                                          type="datetime-local"
+                                          value={editingScheduling.open_date}
+                                          onChange={(e) => setEditingScheduling({...editingScheduling, open_date: e.target.value})}
+                                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                                        />
+                                        <p className="text-xs text-gray-500 mt-1">
+                                          When the case becomes available to students. Leave empty for no open restriction.
+                                        </p>
+                                      </div>
+
+                                      <div>
+                                        <label className="block text-xs font-medium text-gray-700 mb-1">Close Date & Time</label>
+                                        <input
+                                          type="datetime-local"
+                                          value={editingScheduling.close_date}
+                                          onChange={(e) => setEditingScheduling({...editingScheduling, close_date: e.target.value})}
+                                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                                        />
+                                        <p className="text-xs text-gray-500 mt-1">
+                                          When the case is no longer available for starting new chats. Students can continue existing chats after this time.
+                                        </p>
+                                      </div>
+                                    </>
+                                  )}
+
+                                  {/* Action Buttons */}
+                                  <div className="flex justify-end gap-2 pt-2 border-t">
+                                    <button
+                                      onClick={() => { setExpandedScheduling(null); setEditingScheduling(null); }}
+                                      className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      onClick={() => handleSaveScheduling(section.section_id, sc.case_id)}
+                                      disabled={isSavingScheduling}
+                                      className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                                    >
+                                      {isSavingScheduling ? 'Saving...' : 'Save Scheduling'}
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
 
                               {/* Expanded Chat Options */}
                               {expandedCaseOptions === sc.case_id && editingChatOptions && (
