@@ -27,8 +27,11 @@ CREATE TABLE `admins` (
   `who` text COLLATE utf8mb4_unicode_ci,
   `email` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `password_hash` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `superuser` tinyint(1) NOT NULL DEFAULT '1' COMMENT 'Superuser has full access by default',
+  `admin_access` text COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Comma-separated list of allowed functions for non-superusers',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `email` (`email`)
+  UNIQUE KEY `email` (`email`),
+  KEY `idx_admins_superuser` (`superuser`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 

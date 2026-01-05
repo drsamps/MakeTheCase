@@ -895,11 +895,21 @@ const App: React.FC = () => {
       }
   };
 
-  const handleAdminLogin = () => setIsAdminAuthenticated(true);
-  
+  const handleAdminLogin = async () => {
+    setIsAdminAuthenticated(true);
+    // Fetch the admin user session data
+    try {
+      const { data: { session } } = await api.auth.getSession();
+      setSessionUser(session?.user || null);
+    } catch (error) {
+      console.error('Failed to fetch admin session:', error);
+    }
+  };
+
   const handleAdminLogout = async () => {
     await api.auth.signOut();
     setIsAdminAuthenticated(false);
+    setSessionUser(null);
     // Redirect to student view after logout
     window.location.hash = '';
   };
@@ -916,7 +926,7 @@ const App: React.FC = () => {
   
   if (view === 'admin') {
     if (isAdminAuthenticated) {
-      return <Dashboard onLogout={handleAdminLogout} />;
+      return <Dashboard onLogout={handleAdminLogout} user={sessionUser as any} />;
     }
     return <Login onLoginSuccess={handleAdminLogin} />;
   }
@@ -940,7 +950,16 @@ const App: React.FC = () => {
       <div className="flex items-center justify-center min-h-screen bg-gray-200">
         <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-2xl shadow-xl">
           <div className="text-center">
-            <h1 className="text-3xl font-bold text-gray-900">Make The Case</h1>
+            <h1
+              className="text-3xl font-bold text-gray-900"
+              onClick={(e) => {
+                if (e.ctrlKey || e.metaKey) {
+                  window.open('#/admin', 'admin');
+                }
+              }}
+            >
+              Make The Case
+            </h1>
             <p className="mt-2 text-gray-600">Please sign in with your BYU CAS account to begin chatting with an AI case protagonist.</p>
           </div>
           <div className="space-y-4">
@@ -974,7 +993,7 @@ const App: React.FC = () => {
               title="admin"
               onClick={(e) => {
                 if (e.ctrlKey || e.metaKey) {
-                  window.location.hash = '#/admin';
+                  window.open('#/admin', 'admin');
                 }
               }}
             >

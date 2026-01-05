@@ -1,0 +1,199 @@
+Teaching Note: Malawi's Pizza Catering Decision
+
+COURSE CONTEXT
+
+This case is designed for an undergraduate or MBA course in entrepreneurial finance, strategic management, or small business management. It addresses key concepts including:
+- Growth strategy evaluation
+- Financial analysis of expansion opportunities
+- Operational capacity assessment
+- Risk-return tradeoffs in business decisions
+
+Recommended placement: Mid-semester, after covering financial statement analysis and before discussing growth strategies.
+
+Class time required: 60-75 minutes
+
+LEARNING OBJECTIVES
+
+By the end of this case discussion, students should be able to:
+
+1. Analyze the financial viability of a business expansion opportunity
+   - Calculate break-even requirements
+   - Assess return on investment
+   - Evaluate cash flow implications
+
+2. Evaluate competitive positioning in a new market segment
+   - Identify key competitors and their strengths/weaknesses
+   - Assess sustainable competitive advantages
+   - Understand market sizing and opportunity assessment
+
+3. Assess operational capacity and constraints
+   - Identify resource requirements (human, financial, physical)
+   - Evaluate impact on existing operations
+   - Understand operational risk management
+
+4. Make strategic recommendations considering multiple stakeholder perspectives
+   - Balance growth ambitions with risk management
+   - Consider organizational capabilities
+   - Evaluate timing and sequencing of strategic moves
+
+CASE PROTAGONIST
+
+John Malawi - Founder and owner of Malawi's Pizza
+- Age: 52
+- Background: Started business 28 years ago with single location
+- Management style: Hands-on, quality-focused, risk-averse
+- Key strength: Deep understanding of local market and customer preferences
+- Key challenge: No experience with catering or corporate sales
+
+DISCUSSION QUESTIONS
+
+Opening Question (10 minutes):
+"What is Malawi's current strategic position? What has made the company successful?"
+
+Expected responses:
+- Focus on quality and customer service
+- Strong local brand recognition
+- Above-average profitability
+- Steady, controlled growth strategy
+- Owner's deep involvement and commitment
+
+Financial Analysis (20 minutes):
+"Is the catering opportunity financially attractive? Walk me through your analysis."
+
+Key teaching points:
+- Initial investment: $150K (30% of cash reserves)
+- Year 1 projected revenue: $400K (16% increase to total revenue)
+- Lower margin (12% vs 15%) due to delivery costs
+- Break-even timeline: 18-24 months
+- Opportunity cost of capital
+- Risk-adjusted return analysis
+
+Market Opportunity (15 minutes):
+"How attractive is the Springfield corporate catering market? Can Malawi's compete effectively?"
+
+Key teaching points:
+- $8M market size (sufficient for multiple players)
+- Fragmented competition (no dominant player)
+- Differentiation opportunities exist
+- Barriers to entry are moderate
+- Customer acquisition costs and strategies
+
+Operational Feasibility (15 minutes):
+"What operational challenges does Malawi's face in entering catering? Can they be overcome?"
+
+Key teaching points:
+- Kitchen capacity at peak times
+- Food quality during transport (critical for brand reputation)
+- Need for dedicated management (fixed cost commitment)
+- Integration with existing operations
+- Minimum order requirements to ensure profitability
+- Delivery logistics and reliability
+
+Strategic Fit (10 minutes):
+"Does catering align with Malawi's core competencies and strategic direction?"
+
+Key teaching points:
+- Leverages brand and reputation (positive)
+- Different business model than restaurants (challenge)
+- Requires new capabilities (corporate sales, logistics)
+- Risk to core business if not executed well
+- Founder's risk tolerance and priorities
+
+Final Recommendation (10 minutes):
+"What should John do? What are the key success factors if he moves forward?"
+
+RECOMMENDED TEACHING APPROACH
+
+1. Opening (5 minutes)
+   - Brief overview of Malawi's history and current situation
+   - Identify the key decision John faces
+   - Set context for analysis
+
+2. Current Position Analysis (10 minutes)
+   - Use cold call to analyze Malawi's strengths
+   - Board work: Create competitive position matrix
+   - Discuss what's at risk if expansion fails
+
+3. Financial Deep Dive (20 minutes)
+   - Call on students to present their financial analysis
+   - Board work: Calculate break-even scenarios
+   - Discuss: "What assumptions are most critical to success?"
+   - Sensitivity analysis: What if revenue is 20% lower?
+
+4. Market and Competition (15 minutes)
+   - Divide class into groups: Defenders (stay focused on restaurants) vs Expanders (pursue catering)
+   - Each group presents strongest arguments
+   - Class debate on market attractiveness
+
+5. Operational Reality Check (15 minutes)
+   - Ask: "Who has worked in a restaurant? What operational challenges do you see?"
+   - Discuss implementation timeline and milestones
+   - Identify what could go wrong operationally
+
+6. Decision and Recommendation (10 minutes)
+   - Vote: How many recommend pursuing catering? How many recommend passing?
+   - Call on students from each side to justify position
+   - Discuss: If John does pursue it, what are the critical success factors?
+
+BOARD PLAN
+
+Left side:
+- Financial Analysis (ROI, break-even, cash flow)
+- Key Assumptions
+
+Center:
+- Market Opportunity ($8M market, competitors)
+- Malawi's Competitive Advantages
+
+Right side:
+- Operational Requirements
+- Critical Success Factors
+- Key Risks
+
+ASSIGNMENT VARIATIONS
+
+Individual Assignment Option:
+"Prepare a 2-page memo to John Malawi with your recommendation on the catering opportunity. Include financial analysis, market assessment, and implementation considerations."
+
+Team Project Option:
+"Develop a detailed business plan for Malawi's Catering, including financial projections, marketing strategy, operational plan, and risk mitigation strategies. Present to class in 10 minutes."
+
+FOLLOW-ON DISCUSSION
+
+After reaching a decision on whether to pursue catering, you can extend the discussion:
+
+1. If YES to catering:
+   - How should it be funded? (cash vs debt vs equity partner)
+   - What should the first 90 days look like?
+   - How will John know if it's working?
+   - What's the exit strategy if it fails?
+
+2. If NO to catering:
+   - What alternative growth opportunities exist?
+   - How should John respond to the corporate inquiries?
+   - Is there a "test" or pilot approach to reduce risk?
+   - What would need to change to make this attractive?
+
+ACTUAL OUTCOME (optional for debrief)
+
+[Instructor's note: You can share this after discussion or use for a follow-up class]
+
+John Malawi decided to pursue a modified catering strategy:
+- Started with a 6-month pilot program
+- Limited catering to lunch delivery only (avoiding dinner peak)
+- Minimum order: $250
+- Used existing staff (no new hires initially)
+- Invested $75K instead of $150K
+
+Results after 12 months:
+- Catering revenue: $180K (below projection but profitable)
+- Operating margin: 14% (better than projected due to lower overhead)
+- No negative impact on restaurant operations
+- 8 regular corporate clients established
+- Plans to expand with dedicated catering manager in Year 2
+
+Key lessons:
+- Pilot approach reduced risk and validated demand
+- Starting small preserved optionality
+- Lower investment requirement made decision easier
+- Integration with existing operations worked better than anticipated

@@ -7,9 +7,14 @@ import { detectProvider } from '../services/llmService';
 import { PromptManager } from './PromptManager';
 import { SettingsManager } from './SettingsManager';
 import { CasePrepManager } from './CasePrepManager';
+import InstructorManager from './InstructorManager';
+import StudentManager from './StudentManager';
+import { hasAccess } from '../utils/permissions';
+import { AdminUser } from '../types';
 
 interface DashboardProps {
   onLogout: () => void;
+  user?: AdminUser | null;
 }
 
 interface SectionStat {
@@ -104,7 +109,19 @@ type SortKey = 'full_name' | 'persona' | 'score' | 'hints' | 'helpful' | 'comple
 type SortDirection = 'asc' | 'desc';
 type FilterMode = 'all' | 'completed' | 'in_progress' | 'not_started';
 
-const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
+const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
+  // Determine first accessible tab for the user
+  const getFirstAccessibleTab = (): 'chats' | 'assignments' | 'sections' | 'students' | 'cases' | 'caseprep' | 'personas' | 'prompts' | 'models' | 'settings' | 'instructors' => {
+    const tabs: Array<'chats' | 'assignments' | 'sections' | 'students' | 'cases' | 'caseprep' | 'personas' | 'prompts' | 'models' | 'settings' | 'instructors'> =
+      ['chats', 'assignments', 'sections', 'students', 'cases', 'caseprep', 'personas', 'prompts', 'models', 'settings', 'instructors'];
+    for (const tab of tabs) {
+      if (hasAccess(user, tab)) {
+        return tab;
+      }
+    }
+    return 'sections'; // Fallback
+  };
+
   const [sectionStats, setSectionStats] = useState<SectionStat[]>([]);
   const [selectedSection, setSelectedSection] = useState<SectionStat | null>(null);
   const [studentDetails, setStudentDetails] = useState<StudentDetail[]>([]);
@@ -112,7 +129,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [modelsList, setModelsList] = useState<Model[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [testingModelId, setTestingModelId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'sections' | 'models' | 'cases' | 'assignments' | 'personas' | 'chats' | 'caseprep' | 'prompts' | 'settings'>('sections');
+  const [activeTab, setActiveTab] = useState<'chats' | 'assignments' | 'sections' | 'students' | 'cases' | 'caseprep' | 'personas' | 'prompts' | 'models' | 'settings' | 'instructors'>(getFirstAccessibleTab());
   const [showModelModal, setShowModelModal] = useState(false);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
   const [modelForm, setModelForm] = useState<{
@@ -613,9 +630,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setSectionCasesForFilter([]);
   };
 
-  const handleTabChange = (tab: 'sections' | 'models' | 'cases' | 'assignments' | 'personas' | 'chats') => {
+  const handleTabChange = (tab: 'chats' | 'assignments' | 'sections' | 'students' | 'cases' | 'caseprep' | 'personas' | 'prompts' | 'models' | 'settings' | 'instructors') => {
+    if (!hasAccess(user, tab)) {
+      alert(`You don't have access to ${tab}. Contact a superuser for access.`);
+      return;
+    }
     setActiveTab(tab);
-    if (tab === 'models' || tab === 'cases' || tab === 'assignments' || tab === 'personas' || tab === 'chats') {
+    if (tab !== 'sections') {
       setSelectedSection(null);
     }
     if (tab === 'cases' && casesList.length === 0) {
@@ -2727,7 +2748,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       <header className="flex-shrink-0 flex justify-between items-center px-6 py-3 bg-white border-b border-gray-200 shadow-sm">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold text-gray-900">Instructor Dashboard</h1>
-          <span className="text-xs font-medium text-gray-500">(MySQL Database)</span>
+          {user && (
+            <span className="text-xs font-medium text-gray-600">
+              {user.email}
+              {user.superuser && <span className="ml-1 text-purple-600 font-semibold">(super)</span>}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-4">
           {/* Auto-refresh toggle */}
@@ -2750,11 +2776,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
             href="#"
             onClick={(e) => {
               e.preventDefault();
-              window.location.hash = '';
+              window.open('#', 'student');
             }}
             className="text-sm font-medium text-gray-600 hover:text-gray-900 p-2 rounded-md hover:bg-gray-100 transition-colors"
           >
-            to CEO chatbot
+            to student screen
           </a>
           <button onClick={onLogout} className="flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors p-2 rounded-md hover:bg-gray-100">
             <span>Sign Out</span>
@@ -2768,97 +2794,139 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       {/* Main Content - Two Screen Layout */}
       <main className="flex-1 overflow-y-auto">
         <div className="px-6 pt-4">
-          <div className="flex gap-2">
-            <button
-              onClick={() => handleTabChange('sections')}
-              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                activeTab === 'sections'
-                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-              }`}
-            >
-              Sections
-            </button>
-            <button
-              onClick={() => handleTabChange('models')}
-              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                activeTab === 'models'
-                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-              }`}
-            >
-              Models
-            </button>
-            <button
-              onClick={() => handleTabChange('cases')}
-              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                activeTab === 'cases'
-                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-              }`}
-            >
-              Cases
-            </button>
-            <button
-              onClick={() => handleTabChange('assignments')}
-              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                activeTab === 'assignments'
-                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-              }`}
-            >
-              Assignments
-            </button>
-            <button
-              onClick={() => handleTabChange('personas')}
-              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                activeTab === 'personas'
-                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-              }`}
-            >
-              Personas
-            </button>
-            <button
-              onClick={() => handleTabChange('chats')}
-              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                activeTab === 'chats'
-                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-              }`}
-            >
-              Chats
-            </button>
-            <button
-              onClick={() => handleTabChange('caseprep')}
-              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                activeTab === 'caseprep'
-                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-              }`}
-            >
-              Case Prep
-            </button>
-            <button
-              onClick={() => handleTabChange('prompts')}
-              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                activeTab === 'prompts'
-                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-              }`}
-            >
-              Prompts
-            </button>
-            <button
-              onClick={() => handleTabChange('settings')}
-              className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                activeTab === 'settings'
-                  ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-              }`}
-            >
-              Settings
-            </button>
+          <div className="flex gap-2 flex-wrap">
+            {hasAccess(user, 'chats') && (
+              <button
+                onClick={() => handleTabChange('chats')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                  activeTab === 'chats'
+                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                }`}
+              >
+                Chats
+              </button>
+            )}
+            {hasAccess(user, 'assignments') && (
+              <button
+                onClick={() => handleTabChange('assignments')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                  activeTab === 'assignments'
+                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                }`}
+              >
+                Assignments
+              </button>
+            )}
+            {hasAccess(user, 'sections') && (
+              <button
+                onClick={() => handleTabChange('sections')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                  activeTab === 'sections'
+                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                }`}
+              >
+                Sections
+              </button>
+            )}
+            {hasAccess(user, 'students') && (
+              <button
+                onClick={() => handleTabChange('students')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                  activeTab === 'students'
+                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                }`}
+              >
+                Students
+              </button>
+            )}
+            {hasAccess(user, 'cases') && (
+              <button
+                onClick={() => handleTabChange('cases')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                  activeTab === 'cases'
+                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                }`}
+              >
+                Cases
+              </button>
+            )}
+            {hasAccess(user, 'caseprep') && (
+              <button
+                onClick={() => handleTabChange('caseprep')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                  activeTab === 'caseprep'
+                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                }`}
+              >
+                Case Prep+
+              </button>
+            )}
+            {hasAccess(user, 'personas') && (
+              <button
+                onClick={() => handleTabChange('personas')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                  activeTab === 'personas'
+                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                }`}
+              >
+                Personas+
+              </button>
+            )}
+            {hasAccess(user, 'prompts') && (
+              <button
+                onClick={() => handleTabChange('prompts')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                  activeTab === 'prompts'
+                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                }`}
+              >
+                Prompts+
+              </button>
+            )}
+            {hasAccess(user, 'models') && (
+              <button
+                onClick={() => handleTabChange('models')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                  activeTab === 'models'
+                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                }`}
+              >
+                Models+
+              </button>
+            )}
+            {hasAccess(user, 'settings') && (
+              <button
+                onClick={() => handleTabChange('settings')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                  activeTab === 'settings'
+                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                }`}
+              >
+                Settings+
+              </button>
+            )}
+            {hasAccess(user, 'instructors') && (
+              <button
+                onClick={() => handleTabChange('instructors')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
+                  activeTab === 'instructors'
+                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
+                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                }`}
+              >
+                Instructors+
+              </button>
+            )}
           </div>
         </div>
         {activeTab === 'models' ? (
@@ -2877,6 +2945,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
           <PromptManager />
         ) : activeTab === 'settings' ? (
           <SettingsManager />
+        ) : activeTab === 'students' ? (
+          <StudentManager />
+        ) : activeTab === 'instructors' ? (
+          <InstructorManager user={user} />
         ) : !selectedSection ? (
           /* ==================== SCREEN 1: SECTION LIST ==================== */
           <div className="p-6 max-w-7xl mx-auto">

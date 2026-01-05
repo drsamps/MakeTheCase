@@ -1,6 +1,6 @@
 /**
  * Script to create an admin user for the dashboard
- * Usage: node server/scripts/create-admin.js <email> <password>
+ * Usage: node server/scripts/create-admin.js <email> <password> [--superuser]
  */
 
 import bcrypt from 'bcryptjs';
@@ -12,14 +12,18 @@ dotenv.config({ path: '.env.local' });
 
 async function createAdmin() {
   const args = process.argv.slice(2);
-  
+
   if (args.length < 2) {
-    console.log('Usage: node server/scripts/create-admin.js <email> <password>');
-    console.log('Example: node server/scripts/create-admin.js admin@example.com mypassword123');
+    console.log('Usage: node server/scripts/create-admin.js <email> <password> [--superuser]');
+    console.log('Example: node server/scripts/create-admin.js admin@example.com mypassword123 --superuser');
+    console.log('');
+    console.log('Options:');
+    console.log('  --superuser    Create as superuser with full access (default: regular instructor)');
     process.exit(1);
   }
 
-  const [email, password] = args;
+  const [email, password, ...flags] = args;
+  const isSuperuser = flags.includes('--superuser');
 
   try {
     const connection = await mysql.createConnection({
@@ -48,13 +52,14 @@ async function createAdmin() {
 
     // Insert the new admin
     await connection.execute(
-      'INSERT INTO admins (id, email, password_hash, who) VALUES (?, ?, ?, ?)',
-      [id, email, passwordHash, email]
+      'INSERT INTO admins (id, email, password_hash, who, superuser) VALUES (?, ?, ?, ?, ?)',
+      [id, email, passwordHash, email, isSuperuser ? 1 : 0]
     );
 
     console.log('✓ Admin user created successfully!');
     console.log('  Email:', email);
     console.log('  ID:', id);
+    console.log('  Superuser:', isSuperuser ? 'Yes' : 'No');
 
     await connection.end();
   } catch (error) {

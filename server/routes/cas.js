@@ -130,10 +130,16 @@ router.get('/verify', async (req, res) => {
     const fullName = `${firstName}${lastName ? ' ' + lastName : ''}`;
 
     // Check admin first
-    const [admins] = await pool.execute('SELECT id, email FROM admins WHERE email = ?', [email]);
+    const [admins] = await pool.execute('SELECT id, email, superuser, admin_access FROM admins WHERE email = ?', [email]);
     if (admins.length > 0) {
       const admin = admins[0];
-      const token = generateToken(admin.id, admin.email, 'admin');
+      // Parse admin_access into array
+      const adminAccess = admin.admin_access ? admin.admin_access.split(',').map(s => s.trim()) : [];
+      // Generate JWT token with permissions
+      const token = generateToken(admin.id, admin.email, 'admin', {
+        superuser: Boolean(admin.superuser),
+        adminAccess: adminAccess
+      });
       const payload = { token, role: 'admin', email: admin.email, fullName };
       if ((req.headers.accept || '').includes('application/json')) {
         return res.json(payload);
@@ -150,8 +156,14 @@ router.get('/verify', async (req, res) => {
 
     if (students.length === 0) {
       await pool.execute(
-        'INSERT INTO students (id, first_name, last_name, full_name, favorite_persona, section_id) VALUES (?, ?, ?, ?, ?, ?)',
-        [studentId, firstName, lastName, fullName || netid, null, null]
+        'INSERT INTO students (id, first_name, last_name, full_name, email, favorite_persona, section_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [studentId, firstName, lastName, fullName || netid, email, null, null]
+      );
+    } else {
+      // Update existing student record with latest info from CAS
+      await pool.execute(
+        'UPDATE students SET first_name = ?, last_name = ?, full_name = ?, email = ? WHERE id = ?',
+        [firstName, lastName, fullName || netid, email, studentId]
       );
     }
 

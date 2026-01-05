@@ -103,3 +103,11 @@ export interface Section {
     chat_model: string | null;
     super_model: string | null;
 }
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  role: 'admin';
+  superuser: boolean;
+  adminAccess: string[];
+}

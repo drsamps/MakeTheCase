@@ -5,6 +5,7 @@
 
 import express from 'express';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/permissions.js';
 import {
   getAllSettings,
   getSetting,
@@ -15,7 +16,7 @@ import {
 const router = express.Router();
 
 // GET /api/settings - Get all settings
-router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/', verifyToken, requireRole(['admin']), requirePermission('settings'), async (req, res) => {
   try {
     const settings = await getAllSettings();
 
@@ -34,7 +35,7 @@ router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // GET /api/settings/:key - Get single setting value
-router.get('/:key', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/:key', verifyToken, requireRole(['admin']), requirePermission('settings'), async (req, res) => {
   try {
     const { key } = req.params;
 
@@ -62,7 +63,7 @@ router.get('/:key', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // PATCH /api/settings/:key - Update setting value
-router.patch('/:key', verifyToken, requireRole(['admin']), async (req, res) => {
+router.patch('/:key', verifyToken, requireRole(['admin']), requirePermission('settings'), async (req, res) => {
   try {
     const { key } = req.params;
     const { setting_value } = req.body;

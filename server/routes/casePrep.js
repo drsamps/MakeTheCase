@@ -6,6 +6,7 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/permissions.js';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
@@ -56,7 +57,7 @@ const upload = multer({
 });
 
 // POST /api/case-prep/:caseId/upload - Upload file for processing
-router.post('/:caseId/upload', verifyToken, requireRole(['admin']), upload.single('file'), async (req, res) => {
+router.post('/:caseId/upload', verifyToken, requireRole(['admin']), requirePermission('caseprep'), upload.single('file'), async (req, res) => {
   try {
     const { caseId } = req.params;
     const { file_type } = req.body; // 'case' or 'notes'
@@ -116,7 +117,7 @@ router.post('/:caseId/upload', verifyToken, requireRole(['admin']), upload.singl
 });
 
 // POST /api/case-prep/:caseId/process - Process uploaded file with AI
-router.post('/:caseId/process', verifyToken, requireRole(['admin']), async (req, res) => {
+router.post('/:caseId/process', verifyToken, requireRole(['admin']), requirePermission('caseprep'), async (req, res) => {
   try {
     const { caseId } = req.params;
     const { file_id, model_id } = req.body;
@@ -229,7 +230,7 @@ router.post('/:caseId/process', verifyToken, requireRole(['admin']), async (req,
 });
 
 // GET /api/case-prep/:caseId/files - List all uploaded files for a case
-router.get('/:caseId/files', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/:caseId/files', verifyToken, requireRole(['admin']), requirePermission('caseprep'), async (req, res) => {
   try {
     const { caseId } = req.params;
 
@@ -267,7 +268,7 @@ router.get('/:caseId/files', verifyToken, requireRole(['admin']), async (req, re
 });
 
 // PATCH /api/case-prep/files/:fileId/outline - Update outline content after manual editing
-router.patch('/files/:fileId/outline', verifyToken, requireRole(['admin']), async (req, res) => {
+router.patch('/files/:fileId/outline', verifyToken, requireRole(['admin']), requirePermission('caseprep'), async (req, res) => {
   try {
     const { fileId } = req.params;
     const { outline_content } = req.body;
@@ -315,7 +316,7 @@ router.patch('/files/:fileId/outline', verifyToken, requireRole(['admin']), asyn
 });
 
 // GET /api/case-prep/files/:fileId/original - Get original uploaded file for preview
-router.get('/files/:fileId/original', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/files/:fileId/original', verifyToken, requireRole(['admin']), requirePermission('caseprep'), async (req, res) => {
   try {
     const { fileId } = req.params;
 
@@ -371,7 +372,7 @@ router.get('/files/:fileId/original', verifyToken, requireRole(['admin']), async
 });
 
 // GET /api/case-prep/files/:fileId/content - Get converted text content (not outline)
-router.get('/files/:fileId/content', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/files/:fileId/content', verifyToken, requireRole(['admin']), requirePermission('caseprep'), async (req, res) => {
   try {
     const { fileId } = req.params;
 

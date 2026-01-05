@@ -16,7 +16,7 @@ router.post('/login', async (req, res) => {
 
     // Find admin by email
     const [rows] = await pool.execute(
-      'SELECT id, email, password_hash FROM admins WHERE email = ?',
+      'SELECT id, email, password_hash, superuser, admin_access FROM admins WHERE email = ?',
       [email]
     );
 
@@ -32,15 +32,23 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Generate JWT token
-    const token = generateToken(admin.id, admin.email, 'admin');
+    // Parse admin_access into array
+    const adminAccess = admin.admin_access ? admin.admin_access.split(',').map(s => s.trim()) : [];
+
+    // Generate JWT token with permissions
+    const token = generateToken(admin.id, admin.email, 'admin', {
+      superuser: Boolean(admin.superuser),
+      adminAccess: adminAccess
+    });
 
     res.json({
       token,
       user: {
         id: admin.id,
         email: admin.email,
-        role: 'admin'
+        role: 'admin',
+        superuser: Boolean(admin.superuser),
+        adminAccess: adminAccess
       }
     });
   } catch (error) {
@@ -60,6 +68,8 @@ router.get('/session', verifyToken, (req, res) => {
       last_name: req.user.last_name,
       full_name: req.user.full_name,
       section_id: req.user.section_id,
+      superuser: req.user.superuser,
+      adminAccess: req.user.adminAccess,
     }
   });
 });

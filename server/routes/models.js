@@ -1,6 +1,7 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/permissions.js';
 
 const router = express.Router();
 
@@ -67,7 +68,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/models - Create model (admin only)
-router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
+router.post('/', verifyToken, requireRole(['admin']), requirePermission('models'), async (req, res) => {
   try {
     const {
       model_id,
@@ -116,7 +117,7 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // PATCH /api/models/:id - Update model (admin only)
-router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+router.patch('/:id', verifyToken, requireRole(['admin']), requirePermission('models'), async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
@@ -171,7 +172,7 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // DELETE /api/models/:id - Delete model (admin only)
-router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+router.delete('/:id', verifyToken, requireRole(['admin']), requirePermission('models'), async (req, res) => {
   try {
     const { id } = req.params;
 

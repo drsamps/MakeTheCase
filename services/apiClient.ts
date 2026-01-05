@@ -307,6 +307,29 @@ export const api = {
     const endpoint = tableMap[table] || table;
     return new QueryBuilder<T>(endpoint);
   },
+
+  // Direct HTTP methods for REST API calls
+  async get<T = any>(endpoint: string): Promise<{ data: T | null; error: { message: string } | null }> {
+    return apiFetch<T>(endpoint, { method: 'GET' });
+  },
+
+  async post<T = any>(endpoint: string, body?: any): Promise<{ data: T | null; error: { message: string } | null }> {
+    return apiFetch<T>(endpoint, {
+      method: 'POST',
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  },
+
+  async patch<T = any>(endpoint: string, body?: any): Promise<{ data: T | null; error: { message: string } | null }> {
+    return apiFetch<T>(endpoint, {
+      method: 'PATCH',
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  },
+
+  async delete<T = any>(endpoint: string): Promise<{ data: T | null; error: { message: string } | null }> {
+    return apiFetch<T>(endpoint, { method: 'DELETE' });
+  },
 };
 
 // For backwards compatibility with existing code that imports 'supabase'

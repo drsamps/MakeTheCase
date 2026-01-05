@@ -26,6 +26,7 @@ import caseChatsRoutes from './routes/caseChats.js';
 import casePrepRoutes from './routes/casePrep.js';
 import promptsRoutes from './routes/prompts.js';
 import settingsRoutes from './routes/settings.js';
+import adminsRoutes from './routes/admins.js';
 
 // Load environment variables
 // Use absolute path to ensure .env.local is found regardless of working directory
@@ -61,6 +62,7 @@ app.use('/api/case-chats', caseChatsRoutes); // Chat session tracking
 app.use('/api/case-prep', casePrepRoutes); // Case prep file upload and AI processing
 app.use('/api/prompts', promptsRoutes); // AI prompt template management
 app.use('/api/settings', settingsRoutes); // Application settings
+app.use('/api/admins', adminsRoutes); // Instructor management (superuser only)
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

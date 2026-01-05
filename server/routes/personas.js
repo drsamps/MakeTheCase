@@ -1,6 +1,7 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/permissions.js';
 
 const router = express.Router();
 
@@ -49,7 +50,7 @@ router.get('/:personaId', async (req, res) => {
 });
 
 // POST /api/personas - Create a new persona (admin only)
-router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
+router.post('/', verifyToken, requireRole(['admin']), requirePermission('personas'), async (req, res) => {
   try {
     const { persona_id, persona_name, description, instructions, enabled, sort_order } = req.body;
 
@@ -104,7 +105,7 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // PATCH /api/personas/:personaId - Update a persona (admin only)
-router.patch('/:personaId', verifyToken, requireRole(['admin']), async (req, res) => {
+router.patch('/:personaId', verifyToken, requireRole(['admin']), requirePermission('personas'), async (req, res) => {
   try {
     const { personaId } = req.params;
     const { persona_name, description, instructions, enabled, sort_order } = req.body;
@@ -168,7 +169,7 @@ router.patch('/:personaId', verifyToken, requireRole(['admin']), async (req, res
 });
 
 // DELETE /api/personas/:personaId - Delete a persona (admin only)
-router.delete('/:personaId', verifyToken, requireRole(['admin']), async (req, res) => {
+router.delete('/:personaId', verifyToken, requireRole(['admin']), requirePermission('personas'), async (req, res) => {
   try {
     const { personaId } = req.params;
 

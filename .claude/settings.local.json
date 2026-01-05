@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(npm run dev:server:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(curl:*)",
+      "Bash(node -e \"process.stdin.pipe\\(require\\(''fs''\\).createWriteStream\\(''nul''\\)\\); console.log\\(''Prompts API response received successfully''\\)\")",
+      "Bash(node:*)",
+      "Bash(findstr:*)"
     ]
   }
 }

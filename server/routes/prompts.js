@@ -5,6 +5,7 @@
 
 import express from 'express';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import { requirePermission } from '../middleware/permissions.js';
 import {
   getAllPrompts,
   getAllPromptsForUse,
@@ -18,7 +19,7 @@ import {
 const router = express.Router();
 
 // GET /api/prompts - Get all prompts (optionally filtered by use)
-router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/', verifyToken, requireRole(['admin']), requirePermission('prompts'), async (req, res) => {
   try {
     const { use } = req.query;
 
@@ -39,7 +40,7 @@ router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // GET /api/prompts/uses - Get all unique prompt use cases
-router.get('/uses', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/uses', verifyToken, requireRole(['admin']), requirePermission('prompts'), async (req, res) => {
   try {
     const uses = await getAllPromptUses();
 
@@ -58,7 +59,7 @@ router.get('/uses', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // GET /api/prompts/:id - Get single prompt by ID
-router.get('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/:id', verifyToken, requireRole(['admin']), requirePermission('prompts'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -80,7 +81,7 @@ router.get('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // POST /api/prompts - Create new prompt version
-router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
+router.post('/', verifyToken, requireRole(['admin']), requirePermission('prompts'), async (req, res) => {
   try {
     const { use, version, description, prompt_template } = req.body;
 
@@ -114,7 +115,7 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // PATCH /api/prompts/:id - Update existing prompt
-router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+router.patch('/:id', verifyToken, requireRole(['admin']), requirePermission('prompts'), async (req, res) => {
   try {
     const { id } = req.params;
     const { description, prompt_template, enabled } = req.body;
@@ -148,7 +149,7 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // DELETE /api/prompts/:id - Delete (disable) prompt
-router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+router.delete('/:id', verifyToken, requireRole(['admin']), requirePermission('prompts'), async (req, res) => {
   try {
     const { id } = req.params;
 
