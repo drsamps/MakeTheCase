@@ -1,4 +1,5 @@
 // LLM Router - Updated with increased token limits for complete outlines (8K-16K)
+// Preview now supports styled headings and print functionality
 import { GoogleGenAI } from '@google/genai';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;

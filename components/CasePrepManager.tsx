@@ -50,7 +50,9 @@ export const CasePrepManager: React.FC = () => {
   const [processingFileId, setProcessingFileId] = useState<number | null>(null);
   const [previousOutline, setPreviousOutline] = useState<string>('');
   const [pollIntervalId, setPollIntervalId] = useState<NodeJS.Timeout | null>(null);
+  const [showStyledHeadings, setShowStyledHeadings] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const initialize = async () => {
@@ -410,6 +412,71 @@ export const CasePrepManager: React.FC = () => {
     setShowPreview(false);
     
     alert('✓ Processing in background. You can continue working. Check back in 1-2 minutes.');
+  };
+
+  const handlePrintPreview = () => {
+    if (!previewRef.current) return;
+    
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert('Please allow popups to print the preview.');
+      return;
+    }
+    
+    const printStyles = `
+      <style>
+        @media print {
+          body { margin: 0; padding: 20px; font-family: Georgia, serif; }
+          h1 { font-size: 28px; font-weight: bold; margin: 24px 0 16px 0; color: #1a1a1a; }
+          h2 { font-size: 24px; font-weight: bold; margin: 20px 0 12px 0; color: #2a2a2a; }
+          h3 { font-size: 20px; font-weight: bold; margin: 16px 0 10px 0; color: #3a3a3a; }
+          h4 { font-size: 18px; font-weight: bold; margin: 14px 0 8px 0; color: #4a4a4a; }
+          h5 { font-size: 16px; font-weight: bold; margin: 12px 0 6px 0; color: #5a5a5a; }
+          h6 { font-size: 14px; font-weight: bold; margin: 10px 0 4px 0; color: #6a6a6a; }
+          p { margin: 8px 0; line-height: 1.6; }
+          ul, ol { margin: 8px 0; padding-left: 32px; }
+          li { margin: 4px 0; line-height: 1.5; }
+          strong { font-weight: bold; }
+          em { font-style: italic; }
+          code { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; font-family: monospace; }
+          pre { background: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto; }
+          blockquote { border-left: 4px solid #ccc; padding-left: 16px; margin: 8px 0; color: #666; }
+        }
+        @media screen {
+          body { padding: 40px; max-width: 800px; margin: 0 auto; font-family: Georgia, serif; }
+          h1 { font-size: 28px; font-weight: bold; margin: 24px 0 16px 0; color: #1a1a1a; }
+          h2 { font-size: 24px; font-weight: bold; margin: 20px 0 12px 0; color: #2a2a2a; }
+          h3 { font-size: 20px; font-weight: bold; margin: 16px 0 10px 0; color: #3a3a3a; }
+          h4 { font-size: 18px; font-weight: bold; margin: 14px 0 8px 0; color: #4a4a4a; }
+          h5 { font-size: 16px; font-weight: bold; margin: 12px 0 6px 0; color: #5a5a5a; }
+          h6 { font-size: 14px; font-weight: bold; margin: 10px 0 4px 0; color: #6a6a6a; }
+          p { margin: 8px 0; line-height: 1.6; }
+          ul, ol { margin: 8px 0; padding-left: 32px; }
+          li { margin: 4px 0; line-height: 1.5; }
+        }
+      </style>
+    `;
+    
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>${editingFile?.filename || 'Preview'} - Outline</title>
+          ${printStyles}
+        </head>
+        <body>
+          ${previewRef.current.innerHTML}
+        </body>
+      </html>
+    `);
+    
+    printWindow.document.close();
+    printWindow.focus();
+    
+    // Auto-print after a brief delay to ensure styles load
+    setTimeout(() => {
+      printWindow.print();
+    }, 250);
   };
 
   const getStatusBadge = (status: string | null) => {
@@ -803,9 +870,46 @@ export const CasePrepManager: React.FC = () => {
                 {/* Preview */}
                 {showPreview && (
                   <div className="flex-1 p-4 overflow-auto bg-gray-50">
-                    <h4 className="font-semibold mb-2">Preview</h4>
-                    <div className="prose max-w-none bg-white p-4 rounded border">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="font-semibold">Preview</h4>
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center text-sm cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={showStyledHeadings}
+                            onChange={(e) => setShowStyledHeadings(e.target.checked)}
+                            className="mr-2"
+                          />
+                          Show Headings
+                        </label>
+                        <button
+                          onClick={handlePrintPreview}
+                          className="text-sm bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700"
+                        >
+                          🖨️ Print
+                        </button>
+                      </div>
+                    </div>
+                    <div 
+                      ref={previewRef}
+                      className={`bg-white p-4 rounded border ${showStyledHeadings ? 'markdown-preview' : ''}`}
+                      style={showStyledHeadings ? {} : { fontFamily: 'inherit', fontSize: 'inherit' }}
+                    >
+                      <ReactMarkdown 
+                        remarkPlugins={[remarkGfm]}
+                        components={showStyledHeadings ? {
+                          h1: ({node, ...props}) => <h1 style={{fontSize: '28px', fontWeight: 'bold', margin: '24px 0 16px 0', color: '#1a1a1a'}} {...props} />,
+                          h2: ({node, ...props}) => <h2 style={{fontSize: '24px', fontWeight: 'bold', margin: '20px 0 12px 0', color: '#2a2a2a'}} {...props} />,
+                          h3: ({node, ...props}) => <h3 style={{fontSize: '20px', fontWeight: 'bold', margin: '16px 0 10px 0', color: '#3a3a3a'}} {...props} />,
+                          h4: ({node, ...props}) => <h4 style={{fontSize: '18px', fontWeight: 'bold', margin: '14px 0 8px 0', color: '#4a4a4a'}} {...props} />,
+                          h5: ({node, ...props}) => <h5 style={{fontSize: '16px', fontWeight: 'bold', margin: '12px 0 6px 0', color: '#5a5a5a'}} {...props} />,
+                          h6: ({node, ...props}) => <h6 style={{fontSize: '14px', fontWeight: 'bold', margin: '10px 0 4px 0', color: '#6a6a6a'}} {...props} />,
+                          p: ({node, ...props}) => <p style={{margin: '8px 0', lineHeight: '1.6'}} {...props} />,
+                          ul: ({node, ...props}) => <ul style={{margin: '8px 0', paddingLeft: '32px'}} {...props} />,
+                          ol: ({node, ...props}) => <ol style={{margin: '8px 0', paddingLeft: '32px'}} {...props} />,
+                          li: ({node, ...props}) => <li style={{margin: '4px 0', lineHeight: '1.5'}} {...props} />,
+                        } : undefined}
+                      >
                         {editingOutline}
                       </ReactMarkdown>
                     </div>
