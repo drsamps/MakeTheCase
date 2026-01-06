@@ -21,6 +21,12 @@ const CASE_FILES_DIR = path.join(__dirname, '../../case_files');
 
 const router = express.Router();
 
+// Test route to verify router is working
+router.get('/test', (req, res) => {
+  console.log('[CasePrep] Test route hit');
+  res.json({ message: 'Case prep routes are working', timestamp: new Date().toISOString() });
+});
+
 // Configure multer for file uploads to uploads subdirectory
 const storage = multer.diskStorage({
   destination: async (req, file, cb) => {
@@ -57,63 +63,92 @@ const upload = multer({
 });
 
 // POST /api/case-prep/:caseId/upload - Upload file for processing
-router.post('/:caseId/upload', verifyToken, requireRole(['admin']), requirePermission('caseprep'), upload.single('file'), async (req, res) => {
-  try {
-    const { caseId } = req.params;
-    const { file_type } = req.body; // 'case' or 'notes'
-
-    if (!file_type || !['case', 'notes'].includes(file_type)) {
+router.post('/:caseId/upload', verifyToken, requireRole(['admin']), requirePermission('caseprep'), async (req, res) => {
+  console.log('[CasePrep] Upload route hit, caseId:', req.params.caseId);
+  
+  // Handle file upload with multer
+  upload.single('file')(req, res, async (err) => {
+    if (err) {
+      console.error('[CasePrep] Multer error:', err);
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({
+            data: null,
+            error: { message: 'File size exceeds 10MB limit' }
+          });
+        }
+        return res.status(400).json({
+          data: null,
+          error: { message: `Upload error: ${err.message}` }
+        });
+      }
       return res.status(400).json({
         data: null,
-        error: { message: 'file_type must be either "case" or "notes"' }
+        error: { message: err.message || 'File upload failed' }
       });
     }
 
-    if (!req.file) {
-      return res.status(400).json({
+    // File upload successful, process the request
+    try {
+      const { caseId } = req.params;
+      const { file_type } = req.body; // 'case' or 'notes'
+
+      console.log('[CasePrep] Upload request:', { caseId, file_type, hasFile: !!req.file });
+
+      if (!file_type || !['case', 'notes'].includes(file_type)) {
+        return res.status(400).json({
+          data: null,
+          error: { message: 'file_type must be either "case" or "notes"' }
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          data: null,
+          error: { message: 'No file uploaded' }
+        });
+      }
+
+      // Verify case exists
+      const [cases] = await pool.execute('SELECT case_id FROM cases WHERE case_id = ?', [caseId]);
+      if (cases.length === 0) {
+        // Clean up uploaded file
+        await fs.unlink(req.file.path);
+        return res.status(404).json({
+          data: null,
+          error: { message: 'Case not found' }
+        });
+      }
+
+      // Create case_files record with pending status
+      const [result] = await pool.execute(
+        `INSERT INTO case_files (case_id, filename, file_type, processing_status, created_at)
+         VALUES (?, ?, ?, 'pending', NOW())`,
+        [caseId, req.file.filename, file_type]
+      );
+
+      const fileId = result.insertId;
+
+      // Return file info
+      const [fileRecord] = await pool.execute(
+        'SELECT id, case_id, filename, file_type, processing_status, created_at FROM case_files WHERE id = ?',
+        [fileId]
+      );
+
+      res.status(201).json({
+        data: fileRecord[0],
+        error: null
+      });
+
+    } catch (error) {
+      console.error('[CasePrep] Error uploading file:', error);
+      console.error('[CasePrep] Error stack:', error.stack);
+      res.status(500).json({
         data: null,
-        error: { message: 'No file uploaded' }
+        error: { message: error.message || 'Upload failed' }
       });
     }
-
-    // Verify case exists
-    const [cases] = await pool.execute('SELECT case_id FROM cases WHERE case_id = ?', [caseId]);
-    if (cases.length === 0) {
-      // Clean up uploaded file
-      await fs.unlink(req.file.path);
-      return res.status(404).json({
-        data: null,
-        error: { message: 'Case not found' }
-      });
-    }
-
-    // Create case_files record with pending status
-    const [result] = await pool.execute(
-      `INSERT INTO case_files (case_id, filename, file_type, processing_status, created_at)
-       VALUES (?, ?, ?, 'pending', NOW())`,
-      [caseId, req.file.filename, file_type]
-    );
-
-    const fileId = result.insertId;
-
-    // Return file info
-    const [fileRecord] = await pool.execute(
-      'SELECT id, case_id, filename, file_type, processing_status, created_at FROM case_files WHERE id = ?',
-      [fileId]
-    );
-
-    res.status(201).json({
-      data: fileRecord[0],
-      error: null
-    });
-
-  } catch (error) {
-    console.error('Error uploading file:', error);
-    res.status(500).json({
-      data: null,
-      error: { message: error.message }
-    });
-  }
+  }); // End of multer callback
 });
 
 // POST /api/case-prep/:caseId/process - Process uploaded file with AI
@@ -153,21 +188,32 @@ router.post('/:caseId/process', verifyToken, requireRole(['admin']), requirePerm
 
     try {
       // Step 1: Convert file to text
+      console.log('[CasePrep] Step 1: Converting file to text...');
       const ext = path.extname(fileRecord.filename);
       const { text: fileContent } = await convertFile(filePath, ext);
+      console.log('[CasePrep] File converted, text length:', fileContent.length);
 
       // Step 2: Get active prompt template based on file type
+      console.log('[CasePrep] Step 2: Getting active prompt template...');
       const promptUse = fileRecord.file_type === 'case' ? 'case_outline_generation' : 'notes_cleanup';
       const activePrompt = await getActivePrompt(promptUse);
+      console.log('[CasePrep] Active prompt:', activePrompt ? `${activePrompt.use} v${activePrompt.version}` : 'NOT FOUND');
+
+      if (!activePrompt) {
+        throw new Error(`No active prompt found for ${promptUse}`);
+      }
 
       // Step 3: Render prompt with file content
+      console.log('[CasePrep] Step 3: Rendering prompt...');
       const variables = fileRecord.file_type === 'case'
         ? { case_content: fileContent }
         : { notes_content: fileContent };
 
       const renderedPrompt = renderPrompt(activePrompt.prompt_template, variables);
+      console.log('[CasePrep] Rendered prompt length:', renderedPrompt.length);
 
       // Step 4: Get model config
+      console.log('[CasePrep] Step 4: Getting model config for:', model_id);
       const [models] = await pool.execute(
         'SELECT model_id, temperature, reasoning_effort FROM models WHERE model_id = ? AND enabled = 1',
         [model_id]
@@ -181,21 +227,26 @@ router.post('/:caseId/process', verifyToken, requireRole(['admin']), requirePerm
         temperature: models[0].temperature,
         reasoning_effort: models[0].reasoning_effort
       };
+      console.log('[CasePrep] Model config:', modelConfig);
 
       // Step 5: Call LLM to generate outline
+      console.log('[CasePrep] Step 5: Calling LLM to generate outline...');
       const { text: outline, meta } = await generateOutlineWithLLM({
         modelId: model_id,
         prompt: renderedPrompt,
         config: modelConfig
       });
+      console.log('[CasePrep] LLM returned outline length:', outline ? outline.length : 0);
 
       // Step 6: Save outline and update status
+      console.log('[CasePrep] Step 6: Saving outline to database...');
       await pool.execute(
         `UPDATE case_files
          SET outline_content = ?, processing_status = ?, processed_at = NOW(), processing_error = NULL
          WHERE id = ?`,
         [outline, 'completed', file_id]
       );
+      console.log('[CasePrep] Database updated successfully');
 
       // Return generated outline
       const [updatedFile] = await pool.execute(
@@ -204,6 +255,9 @@ router.post('/:caseId/process', verifyToken, requireRole(['admin']), requirePerm
          FROM case_files WHERE id = ?`,
         [file_id]
       );
+
+      console.log('[CasePrep] Returning file record with outline_content length:', 
+        updatedFile[0]?.outline_content?.length || 0);
 
       res.json({
         data: updatedFile[0],
@@ -246,7 +300,7 @@ router.get('/:caseId/files', verifyToken, requireRole(['admin']), requirePermiss
     // Get all files for this case
     const [files] = await pool.execute(
       `SELECT id, case_id, filename, file_type, processing_status, processing_model,
-              processing_error, processed_at, created_at
+              processing_error, outline_content, processed_at, created_at
        FROM case_files
        WHERE case_id = ?
        ORDER BY created_at DESC`,
@@ -407,6 +461,14 @@ router.get('/files/:fileId/content', verifyToken, requireRole(['admin']), requir
       data: null,
       error: { message: error.message }
     });
+  }
+});
+
+// Log all registered routes
+console.log('[CasePrep] Registered routes:');
+router.stack.forEach((r) => {
+  if (r.route) {
+    console.log(`  ${Object.keys(r.route.methods).join(', ').toUpperCase()} ${r.route.path}`);
   }
 });
 

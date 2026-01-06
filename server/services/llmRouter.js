@@ -1,3 +1,4 @@
+// LLM Router - Updated with increased token limits for complete outlines (8K-16K)
 import { GoogleGenAI } from '@google/genai';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
@@ -232,7 +233,7 @@ export async function generateOutlineWithLLM({ modelId, prompt, config = {} }) {
       messages: [
         { role: 'user', content: prompt },
       ],
-      max_tokens: 4096, // Higher token limit for outlines
+      max_tokens: 16000, // OpenAI GPT-4 supports higher limits for detailed outlines
     };
     if (!reasoningModel && temperature !== null && temperature !== undefined) {
       payload.temperature = Number(temperature);
@@ -274,7 +275,7 @@ export async function generateOutlineWithLLM({ modelId, prompt, config = {} }) {
       },
       body: JSON.stringify({
         model: modelId,
-        max_tokens: 4096, // Higher token limit for outlines
+        max_tokens: 8192, // Increased for detailed case outlines (Claude supports up to 8192)
         messages: [
           { role: 'user', content: [{ type: 'text', text: prompt }] },
         ],
@@ -297,7 +298,7 @@ export async function generateOutlineWithLLM({ modelId, prompt, config = {} }) {
     model: modelId,
     contents: prompt,
     config: {
-      maxOutputTokens: 4096, // Higher token limit for outlines
+      maxOutputTokens: 8192, // Gemini supports up to 8192 tokens for detailed outlines
       ...(temperature !== null && temperature !== undefined ? { temperature: Number(temperature) } : {}),
       topP: 0.9,
     },

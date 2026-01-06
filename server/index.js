@@ -60,6 +60,7 @@ app.use('/api/chat-options', chatOptionsRoutes); // Chat options schema and defa
 app.use('/api/personas', personasRoutes); // Persona management
 app.use('/api/case-chats', caseChatsRoutes); // Chat session tracking
 app.use('/api/case-prep', casePrepRoutes); // Case prep file upload and AI processing
+console.log('✓ Case prep routes mounted at /api/case-prep');
 app.use('/api/prompts', promptsRoutes); // AI prompt template management
 app.use('/api/settings', settingsRoutes); // Application settings
 app.use('/api/admins', adminsRoutes); // Instructor management (superuser only)

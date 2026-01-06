@@ -183,7 +183,14 @@ const App: React.FC = () => {
 
         if (fetchError) {
             console.error('Error fetching sections:', fetchError);
-            setError('Could not load course sections from the database.');
+            // Check if backend server is down (connection refused/failed to fetch)
+            const errorMsg = fetchError.message || '';
+            if (errorMsg.includes('Failed to fetch') || errorMsg.includes('ECONNREFUSED') || 
+                errorMsg.includes('NetworkError') || errorMsg.includes('fetch failed')) {
+                setError('Backend server paused - please try again later.');
+            } else {
+                setError('Could not load course sections from the database.');
+            }
         } else if (data) {
             setSections(data as Section[]);
             if (data.length === 0) {
@@ -200,7 +207,14 @@ const App: React.FC = () => {
         
         if (modelError) {
             console.error('Error fetching models:', modelError);
-            setError('Could not load AI models from the database.');
+            // Check if backend server is down
+            const errorMsg = modelError.message || '';
+            if (errorMsg.includes('Failed to fetch') || errorMsg.includes('ECONNREFUSED') || 
+                errorMsg.includes('NetworkError') || errorMsg.includes('fetch failed')) {
+                setError('Backend server paused - please try again later.');
+            } else {
+                setError('Could not load AI models from the database.');
+            }
         } else if (data) {
             setModels(data as Model[]);
             const defaultM = (data as any[]).find(m => m.default);

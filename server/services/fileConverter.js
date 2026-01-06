@@ -5,6 +5,9 @@
 
 import fs from 'fs/promises';
 import mammoth from 'mammoth';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
 
 /**
  * Convert PDF to text using pdf-parse
@@ -13,11 +16,13 @@ import mammoth from 'mammoth';
  */
 export async function convertPdfToText(filePath) {
   try {
-    const pdfParse = (await import('pdf-parse/lib/pdf-parse.js')).default;
+    // Using pdf-parse v1.1.1 which has simpler CommonJS exports
+    const pdfParse = require('pdf-parse');
     const dataBuffer = await fs.readFile(filePath);
     const data = await pdfParse(dataBuffer);
     return data.text;
   } catch (error) {
+    console.error('[FileConverter] PDF conversion error:', error);
     throw new Error(`PDF conversion failed: ${error.message}`);
   }
 }
