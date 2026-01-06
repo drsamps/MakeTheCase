@@ -9,8 +9,16 @@ import { SettingsManager } from './SettingsManager';
 import { CasePrepManager } from './CasePrepManager';
 import InstructorManager from './InstructorManager';
 import StudentManager from './StudentManager';
+import DashboardHome from './DashboardHome';
+import Analytics from './Analytics';
 import { hasAccess } from '../utils/permissions';
 import { AdminUser } from '../types';
+
+// New workflow-centric navigation types
+type PrimaryTab = 'home' | 'courses' | 'content' | 'monitor' | 'analytics' | 'admin';
+type CoursesSubTab = 'sections' | 'students' | 'assignments';
+type ContentSubTab = 'cases' | 'caseprep';
+type AdminSubTab = 'personas' | 'prompts' | 'models' | 'settings' | 'instructors';
 
 interface DashboardProps {
   onLogout: () => void;
@@ -110,7 +118,20 @@ type SortDirection = 'asc' | 'desc';
 type FilterMode = 'all' | 'completed' | 'in_progress' | 'not_started';
 
 const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
-  // Determine first accessible tab for the user
+  // New workflow-centric navigation state
+  const [primaryTab, setPrimaryTab] = useState<PrimaryTab>('home');
+  const [coursesSubTab, setCoursesSubTab] = useState<CoursesSubTab>('sections');
+  const [contentSubTab, setContentSubTab] = useState<ContentSubTab>('cases');
+  const [adminSubTab, setAdminSubTab] = useState<AdminSubTab>('personas');
+
+  // Check if user has access to any admin functions
+  const hasAdminAccess = useCallback(() => {
+    return hasAccess(user, 'personas') || hasAccess(user, 'prompts') ||
+           hasAccess(user, 'models') || hasAccess(user, 'settings') ||
+           hasAccess(user, 'instructors');
+  }, [user]);
+
+  // Legacy tab compatibility - determine first accessible tab for the user
   const getFirstAccessibleTab = (): 'chats' | 'assignments' | 'sections' | 'students' | 'cases' | 'caseprep' | 'personas' | 'prompts' | 'models' | 'settings' | 'instructors' => {
     const tabs: Array<'chats' | 'assignments' | 'sections' | 'students' | 'cases' | 'caseprep' | 'personas' | 'prompts' | 'models' | 'settings' | 'instructors'> =
       ['chats', 'assignments', 'sections', 'students', 'cases', 'caseprep', 'personas', 'prompts', 'models', 'settings', 'instructors'];
@@ -125,6 +146,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [sectionStats, setSectionStats] = useState<SectionStat[]>([]);
   const [selectedSection, setSelectedSection] = useState<SectionStat | null>(null);
   const [studentDetails, setStudentDetails] = useState<StudentDetail[]>([]);
+
+  // Stats for navigation badges
+  const [stats, setStats] = useState({ activeChats: 0, abandonedChats: 0 });
   const [modelsMap, setModelsMap] = useState<Map<string, string>>(new Map());
   const [modelsList, setModelsList] = useState<Model[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
@@ -163,6 +187,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const autoRefreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Bulk selection state
+  const [selectedStudentIds, setSelectedStudentIds] = useState<Set<string>>(new Set());
   
   // Section list filter: show only enabled sections by default
   const [showAllSections, setShowAllSections] = useState(false);
@@ -265,6 +292,71 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [isLoadingAssignments, setIsLoadingAssignments] = useState(false);
   const [expandedAssignmentSection, setExpandedAssignmentSection] = useState<string | null>(null);
   const [assignmentCasesList, setAssignmentCasesList] = useState<any[]>([]);
+
+  // Navigation handler for DashboardHome - simplified to just navigate
+  const handleNavigate = useCallback((section: string, subTab?: string) => {
+    switch (section) {
+      case 'courses':
+        setPrimaryTab('courses');
+        if (subTab === 'new-section') {
+          setCoursesSubTab('sections');
+          setShowSectionModal(true);
+          setEditingSection(null);
+          setSectionForm({
+            section_id: '',
+            section_title: '',
+            year_term: '',
+            chat_model: '',
+            super_model: '',
+            enabled: true
+          });
+        } else if (subTab && ['sections', 'students', 'assignments'].includes(subTab)) {
+          setCoursesSubTab(subTab as CoursesSubTab);
+        } else if (subTab) {
+          // If subTab is a section_id, select that section
+          setCoursesSubTab('sections');
+          // Will select the section when sectionStats are available
+          const foundSection = sectionStats.find(s => s.section_id === subTab);
+          if (foundSection) {
+            setSelectedSection(foundSection);
+          }
+        }
+        break;
+      case 'content':
+        setPrimaryTab('content');
+        if (subTab === 'new-case') {
+          setContentSubTab('cases');
+          setShowCaseModal(true);
+          setEditingCase(null);
+          setCaseForm({
+            case_id: '',
+            case_title: '',
+            protagonist: '',
+            protagonist_initials: '',
+            chat_topic: '',
+            chat_question: '',
+            enabled: true
+          });
+        } else if (subTab && ['cases', 'caseprep'].includes(subTab)) {
+          setContentSubTab(subTab as ContentSubTab);
+        }
+        break;
+      case 'monitor':
+        setPrimaryTab('monitor');
+        break;
+      case 'analytics':
+        setPrimaryTab('analytics');
+        break;
+      case 'admin':
+        setPrimaryTab('admin');
+        if (subTab && ['personas', 'prompts', 'models', 'settings', 'instructors'].includes(subTab)) {
+          setAdminSubTab(subTab as AdminSubTab);
+        }
+        break;
+      default:
+        setPrimaryTab('home');
+    }
+  }, [sectionStats]);
 
   const fetchModels = useCallback(async () => {
     setIsLoadingModels(true);
@@ -1438,6 +1530,70 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     document.body.removeChild(a);
     URL.revokeObjectURL(a.href);
   }, [selectedSection, sortedStudentDetails, modelsMap]);
+
+  // Bulk selection handlers
+  const handleToggleSelectStudent = useCallback((studentId: string) => {
+    setSelectedStudentIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(studentId)) {
+        newSet.delete(studentId);
+      } else {
+        newSet.add(studentId);
+      }
+      return newSet;
+    });
+  }, []);
+
+  const handleSelectAllStudents = useCallback(() => {
+    if (selectedStudentIds.size === sortedStudentDetails.length) {
+      setSelectedStudentIds(new Set());
+    } else {
+      setSelectedStudentIds(new Set(sortedStudentDetails.map(s => s.id)));
+    }
+  }, [sortedStudentDetails, selectedStudentIds.size]);
+
+  const handleBulkExportCSV = useCallback(() => {
+    if (!selectedSection || selectedStudentIds.size === 0) {
+      alert('No students selected. Select students using checkboxes first.');
+      return;
+    }
+
+    const selectedStudents = sortedStudentDetails.filter(s => selectedStudentIds.has(s.id));
+    const headers = ['Student Name', 'CEO Persona', 'Status', 'Score', 'Hints', 'Helpful Rating', 'Chat Model', 'Super Model', 'Completion Time'];
+    const rows = selectedStudents.map(s => [
+      s.full_name,
+      s.persona || '',
+      s.status,
+      s.score !== null ? s.score.toString() : '',
+      s.hints !== null ? s.hints.toString() : '',
+      s.helpful !== null ? s.helpful.toFixed(1) : '',
+      s.chat_model ? (modelsMap.get(s.chat_model) || s.chat_model) : '',
+      s.super_model ? (modelsMap.get(s.super_model) || s.super_model) : '',
+      s.completion_time ? new Date(s.completion_time).toLocaleString() : '',
+    ]);
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    const ts = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const fname = `selected-students-${ts.getFullYear()}${pad(ts.getMonth()+1)}${pad(ts.getDate())}.csv`;
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+    setSelectedStudentIds(new Set()); // Clear selection after export
+  }, [selectedSection, sortedStudentDetails, selectedStudentIds, modelsMap]);
+
+  const handleClearSelection = useCallback(() => {
+    setSelectedStudentIds(new Set());
+  }, []);
 
   // Section CRUD operations
   const handleCreateSection = () => {
@@ -2618,7 +2774,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         await fetch(`${getApiBaseUrl()}/case-chats/mark-abandoned`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${localStorage.getItem('adminToken')}`,
+            'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({ timeout_minutes: 1440 }) // 24 hours = 1440 minutes
@@ -2635,12 +2791,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
       const response = await fetch(`${getApiBaseUrl()}/case-chats?${params.toString()}`, {
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('adminToken')}`
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
         }
       });
       const result = await response.json();
       if (result.data) {
         let chats = result.data;
+        // Update stats for nav badges (calculate from unfiltered data)
+        const activeCount = chats.filter((c: any) => ['started', 'in_progress'].includes(c.status)).length;
+        const abandonedCount = chats.filter((c: any) => c.status === 'abandoned').length;
+        setStats({ activeChats: activeCount, abandonedChats: abandonedCount });
+
         // Client-side search filter
         if (caseChatsFilter.search) {
           const searchLower = caseChatsFilter.search.toLowerCase();
@@ -2659,12 +2820,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   }, [caseChatsFilter]);
 
-  // Fetch case chats when filters change or chats tab is active
+  // Fetch case chats when filters change or monitor tab is active
   useEffect(() => {
-    if (activeTab === 'chats') {
+    if (primaryTab === 'monitor' || activeTab === 'chats') {
       fetchCaseChats();
     }
-  }, [activeTab, caseChatsFilter.status, caseChatsFilter.section_id, fetchCaseChats]);
+  }, [primaryTab, activeTab, caseChatsFilter.status, caseChatsFilter.section_id, fetchCaseChats]);
+
+  // Fetch initial stats on mount
+  useEffect(() => {
+    fetchCaseChats();
+  }, []);
 
   // Kill a chat session
   const handleKillChat = async (chatId: string) => {
@@ -2674,7 +2840,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const response = await fetch(`${getApiBaseUrl()}/case-chats/${chatId}/kill`, {
         method: 'PATCH',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('adminToken')}`,
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
           'Content-Type': 'application/json'
         }
       });
@@ -2941,165 +3107,314 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       </header>
 
-      {/* Main Content - Two Screen Layout */}
+      {/* Main Content - New Workflow-Centric Navigation */}
       <main className="flex-1 overflow-y-auto">
-        <div className="px-6 pt-4">
-          <div className="flex gap-2 flex-wrap">
+        {/* Primary Navigation */}
+        <div className="px-6 pt-4 border-b border-gray-200 bg-white">
+          <div className="flex gap-1">
+            {/* Dashboard Home */}
+            <button
+              onClick={() => setPrimaryTab('home')}
+              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                primaryTab === 'home'
+                  ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
+                </svg>
+                Dashboard
+              </span>
+            </button>
+
+            {/* Courses */}
+            {(hasAccess(user, 'sections') || hasAccess(user, 'students') || hasAccess(user, 'assignments')) && (
+              <button
+                onClick={() => {
+                  setPrimaryTab('courses');
+                  if (casesList.length === 0) fetchCases();
+                  if (coursesSubTab === 'assignments') fetchAssignmentsSections();
+                }}
+                className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                  primaryTab === 'courses'
+                    ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M10.394 2.08a1 1 0 00-.788 0l-7 3a1 1 0 000 1.84L5.25 8.051a.999.999 0 01.356-.257l4-1.714a1 1 0 11.788 1.838l-2.727 1.17 1.94.831a1 1 0 00.787 0l7-3a1 1 0 000-1.838l-7-3zM3.31 9.397L5 10.12v4.102a8.969 8.969 0 00-1.05-.174 1 1 0 01-.89-.89 11.115 11.115 0 01.25-3.762z" />
+                  </svg>
+                  Courses
+                </span>
+              </button>
+            )}
+
+            {/* Content Library */}
+            {(hasAccess(user, 'cases') || hasAccess(user, 'caseprep')) && (
+              <button
+                onClick={() => {
+                  setPrimaryTab('content');
+                  if (casesList.length === 0) fetchCases();
+                }}
+                className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                  primaryTab === 'content'
+                    ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" />
+                  </svg>
+                  Content
+                </span>
+              </button>
+            )}
+
+            {/* Live Monitoring */}
             {hasAccess(user, 'chats') && (
               <button
-                onClick={() => handleTabChange('chats')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                  activeTab === 'chats'
-                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                onClick={() => setPrimaryTab('monitor')}
+                className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                  primaryTab === 'monitor'
+                    ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
                 }`}
               >
-                Chats
+                <span className="flex items-center gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z" />
+                    <path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z" />
+                  </svg>
+                  Monitor
+                  {stats.activeChats > 0 && (
+                    <span className="px-1.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                      {stats.activeChats}
+                    </span>
+                  )}
+                </span>
               </button>
             )}
-            {hasAccess(user, 'assignments') && (
+
+            {/* Analytics */}
+            <button
+              onClick={() => setPrimaryTab('analytics')}
+              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                primaryTab === 'analytics'
+                  ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+                </svg>
+                Analytics
+              </span>
+            </button>
+
+            {/* System Admin (for superusers and those with admin permissions) */}
+            {hasAdminAccess() && (
               <button
-                onClick={() => handleTabChange('assignments')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                  activeTab === 'assignments'
-                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
+                onClick={() => {
+                  setPrimaryTab('admin');
+                  if (personasList.length === 0 && hasAccess(user, 'personas')) fetchPersonas();
+                }}
+                className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                  primaryTab === 'admin'
+                    ? 'bg-gray-50 text-purple-600 border-b-2 border-purple-600'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
                 }`}
               >
-                Assignments
-              </button>
-            )}
-            {hasAccess(user, 'sections') && (
-              <button
-                onClick={() => handleTabChange('sections')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                  activeTab === 'sections'
-                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-                }`}
-              >
-                Sections
-              </button>
-            )}
-            {hasAccess(user, 'students') && (
-              <button
-                onClick={() => handleTabChange('students')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                  activeTab === 'students'
-                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-                }`}
-              >
-                Students
-              </button>
-            )}
-            {hasAccess(user, 'cases') && (
-              <button
-                onClick={() => handleTabChange('cases')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                  activeTab === 'cases'
-                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-                }`}
-              >
-                Cases
-              </button>
-            )}
-            {hasAccess(user, 'caseprep') && (
-              <button
-                onClick={() => handleTabChange('caseprep')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                  activeTab === 'caseprep'
-                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-                }`}
-              >
-                Case Prep+
-              </button>
-            )}
-            {hasAccess(user, 'personas') && (
-              <button
-                onClick={() => handleTabChange('personas')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                  activeTab === 'personas'
-                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-                }`}
-              >
-                Personas+
-              </button>
-            )}
-            {hasAccess(user, 'prompts') && (
-              <button
-                onClick={() => handleTabChange('prompts')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                  activeTab === 'prompts'
-                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-                }`}
-              >
-                Prompts+
-              </button>
-            )}
-            {hasAccess(user, 'models') && (
-              <button
-                onClick={() => handleTabChange('models')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                  activeTab === 'models'
-                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-                }`}
-              >
-                Models+
-              </button>
-            )}
-            {hasAccess(user, 'settings') && (
-              <button
-                onClick={() => handleTabChange('settings')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                  activeTab === 'settings'
-                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-                }`}
-              >
-                Settings+
-              </button>
-            )}
-            {hasAccess(user, 'instructors') && (
-              <button
-                onClick={() => handleTabChange('instructors')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg border ${
-                  activeTab === 'instructors'
-                    ? 'bg-white text-gray-900 border-gray-300 shadow-sm'
-                    : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-white'
-                }`}
-              >
-                Instructors+
+                <span className="flex items-center gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+                  </svg>
+                  Admin
+                </span>
               </button>
             )}
           </div>
+
+          {/* Sub-navigation for Courses */}
+          {primaryTab === 'courses' && (
+            <div className="flex gap-1 mt-2 pb-2">
+              {hasAccess(user, 'sections') && (
+                <button
+                  onClick={() => setCoursesSubTab('sections')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    coursesSubTab === 'sections'
+                      ? 'bg-blue-100 text-blue-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Sections
+                </button>
+              )}
+              {hasAccess(user, 'students') && (
+                <button
+                  onClick={() => setCoursesSubTab('students')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    coursesSubTab === 'students'
+                      ? 'bg-blue-100 text-blue-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Students
+                </button>
+              )}
+              {hasAccess(user, 'assignments') && (
+                <button
+                  onClick={() => {
+                    setCoursesSubTab('assignments');
+                    fetchAssignmentsSections();
+                  }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    coursesSubTab === 'assignments'
+                      ? 'bg-blue-100 text-blue-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Assignments
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Sub-navigation for Content */}
+          {primaryTab === 'content' && (
+            <div className="flex gap-1 mt-2 pb-2">
+              {hasAccess(user, 'cases') && (
+                <button
+                  onClick={() => setContentSubTab('cases')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    contentSubTab === 'cases'
+                      ? 'bg-blue-100 text-blue-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Cases
+                </button>
+              )}
+              {hasAccess(user, 'caseprep') && (
+                <button
+                  onClick={() => setContentSubTab('caseprep')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    contentSubTab === 'caseprep'
+                      ? 'bg-blue-100 text-blue-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  AI Case Prep
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Sub-navigation for Admin */}
+          {primaryTab === 'admin' && (
+            <div className="flex gap-1 mt-2 pb-2">
+              {hasAccess(user, 'personas') && (
+                <button
+                  onClick={() => {
+                    setAdminSubTab('personas');
+                    if (personasList.length === 0) fetchPersonas();
+                  }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'personas'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Personas
+                </button>
+              )}
+              {hasAccess(user, 'prompts') && (
+                <button
+                  onClick={() => setAdminSubTab('prompts')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'prompts'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Prompts
+                </button>
+              )}
+              {hasAccess(user, 'models') && (
+                <button
+                  onClick={() => setAdminSubTab('models')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'models'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Models
+                </button>
+              )}
+              {hasAccess(user, 'settings') && (
+                <button
+                  onClick={() => setAdminSubTab('settings')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'settings'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Settings
+                </button>
+              )}
+              {hasAccess(user, 'instructors') && (
+                <button
+                  onClick={() => setAdminSubTab('instructors')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'instructors'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Instructors
+                </button>
+              )}
+            </div>
+          )}
         </div>
-        {activeTab === 'models' ? (
-          renderModelsTab()
-        ) : activeTab === 'cases' ? (
-          renderCasesTab()
-        ) : activeTab === 'assignments' ? (
-          renderAssignmentsTab()
-        ) : activeTab === 'personas' ? (
-          renderPersonasTab()
-        ) : activeTab === 'chats' ? (
+
+        {/* Content Rendering based on Primary Tab */}
+        {primaryTab === 'home' ? (
+          <DashboardHome user={user} onNavigate={handleNavigate} />
+        ) : primaryTab === 'analytics' ? (
+          <Analytics onNavigate={handleNavigate} />
+        ) : primaryTab === 'monitor' ? (
           renderChatsTab()
-        ) : activeTab === 'caseprep' ? (
-          <CasePrepManager />
-        ) : activeTab === 'prompts' ? (
-          <PromptManager />
-        ) : activeTab === 'settings' ? (
-          <SettingsManager />
-        ) : activeTab === 'students' ? (
-          <StudentManager />
-        ) : activeTab === 'instructors' ? (
-          <InstructorManager user={user} />
-        ) : !selectedSection ? (
+        ) : primaryTab === 'content' ? (
+          contentSubTab === 'caseprep' ? (
+            <CasePrepManager />
+          ) : (
+            renderCasesTab()
+          )
+        ) : primaryTab === 'admin' ? (
+          adminSubTab === 'models' ? (
+            renderModelsTab()
+          ) : adminSubTab === 'personas' ? (
+            renderPersonasTab()
+          ) : adminSubTab === 'prompts' ? (
+            <PromptManager />
+          ) : adminSubTab === 'settings' ? (
+            <SettingsManager />
+          ) : adminSubTab === 'instructors' ? (
+            <InstructorManager user={user} />
+          ) : null
+        ) : primaryTab === 'courses' ? (
+          coursesSubTab === 'students' ? (
+            <StudentManager />
+          ) : coursesSubTab === 'assignments' ? (
+            renderAssignmentsTab()
+          ) : !selectedSection ? (
           /* ==================== SCREEN 1: SECTION LIST ==================== */
           <div className="p-6 max-w-7xl mx-auto">
             {/* Section List Header */}
@@ -3602,10 +3917,42 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 ) : !sortedStudentDetails.length ? (
                   <div className="p-6 text-center text-gray-500">No students match the current filter.</div>
                 ) : (
+                  <>
+                  {/* Bulk Actions Bar */}
+                  {selectedStudentIds.size > 0 && (
+                    <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+                      <span className="text-sm font-medium text-blue-800">
+                        {selectedStudentIds.size} student{selectedStudentIds.size !== 1 ? 's' : ''} selected
+                      </span>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={handleBulkExportCSV}
+                          className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-white border border-blue-300 rounded hover:bg-blue-50"
+                        >
+                          Export Selected
+                        </button>
+                        <button
+                          onClick={handleClearSelection}
+                          className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-800"
+                        >
+                          Clear Selection
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">
                         <tr>
+                          <th className="p-3 w-10">
+                            <input
+                              type="checkbox"
+                              checked={selectedStudentIds.size === sortedStudentDetails.length && sortedStudentDetails.length > 0}
+                              onChange={handleSelectAllStudents}
+                              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              title="Select all"
+                            />
+                          </th>
                           <SortableHeader label="Student" sortableKey="full_name" />
                           <SortableHeader label="Status" sortableKey="status" />
                           <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Case</th>
@@ -3619,7 +3966,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
                         {sortedStudentDetails.map(student => (
-                          <tr key={student.id} className={`hover:bg-gray-50 ${student.status === 'in_progress' ? 'bg-yellow-50' : ''}`}>
+                          <tr key={student.id} className={`hover:bg-gray-50 ${student.status === 'in_progress' ? 'bg-yellow-50' : ''} ${selectedStudentIds.has(student.id) ? 'bg-blue-50' : ''}`}>
+                            <td className="p-3">
+                              <input
+                                type="checkbox"
+                                checked={selectedStudentIds.has(student.id)}
+                                onChange={() => handleToggleSelectStudent(student.id)}
+                                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              />
+                            </td>
                             <td className="p-3 whitespace-nowrap">
                               <div className="text-sm font-medium text-gray-900">{student.full_name}</div>
                             </td>
@@ -3696,11 +4051,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       </tbody>
                     </table>
                   </div>
+                  </>
                 )}
               </div>
             </div>
           </div>
-        )}
+        )
+        ) : null}
       </main>
 
       {/* Transcript Modal */}

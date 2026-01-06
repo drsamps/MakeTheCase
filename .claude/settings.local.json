@@ -6,7 +6,9 @@
       "Bash(curl:*)",
       "Bash(node -e \"process.stdin.pipe\\(require\\(''fs''\\).createWriteStream\\(''nul''\\)\\); console.log\\(''Prompts API response received successfully''\\)\")",
       "Bash(node:*)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(grep:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }
