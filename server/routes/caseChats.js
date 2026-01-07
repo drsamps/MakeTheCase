@@ -167,7 +167,12 @@ router.patch('/:id/complete', async (req, res) => {
 // GET /api/case-chats - List chats with filters (admin only)
 router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
-    const { status, section_id, student_id, case_id, limit = 100, offset = 0 } = req.query;
+    const { status, section_id, student_id, case_id } = req.query;
+    let { limit = 100, offset = 0 } = req.query;
+
+    // Ensure limit and offset are valid numbers
+    limit = Math.max(1, parseInt(limit) || 100);
+    offset = Math.max(0, parseInt(offset) || 0);
 
     let query = `
       SELECT cc.*,
@@ -182,12 +187,12 @@ router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
     `;
     const params = [];
 
-    if (status) {
+    if (status && status !== 'all') {
       query += ' AND cc.status = ?';
       params.push(status);
     }
 
-    if (section_id) {
+    if (section_id && section_id !== 'all') {
       query += ' AND cc.section_id = ?';
       params.push(section_id);
     }
@@ -203,19 +208,21 @@ router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
     }
 
     query += ' ORDER BY cc.start_time DESC LIMIT ? OFFSET ?';
-    params.push(parseInt(limit), parseInt(offset));
+    params.push(limit, offset);
 
-    const [rows] = await pool.execute(query, params);
+    // Using pool.query instead of pool.execute for queries with LIMIT placeholders
+    // as some MySQL versions have issues with prepared statements and LIMIT.
+    const [rows] = await pool.query(query, params);
 
     // Get total count for pagination
     let countQuery = 'SELECT COUNT(*) as total FROM case_chats cc WHERE 1=1';
     const countParams = [];
 
-    if (status) {
+    if (status && status !== 'all') {
       countQuery += ' AND cc.status = ?';
       countParams.push(status);
     }
-    if (section_id) {
+    if (section_id && section_id !== 'all') {
       countQuery += ' AND cc.section_id = ?';
       countParams.push(section_id);
     }
@@ -228,18 +235,24 @@ router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
       countParams.push(case_id);
     }
 
-    const [countResult] = await pool.execute(countQuery, countParams);
+    const [countResult] = await pool.query(countQuery, countParams);
 
     res.json({
       data: rows,
-      total: countResult[0].total,
-      limit: parseInt(limit),
-      offset: parseInt(offset),
+      total: countResult[0]?.total || 0,
+      limit,
+      offset,
       error: null
     });
   } catch (error) {
     console.error('Error fetching case chats:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
+    res.status(500).json({ 
+      data: null, 
+      error: { 
+        message: error.message,
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      } 
+    });
   }
 });
 
@@ -415,13 +428,14 @@ router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
 router.post('/mark-abandoned', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { timeout_minutes = 60 } = req.body;
+    const timeout = parseInt(timeout_minutes) || 60;
 
-    const [result] = await pool.execute(
+    const [result] = await pool.query(
       `UPDATE case_chats
        SET status = 'abandoned', end_time = CURRENT_TIMESTAMP
        WHERE status IN ('started', 'in_progress')
          AND last_activity < DATE_SUB(NOW(), INTERVAL ? MINUTE)`,
-      [timeout_minutes]
+      [timeout]
     );
 
     res.json({
