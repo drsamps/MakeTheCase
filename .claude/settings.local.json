@@ -1,4 +1,8 @@
 {
+  "env": {
+    "MYSQL_CLAUDE_USER": "claudecode",
+    "MYSQL_CLAUDE_PASSWORD": "devonly"
+  },
   "permissions": {
     "allow": [
       "Bash(npm run dev:server:*)",
@@ -8,7 +12,12 @@
       "Bash(node:*)",
       "Bash(findstr:*)",
       "Bash(grep:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(where:*)",
+      "Bash(dir /s /b \"C:\\\\Program Files\\\\MySQL\\\\*mysql.exe\")",
+      "Bash(dir /s /b \"C:\\\\Program Files \\(x86\\)\\\\MySQL\\\\*mysql.exe\")",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
