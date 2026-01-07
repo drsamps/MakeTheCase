@@ -19,6 +19,7 @@ import studentsRoutes from './routes/students.js';
 import evaluationsRoutes from './routes/evaluations.js';
 import casRoutes from './routes/cas.js';
 import casesRoutes from './routes/cases.js';
+import scenariosRoutes from './routes/scenarios.js';
 import sectionCasesRoutes from './routes/sectionCases.js';
 import chatOptionsRoutes from './routes/chatOptions.js';
 import personasRoutes from './routes/personas.js';
@@ -55,6 +56,7 @@ app.use('/api/students', studentsRoutes);
 app.use('/api/evaluations', evaluationsRoutes);
 app.use('/api/llm', llmRoutes);
 app.use('/api/cases', casesRoutes);
+app.use('/api/cases', scenariosRoutes); // Scenario management (nested under cases)
 app.use('/api/sections', sectionCasesRoutes); // Section-case assignments (nested under sections)
 app.use('/api/chat-options', chatOptionsRoutes); // Chat options schema and defaults
 app.use('/api/personas', personasRoutes); // Persona management

@@ -13,6 +13,8 @@ import Evaluation from './components/Evaluation';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import ResizablePanes from './components/ResizablePanes';
+import ScenarioSelector from './components/ScenarioSelector';
+import ChatTimer from './components/ChatTimer';
 
 interface Model {
     model_id: string;
@@ -125,6 +127,13 @@ const App: React.FC = () => {
   const [isLoadingAvailableCases, setIsLoadingAvailableCases] = useState(false);
   const [studentSavedSectionId, setStudentSavedSectionId] = useState<string | null>(null);
   const [hasFetchedStudentSection, setHasFetchedStudentSection] = useState(false);
+
+  // Scenario support
+  const [availableScenarios, setAvailableScenarios] = useState<any[]>([]);
+  const [selectedScenarioId, setSelectedScenarioId] = useState<number | null>(null);
+  const [scenarioSelectionMode, setScenarioSelectionMode] = useState<'student_choice' | 'all_required'>('student_choice');
+  const [scenarioRequireOrder, setScenarioRequireOrder] = useState(false);
+  const [useScenarios, setUseScenarios] = useState(false);
   
   // Case completion tracking
   const [caseCompletionStatus, setCaseCompletionStatus] = useState<Record<string, { completed: boolean; allowRechat: boolean }>>({});
@@ -344,16 +353,19 @@ const App: React.FC = () => {
       if (!selectedCaseId) {
         setActiveCaseData(null);
         setChatOptions(defaultChatOptions);
+        setAvailableScenarios([]);
+        setSelectedScenarioId(null);
+        setUseScenarios(false);
         return;
       }
-      
-      // Find the selected case from available cases to get chat_options
+
+      // Find the selected case from available cases to get chat_options and scenarios
       const selectedCase = availableCases.find(c => c.case_id === selectedCaseId);
       if (selectedCase) {
         // Extract and set chat options
         const options = selectedCase.chat_options || defaultChatOptions;
         setChatOptions(options);
-        
+
         // Set default persona from chat options
         if (options.default_persona) {
           const personaMap: Record<string, CEOPersona> = {
@@ -365,8 +377,31 @@ const App: React.FC = () => {
           };
           setCeoPersona(personaMap[options.default_persona] || CEOPersona.MODERATE);
         }
+
+        // Handle scenarios from the active-case response
+        if (selectedCase.use_scenarios && selectedCase.scenarios?.length > 0) {
+          setUseScenarios(true);
+          setAvailableScenarios(selectedCase.scenarios);
+          setScenarioSelectionMode(selectedCase.selection_mode || 'student_choice');
+          setScenarioRequireOrder(selectedCase.require_order || false);
+
+          // Auto-select first incomplete scenario in all_required mode
+          if (selectedCase.selection_mode === 'all_required') {
+            const firstIncomplete = selectedCase.scenarios.find((s: any) => !s.completed);
+            if (firstIncomplete) {
+              setSelectedScenarioId(firstIncomplete.scenario_id);
+            }
+          } else if (selectedCase.scenarios.length === 1) {
+            // Auto-select if only one scenario
+            setSelectedScenarioId(selectedCase.scenarios[0].scenario_id);
+          }
+        } else {
+          setUseScenarios(false);
+          setAvailableScenarios([]);
+          setSelectedScenarioId(null);
+        }
       }
-      
+
       setIsLoadingCase(true);
       setError(null); // Clear any previous errors
       try {
@@ -452,8 +487,25 @@ const App: React.FC = () => {
     setHintsUsed(0);  // Reset hint counter at start of conversation
     try {
       // Use active case data or default
-      const caseData = activeCaseData || DEFAULT_CASE_DATA;
-      
+      let caseData = activeCaseData || DEFAULT_CASE_DATA;
+
+      // If a scenario is selected, override case data with scenario-specific values
+      if (selectedScenarioId && availableScenarios.length > 0) {
+        const selectedScenario = availableScenarios.find(s => s.scenario_id === selectedScenarioId);
+        if (selectedScenario) {
+          caseData = {
+            ...caseData,
+            protagonist: selectedScenario.protagonist,
+            protagonist_initials: selectedScenario.protagonist_initials,
+            protagonist_role: selectedScenario.protagonist_role || undefined,
+            chat_topic: selectedScenario.chat_topic || undefined,
+            chat_question: selectedScenario.chat_question,
+            arguments_for: selectedScenario.arguments_for || undefined,
+            arguments_against: selectedScenario.arguments_against || undefined,
+          };
+        }
+      }
+
       // Build first message using case protagonist and question
       const firstMessageContent = `Hello ${name}, I am ${caseData.protagonist}, the protagonist of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
       const initialHistory: Message[] = [{ role: MessageRole.MODEL, content: firstMessageContent }];
@@ -469,7 +521,7 @@ const App: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [activeCaseData]);
+  }, [activeCaseData, selectedScenarioId, availableScenarios]);
   
   const handleSendMessage = async (userMessage: string) => {
     if (conversationPhase === ConversationPhase.CHATTING) {
@@ -834,6 +886,7 @@ const App: React.FC = () => {
             section_id: sectionToSave,
             persona: ceoPersona,
             chat_model: selectedChatModel,
+            scenario_id: selectedScenarioId || undefined,
           }),
         });
         const caseChatResult = await caseChatResponse.json();
@@ -887,6 +940,12 @@ const App: React.FC = () => {
     setShareTranscript(false);
     setSelectedChatModel(defaultModel);
     setSelectedSuperModel(defaultModel);
+    // Reset scenario state
+    setAvailableScenarios([]);
+    setSelectedScenarioId(null);
+    setUseScenarios(false);
+    setScenarioSelectionMode('student_choice');
+    setScenarioRequireOrder(false);
   };
 
   const handleSectionChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -896,6 +955,10 @@ const App: React.FC = () => {
       setSelectedCaseId(null);
       setActiveCaseData(null);
       setChatOptions(defaultChatOptions);
+      // Reset scenario state
+      setAvailableScenarios([]);
+      setSelectedScenarioId(null);
+      setUseScenarios(false);
 
       if (sectionId === 'other' || !sectionId) {
           setSelectedChatModel(defaultModel);
@@ -994,7 +1057,10 @@ const App: React.FC = () => {
     const isSectionValid = selectedSection !== '' && selectedSection !== 'other';
     const selectedCaseStatus = selectedCaseId ? caseCompletionStatus[selectedCaseId] : null;
     const isCaseCompleted = selectedCaseStatus?.completed && !selectedCaseStatus?.allowRechat;
-    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted;
+    // Check if scenario selection is required and valid
+    const scenarioRequirementMet = !useScenarios || selectedScenarioId !== null;
+    const allScenariosCompleted = useScenarios && availableScenarios.length > 0 && availableScenarios.every((s: any) => s.completed);
+    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted;
     const sectionName = sections.find(s => s.section_id === selectedSection)?.section_title || selectedSection;
 
     return (
@@ -1166,7 +1232,24 @@ const App: React.FC = () => {
                 )}
               </div>
             )}
-            
+
+            {/* Scenario Selection */}
+            {selectedCaseId && activeCaseData && useScenarios && availableScenarios.length > 0 && (
+              <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <label className="block text-sm font-medium text-gray-700 mb-3">
+                  Select a Scenario
+                </label>
+                <ScenarioSelector
+                  scenarios={availableScenarios}
+                  selectionMode={scenarioSelectionMode}
+                  requireOrder={scenarioRequireOrder}
+                  selectedScenarioId={selectedScenarioId}
+                  onSelect={(scenarioId) => setSelectedScenarioId(scenarioId)}
+                  allCompleted={allScenariosCompleted}
+                />
+              </div>
+            )}
+
             {/* Protagonist Personality */}
             {selectedCaseId && activeCaseData && (
               <div>
@@ -1207,12 +1290,12 @@ const App: React.FC = () => {
               </p>
             )}
             
-            <button 
-              type="submit" 
-              disabled={isLoading || !canStartChat} 
+            <button
+              type="submit"
+              disabled={isLoading || !canStartChat}
               className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : 'Start Chat'}
+              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : 'Start Chat'}
             </button>
           </form>
         </div>
@@ -1239,6 +1322,18 @@ const App: React.FC = () => {
         </div>
         <aside className="w-full h-full flex flex-col bg-gray-200 rounded-xl shadow-lg">
           {error && <div className="p-4 bg-red-500 text-white text-center font-semibold rounded-t-xl">{error}</div>}
+          {currentCaseChatId && (
+            <div className="flex justify-end px-3 py-1">
+              <ChatTimer
+                chatId={currentCaseChatId}
+                warningMinutes={5}
+                onTimeUp={() => {
+                  // Auto-submit "time is up" when timer expires
+                  handleSendMessage("time is up");
+                }}
+              />
+            </div>
+          )}
           <ChatWindow 
             messages={messages} 
             isLoading={isLoading} 

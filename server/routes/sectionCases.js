@@ -60,10 +60,12 @@ function isCaseAvailable(openDate, closeDate, manualStatus) {
 router.get('/:sectionId/active-case', async (req, res) => {
   try {
     const { sectionId } = req.params;
+    const { student_id } = req.query; // Optional: to check scenario completion
 
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.chat_options,
               sc.open_date, sc.close_date, sc.manual_status,
+              sc.selection_mode, sc.require_order, sc.use_scenarios,
               c.case_title, c.protagonist, c.protagonist_initials, c.chat_topic, c.chat_question
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
@@ -80,11 +82,48 @@ router.get('/:sectionId/active-case', async (req, res) => {
     const caseData = rows[0];
     const availability = isCaseAvailable(caseData.open_date, caseData.close_date, caseData.manual_status);
 
+    // If use_scenarios is enabled, fetch available scenarios
+    let scenarios = [];
+    if (caseData.use_scenarios) {
+      const [scenarioRows] = await pool.execute(
+        `SELECT scs.id as assignment_id, scs.scenario_id, scs.enabled, scs.sort_order,
+                cs.scenario_name, cs.protagonist, cs.protagonist_initials, cs.protagonist_role,
+                cs.chat_topic, cs.chat_question, cs.chat_time_limit, cs.chat_time_warning,
+                cs.chat_options_override
+         FROM section_case_scenarios scs
+         JOIN case_scenarios cs ON scs.scenario_id = cs.id
+         WHERE scs.section_case_id = ? AND scs.enabled = TRUE AND cs.enabled = TRUE
+         ORDER BY scs.sort_order ASC`,
+        [caseData.id]
+      );
+      scenarios = scenarioRows;
+
+      // If student_id provided, check completion status for each scenario
+      if (student_id && scenarios.length > 0) {
+        const [completedChats] = await pool.execute(
+          `SELECT scenario_id, COUNT(*) as completed_count
+           FROM case_chats
+           WHERE student_id = ? AND case_id = ? AND status = 'completed' AND scenario_id IS NOT NULL
+           GROUP BY scenario_id`,
+          [student_id, caseData.case_id]
+        );
+
+        const completedMap = new Map(completedChats.map(c => [c.scenario_id, c.completed_count]));
+
+        scenarios = scenarios.map(s => ({
+          ...s,
+          completed: completedMap.has(s.scenario_id),
+          completed_count: completedMap.get(s.scenario_id) || 0
+        }));
+      }
+    }
+
     res.json({
       data: {
         ...caseData,
         is_available: availability.available,
-        availability_message: availability.reason
+        availability_message: availability.reason,
+        scenarios: scenarios
       },
       error: null
     });
@@ -374,6 +413,343 @@ router.patch('/:sectionId/cases/:caseId/scheduling', verifyToken, requireRole(['
     res.json({ data: rows[0], error: null });
   } catch (error) {
     console.error('Error updating scheduling:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// =====================================================
+// SCENARIO ASSIGNMENT ENDPOINTS
+// =====================================================
+
+// GET /api/sections/:sectionId/cases/:caseId/scenarios - List scenarios assigned to this section-case
+router.get('/:sectionId/cases/:caseId/scenarios', async (req, res) => {
+  try {
+    const { sectionId, caseId } = req.params;
+
+    // Get the section_case id
+    const [sectionCase] = await pool.execute(
+      'SELECT id, selection_mode, require_order, use_scenarios FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [sectionId, caseId]
+    );
+
+    if (sectionCase.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    const sectionCaseId = sectionCase[0].id;
+
+    // Get assigned scenarios with full scenario details
+    const [rows] = await pool.execute(
+      `SELECT scs.id, scs.section_case_id, scs.scenario_id, scs.enabled, scs.sort_order, scs.created_at,
+              cs.scenario_name, cs.protagonist, cs.protagonist_initials, cs.protagonist_role,
+              cs.chat_topic, cs.chat_question, cs.chat_time_limit, cs.chat_time_warning,
+              cs.arguments_for, cs.arguments_against, cs.chat_options_override,
+              cs.enabled as scenario_enabled
+       FROM section_case_scenarios scs
+       JOIN case_scenarios cs ON scs.scenario_id = cs.id
+       WHERE scs.section_case_id = ?
+       ORDER BY scs.sort_order ASC, scs.id ASC`,
+      [sectionCaseId]
+    );
+
+    res.json({
+      data: {
+        section_case_id: sectionCaseId,
+        selection_mode: sectionCase[0].selection_mode,
+        require_order: sectionCase[0].require_order,
+        use_scenarios: sectionCase[0].use_scenarios,
+        scenarios: rows
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching section case scenarios:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/sections/:sectionId/cases/:caseId/scenarios - Assign scenarios to section-case (admin only)
+router.post('/:sectionId/cases/:caseId/scenarios', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { sectionId, caseId } = req.params;
+    const { scenario_ids } = req.body; // Array of scenario IDs to assign
+
+    if (!Array.isArray(scenario_ids) || scenario_ids.length === 0) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'scenario_ids must be a non-empty array' }
+      });
+    }
+
+    // Get the section_case id
+    const [sectionCase] = await pool.execute(
+      'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [sectionId, caseId]
+    );
+
+    if (sectionCase.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    const sectionCaseId = sectionCase[0].id;
+
+    // Verify all scenarios belong to this case
+    const placeholders = scenario_ids.map(() => '?').join(',');
+    const [scenarios] = await pool.execute(
+      `SELECT id FROM case_scenarios WHERE case_id = ? AND id IN (${placeholders})`,
+      [caseId, ...scenario_ids]
+    );
+
+    if (scenarios.length !== scenario_ids.length) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'Some scenario IDs do not belong to this case' }
+      });
+    }
+
+    // Get current max sort_order
+    const [maxOrder] = await pool.execute(
+      'SELECT COALESCE(MAX(sort_order), -1) + 1 as next_order FROM section_case_scenarios WHERE section_case_id = ?',
+      [sectionCaseId]
+    );
+    let sortOrder = maxOrder[0].next_order;
+
+    // Insert new assignments (skip if already exists)
+    const inserted = [];
+    for (const scenarioId of scenario_ids) {
+      try {
+        await pool.execute(
+          'INSERT INTO section_case_scenarios (section_case_id, scenario_id, enabled, sort_order) VALUES (?, ?, TRUE, ?)',
+          [sectionCaseId, scenarioId, sortOrder++]
+        );
+        inserted.push(scenarioId);
+      } catch (err) {
+        // Skip duplicate entries
+        if (err.code !== 'ER_DUP_ENTRY') throw err;
+      }
+    }
+
+    // Enable use_scenarios for this section_case
+    await pool.execute(
+      'UPDATE section_cases SET use_scenarios = TRUE WHERE id = ?',
+      [sectionCaseId]
+    );
+
+    // Return updated scenarios list
+    const [rows] = await pool.execute(
+      `SELECT scs.id, scs.section_case_id, scs.scenario_id, scs.enabled, scs.sort_order,
+              cs.scenario_name, cs.protagonist, cs.protagonist_initials
+       FROM section_case_scenarios scs
+       JOIN case_scenarios cs ON scs.scenario_id = cs.id
+       WHERE scs.section_case_id = ?
+       ORDER BY scs.sort_order ASC`,
+      [sectionCaseId]
+    );
+
+    res.status(201).json({ data: { inserted: inserted.length, scenarios: rows }, error: null });
+  } catch (error) {
+    console.error('Error assigning scenarios:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// DELETE /api/sections/:sectionId/cases/:caseId/scenarios/:scenarioId - Remove scenario from section-case (admin only)
+router.delete('/:sectionId/cases/:caseId/scenarios/:scenarioId', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { sectionId, caseId, scenarioId } = req.params;
+
+    // Get the section_case id
+    const [sectionCase] = await pool.execute(
+      'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [sectionId, caseId]
+    );
+
+    if (sectionCase.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    const sectionCaseId = sectionCase[0].id;
+
+    const [result] = await pool.execute(
+      'DELETE FROM section_case_scenarios WHERE section_case_id = ? AND scenario_id = ?',
+      [sectionCaseId, scenarioId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Scenario assignment not found' } });
+    }
+
+    // Check if there are any remaining scenarios; if not, disable use_scenarios
+    const [remaining] = await pool.execute(
+      'SELECT COUNT(*) as count FROM section_case_scenarios WHERE section_case_id = ?',
+      [sectionCaseId]
+    );
+
+    if (remaining[0].count === 0) {
+      await pool.execute(
+        'UPDATE section_cases SET use_scenarios = FALSE WHERE id = ?',
+        [sectionCaseId]
+      );
+    }
+
+    res.json({ data: { deleted: true }, error: null });
+  } catch (error) {
+    console.error('Error removing scenario:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/sections/:sectionId/cases/:caseId/scenarios/:scenarioId/toggle - Toggle scenario enabled (admin only)
+router.patch('/:sectionId/cases/:caseId/scenarios/:scenarioId/toggle', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { sectionId, caseId, scenarioId } = req.params;
+
+    // Get the section_case id
+    const [sectionCase] = await pool.execute(
+      'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [sectionId, caseId]
+    );
+
+    if (sectionCase.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    const sectionCaseId = sectionCase[0].id;
+
+    // Get current enabled state
+    const [current] = await pool.execute(
+      'SELECT id, enabled FROM section_case_scenarios WHERE section_case_id = ? AND scenario_id = ?',
+      [sectionCaseId, scenarioId]
+    );
+
+    if (current.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Scenario assignment not found' } });
+    }
+
+    const newEnabled = !current[0].enabled;
+
+    await pool.execute(
+      'UPDATE section_case_scenarios SET enabled = ? WHERE id = ?',
+      [newEnabled ? 1 : 0, current[0].id]
+    );
+
+    res.json({ data: { id: current[0].id, enabled: newEnabled }, error: null });
+  } catch (error) {
+    console.error('Error toggling scenario:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/sections/:sectionId/cases/:caseId/selection-mode - Update selection mode settings (admin only)
+router.patch('/:sectionId/cases/:caseId/selection-mode', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { sectionId, caseId } = req.params;
+    const { selection_mode, require_order } = req.body;
+
+    // Validate selection_mode
+    if (selection_mode && !['student_choice', 'all_required'].includes(selection_mode)) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'selection_mode must be "student_choice" or "all_required"' }
+      });
+    }
+
+    // Check if assignment exists
+    const [existing] = await pool.execute(
+      'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [sectionId, caseId]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    // Build update query
+    const updates = [];
+    const params = [];
+
+    if (selection_mode !== undefined) {
+      updates.push('selection_mode = ?');
+      params.push(selection_mode);
+    }
+    if (require_order !== undefined) {
+      updates.push('require_order = ?');
+      params.push(require_order ? 1 : 0);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ data: null, error: { message: 'No fields to update' } });
+    }
+
+    params.push(sectionId, caseId);
+
+    await pool.execute(
+      `UPDATE section_cases SET ${updates.join(', ')} WHERE section_id = ? AND case_id = ?`,
+      params
+    );
+
+    // Return updated data
+    const [rows] = await pool.execute(
+      `SELECT sc.id, sc.section_id, sc.case_id, sc.selection_mode, sc.require_order, sc.use_scenarios
+       FROM section_cases sc
+       WHERE sc.section_id = ? AND sc.case_id = ?`,
+      [sectionId, caseId]
+    );
+
+    res.json({ data: rows[0], error: null });
+  } catch (error) {
+    console.error('Error updating selection mode:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/sections/:sectionId/cases/:caseId/scenarios/reorder - Reorder scenarios (admin only)
+router.patch('/:sectionId/cases/:caseId/scenarios/reorder', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { sectionId, caseId } = req.params;
+    const { order } = req.body; // Array of scenario IDs in desired order
+
+    if (!Array.isArray(order) || order.length === 0) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'order must be a non-empty array of scenario IDs' }
+      });
+    }
+
+    // Get the section_case id
+    const [sectionCase] = await pool.execute(
+      'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [sectionId, caseId]
+    );
+
+    if (sectionCase.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    const sectionCaseId = sectionCase[0].id;
+
+    // Update sort_order for each scenario
+    for (let i = 0; i < order.length; i++) {
+      await pool.execute(
+        'UPDATE section_case_scenarios SET sort_order = ? WHERE section_case_id = ? AND scenario_id = ?',
+        [i, sectionCaseId, order[i]]
+      );
+    }
+
+    // Return updated scenarios
+    const [rows] = await pool.execute(
+      `SELECT scs.id, scs.scenario_id, scs.enabled, scs.sort_order,
+              cs.scenario_name, cs.protagonist
+       FROM section_case_scenarios scs
+       JOIN case_scenarios cs ON scs.scenario_id = cs.id
+       WHERE scs.section_case_id = ?
+       ORDER BY scs.sort_order ASC`,
+      [sectionCaseId]
+    );
+
+    res.json({ data: rows, error: null });
+  } catch (error) {
+    console.error('Error reordering scenarios:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

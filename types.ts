@@ -54,6 +54,7 @@ export interface CaseChat {
   student_id: string;
   case_id: string;
   section_id: string | null;
+  scenario_id: number | null;
   status: ChatStatus;
   persona: string | null;
   hints_used: number;
@@ -63,10 +64,64 @@ export interface CaseChat {
   end_time: string | null;
   transcript: string | null;
   evaluation_id: string | null;
+  time_limit_minutes: number | null;
+  time_started: string | null;
   // Joined fields
   student_name?: string;
   case_title?: string;
   section_title?: string;
+  scenario_name?: string;
+}
+
+export interface CaseScenario {
+  id: number;
+  case_id: string;
+  scenario_name: string;
+  protagonist: string;
+  protagonist_initials: string;
+  protagonist_role: string | null;
+  chat_topic: string | null;
+  chat_question: string;
+  chat_time_limit: number;
+  chat_time_warning: number;
+  arguments_for: string | null;
+  arguments_against: string | null;
+  chat_options_override: Partial<ChatOptions> | null;
+  sort_order: number;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SectionCaseScenario {
+  id: number;
+  section_case_id: number;
+  scenario_id: number;
+  enabled: boolean;
+  sort_order: number;
+  created_at?: string;
+  // Joined from case_scenarios
+  scenario?: CaseScenario;
+}
+
+export type ScenarioSelectionMode = 'student_choice' | 'all_required';
+
+export interface SectionCase {
+  id: number;
+  section_id: string;
+  case_id: string;
+  active: boolean;
+  chat_options: ChatOptions | null;
+  open_date: string | null;
+  close_date: string | null;
+  manual_status: 'auto' | 'manually_opened' | 'manually_closed';
+  selection_mode: ScenarioSelectionMode;
+  require_order: boolean;
+  use_scenarios: boolean;
+  created_at?: string;
+  // Joined fields
+  case_title?: string;
+  scenarios?: SectionCaseScenario[];
 }
 
 export interface ChatOptions {

@@ -7,6 +7,7 @@ import { detectProvider } from '../services/llmService';
 import { PromptManager } from './PromptManager';
 import { SettingsManager } from './SettingsManager';
 import { CasePrepManager } from './CasePrepManager';
+import { ScenarioManager } from './ScenarioManager';
 import InstructorManager from './InstructorManager';
 import StudentManager from './StudentManager';
 import DashboardHome from './DashboardHome';
@@ -232,6 +233,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [caseFileUpload, setCaseFileUpload] = useState<{ type: 'case' | 'teaching_note'; file: File | null }>({ type: 'case', file: null });
   const [isUploadingCaseFile, setIsUploadingCaseFile] = useState(false);
 
+  // Scenario management
+  const [showScenarioManager, setShowScenarioManager] = useState(false);
+  const [managingScenarioCase, setManagingScenarioCase] = useState<Case | null>(null);
+
   // Section-Case management
   const [showSectionCasesModal, setShowSectionCasesModal] = useState(false);
   const [managingSectionCases, setManagingSectionCases] = useState<SectionStat | null>(null);
@@ -257,6 +262,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Scheduling options editing
   const [expandedScheduling, setExpandedScheduling] = useState<string | null>(null);
   const [editingScheduling, setEditingScheduling] = useState<any>(null);
+  // Scenario assignment state
+  const [expandedScenarios, setExpandedScenarios] = useState<string | null>(null);
+  const [availableScenariosForCase, setAvailableScenariosForCase] = useState<any[]>([]);
+  const [assignedScenarios, setAssignedScenarios] = useState<any[]>([]);
+  const [scenarioSettings, setScenarioSettings] = useState<{ use_scenarios: boolean; selection_mode: string; require_order: boolean }>({
+    use_scenarios: false,
+    selection_mode: 'student_choice',
+    require_order: false
+  });
+  const [isLoadingScenarioAssignment, setIsLoadingScenarioAssignment] = useState(false);
+  const [isSavingScenarioAssignment, setIsSavingScenarioAssignment] = useState(false);
   const [isSavingScheduling, setIsSavingScheduling] = useState(false);
   
   // Default chat options
@@ -1219,6 +1235,117 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       setError(err.message || 'Failed to update scheduling');
     } finally {
       setIsSavingScheduling(false);
+    }
+  };
+
+  // Expand/collapse scenario assignment panel
+  const handleExpandScenarios = async (sectionId: string, caseId: string, sectionCase: any) => {
+    if (expandedScenarios === caseId) {
+      setExpandedScenarios(null);
+      setAvailableScenariosForCase([]);
+      setAssignedScenarios([]);
+      return;
+    }
+
+    setExpandedScenarios(caseId);
+    setIsLoadingScenarioAssignment(true);
+
+    try {
+      const token = localStorage.getItem('auth_token');
+
+      // Fetch all scenarios for this case
+      const scenariosResponse = await fetch(`${getApiBaseUrl()}/cases/${caseId}/scenarios`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const scenariosResult = await scenariosResponse.json();
+      const allScenarios = scenariosResult.data || [];
+      setAvailableScenariosForCase(allScenarios);
+
+      // Fetch assigned scenarios for this section-case
+      const assignedResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/scenarios`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const assignedResult = await assignedResponse.json();
+      // API returns { data: { scenarios: [...], selection_mode, ... } }
+      const assignedData = assignedResult.data || {};
+      setAssignedScenarios(assignedData.scenarios || []);
+
+      // Set current settings from API response (more reliable than sectionCase object)
+      setScenarioSettings({
+        use_scenarios: assignedData.use_scenarios ?? sectionCase.use_scenarios ?? false,
+        selection_mode: assignedData.selection_mode || sectionCase.selection_mode || 'student_choice',
+        require_order: assignedData.require_order ?? sectionCase.require_order ?? false
+      });
+    } catch (err) {
+      console.error('Failed to load scenario assignments:', err);
+      setAvailableScenariosForCase([]);
+      setAssignedScenarios([]);
+    } finally {
+      setIsLoadingScenarioAssignment(false);
+    }
+  };
+
+  // Toggle scenario assignment
+  const handleToggleScenarioAssignment = async (sectionId: string, caseId: string, scenarioId: number, isAssigned: boolean) => {
+    const token = localStorage.getItem('auth_token');
+    try {
+      if (isAssigned) {
+        // Remove assignment
+        await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/scenarios/${scenarioId}`, {
+          method: 'DELETE',
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+        });
+        setAssignedScenarios(prev => prev.filter(s => s.scenario_id !== scenarioId));
+      } else {
+        // Add assignment
+        const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/scenarios`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({ scenario_ids: [scenarioId] })
+        });
+        const result = await response.json();
+        if (result.data) {
+          // Refresh assigned scenarios
+          const assignedResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/scenarios`, {
+            headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+          });
+          const assignedResult = await assignedResponse.json();
+          setAssignedScenarios(assignedResult.data?.scenarios || []);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to toggle scenario assignment:', err);
+    }
+  };
+
+  // Save scenario selection mode settings
+  const handleSaveScenarioSettings = async (sectionId: string, caseId: string) => {
+    setIsSavingScenarioAssignment(true);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/selection-mode`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(scenarioSettings)
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to update scenario settings');
+      }
+      // Refresh section cases
+      if (expandedAssignmentSection) {
+        fetchSectionCases(expandedAssignmentSection);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to update scenario settings');
+    } finally {
+      setIsSavingScenarioAssignment(false);
     }
   };
 
@@ -2278,6 +2405,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         />
                       </label>
                       <button
+                        onClick={() => {
+                          setManagingScenarioCase(caseItem);
+                          setShowScenarioManager(true);
+                        }}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-teal-600 border-teal-200 hover:bg-teal-50"
+                      >
+                        Scenarios
+                      </button>
+                      <button
                         onClick={() => handleDeleteCase(caseItem.case_id)}
                         className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
                       >
@@ -2299,6 +2435,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <p className="mt-2 text-gray-600">Uploading file...</p>
           </div>
         </div>
+      )}
+
+      {showScenarioManager && managingScenarioCase && (
+        <ScenarioManager
+          caseId={managingScenarioCase.case_id}
+          caseTitle={managingScenarioCase.case_title}
+          onClose={() => {
+            setShowScenarioManager(false);
+            setManagingScenarioCase(null);
+          }}
+          onScenariosChanged={() => {
+            // Optionally refresh something if needed
+          }}
+        />
       )}
     </div>
   );
@@ -2416,6 +2566,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                     Options
                                   </button>
                                   <button
+                                    onClick={() => handleExpandScenarios(section.section_id, sc.case_id, sc)}
+                                    className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                                      expandedScenarios === sc.case_id
+                                        ? 'bg-green-100 text-green-700 border-green-200'
+                                        : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-green-50'
+                                    }`}
+                                  >
+                                    Scenarios
+                                  </button>
+                                  <button
                                     onClick={() => handleExpandScheduling(sc.case_id, sc)}
                                     className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
                                       expandedScheduling === sc.case_id
@@ -2451,80 +2611,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                   </button>
                                 </div>
                               </div>
-
-                              {/* Expanded Scheduling */}
-                              {expandedScheduling === sc.case_id && editingScheduling && (
-                                <div className="p-4 bg-blue-50 border-t border-gray-200 space-y-4">
-                                  <h4 className="text-sm font-semibold text-gray-800">Scheduling & Availability</h4>
-
-                                  {/* Manual Status Override */}
-                                  <div>
-                                    <label className="block text-xs font-medium text-gray-700 mb-2">Availability Control</label>
-                                    <select
-                                      value={editingScheduling.manual_status}
-                                      onChange={(e) => setEditingScheduling({...editingScheduling, manual_status: e.target.value})}
-                                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                                    >
-                                      <option value="auto">Auto (use dates below)</option>
-                                      <option value="manually_opened">Always Available (manually opened)</option>
-                                      <option value="manually_closed">Never Available (manually closed)</option>
-                                    </select>
-                                    <p className="text-xs text-gray-500 mt-1">
-                                      {editingScheduling.manual_status === 'auto' && 'Case availability will be determined by the open and close dates below.'}
-                                      {editingScheduling.manual_status === 'manually_opened' && 'Case will be available to students regardless of dates.'}
-                                      {editingScheduling.manual_status === 'manually_closed' && 'Case will not be available to students regardless of dates.'}
-                                    </p>
-                                  </div>
-
-                                  {/* Date/Time Controls - only show if auto mode */}
-                                  {editingScheduling.manual_status === 'auto' && (
-                                    <>
-                                      <div>
-                                        <label className="block text-xs font-medium text-gray-700 mb-1">Open Date & Time</label>
-                                        <input
-                                          type="datetime-local"
-                                          value={editingScheduling.open_date}
-                                          onChange={(e) => setEditingScheduling({...editingScheduling, open_date: e.target.value})}
-                                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                                        />
-                                        <p className="text-xs text-gray-500 mt-1">
-                                          When the case becomes available to students. Leave empty for no open restriction.
-                                        </p>
-                                      </div>
-
-                                      <div>
-                                        <label className="block text-xs font-medium text-gray-700 mb-1">Close Date & Time</label>
-                                        <input
-                                          type="datetime-local"
-                                          value={editingScheduling.close_date}
-                                          onChange={(e) => setEditingScheduling({...editingScheduling, close_date: e.target.value})}
-                                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                                        />
-                                        <p className="text-xs text-gray-500 mt-1">
-                                          When the case is no longer available for starting new chats. Students can continue existing chats after this time.
-                                        </p>
-                                      </div>
-                                    </>
-                                  )}
-
-                                  {/* Action Buttons */}
-                                  <div className="flex justify-end gap-2 pt-2 border-t">
-                                    <button
-                                      onClick={() => { setExpandedScheduling(null); setEditingScheduling(null); }}
-                                      className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
-                                    >
-                                      Cancel
-                                    </button>
-                                    <button
-                                      onClick={() => handleSaveScheduling(section.section_id, sc.case_id)}
-                                      disabled={isSavingScheduling}
-                                      className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
-                                    >
-                                      {isSavingScheduling ? 'Saving...' : 'Save Scheduling'}
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
 
                               {/* Expanded Chat Options */}
                               {expandedCaseOptions === sc.case_id && editingChatOptions && (
@@ -2657,6 +2743,184 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                         {isSavingChatOptions ? 'Saving...' : 'Save Options'}
                                       </button>
                                     </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Expanded Scenarios Assignment */}
+                              {expandedScenarios === sc.case_id && (
+                                <div className="p-4 bg-green-50 border-t border-gray-200 space-y-4">
+                                  <h4 className="text-sm font-semibold text-gray-800">Scenario Assignment</h4>
+
+                                  {isLoadingScenarioAssignment ? (
+                                    <div className="text-center py-4">
+                                      <div className="inline-block animate-spin rounded-full h-6 w-6 border-4 border-green-500 border-t-transparent"></div>
+                                    </div>
+                                  ) : availableScenariosForCase.length === 0 ? (
+                                    <div className="text-sm text-gray-600 bg-yellow-50 p-3 rounded-lg border border-yellow-200">
+                                      No scenarios defined for this case yet. Go to the <strong>Cases</strong> tab and click <strong>Scenarios</strong> to create scenarios first.
+                                    </div>
+                                  ) : (
+                                    <>
+                                      {/* Enable Scenarios Toggle */}
+                                      <label className="flex items-center gap-2 text-sm">
+                                        <input
+                                          type="checkbox"
+                                          checked={scenarioSettings.use_scenarios}
+                                          onChange={(e) => setScenarioSettings({...scenarioSettings, use_scenarios: e.target.checked})}
+                                          className="rounded border-gray-300"
+                                        />
+                                        <span className="font-medium">Enable scenarios for this section-case</span>
+                                      </label>
+
+                                      {scenarioSettings.use_scenarios && (
+                                        <>
+                                          {/* Selection Mode */}
+                                          <div>
+                                            <label className="block text-xs font-medium text-gray-700 mb-1">Selection Mode</label>
+                                            <select
+                                              value={scenarioSettings.selection_mode}
+                                              onChange={(e) => setScenarioSettings({...scenarioSettings, selection_mode: e.target.value})}
+                                              className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                                            >
+                                              <option value="student_choice">Student Choice (pick any one)</option>
+                                              <option value="all_required">All Required (must complete all)</option>
+                                            </select>
+                                          </div>
+
+                                          {/* Require Order (only for all_required) */}
+                                          {scenarioSettings.selection_mode === 'all_required' && (
+                                            <label className="flex items-center gap-2 text-sm">
+                                              <input
+                                                type="checkbox"
+                                                checked={scenarioSettings.require_order}
+                                                onChange={(e) => setScenarioSettings({...scenarioSettings, require_order: e.target.checked})}
+                                                className="rounded border-gray-300"
+                                              />
+                                              Require completion in order
+                                            </label>
+                                          )}
+
+                                          {/* Scenario Checkboxes */}
+                                          <div>
+                                            <label className="block text-xs font-medium text-gray-700 mb-2">Assign Scenarios</label>
+                                            <div className="space-y-2 max-h-48 overflow-y-auto">
+                                              {availableScenariosForCase.map((scenario) => {
+                                                const isAssigned = Array.isArray(assignedScenarios) && assignedScenarios.some(a => a.scenario_id === scenario.id);
+                                                return (
+                                                  <label key={scenario.id} className="flex items-start gap-2 text-sm p-2 bg-white rounded border border-gray-200 hover:bg-gray-50">
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={isAssigned}
+                                                      onChange={() => handleToggleScenarioAssignment(expandedAssignmentSection!, sc.case_id, scenario.id, isAssigned)}
+                                                      className="mt-0.5 rounded border-gray-300"
+                                                    />
+                                                    <div className="flex-1">
+                                                      <div className="font-medium text-gray-900">{scenario.scenario_name}</div>
+                                                      <div className="text-xs text-gray-500">
+                                                        {scenario.protagonist}
+                                                        {scenario.chat_time_limit > 0 && ` • ${scenario.chat_time_limit}min limit`}
+                                                      </div>
+                                                    </div>
+                                                  </label>
+                                                );
+                                              })}
+                                            </div>
+                                          </div>
+                                        </>
+                                      )}
+
+                                      {/* Action Buttons */}
+                                      <div className="flex justify-end gap-2 pt-2 border-t">
+                                        <button
+                                          onClick={() => { setExpandedScenarios(null); }}
+                                          className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
+                                        >
+                                          Close
+                                        </button>
+                                        <button
+                                          onClick={() => handleSaveScenarioSettings(expandedAssignmentSection!, sc.case_id)}
+                                          disabled={isSavingScenarioAssignment}
+                                          className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50"
+                                        >
+                                          {isSavingScenarioAssignment ? 'Saving...' : 'Save Settings'}
+                                        </button>
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Expanded Scheduling */}
+                              {expandedScheduling === sc.case_id && editingScheduling && (
+                                <div className="p-4 bg-blue-50 border-t border-gray-200 space-y-4">
+                                  <h4 className="text-sm font-semibold text-gray-800">Scheduling & Availability</h4>
+
+                                  {/* Manual Status Override */}
+                                  <div>
+                                    <label className="block text-xs font-medium text-gray-700 mb-2">Availability Control</label>
+                                    <select
+                                      value={editingScheduling.manual_status}
+                                      onChange={(e) => setEditingScheduling({...editingScheduling, manual_status: e.target.value})}
+                                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                                    >
+                                      <option value="auto">Auto (use dates below)</option>
+                                      <option value="manually_opened">Always Available (manually opened)</option>
+                                      <option value="manually_closed">Never Available (manually closed)</option>
+                                    </select>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                      {editingScheduling.manual_status === 'auto' && 'Case availability will be determined by the open and close dates below.'}
+                                      {editingScheduling.manual_status === 'manually_opened' && 'Case will be available to students regardless of dates.'}
+                                      {editingScheduling.manual_status === 'manually_closed' && 'Case will not be available to students regardless of dates.'}
+                                    </p>
+                                  </div>
+
+                                  {/* Date/Time Controls - only show if auto mode */}
+                                  {editingScheduling.manual_status === 'auto' && (
+                                    <>
+                                      <div>
+                                        <label className="block text-xs font-medium text-gray-700 mb-1">Open Date & Time</label>
+                                        <input
+                                          type="datetime-local"
+                                          value={editingScheduling.open_date}
+                                          onChange={(e) => setEditingScheduling({...editingScheduling, open_date: e.target.value})}
+                                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                                        />
+                                        <p className="text-xs text-gray-500 mt-1">
+                                          When the case becomes available to students. Leave empty for no open restriction.
+                                        </p>
+                                      </div>
+
+                                      <div>
+                                        <label className="block text-xs font-medium text-gray-700 mb-1">Close Date & Time</label>
+                                        <input
+                                          type="datetime-local"
+                                          value={editingScheduling.close_date}
+                                          onChange={(e) => setEditingScheduling({...editingScheduling, close_date: e.target.value})}
+                                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                                        />
+                                        <p className="text-xs text-gray-500 mt-1">
+                                          When the case is no longer available for starting new chats. Students can continue existing chats after this time.
+                                        </p>
+                                      </div>
+                                    </>
+                                  )}
+
+                                  {/* Action Buttons */}
+                                  <div className="flex justify-end gap-2 pt-2 border-t">
+                                    <button
+                                      onClick={() => { setExpandedScheduling(null); setEditingScheduling(null); }}
+                                      className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      onClick={() => handleSaveScheduling(section.section_id, sc.case_id)}
+                                      disabled={isSavingScheduling}
+                                      className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                                    >
+                                      {isSavingScheduling ? 'Saving...' : 'Save Scheduling'}
+                                    </button>
                                   </div>
                                 </div>
                               )}

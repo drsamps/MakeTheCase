@@ -11,7 +11,7 @@ const VALID_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'kill
 // POST /api/case-chats - Create a new chat session
 router.post('/', async (req, res) => {
   try {
-    const { student_id, case_id, section_id, persona, chat_model } = req.body;
+    const { student_id, case_id, section_id, scenario_id, persona, chat_model } = req.body;
 
     if (!student_id || !case_id) {
       return res.status(400).json({
@@ -22,10 +22,22 @@ router.post('/', async (req, res) => {
 
     const id = uuidv4();
 
+    // If scenario_id provided, get the time limit from the scenario
+    let timeLimitMinutes = null;
+    if (scenario_id) {
+      const [scenario] = await pool.execute(
+        'SELECT chat_time_limit FROM case_scenarios WHERE id = ?',
+        [scenario_id]
+      );
+      if (scenario.length > 0 && scenario[0].chat_time_limit > 0) {
+        timeLimitMinutes = scenario[0].chat_time_limit;
+      }
+    }
+
     await pool.execute(
-      `INSERT INTO case_chats (id, student_id, case_id, section_id, persona, chat_model, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'started')`,
-      [id, student_id, case_id, section_id || null, persona || null, chat_model || null]
+      `INSERT INTO case_chats (id, student_id, case_id, section_id, scenario_id, persona, chat_model, status, time_limit_minutes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?)`,
+      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, chat_model || null, timeLimitMinutes]
     );
 
     const [rows] = await pool.execute('SELECT * FROM case_chats WHERE id = ?', [id]);
@@ -447,6 +459,221 @@ router.post('/mark-abandoned', verifyToken, requireRole(['admin']), async (req, 
     });
   } catch (error) {
     console.error('Error marking abandoned chats:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// =====================================================
+// TIMER ENDPOINTS
+// =====================================================
+
+// POST /api/case-chats/:id/start-timer - Start the chat timer (call on first student message)
+router.post('/:id/start-timer', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [existing] = await pool.execute(
+      'SELECT id, status, time_started, time_limit_minutes FROM case_chats WHERE id = ?',
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
+
+    const chat = existing[0];
+
+    // Only start timer if chat is active
+    if (!['started', 'in_progress'].includes(chat.status)) {
+      return res.status(400).json({
+        data: null,
+        error: { message: `Cannot start timer for chat with status '${chat.status}'` }
+      });
+    }
+
+    // If timer already started, return current state
+    if (chat.time_started) {
+      const now = new Date();
+      const startTime = new Date(chat.time_started);
+      const elapsedMinutes = (now - startTime) / 60000;
+      const remainingMinutes = chat.time_limit_minutes ? Math.max(0, chat.time_limit_minutes - elapsedMinutes) : null;
+
+      return res.json({
+        data: {
+          time_started: chat.time_started,
+          time_limit_minutes: chat.time_limit_minutes,
+          elapsed_minutes: Math.round(elapsedMinutes * 10) / 10,
+          remaining_minutes: remainingMinutes ? Math.round(remainingMinutes * 10) / 10 : null,
+          already_started: true
+        },
+        error: null
+      });
+    }
+
+    // Start the timer
+    await pool.execute(
+      `UPDATE case_chats SET time_started = CURRENT_TIMESTAMP, status = 'in_progress' WHERE id = ?`,
+      [id]
+    );
+
+    const [updated] = await pool.execute('SELECT time_started, time_limit_minutes FROM case_chats WHERE id = ?', [id]);
+
+    res.json({
+      data: {
+        time_started: updated[0].time_started,
+        time_limit_minutes: updated[0].time_limit_minutes,
+        elapsed_minutes: 0,
+        remaining_minutes: updated[0].time_limit_minutes,
+        already_started: false
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error starting timer:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/case-chats/:id/time-remaining - Get remaining time for active chat
+router.get('/:id/time-remaining', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [existing] = await pool.execute(
+      'SELECT id, status, time_started, time_limit_minutes FROM case_chats WHERE id = ?',
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
+
+    const chat = existing[0];
+
+    // No time limit set
+    if (!chat.time_limit_minutes) {
+      return res.json({
+        data: {
+          has_time_limit: false,
+          time_limit_minutes: null,
+          remaining_minutes: null,
+          elapsed_minutes: null,
+          expired: false
+        },
+        error: null
+      });
+    }
+
+    // Timer not started yet
+    if (!chat.time_started) {
+      return res.json({
+        data: {
+          has_time_limit: true,
+          time_limit_minutes: chat.time_limit_minutes,
+          remaining_minutes: chat.time_limit_minutes,
+          elapsed_minutes: 0,
+          timer_started: false,
+          expired: false
+        },
+        error: null
+      });
+    }
+
+    // Calculate remaining time
+    const now = new Date();
+    const startTime = new Date(chat.time_started);
+    const elapsedMinutes = (now - startTime) / 60000;
+    const remainingMinutes = Math.max(0, chat.time_limit_minutes - elapsedMinutes);
+    const expired = remainingMinutes <= 0;
+
+    res.json({
+      data: {
+        has_time_limit: true,
+        time_limit_minutes: chat.time_limit_minutes,
+        time_started: chat.time_started,
+        elapsed_minutes: Math.round(elapsedMinutes * 10) / 10,
+        remaining_minutes: Math.round(remainingMinutes * 10) / 10,
+        remaining_seconds: Math.round(remainingMinutes * 60),
+        timer_started: true,
+        expired: expired
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error getting time remaining:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/case-chats/check-scenario-completion/:studentId/:caseId - Check which scenarios are completed
+router.get('/check-scenario-completion/:studentId/:caseId', async (req, res) => {
+  try {
+    const { studentId, caseId } = req.params;
+    const { section_id } = req.query;
+
+    // Get all scenarios for this case
+    let scenariosQuery = `
+      SELECT cs.id as scenario_id, cs.scenario_name, cs.protagonist, cs.sort_order
+      FROM case_scenarios cs
+      WHERE cs.case_id = ? AND cs.enabled = TRUE
+    `;
+    const params = [caseId];
+
+    // If section_id provided, only get assigned scenarios
+    if (section_id) {
+      scenariosQuery = `
+        SELECT cs.id as scenario_id, cs.scenario_name, cs.protagonist, scs.sort_order
+        FROM section_case_scenarios scs
+        JOIN case_scenarios cs ON scs.scenario_id = cs.id
+        JOIN section_cases sc ON scs.section_case_id = sc.id
+        WHERE sc.section_id = ? AND sc.case_id = ? AND scs.enabled = TRUE AND cs.enabled = TRUE
+        ORDER BY scs.sort_order ASC
+      `;
+      params.unshift(section_id);
+    }
+
+    const [scenarios] = await pool.execute(scenariosQuery, params);
+
+    // Get completed chats for each scenario
+    const [completedChats] = await pool.execute(
+      `SELECT scenario_id, COUNT(*) as completed_count
+       FROM case_chats
+       WHERE student_id = ? AND case_id = ? AND status = 'completed' AND scenario_id IS NOT NULL
+       GROUP BY scenario_id`,
+      [studentId, caseId]
+    );
+
+    const completedMap = new Map(completedChats.map(c => [c.scenario_id, c.completed_count]));
+
+    // Check for active chats
+    const [activeChats] = await pool.execute(
+      `SELECT scenario_id FROM case_chats
+       WHERE student_id = ? AND case_id = ? AND status IN ('started', 'in_progress')`,
+      [studentId, caseId]
+    );
+
+    const activeScenarioIds = new Set(activeChats.map(c => c.scenario_id));
+
+    const scenariosWithStatus = scenarios.map(s => ({
+      ...s,
+      completed: completedMap.has(s.scenario_id),
+      completed_count: completedMap.get(s.scenario_id) || 0,
+      has_active_chat: activeScenarioIds.has(s.scenario_id)
+    }));
+
+    const completedCount = scenariosWithStatus.filter(s => s.completed).length;
+
+    res.json({
+      data: {
+        scenarios: scenariosWithStatus,
+        total_scenarios: scenarios.length,
+        completed_count: completedCount,
+        all_completed: completedCount >= scenarios.length
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error checking scenario completion:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

@@ -22,10 +22,13 @@ export interface CaseData {
   case_title: string;
   protagonist: string;
   protagonist_initials: string;
+  protagonist_role?: string;   // Scenario-specific role (e.g., "CEO of Benihana")
   chat_topic?: string;
   chat_question: string;
-  case_content: string;      // The business case markdown
-  teaching_note: string;     // Teaching notes/key facts markdown
+  case_content: string;        // The business case markdown
+  teaching_note: string;       // Teaching notes/key facts markdown
+  arguments_for?: string;      // Arguments supporting one position (for AI prompt)
+  arguments_against?: string;  // Arguments supporting opposing position (for AI prompt)
 }
 
 // Default case data for backwards compatibility (Malawi's Pizza)
@@ -101,6 +104,20 @@ export const buildSystemPrompt = (
   caseData: CaseData = DEFAULT_CASE_DATA,
   options: SystemPromptOptions = {}
 ): string => {
+  // Build arguments section if available
+  let argumentsSection = '';
+  if (caseData.arguments_for || caseData.arguments_against) {
+    argumentsSection = '\n\n=== ARGUMENT FRAMEWORK (DO NOT REVEAL TO THE STUDENT) ===\n';
+    argumentsSection += 'Use these arguments to guide challenging questions and counter-arguments.\n\n';
+    if (caseData.arguments_for) {
+      argumentsSection += `**Arguments FOR the proposal:**\n${caseData.arguments_for}\n\n`;
+    }
+    if (caseData.arguments_against) {
+      argumentsSection += `**Arguments AGAINST the proposal:**\n${caseData.arguments_against}\n`;
+    }
+    argumentsSection += '=== END ARGUMENT FRAMEWORK ===\n';
+  }
+
   // STATIC CONTENT FIRST (for caching)
   const staticContent = `
 === BUSINESS CASE DOCUMENT ===
@@ -110,7 +127,7 @@ ${caseData.case_content}
 === INTERNAL GUIDE: KEY FACTS & TALKING POINTS (DO NOT REVEAL TO THE STUDENT) ===
 Use these points to formulate challenging questions and counter-arguments. If the student raises these points, press them to elaborate on the implications.
 ${caseData.teaching_note}
-=== END INTERNAL GUIDE ===
+=== END INTERNAL GUIDE ===${argumentsSection}
 `;
 
   // DYNAMIC CONTENT (per-request)
@@ -121,8 +138,13 @@ ${caseData.teaching_note}
     ? `\n\n**Additional Personality Instructions:**\n${options.chatbotPersonality.trim()}`
     : '';
 
+  // Build protagonist description with optional role
+  const protagonistDesc = caseData.protagonist_role
+    ? `${caseData.protagonist}, ${caseData.protagonist_role}, the protagonist of the "${caseData.case_title}" business case`
+    : `${caseData.protagonist}, the protagonist of the "${caseData.case_title}" business case`;
+
   const dynamicContent = `
-You are ${caseData.protagonist}, the protagonist of the "${caseData.case_title}" business case. You are a sharp, experienced professional meeting with a junior business analyst, ${studentName}, to discuss the challenges presented in the case.
+You are ${protagonistDesc}. You are a sharp, experienced professional meeting with a junior business analyst, ${studentName}, to discuss the challenges presented in the case.
 
 Your objective is to rigorously test ${studentName}'s understanding of the business case. You must evaluate if they can form a coherent strategy and defend it with specific facts from the document.
 
