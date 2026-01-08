@@ -145,11 +145,30 @@ const App: React.FC = () => {
   useEffect(() => {
     // Handles client-side routing and auth state
     const handleRouteChange = async () => {
-        api.auth.applyCasCallbackFromUrl();
+        // Apply CAS callback params (token/role/fullName/email) from URL
+        const casResult = api.auth.applyCasCallbackFromUrl();
+
         const { data: { session } } = await api.auth.getSession();
         setSessionUser(session?.user || null);
         const urlParams = new URLSearchParams(window.location.search);
         
+        // If CAS delivered an admin token, immediately move to the admin view
+        // even before the session fetch resolves. This avoids bouncing back to
+        // the student login when the browser already holds a student token.
+        if (casResult?.role === 'admin') {
+            setView('admin');
+            setIsAdminAuthenticated(true);
+            // Preserve whatever session user we have; fall back to CAS payload fields.
+            setSessionUser(prev => prev || {
+              role: 'admin',
+              email: casResult.email || session?.user?.email,
+              full_name: casResult.fullName || session?.user?.full_name,
+            } as any);
+            if (window.location.hash !== '#/admin') {
+                window.location.hash = '#/admin';
+            }
+        }
+
         // Use hash-based routing for robust SPA navigation.
         // Fallback to query param for AI Studio Preview compatibility.
         if (window.location.hash === '#/admin' || urlParams.get('view') === 'admin') {
@@ -1037,14 +1056,16 @@ const App: React.FC = () => {
             >
               Make The Case
             </h1>
-            <p className="mt-2 text-gray-600">Please sign in with your BYU CAS account to begin chatting with an AI case protagonist.</p>
+            <p className="mt-2 text-gray-600">
+              Click below to sign in with your BYU NetID to chat with cases as assigned by your instructor.
+            </p>
           </div>
           <div className="space-y-4">
             <button
-              onClick={() => api.auth.beginCasLogin()}
+              onClick={() => api.auth.beginCasLogin('student')}
               className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
             >
-              Login with BYU CAS
+              Click to login with BYU NetID
             </button>
             {error && <p className="text-sm text-red-600 text-center">{error}</p>}
           </div>

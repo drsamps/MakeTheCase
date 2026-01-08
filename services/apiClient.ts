@@ -90,8 +90,9 @@ export const auth = {
     };
   },
 
-  async beginCasLogin() {
-    window.location.href = `${API_BASE}/cas/login`;
+  async beginCasLogin(role?: 'student' | 'admin') {
+    const url = role ? `${API_BASE}/cas/login?role=${role}` : `${API_BASE}/cas/login`;
+    window.location.href = url;
   },
 
   applyCasCallbackFromUrl() {

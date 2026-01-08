@@ -33,8 +33,12 @@ function getRedirectBase() {
   return getServiceBase();
 }
 
-function buildServiceUrl() {
-  return `${getServiceBase()}/api/cas/verify`;
+function buildServiceUrl(roleParam) {
+  const base = `${getServiceBase()}/api/cas/verify`;
+  if (roleParam) {
+    return `${base}?role=${encodeURIComponent(roleParam)}`;
+  }
+  return base;
 }
 
 function parseCasResponse(xml) {
@@ -86,7 +90,8 @@ router.get('/login', (req, res) => {
     return res.status(400).json({ error: 'CAS is disabled' });
   }
 
-  const serviceUrl = buildServiceUrl();
+  const requestedRole = req.query.role === 'student' ? 'student' : undefined;
+  const serviceUrl = buildServiceUrl(requestedRole);
   const loginUrl = `${casServerUrl}login?service=${encodeURIComponent(serviceUrl)}`;
   res.redirect(loginUrl);
 });
@@ -98,12 +103,13 @@ router.get('/verify', async (req, res) => {
   }
 
   const { ticket } = req.query;
+  const requestedRole = req.query.role === 'student' ? 'student' : undefined;
   if (!ticket) {
     return res.status(400).json({ error: 'Missing CAS ticket' });
   }
 
   try {
-    const serviceUrl = buildServiceUrl();
+    const serviceUrl = buildServiceUrl(requestedRole);
     const result = await validateTicket(ticket, serviceUrl);
     if (!result.success) {
       return res.status(401).json({ error: result.error });
@@ -131,7 +137,7 @@ router.get('/verify', async (req, res) => {
 
     // Check admin first
     const [admins] = await pool.execute('SELECT id, email, superuser, admin_access FROM admins WHERE email = ?', [email]);
-    if (admins.length > 0) {
+    if (admins.length > 0 && requestedRole !== 'student') {
       const admin = admins[0];
       // Parse admin_access into array
       const adminAccess = admin.admin_access ? admin.admin_access.split(',').map(s => s.trim()) : [];
