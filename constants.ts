@@ -27,6 +27,7 @@ export interface CaseData {
   chat_question: string;
   case_content: string;        // The business case markdown
   teaching_note: string;       // Teaching notes/key facts markdown
+  supplementary_content?: string; // Additional materials (chapters, readings, articles, etc.)
   arguments_for?: string;      // Arguments supporting one position (for AI prompt)
   arguments_against?: string;  // Arguments supporting opposing position (for AI prompt)
 }
@@ -118,11 +119,23 @@ export const buildSystemPrompt = (
     argumentsSection += '=== END ARGUMENT FRAMEWORK ===\n';
   }
 
+  // Build supplementary content section if available
+  let supplementarySection = '';
+  if (caseData.supplementary_content?.trim()) {
+    supplementarySection = `
+
+=== SUPPLEMENTARY MATERIALS ===
+The following materials provide additional context for this case.
+${caseData.supplementary_content}
+=== END SUPPLEMENTARY MATERIALS ===
+`;
+  }
+
   // STATIC CONTENT FIRST (for caching)
   const staticContent = `
 === BUSINESS CASE DOCUMENT ===
 ${caseData.case_content}
-=== END BUSINESS CASE ===
+=== END BUSINESS CASE ===${supplementarySection}
 
 === INTERNAL GUIDE: KEY FACTS & TALKING POINTS (DO NOT REVEAL TO THE STUDENT) ===
 Use these points to formulate challenging questions and counter-arguments. If the student raises these points, press them to elaborate on the implications.

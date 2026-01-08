@@ -4,6 +4,7 @@ import { chatWithLLM, evaluateWithLLM } from '../services/llmRouter.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { convertFile } from '../services/fileConverter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,39 +18,109 @@ async function getModelConfig(modelId) {
   return rows[0] || null;
 }
 
+// Helper: Load content from a file (handles different formats)
+async function loadFileContent(caseId, filename, fileType) {
+  // First try the uploads directory (new files)
+  const uploadsPath = path.join(CASE_FILES_DIR, caseId, 'uploads', filename);
+  try {
+    await fs.access(uploadsPath);
+    const ext = path.extname(filename);
+    const { text } = await convertFile(uploadsPath, ext);
+    return text;
+  } catch (e) {
+    // Not in uploads, try standard location for legacy files
+  }
+
+  // Try standard location for case.md or teaching_note.md
+  if (fileType === 'case' || fileType === 'teaching_note') {
+    const standardPath = path.join(CASE_FILES_DIR, caseId, `${fileType}.md`);
+    try {
+      return await fs.readFile(standardPath, 'utf-8');
+    } catch (e) {
+      // File not found
+    }
+  }
+
+  return null;
+}
+
 // Load case data including markdown content for prompts
+// Now uses ordered prompt context from case_files table
 async function loadCaseData(caseId) {
   const [cases] = await pool.execute(
     `SELECT case_id, case_title, protagonist, protagonist_initials, chat_topic, chat_question
      FROM cases WHERE case_id = ?`,
     [caseId]
   );
-  
+
   if (cases.length === 0) return null;
-  
+
   const caseData = cases[0];
-  
-  // Load case content
-  try {
-    const casePath = path.join(CASE_FILES_DIR, caseId, 'case.md');
-    caseData.case_content = await fs.readFile(casePath, 'utf-8');
-    if (!caseData.case_content || caseData.case_content.trim() === '') {
-      console.warn(`[loadCaseData] Case file is empty: ${casePath}`);
+  caseData.case_content = '';
+  caseData.teaching_note = '';
+  caseData.supplementary_content = '';
+
+  // Try to load files from database with ordering
+  const [files] = await pool.execute(
+    `SELECT id, filename, file_type, file_format, proprietary, proprietary_confirmed_by,
+            include_in_chat_prompt, prompt_order
+     FROM case_files
+     WHERE case_id = ? AND include_in_chat_prompt = 1
+     ORDER BY prompt_order ASC, created_at ASC`,
+    [caseId]
+  );
+
+  if (files.length > 0) {
+    // Load content from each file in order
+    for (const file of files) {
+      // Skip proprietary files without confirmation
+      if (file.proprietary && !file.proprietary_confirmed_by) {
+        console.warn(`[loadCaseData] Skipping unconfirmed proprietary file: ${file.filename}`);
+        continue;
+      }
+
+      try {
+        const content = await loadFileContent(caseId, file.filename, file.file_type);
+        if (!content) continue;
+
+        // Aggregate by file type
+        if (file.file_type === 'case') {
+          caseData.case_content += (caseData.case_content ? '\n\n' : '') + content;
+        } else if (file.file_type === 'teaching_note') {
+          caseData.teaching_note += (caseData.teaching_note ? '\n\n' : '') + content;
+        } else {
+          // Supplementary content (chapters, readings, articles, etc.)
+          const typeLabel = file.file_type.startsWith('other:')
+            ? file.file_type.substring(6)
+            : file.file_type.replace('_', ' ').toUpperCase();
+          caseData.supplementary_content +=
+            `\n\n=== ${typeLabel}: ${file.filename} ===\n${content}`;
+        }
+      } catch (e) {
+        console.error(`[loadCaseData] Failed to load file ${file.filename}:`, e.message);
+      }
     }
-  } catch (e) {
-    console.error(`[loadCaseData] Failed to read case file: ${path.join(CASE_FILES_DIR, caseId, 'case.md')}`, e.message);
-    caseData.case_content = '';
+  } else {
+    // Fallback: Load from standard file locations (legacy behavior)
+    try {
+      const casePath = path.join(CASE_FILES_DIR, caseId, 'case.md');
+      caseData.case_content = await fs.readFile(casePath, 'utf-8');
+    } catch (e) {
+      console.error(`[loadCaseData] Failed to read case file: ${path.join(CASE_FILES_DIR, caseId, 'case.md')}`, e.message);
+    }
+
+    try {
+      const notePath = path.join(CASE_FILES_DIR, caseId, 'teaching_note.md');
+      caseData.teaching_note = await fs.readFile(notePath, 'utf-8');
+    } catch (e) {
+      // Teaching note is optional
+    }
   }
-  
-  // Load teaching note
-  try {
-    const notePath = path.join(CASE_FILES_DIR, caseId, 'teaching_note.md');
-    caseData.teaching_note = await fs.readFile(notePath, 'utf-8');
-  } catch (e) {
-    // Teaching note is optional, so we don't log an error if it's missing
-    caseData.teaching_note = '';
+
+  if (!caseData.case_content || caseData.case_content.trim() === '') {
+    console.warn(`[loadCaseData] No case content loaded for: ${caseId}`);
   }
-  
+
   return caseData;
 }
 

@@ -25,6 +25,8 @@ import chatOptionsRoutes from './routes/chatOptions.js';
 import personasRoutes from './routes/personas.js';
 import caseChatsRoutes from './routes/caseChats.js';
 import casePrepRoutes from './routes/casePrep.js';
+import caseFilesRoutes from './routes/caseFiles.js';
+import llmMetricsRoutes from './routes/llmMetrics.js';
 import promptsRoutes from './routes/prompts.js';
 import settingsRoutes from './routes/settings.js';
 import adminsRoutes from './routes/admins.js';
@@ -63,6 +65,10 @@ app.use('/api/personas', personasRoutes); // Persona management
 app.use('/api/case-chats', caseChatsRoutes); // Chat session tracking
 app.use('/api/case-prep', casePrepRoutes); // Case prep file upload and AI processing
 console.log('✓ Case prep routes mounted at /api/case-prep');
+app.use('/api/case-files', caseFilesRoutes); // Case file management
+console.log('✓ Case files routes mounted at /api/case-files');
+app.use('/api/llm-metrics', llmMetricsRoutes); // LLM cache metrics and analytics
+console.log('✓ LLM metrics routes mounted at /api/llm-metrics');
 app.use('/api/prompts', promptsRoutes); // AI prompt template management
 app.use('/api/settings', settingsRoutes); // Application settings
 app.use('/api/admins', adminsRoutes); // Instructor management (superuser only)

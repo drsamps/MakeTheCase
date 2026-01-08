@@ -3,7 +3,7 @@
  */
 
 // Base functions available to all instructors
-const BASE_FUNCTIONS = ['chats', 'assignments', 'sections', 'students', 'cases'];
+const BASE_FUNCTIONS = ['chats', 'assignments', 'sections', 'students', 'cases', 'casefiles'];
 
 // Superuser-only functions by default
 const SUPERUSER_FUNCTIONS = ['caseprep', 'personas', 'prompts', 'models', 'settings', 'instructors'];

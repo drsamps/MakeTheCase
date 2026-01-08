@@ -1,10 +1,36 @@
 // LLM Router - Updated with increased token limits for complete outlines (8K-16K)
 // Preview now supports styled headings and print functionality
+// Now includes prompt caching support for Anthropic and cache metrics tracking
 import { GoogleGenAI } from '@google/genai';
+import { pool } from '../db.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+// Track cache metrics in database
+async function trackCacheMetrics(caseId, provider, modelId, cacheMetrics, requestType = 'chat') {
+  if (!caseId || !cacheMetrics) return;
+  try {
+    await pool.execute(
+      `INSERT INTO llm_cache_metrics (case_id, provider, model_id, cache_hit, input_tokens, cached_tokens, output_tokens, request_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        caseId,
+        provider,
+        modelId,
+        cacheMetrics.cache_hit ? 1 : 0,
+        cacheMetrics.input_tokens || null,
+        cacheMetrics.cached_tokens || null,
+        cacheMetrics.output_tokens || null,
+        requestType
+      ]
+    );
+  } catch (e) {
+    // Don't fail the request if metrics tracking fails
+    console.warn('[LLMRouter] Failed to track cache metrics:', e.message);
+  }
+}
 
 const detectProvider = (modelId = '') => {
   const id = modelId.toLowerCase();
@@ -72,22 +98,48 @@ export async function chatWithLLM({ modelId, systemPrompt, history = [], message
     }
     const data = await response.json();
     const text = data?.choices?.[0]?.message?.content?.trim() || '';
-    return { text, meta: appliedParams };
+
+    // OpenAI automatic caching metrics (available in newer API versions)
+    const cacheMetrics = {
+      cache_hit: (data.usage?.cached_tokens || 0) > 0,
+      input_tokens: data.usage?.prompt_tokens || 0,
+      cached_tokens: data.usage?.cached_tokens || 0,
+      output_tokens: data.usage?.completion_tokens || 0,
+    };
+
+    // Track metrics if caseId is provided
+    if (config.caseId) {
+      trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat');
+    }
+
+    return { text, meta: { ...appliedParams, cacheMetrics } };
   }
 
   if (provider === 'anthropic') {
     if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set on the server');
+
+    // Use prompt caching for Anthropic
+    // Structure system prompt with cache_control for static content
+    const systemContent = [
+      {
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' } // Cache the system prompt
+      }
+    ];
+
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31', // Enable prompt caching
       },
       body: JSON.stringify({
         model: modelId,
         max_tokens: 1024,
-        system: systemPrompt,
+        system: systemContent,
         messages: [
           ...mapHistoryForAnthropic(history),
           { role: 'user', content: [{ type: 'text', text: message }] },
@@ -101,7 +153,29 @@ export async function chatWithLLM({ modelId, systemPrompt, history = [], message
     }
     const data = await response.json();
     const text = data?.content?.[0]?.text?.trim() || '';
-    return { text, meta: { provider, temperature: temperature ?? null, reasoning_effort: null } };
+
+    // Extract cache metrics from response
+    const cacheMetrics = {
+      cache_hit: (data.usage?.cache_read_input_tokens || 0) > 0,
+      input_tokens: data.usage?.input_tokens || 0,
+      cached_tokens: (data.usage?.cache_creation_input_tokens || 0) + (data.usage?.cache_read_input_tokens || 0),
+      output_tokens: data.usage?.output_tokens || 0,
+    };
+
+    // Track metrics if caseId is provided in config
+    if (config.caseId) {
+      trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat');
+    }
+
+    return {
+      text,
+      meta: {
+        provider,
+        temperature: temperature ?? null,
+        reasoning_effort: null,
+        cacheMetrics
+      }
+    };
   }
 
   if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set on the server');
