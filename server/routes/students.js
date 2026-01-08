@@ -195,5 +195,201 @@ router.post('/:id/reset-password', async (req, res) => {
   }
 });
 
+// ============================================================================
+// Multi-Section Enrollment Endpoints
+// ============================================================================
+
+// GET /api/students/:id/sections - Get all sections a student is enrolled in
+router.get('/:id/sections', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await pool.execute(
+      `SELECT ss.section_id, ss.enrolled_at, ss.enrolled_by, ss.is_primary,
+              s.section_title, s.year_term, s.enabled, s.accept_new_students
+       FROM student_sections ss
+       JOIN sections s ON ss.section_id = s.section_id
+       WHERE ss.student_id = ?
+       ORDER BY ss.is_primary DESC, ss.enrolled_at DESC`,
+      [id]
+    );
+
+    res.json({ data: rows, error: null });
+  } catch (error) {
+    console.error('Error fetching student sections:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/students/:id/sections - Enroll student in a section (instructor use)
+router.post('/:id/sections', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { section_id, is_primary } = req.body;
+
+    if (!section_id) {
+      return res.status(400).json({ data: null, error: { message: 'section_id is required' } });
+    }
+
+    // Check if student exists
+    const [student] = await pool.execute('SELECT id FROM students WHERE id = ?', [id]);
+    if (student.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Student not found' } });
+    }
+
+    // Check if section exists
+    const [section] = await pool.execute('SELECT section_id FROM sections WHERE section_id = ?', [section_id]);
+    if (section.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Section not found' } });
+    }
+
+    // Check if already enrolled
+    const [existing] = await pool.execute(
+      'SELECT id FROM student_sections WHERE student_id = ? AND section_id = ?',
+      [id, section_id]
+    );
+
+    if (existing.length > 0) {
+      return res.status(409).json({ data: null, error: { message: 'Student already enrolled in this section' } });
+    }
+
+    // If setting as primary, unset other primary sections for this student
+    if (is_primary) {
+      await pool.execute(
+        'UPDATE student_sections SET is_primary = 0 WHERE student_id = ?',
+        [id]
+      );
+    }
+
+    // Insert enrollment
+    await pool.execute(
+      'INSERT INTO student_sections (student_id, section_id, enrolled_by, is_primary) VALUES (?, ?, ?, ?)',
+      [id, section_id, 'instructor', is_primary ? 1 : 0]
+    );
+
+    // If primary, sync to students.section_id for backward compatibility
+    if (is_primary) {
+      await pool.execute('UPDATE students SET section_id = ? WHERE id = ?', [section_id, id]);
+    }
+
+    // Return the enrollment record
+    const [rows] = await pool.execute(
+      `SELECT ss.section_id, ss.enrolled_at, ss.enrolled_by, ss.is_primary,
+              s.section_title, s.year_term
+       FROM student_sections ss
+       JOIN sections s ON ss.section_id = s.section_id
+       WHERE ss.student_id = ? AND ss.section_id = ?`,
+      [id, section_id]
+    );
+
+    res.status(201).json({ data: rows[0], error: null });
+  } catch (error) {
+    console.error('Error enrolling student in section:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// DELETE /api/students/:id/sections/:sectionId - Remove student from section
+router.delete('/:id/sections/:sectionId', async (req, res) => {
+  try {
+    const { id, sectionId } = req.params;
+
+    // Check if enrollment exists
+    const [existing] = await pool.execute(
+      'SELECT id, is_primary FROM student_sections WHERE student_id = ? AND section_id = ?',
+      [id, sectionId]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Enrollment not found' } });
+    }
+
+    const wasPrimary = existing[0].is_primary;
+
+    // Delete enrollment
+    await pool.execute(
+      'DELETE FROM student_sections WHERE student_id = ? AND section_id = ?',
+      [id, sectionId]
+    );
+
+    // If deleted was primary, set another as primary (if any remain)
+    if (wasPrimary) {
+      const [remaining] = await pool.execute(
+        'SELECT section_id FROM student_sections WHERE student_id = ? ORDER BY enrolled_at ASC LIMIT 1',
+        [id]
+      );
+
+      if (remaining.length > 0) {
+        await pool.execute(
+          'UPDATE student_sections SET is_primary = 1 WHERE student_id = ? AND section_id = ?',
+          [id, remaining[0].section_id]
+        );
+        await pool.execute('UPDATE students SET section_id = ? WHERE id = ?', [remaining[0].section_id, id]);
+      } else {
+        // No sections remain, set section_id to NULL
+        await pool.execute('UPDATE students SET section_id = NULL WHERE id = ?', [id]);
+      }
+    }
+
+    res.json({ data: { success: true }, error: null });
+  } catch (error) {
+    console.error('Error removing student from section:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/students/:id/sections/:sectionId - Update enrollment (e.g., set primary)
+router.patch('/:id/sections/:sectionId', async (req, res) => {
+  try {
+    const { id, sectionId } = req.params;
+    const { is_primary } = req.body;
+
+    // Check if enrollment exists
+    const [existing] = await pool.execute(
+      'SELECT id FROM student_sections WHERE student_id = ? AND section_id = ?',
+      [id, sectionId]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Enrollment not found' } });
+    }
+
+    if (is_primary !== undefined) {
+      if (is_primary) {
+        // Unset other primary sections
+        await pool.execute(
+          'UPDATE student_sections SET is_primary = 0 WHERE student_id = ?',
+          [id]
+        );
+      }
+
+      await pool.execute(
+        'UPDATE student_sections SET is_primary = ? WHERE student_id = ? AND section_id = ?',
+        [is_primary ? 1 : 0, id, sectionId]
+      );
+
+      // Sync to students.section_id
+      if (is_primary) {
+        await pool.execute('UPDATE students SET section_id = ? WHERE id = ?', [sectionId, id]);
+      }
+    }
+
+    // Return updated enrollment
+    const [rows] = await pool.execute(
+      `SELECT ss.section_id, ss.enrolled_at, ss.enrolled_by, ss.is_primary,
+              s.section_title, s.year_term
+       FROM student_sections ss
+       JOIN sections s ON ss.section_id = s.section_id
+       WHERE ss.student_id = ? AND ss.section_id = ?`,
+      [id, sectionId]
+    );
+
+    res.json({ data: rows[0], error: null });
+  } catch (error) {
+    console.error('Error updating student enrollment:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 export default router;
 

@@ -11,7 +11,7 @@ router.get('/', async (req, res) => {
     const { enabled, orderBy } = req.query;
     
     let query = `
-      SELECT s.section_id, s.created_at, s.section_title, s.year_term, s.enabled, s.chat_model, s.super_model,
+      SELECT s.section_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model,
              sc.case_id as active_case_id, c.case_title as active_case_title
       FROM sections s
       LEFT JOIN section_cases sc ON s.section_id = sc.section_id AND sc.active = TRUE
@@ -39,7 +39,7 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT s.section_id, s.created_at, s.section_title, s.year_term, s.enabled, s.chat_model, s.super_model,
+      `SELECT s.section_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model,
               sc.case_id as active_case_id, c.case_title as active_case_title
        FROM sections s
        LEFT JOIN section_cases sc ON s.section_id = sc.section_id AND sc.active = TRUE
@@ -62,7 +62,7 @@ router.get('/:id', async (req, res) => {
 // POST /api/sections - Create new section
 router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
-    const { section_id, section_title, year_term, enabled, chat_model, super_model } = req.body;
+    const { section_id, section_title, year_term, enabled, accept_new_students, chat_model, super_model } = req.body;
     
     if (!section_id || !section_title) {
       return res.status(400).json({ data: null, error: { message: 'Section ID and title are required' } });
@@ -79,20 +79,21 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
     }
     
     await pool.execute(
-      'INSERT INTO sections (section_id, section_title, year_term, enabled, chat_model, super_model) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO sections (section_id, section_title, year_term, enabled, accept_new_students, chat_model, super_model) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [
-        section_id, 
-        section_title, 
-        year_term || null, 
-        enabled !== false ? 1 : 0, 
-        chat_model || null, 
+        section_id,
+        section_title,
+        year_term || null,
+        enabled !== false ? 1 : 0,
+        accept_new_students ? 1 : 0,  // Default to locked (0) for new sections
+        chat_model || null,
         super_model || null
       ]
     );
-    
+
     // Return the created section
     const [rows] = await pool.execute(
-      'SELECT section_id, created_at, section_title, year_term, enabled, chat_model, super_model FROM sections WHERE section_id = ?',
+      'SELECT section_id, created_at, section_title, year_term, enabled, accept_new_students, chat_model, super_model FROM sections WHERE section_id = ?',
       [section_id]
     );
     
@@ -110,15 +111,15 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
     const updates = req.body;
     
     // Build dynamic update query
-    const allowedFields = ['section_title', 'year_term', 'enabled', 'chat_model', 'super_model'];
+    const allowedFields = ['section_title', 'year_term', 'enabled', 'accept_new_students', 'chat_model', 'super_model'];
     const setClauses = [];
     const params = [];
-    
+
     for (const [key, value] of Object.entries(updates)) {
       if (allowedFields.includes(key)) {
         setClauses.push(`${key} = ?`);
-        // Handle boolean for enabled field
-        if (key === 'enabled') {
+        // Handle boolean for enabled and accept_new_students fields
+        if (key === 'enabled' || key === 'accept_new_students') {
           params.push(value ? 1 : 0);
         } else {
           params.push(value === '' ? null : value);
@@ -139,7 +140,7 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
     
     // Return updated section
     const [rows] = await pool.execute(
-      'SELECT section_id, created_at, section_title, year_term, enabled, chat_model, super_model FROM sections WHERE section_id = ?',
+      'SELECT section_id, created_at, section_title, year_term, enabled, accept_new_students, chat_model, super_model FROM sections WHERE section_id = ?',
       [id]
     );
     
@@ -150,6 +151,29 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
     res.json({ data: rows[0], error: null });
   } catch (error) {
     console.error('Error updating section:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/sections/:id/students - Get all students enrolled in a section
+router.get('/:id/students', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get students from junction table with student details
+    const [rows] = await pool.execute(
+      `SELECT s.id, s.full_name, s.first_name, s.last_name, s.email, s.created_at,
+              ss.enrolled_at, ss.enrolled_by, ss.is_primary
+       FROM student_sections ss
+       JOIN students s ON ss.student_id = s.id
+       WHERE ss.section_id = ?
+       ORDER BY s.full_name ASC`,
+      [id]
+    );
+
+    res.json({ data: rows, error: null });
+  } catch (error) {
+    console.error('Error fetching section students:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

@@ -39,6 +39,7 @@ interface SectionStat {
   chat_model: string | null;
   super_model: string | null;
   enabled?: boolean;
+  accept_new_students?: boolean;
   active_case_id?: string | null;
   active_case_title?: string | null;
 }
@@ -216,8 +217,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     year_term: '',
     chat_model: '',
     super_model: '',
-    enabled: true
+    enabled: true,
+    accept_new_students: false
   });
+
+  // Toggle for showing models column in section list
+  const [showModelsColumn, setShowModelsColumn] = useState(false);
 
   // Cases management
   const [casesList, setCasesList] = useState<Case[]>([]);
@@ -1750,7 +1755,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       year_term: section.year_term,
       chat_model: section.chat_model || '',
       super_model: section.super_model || '',
-      enabled: !!section.enabled
+      enabled: !!section.enabled,
+      accept_new_students: !!section.accept_new_students
     });
     setShowSectionModal(true);
   };
@@ -1771,13 +1777,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             year_term: sectionForm.year_term,
             chat_model: sectionForm.chat_model || null,
             super_model: sectionForm.super_model || null,
-            enabled: sectionForm.enabled
+            enabled: sectionForm.enabled,
+            accept_new_students: sectionForm.accept_new_students
           })
           .eq('section_id', sectionForm.section_id);
-        
+
         if (error) throw error;
       } else {
-        // Create new section
+        // Create new section (default accept_new_students to false/locked)
         const { error } = await api
           .from('sections')
           .insert({
@@ -1786,9 +1793,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             year_term: sectionForm.year_term,
             chat_model: sectionForm.chat_model || null,
             super_model: sectionForm.super_model || null,
-            enabled: sectionForm.enabled
+            enabled: sectionForm.enabled,
+            accept_new_students: sectionForm.accept_new_students
           });
-        
+
         if (error) throw error;
       }
 
@@ -1864,6 +1872,43 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     } catch (err: any) {
       console.error('Failed to toggle section status:', err);
       alert(`Failed to toggle section status: ${err.message}`);
+    }
+  };
+
+  // Toggle accept_new_students status for a section
+  const handleToggleAcceptNewStudents = async (section: SectionStat, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (section.section_id === 'unassigned' || section.section_id === 'other_courses') return;
+
+    const newStatus = !section.accept_new_students;
+
+    try {
+      const authToken = localStorage.getItem('auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/sections/${section.section_id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ accept_new_students: newStatus }),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        console.error('Response error:', response.status, text);
+        throw new Error(`Server returned ${response.status}: ${text.substring(0, 100)}`);
+      }
+
+      const result = await response.json();
+
+      if (result.error) {
+        throw new Error(result.error.message || 'Update failed');
+      }
+
+      fetchSectionStats();
+    } catch (err: any) {
+      console.error('Failed to toggle accept new students:', err);
+      alert(`Failed to toggle accept new students: ${err.message}`);
     }
   };
 
@@ -3936,8 +3981,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Active Case</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Students</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chat Model</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">New Students</th>
+                      {showModelsColumn && (
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chat Model</th>
+                      )}
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <label className="text-xs text-gray-500 flex items-center gap-1 cursor-pointer justify-end">
+                          <input
+                            type="checkbox"
+                            checked={showModelsColumn}
+                            onChange={(e) => setShowModelsColumn(e.target.checked)}
+                            className="h-3 w-3 rounded border-gray-300"
+                          />
+                          Models
+                        </label>
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
@@ -3998,9 +4056,28 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                             <span className="text-sm text-gray-400">-</span>
                           )}
                         </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">
-                          {formatModelDisplay(section.chat_model)}
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          {section.section_id !== 'unassigned' && section.section_id !== 'other_courses' ? (
+                            <button
+                              onClick={(e) => handleToggleAcceptNewStudents(section, e)}
+                              className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
+                                section.accept_new_students
+                                  ? 'bg-pink-500 text-white hover:bg-pink-600'
+                                  : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                              }`}
+                              title={section.accept_new_students ? 'Accepting new students - click to lock' : 'Locked - click to accept new students'}
+                            >
+                              {section.accept_new_students ? 'Accept' : 'Locked'}
+                            </button>
+                          ) : (
+                            <span className="text-sm text-gray-400">-</span>
+                          )}
                         </td>
+                        {showModelsColumn && (
+                          <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">
+                            {formatModelDisplay(section.chat_model)}
+                          </td>
+                        )}
                         <td className="px-4 py-3 whitespace-nowrap text-right">
                           <div className="flex justify-end gap-1">
                             {section.section_id !== 'unassigned' && (
@@ -4658,6 +4735,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 />
                 <label htmlFor="sectionEnabled" className="text-sm font-medium text-gray-700">
                   Section Enabled (visible to students)
+                </label>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="acceptNewStudents"
+                  checked={sectionForm.accept_new_students}
+                  onChange={(e) => setSectionForm({ ...sectionForm, accept_new_students: e.target.checked })}
+                  className="h-4 w-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+                />
+                <label htmlFor="acceptNewStudents" className="text-sm font-medium text-gray-700">
+                  Accept new student enrollments
                 </label>
               </div>
             </div>

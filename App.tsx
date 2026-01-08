@@ -126,6 +126,7 @@ const App: React.FC = () => {
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [isLoadingAvailableCases, setIsLoadingAvailableCases] = useState(false);
   const [studentSavedSectionId, setStudentSavedSectionId] = useState<string | null>(null);
+  const [enrolledSectionIds, setEnrolledSectionIds] = useState<string[]>([]);
   const [hasFetchedStudentSection, setHasFetchedStudentSection] = useState(false);
 
   // Scenario support
@@ -204,7 +205,7 @@ const App: React.FC = () => {
     const fetchSections = async () => {
         const { data, error: fetchError } = await api
             .from('sections')
-            .select('section_id, section_title, year_term, chat_model, super_model')
+            .select('section_id, section_title, year_term, chat_model, super_model, accept_new_students')
             .eq('enabled', true)
             .order('year_term', { ascending: false })
             .order('section_title', { ascending: true });
@@ -267,21 +268,39 @@ const App: React.FC = () => {
     }
   }, [conversationPhase, view]);
 
-  // Fetch student's saved section when they log in
+  // Fetch student's saved section(s) when they log in
   useEffect(() => {
     const fetchStudentSection = async () => {
       if (!sessionUser || sessionUser.role !== 'student' || hasFetchedStudentSection) return;
-      
+
       try {
-        const { data, error } = await api
-          .from('students')
-          .select('section_id')
-          .eq('id', sessionUser.id)
-          .single();
-        
-        if (!error && data && data.section_id && !data.section_id.startsWith('other:')) {
-          setStudentSavedSectionId(data.section_id);
-          setSelectedSection(data.section_id);
+        // Try to get enrolled sections from junction table first
+        const sectionsResponse = await api.get(`/student-sections/my-sections`);
+        if (!sectionsResponse.error && sectionsResponse.data && sectionsResponse.data.length > 0) {
+          const sectionIds = sectionsResponse.data.map((s: any) => s.section_id);
+          setEnrolledSectionIds(sectionIds);
+          // Set primary section as selected
+          const primary = sectionsResponse.data.find((s: any) => s.is_primary);
+          if (primary) {
+            setStudentSavedSectionId(primary.section_id);
+            setSelectedSection(primary.section_id);
+          } else if (sectionIds.length > 0) {
+            setStudentSavedSectionId(sectionIds[0]);
+            setSelectedSection(sectionIds[0]);
+          }
+        } else {
+          // Fall back to legacy section_id field
+          const { data, error } = await api
+            .from('students')
+            .select('section_id')
+            .eq('id', sessionUser.id)
+            .single();
+
+          if (!error && data && data.section_id && !data.section_id.startsWith('other:')) {
+            setStudentSavedSectionId(data.section_id);
+            setSelectedSection(data.section_id);
+            setEnrolledSectionIds([data.section_id]);
+          }
         }
       } catch (err) {
         console.error('Error fetching student section:', err);
@@ -289,7 +308,7 @@ const App: React.FC = () => {
         setHasFetchedStudentSection(true);
       }
     };
-    
+
     if (sessionUser && conversationPhase === ConversationPhase.PRE_CHAT) {
       fetchStudentSection();
     }
@@ -1114,24 +1133,54 @@ const App: React.FC = () => {
             {/* Section Selection */}
             <div>
               <label htmlFor="section" className="block text-sm font-medium text-gray-700">Your Course Section</label>
-              <select 
-                id="section" 
-                value={selectedSection} 
-                onChange={handleSectionChange} 
-                className="w-full px-4 py-2 mt-1 text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              {enrolledSectionIds.length > 1 && (
+                <p className="text-xs text-blue-600 mt-1">You are enrolled in {enrolledSectionIds.length} sections</p>
+              )}
+              <select
+                id="section"
+                value={selectedSection}
+                onChange={handleSectionChange}
+                disabled={!!studentSavedSectionId}
+                className={`w-full px-4 py-2 mt-1 text-gray-900 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 ${
+                  studentSavedSectionId ? 'bg-gray-200 cursor-not-allowed' : 'bg-gray-100'
+                }`}
               >
                 <option value="" disabled>Select your course section...</option>
-                {sections.map((sec) => (
-                  <option key={sec.section_id} value={sec.section_id}>
-                    {sec.section_title} ({sec.year_term})
-                  </option>
-                ))}
+                {sections
+                  .filter(sec => enrolledSectionIds.includes(sec.section_id) || sec.accept_new_students)
+                  .map((sec) => (
+                    <option key={sec.section_id} value={sec.section_id}>
+                      {sec.section_title} ({sec.year_term}){enrolledSectionIds.includes(sec.section_id) ? ' ✓' : ''}
+                    </option>
+                  ))}
               </select>
               {studentSavedSectionId && selectedSection === studentSavedSectionId && (
-                <p className="mt-1 text-xs text-green-600">✓ Previously selected section</p>
+                <p className="mt-1 text-xs text-green-600">✓ Previously selected section (contact instructor to change)</p>
               )}
             </div>
-            
+
+            {/* Remember Section Button - shown when section selected but not yet enrolled */}
+            {selectedSection && !enrolledSectionIds.includes(selectedSection) && !studentSavedSectionId && (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await api.post('/student-sections/enroll', {
+                      student_id: sessionUser?.id,
+                      section_id: selectedSection
+                    });
+                    setEnrolledSectionIds([...enrolledSectionIds, selectedSection]);
+                    setStudentSavedSectionId(selectedSection);
+                  } catch (err) {
+                    console.error('Error saving section:', err);
+                  }
+                }}
+                className="w-full px-4 py-3 text-white bg-pink-500 hover:bg-pink-600 rounded-lg font-medium transition-colors"
+              >
+                Click here to remember your course section
+              </button>
+            )}
+
             {/* Available Cases for Section */}
             {isSectionValid && (
               <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
@@ -1295,7 +1344,7 @@ const App: React.FC = () => {
               </div>
             )}
             
-            <p className="text-xs text-gray-500 italic px-2">You can optionally and anonymously share your chat conversation with the developers to improve the dialog for future students. You will be asked about this later.</p>
+            <p className="text-xs text-gray-500 italic px-2">Disclosure: Some courses and cases allow you to share your chat conversation with the instructor to track progress and improve the dialog for future students.</p>
             
             {error && (
               <div className="p-4 bg-red-50 border-2 border-red-300 rounded-lg">

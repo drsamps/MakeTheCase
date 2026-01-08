@@ -19,6 +19,16 @@ interface Section {
   year_term: string;
 }
 
+interface StudentSection {
+  section_id: string;
+  section_title: string;
+  year_term: string;
+  is_primary: boolean;
+}
+
+type SortField = 'id' | 'full_name' | 'email' | 'section_id';
+type SortDirection = 'asc' | 'desc';
+
 const StudentManager: React.FC = () => {
   const [students, setStudents] = useState<Student[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
@@ -36,8 +46,19 @@ const StudentManager: React.FC = () => {
     full_name: '',
     email: '',
     password: '',
-    section_id: '',
+    section_ids: [] as string[],
   });
+  const [originalSectionIds, setOriginalSectionIds] = useState<string[]>([]);
+
+  // Search, filter, and sort state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sectionFilter, setSectionFilter] = useState<string>('all');
+  const [sortField, setSortField] = useState<SortField>('full_name');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+
+  // Pagination state
+  const [pageSize, setPageSize] = useState<number>(20);
+  const [currentPage, setCurrentPage] = useState(1);
 
   // Helper function to format student ID for display
   const formatStudentId = (id: string): string => {
@@ -90,6 +111,102 @@ const StudentManager: React.FC = () => {
     }
   };
 
+  // Get section title for display
+  const getSectionTitle = (sectionId: string | null): string => {
+    if (!sectionId) return '';
+    const section = sections.find(s => s.section_id === sectionId);
+    return section ? section.section_title : sectionId;
+  };
+
+  // Handle sort toggle
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  // Filter and sort students
+  const filteredAndSortedStudents = React.useMemo(() => {
+    let result = [...students];
+
+    // Apply search filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter(student =>
+        student.id.toLowerCase().includes(query) ||
+        student.full_name.toLowerCase().includes(query) ||
+        (student.email && student.email.toLowerCase().includes(query)) ||
+        (student.first_name && student.first_name.toLowerCase().includes(query)) ||
+        (student.last_name && student.last_name.toLowerCase().includes(query))
+      );
+    }
+
+    // Apply section filter
+    if (sectionFilter !== 'all') {
+      if (sectionFilter === 'unassigned') {
+        result = result.filter(student => !student.section_id);
+      } else {
+        result = result.filter(student => student.section_id === sectionFilter);
+      }
+    }
+
+    // Apply sort
+    result.sort((a, b) => {
+      let aVal: string = '';
+      let bVal: string = '';
+
+      switch (sortField) {
+        case 'id':
+          aVal = a.id.toLowerCase();
+          bVal = b.id.toLowerCase();
+          break;
+        case 'full_name':
+          aVal = a.full_name.toLowerCase();
+          bVal = b.full_name.toLowerCase();
+          break;
+        case 'email':
+          aVal = (a.email || '').toLowerCase();
+          bVal = (b.email || '').toLowerCase();
+          break;
+        case 'section_id':
+          aVal = getSectionTitle(a.section_id).toLowerCase();
+          bVal = getSectionTitle(b.section_id).toLowerCase();
+          break;
+      }
+
+      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+
+    return result;
+  }, [students, searchQuery, sectionFilter, sortField, sortDirection, sections]);
+
+  // Sort indicator component
+  const SortIndicator: React.FC<{ field: SortField }> = ({ field }) => {
+    if (sortField !== field) {
+      return <span className="ml-1 text-gray-300">↕</span>;
+    }
+    return <span className="ml-1">{sortDirection === 'asc' ? '↑' : '↓'}</span>;
+  };
+
+  // Pagination calculations
+  const totalFiltered = filteredAndSortedStudents.length;
+  const totalPages = pageSize === 0 ? 1 : Math.ceil(totalFiltered / pageSize);
+  const startIndex = pageSize === 0 ? 0 : (currentPage - 1) * pageSize;
+  const endIndex = pageSize === 0 ? totalFiltered : Math.min(startIndex + pageSize, totalFiltered);
+  const paginatedStudents = pageSize === 0
+    ? filteredAndSortedStudents
+    : filteredAndSortedStudents.slice(startIndex, endIndex);
+
+  // Reset to page 1 when filters change
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, sectionFilter, pageSize]);
+
   const handleCreate = () => {
     setEditingStudent(null);
     setFormData({
@@ -99,13 +216,29 @@ const StudentManager: React.FC = () => {
       full_name: '',
       email: '',
       password: '',
-      section_id: '',
+      section_ids: [],
     });
+    setOriginalSectionIds([]);
     setShowModal(true);
   };
 
-  const handleEdit = (student: Student) => {
+  const handleEdit = async (student: Student) => {
     setEditingStudent(student);
+
+    // Fetch student's current sections
+    let sectionIds: string[] = [];
+    try {
+      const response = await api.get(`/students/${student.id}/sections`);
+      if (!response.error && response.data) {
+        sectionIds = response.data.map((s: StudentSection) => s.section_id);
+      }
+    } catch (err) {
+      // Fall back to legacy section_id if junction table query fails
+      if (student.section_id) {
+        sectionIds = [student.section_id];
+      }
+    }
+
     setFormData({
       id: student.id,
       first_name: student.first_name || '',
@@ -113,8 +246,9 @@ const StudentManager: React.FC = () => {
       full_name: student.full_name,
       email: student.email || '',
       password: '',
-      section_id: student.section_id || '',
+      section_ids: sectionIds,
     });
+    setOriginalSectionIds(sectionIds);
     setShowModal(true);
   };
 
@@ -124,13 +258,12 @@ const StudentManager: React.FC = () => {
 
     try {
       if (editingStudent) {
-        // Update existing student
+        // Update existing student basic info
         const updateData: any = {
           first_name: formData.first_name,
           last_name: formData.last_name,
           full_name: formData.full_name,
           email: formData.email,
-          section_id: formData.section_id || null,
         };
         if (formData.password) {
           updateData.password = formData.password;
@@ -140,16 +273,49 @@ const StudentManager: React.FC = () => {
           setError(response.error.message || response.error);
           return;
         }
+
+        // Handle section changes
+        const sectionsToAdd = formData.section_ids.filter(id => !originalSectionIds.includes(id));
+        const sectionsToRemove = originalSectionIds.filter(id => !formData.section_ids.includes(id));
+
+        // Add new sections
+        for (const sectionId of sectionsToAdd) {
+          const isFirst = formData.section_ids.indexOf(sectionId) === 0 && originalSectionIds.length === 0;
+          await api.post(`/students/${editingStudent.id}/sections`, {
+            section_id: sectionId,
+            is_primary: isFirst
+          });
+        }
+
+        // Remove sections
+        for (const sectionId of sectionsToRemove) {
+          await api.delete(`/students/${editingStudent.id}/sections/${sectionId}`);
+        }
       } else {
         // Create new student
         if (!formData.id) {
           setError('Student ID is required for new students');
           return;
         }
-        const response = await api.post('/students', formData);
+        // Create student with first section as primary (for backward compat)
+        const createData = {
+          ...formData,
+          section_id: formData.section_ids[0] || null
+        };
+        const response = await api.post('/students', createData);
         if (response.error) {
           setError(response.error.message || response.error);
           return;
+        }
+
+        // Add additional sections if more than one selected
+        if (formData.section_ids.length > 1) {
+          for (let i = 1; i < formData.section_ids.length; i++) {
+            await api.post(`/students/${formData.id}/sections`, {
+              section_id: formData.section_ids[i],
+              is_primary: false
+            });
+          }
         }
       }
 
@@ -244,22 +410,158 @@ const StudentManager: React.FC = () => {
         </div>
       )}
 
+      {/* Search and Filter Controls */}
+      <div className="mb-4 flex flex-wrap gap-4 items-center">
+        {/* Page Size Selector */}
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-gray-600">Show</label>
+          <select
+            value={pageSize}
+            onChange={(e) => setPageSize(Number(e.target.value))}
+            className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 bg-white text-sm"
+          >
+            <option value={10}>10</option>
+            <option value={20}>20</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+            <option value={0}>All</option>
+          </select>
+        </div>
+
+        {/* Search Input */}
+        <div className="flex-1 min-w-[200px]">
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="Search by ID, name, or email..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full px-4 py-2 pl-10 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+            />
+            <svg
+              className="absolute left-3 top-2.5 h-5 w-5 text-gray-400"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path
+                fillRule="evenodd"
+                d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z"
+                clipRule="evenodd"
+              />
+            </svg>
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-600"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                </svg>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Section Filter */}
+        <div className="min-w-[200px]">
+          <select
+            value={sectionFilter}
+            onChange={(e) => setSectionFilter(e.target.value)}
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 bg-white"
+          >
+            <option value="all">All sections</option>
+            <option value="unassigned">— Unassigned —</option>
+            {sections.map((section) => (
+              <option key={section.section_id} value={section.section_id}>
+                {section.section_title}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Pagination Controls */}
+      <div className="mb-4 flex flex-wrap gap-4 items-center justify-between">
+        {/* Results info */}
+        <div className="text-sm text-gray-500">
+          {totalFiltered === 0 ? (
+            'No students found'
+          ) : pageSize === 0 ? (
+            `Showing all ${totalFiltered} of ${students.length} students`
+          ) : (
+            `Showing ${startIndex + 1}-${endIndex} of ${totalFiltered} students${totalFiltered !== students.length ? ` (${students.length} total)` : ''}`
+          )}
+        </div>
+
+        {/* Page Navigation */}
+        {pageSize > 0 && totalPages > 1 && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCurrentPage(1)}
+              disabled={currentPage === 1}
+              className="px-2 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="First page"
+            >
+              ««
+            </button>
+            <button
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Previous
+            </button>
+            <span className="px-3 py-1 text-sm text-gray-600">
+              Page {currentPage} of {totalPages}
+            </span>
+            <button
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+              className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Next
+            </button>
+            <button
+              onClick={() => setCurrentPage(totalPages)}
+              disabled={currentPage === totalPages}
+              className="px-2 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Last page"
+            >
+              »»
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Students Table */}
       <div className="bg-white rounded-lg shadow overflow-hidden">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                ID
+              <th
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                onClick={() => handleSort('id')}
+              >
+                ID <SortIndicator field="id" />
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Name
+              <th
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                onClick={() => handleSort('full_name')}
+              >
+                Name <SortIndicator field="full_name" />
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Email
+              <th
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                onClick={() => handleSort('email')}
+              >
+                Email <SortIndicator field="email" />
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Section
+              <th
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                onClick={() => handleSort('section_id')}
+              >
+                Section <SortIndicator field="section_id" />
               </th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Actions
@@ -273,14 +575,14 @@ const StudentManager: React.FC = () => {
                   Loading...
                 </td>
               </tr>
-            ) : students.length === 0 ? (
+            ) : paginatedStudents.length === 0 ? (
               <tr>
                 <td colSpan={5} className="px-6 py-4 text-center text-gray-500">
-                  No students found
+                  {students.length === 0 ? 'No students found' : 'No students match the current filters'}
                 </td>
               </tr>
             ) : (
-              students.map((student) => (
+              paginatedStudents.map((student) => (
                 <tr key={student.id} className="hover:bg-gray-50">
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="text-sm text-gray-900 font-mono" title={student.id}>
@@ -426,21 +728,46 @@ const StudentManager: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Section
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Sections
                 </label>
-                <select
-                  value={formData.section_id}
-                  onChange={(e) => setFormData({ ...formData, section_id: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="">No section</option>
-                  {sections.map((section) => (
-                    <option key={section.section_id} value={section.section_id}>
-                      {section.section_title} ({section.year_term})
-                    </option>
-                  ))}
-                </select>
+                <div className="max-h-48 overflow-y-auto border border-gray-300 rounded-lg p-2 space-y-1">
+                  {sections.length === 0 ? (
+                    <div className="text-sm text-gray-500 p-2">No sections available</div>
+                  ) : (
+                    sections.map((section) => (
+                      <label
+                        key={section.section_id}
+                        className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={formData.section_ids.includes(section.section_id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setFormData({
+                                ...formData,
+                                section_ids: [...formData.section_ids, section.section_id]
+                              });
+                            } else {
+                              setFormData({
+                                ...formData,
+                                section_ids: formData.section_ids.filter(id => id !== section.section_id)
+                              });
+                            }
+                          }}
+                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">
+                          {section.section_title} ({section.year_term})
+                        </span>
+                      </label>
+                    ))
+                  )}
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Select one or more sections. Most students will be in one section.
+                </p>
               </div>
 
               <div className="flex justify-end gap-3 pt-4">

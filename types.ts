@@ -157,6 +157,7 @@ export interface Section {
     year_term: string;
     chat_model: string | null;
     super_model: string | null;
+    accept_new_students?: boolean;
 }
 
 export interface AdminUser {
