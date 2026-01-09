@@ -21,6 +21,11 @@ interface FormData {
   arguments_for: string;
   arguments_against: string;
   enabled: boolean;
+  // Position tracking fields
+  position_tracking_enabled: boolean;
+  position_capture_method: string;
+  position_options: string;  // Comma-separated for form input
+  track_position_change: boolean;
 }
 
 const defaultFormData: FormData = {
@@ -34,7 +39,12 @@ const defaultFormData: FormData = {
   chat_time_warning: 5,
   arguments_for: '',
   arguments_against: '',
-  enabled: true
+  enabled: true,
+  // Position tracking defaults
+  position_tracking_enabled: false,
+  position_capture_method: 'explicit',
+  position_options: 'for, against',
+  track_position_change: true
 };
 
 export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
@@ -78,6 +88,8 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
   const handleEdit = (scenario: CaseScenario) => {
     setEditingScenario(scenario);
+    // Parse position tracking from chat_options_override if present
+    const override = scenario.chat_options_override || {};
     setFormData({
       scenario_name: scenario.scenario_name,
       protagonist: scenario.protagonist,
@@ -89,7 +101,14 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       chat_time_warning: scenario.chat_time_warning || 5,
       arguments_for: scenario.arguments_for || '',
       arguments_against: scenario.arguments_against || '',
-      enabled: scenario.enabled
+      enabled: scenario.enabled,
+      // Position tracking from chat_options_override
+      position_tracking_enabled: override.position_tracking_enabled ?? false,
+      position_capture_method: override.position_capture_method || 'explicit',
+      position_options: Array.isArray(override.position_options)
+        ? override.position_options.join(', ')
+        : 'for, against',
+      track_position_change: override.track_position_change ?? true
     });
     setShowForm(true);
   };
@@ -100,13 +119,40 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       return;
     }
 
+    // Build chat_options_override with position tracking settings
+    const chatOptionsOverride: Record<string, any> = {};
+    if (formData.position_tracking_enabled) {
+      chatOptionsOverride.position_tracking_enabled = true;
+      chatOptionsOverride.position_capture_method = formData.position_capture_method;
+      chatOptionsOverride.position_options = formData.position_options
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+      chatOptionsOverride.track_position_change = formData.track_position_change;
+    }
+
+    const payload = {
+      scenario_name: formData.scenario_name,
+      protagonist: formData.protagonist,
+      protagonist_initials: formData.protagonist_initials,
+      protagonist_role: formData.protagonist_role,
+      chat_topic: formData.chat_topic,
+      chat_question: formData.chat_question,
+      chat_time_limit: formData.chat_time_limit,
+      chat_time_warning: formData.chat_time_warning,
+      arguments_for: formData.arguments_for,
+      arguments_against: formData.arguments_against,
+      enabled: formData.enabled,
+      chat_options_override: Object.keys(chatOptionsOverride).length > 0 ? chatOptionsOverride : null
+    };
+
     setIsSaving(true);
     setError(null);
     try {
       if (editingScenario) {
-        await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}`, formData);
+        await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}`, payload);
       } else {
-        await api.post(`/cases/${caseId}/scenarios`, formData);
+        await api.post(`/cases/${caseId}/scenarios`, payload);
       }
       await fetchScenarios();
       setShowForm(false);
@@ -209,6 +255,11 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                             {scenario.chat_time_limit > 0 && (
                               <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
                                 {scenario.chat_time_limit}min limit
+                              </span>
+                            )}
+                            {scenario.chat_options_override?.position_tracking_enabled && (
+                              <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
+                                Position tracking
                               </span>
                             )}
                           </div>
@@ -399,6 +450,65 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   rows={3}
                   placeholder="Key arguments supporting the opposing position..."
                 />
+              </div>
+
+              {/* Position Tracking Section */}
+              <div className="border-t pt-4 mt-4">
+                <h4 className="text-sm font-semibold text-gray-700 mb-3">Position Tracking</h4>
+
+                <label className="flex items-center gap-2 mb-3">
+                  <input
+                    type="checkbox"
+                    checked={formData.position_tracking_enabled}
+                    onChange={(e) => handleInputChange('position_tracking_enabled', e.target.checked)}
+                    className="rounded"
+                  />
+                  <span className="text-sm text-gray-700">Enable position tracking for this scenario</span>
+                </label>
+
+                {formData.position_tracking_enabled && (
+                  <div className="ml-6 space-y-3 bg-blue-50 p-4 rounded-lg">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Capture Method</label>
+                      <select
+                        value={formData.position_capture_method}
+                        onChange={(e) => handleInputChange('position_capture_method', e.target.value)}
+                        className="w-full border rounded-lg px-3 py-2"
+                      >
+                        <option value="explicit">Student selects at chat start</option>
+                        <option value="ai_inferred">AI infers from transcript</option>
+                        <option value="instructor_manual">Instructor tags after chat</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Position Options
+                        <span className="text-gray-400 font-normal ml-1">(comma-separated, at least 2)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.position_options}
+                        onChange={(e) => handleInputChange('position_options', e.target.value)}
+                        className="w-full border rounded-lg px-3 py-2"
+                        placeholder="for, against"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        These options will be shown to students (e.g., "Support expansion", "Oppose expansion")
+                      </p>
+                    </div>
+
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={formData.track_position_change}
+                        onChange={(e) => handleInputChange('track_position_change', e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-sm text-gray-700">Track if position changes during chat</span>
+                    </label>
+                  </div>
+                )}
               </div>
             </div>
           )}

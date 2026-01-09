@@ -2805,6 +2805,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                     </label>
                                   </div>
 
+                                  {/* Position Tracking Override */}
+                                  <div className="border-t border-gray-200 pt-3 mt-3">
+                                    <label className="flex items-center gap-2 text-sm text-gray-600">
+                                      <input
+                                        type="checkbox"
+                                        checked={editingChatOptions.disable_position_tracking ?? false}
+                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, disable_position_tracking: e.target.checked})}
+                                        className="rounded border-gray-300"
+                                      />
+                                      <span>Disable position tracking for this assignment</span>
+                                    </label>
+                                    <p className="text-xs text-gray-400 mt-1 ml-6">Override scenario-level position tracking settings</p>
+                                  </div>
+
                                   {/* Action Buttons */}
                                   <div className="flex justify-between pt-2 border-t">
                                     <button
@@ -3324,6 +3338,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Case</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Section</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Position</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Started</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Duration</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
@@ -3347,6 +3362,26 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     }`}>
                       {chat.status}
                     </span>
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    {chat.initial_position ? (
+                      <div className="flex flex-col gap-0.5">
+                        <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded ${
+                          chat.initial_position === 'for' ? 'bg-green-100 text-green-700' :
+                          chat.initial_position === 'against' ? 'bg-red-100 text-red-700' :
+                          'bg-blue-100 text-blue-700'
+                        }`}>
+                          {chat.initial_position}
+                        </span>
+                        {chat.final_position && chat.final_position !== chat.initial_position && (
+                          <span className="text-xs text-amber-600">
+                            → {chat.final_position}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-gray-400">-</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">
                     {new Date(chat.start_time).toLocaleString()}
@@ -5069,6 +5104,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                 <option value="sycophantic">Sycophantic</option>
                               </select>
                             </div>
+
+                            {/* Position Tracking Override */}
+                            <div className="border-t border-gray-200 pt-3 mt-3">
+                              <label className="flex items-center gap-2 text-sm text-gray-600">
+                                <input
+                                  type="checkbox"
+                                  checked={editingChatOptions.disable_position_tracking ?? false}
+                                  onChange={(e) => setEditingChatOptions({...editingChatOptions, disable_position_tracking: e.target.checked})}
+                                  className="rounded border-gray-300"
+                                />
+                                <span>Disable position tracking</span>
+                              </label>
+                              <p className="text-xs text-gray-400 mt-1 ml-6">Override scenario settings</p>
+                            </div>
+
                             <div className="flex justify-between pt-2 border-t">
                               <button
                                 onClick={handleResetChatOptions}

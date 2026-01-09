@@ -38,6 +38,17 @@ export enum ChatStatus {
   COMPLETED = 'completed',
 }
 
+export type PositionCaptureMethod = 'explicit' | 'ai_inferred' | 'instructor_manual' | 'none';
+
+// Position tracking settings stored in scenario's chat_options_override
+export interface ScenarioPositionSettings {
+  position_tracking_enabled?: boolean;
+  position_capture_method?: PositionCaptureMethod;
+  position_options?: string[];     // Position choices (default: ['for', 'against'])
+  position_labels?: Record<string, string>; // Custom display labels for positions
+  track_position_change?: boolean; // Ask for final position after chat
+}
+
 export interface Persona {
   persona_id: string;
   persona_name: string;
@@ -66,6 +77,10 @@ export interface CaseChat {
   evaluation_id: string | null;
   time_limit_minutes: number | null;
   time_started: string | null;
+  // Position tracking fields
+  initial_position: string | null;
+  final_position: string | null;
+  position_method: PositionCaptureMethod | null;
   // Joined fields
   student_name?: string;
   case_title?: string;
@@ -86,7 +101,7 @@ export interface CaseScenario {
   chat_time_warning: number;
   arguments_for: string | null;
   arguments_against: string | null;
-  chat_options_override: Partial<ChatOptions> | null;
+  chat_options_override: (Partial<ChatOptions> & ScenarioPositionSettings) | null;
   sort_order: number;
   enabled: boolean;
   created_at?: string;
@@ -140,6 +155,8 @@ export interface ChatOptions {
   timeout_chat: boolean;          // Stop the chat at the designated duration
   restart_chat: boolean;          // Allow students to exit chat and restart it
   allow_exit: boolean;            // Provide students an exit button to exit the chat
+  // Position tracking override (position config is now per-scenario in chat_options_override)
+  disable_position_tracking: boolean; // Override to disable scenario-level position tracking
 }
 
 export interface EvaluationCriterion {
@@ -170,4 +187,21 @@ export interface AdminUser {
   role: 'admin';
   superuser: boolean;
   adminAccess: string[];
+}
+
+export interface PositionLog {
+  id: number;
+  case_chat_id: string;
+  position_type: 'initial' | 'final';
+  position_value: string;
+  recorded_by: 'student' | 'ai' | 'instructor';
+  recorded_at: string;
+  notes: string | null;
+}
+
+export interface PositionDistribution {
+  position: string;
+  count: number;
+  percentage: number;
+  students?: Array<{ id: string; name: string; changed: boolean }>;
 }

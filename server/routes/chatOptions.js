@@ -21,7 +21,9 @@ const DEFAULT_CHAT_OPTIONS = {
   chatbot_personality: '',
   // Multi-chat options
   chat_repeats: 0,           // 0 = one chat only, 1+ = can repeat N times
-  save_dead_transcripts: false  // Save transcripts for abandoned/canceled/killed chats
+  save_dead_transcripts: false,  // Save transcripts for abandoned/canceled/killed chats
+  // Position tracking override (position config is now per-scenario)
+  disable_position_tracking: false  // Override to disable scenario-level position tracking
 };
 
 // Base schema describing available options (for UI generation)
@@ -104,6 +106,15 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     default: false,
     description: 'Save transcripts for abandoned, canceled, or killed chats',
     category: 'flow'
+  },
+  // Position tracking override (position config is now per-scenario)
+  {
+    key: 'disable_position_tracking',
+    label: 'Disable Position Tracking',
+    type: 'boolean',
+    default: false,
+    description: 'Override to disable scenario-level position tracking for this assignment',
+    category: 'position_tracking'
   }
 ];
 

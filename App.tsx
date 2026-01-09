@@ -113,6 +113,10 @@ const App: React.FC = () => {
   
   // Chat options from section-case assignment (Phase 2)
   const [chatOptions, setChatOptions] = useState<any>(null);
+
+  // Position tracking state
+  const [selectedInitialPosition, setSelectedInitialPosition] = useState<string | null>(null);
+  const [selectedFinalPosition, setSelectedFinalPosition] = useState<string | null>(null);
   
   // Default chat options
   const defaultChatOptions = {
@@ -1017,17 +1021,34 @@ const App: React.FC = () => {
 
       // Create case_chat record to track this chat session
       try {
+        const caseChatPayload: Record<string, any> = {
+          student_id: studentId,
+          case_id: selectedCaseId,
+          section_id: sectionToSave,
+          persona: ceoPersona,
+          chat_model: selectedChatModel,
+          scenario_id: selectedScenarioId || undefined,
+        };
+
+        // Include position if explicit capture method is enabled (from scenario settings)
+        // Check scenario's chat_options_override for position tracking settings
+        const scenarioForChat = selectedScenarioId
+          ? availableScenarios.find((s: any) => s.scenario_id === selectedScenarioId)
+          : null;
+        const scenarioPosSettings = scenarioForChat?.chat_options_override || {};
+        const isPosTrackingEnabled = scenarioPosSettings.position_tracking_enabled === true &&
+                                     chatOptions?.disable_position_tracking !== true;
+        const posCaptureMethod = scenarioPosSettings.position_capture_method || 'explicit';
+
+        if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && selectedInitialPosition) {
+          caseChatPayload.initial_position = selectedInitialPosition;
+          caseChatPayload.position_method = 'explicit';
+        }
+
         const caseChatResponse = await fetch(`${getApiBaseUrl()}/case-chats`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            student_id: studentId,
-            case_id: selectedCaseId,
-            section_id: sectionToSave,
-            persona: ceoPersona,
-            chat_model: selectedChatModel,
-            scenario_id: selectedScenarioId || undefined,
-          }),
+          body: JSON.stringify(caseChatPayload),
         });
         const caseChatResult = await caseChatResponse.json();
         if (caseChatResult.data?.id) {
@@ -1067,6 +1088,8 @@ const App: React.FC = () => {
     setEvaluationResult(null);
     setCeoPersona(CEOPersona.MODERATE);
     setCurrentCaseChatId(null);
+    setSelectedInitialPosition(null);
+    setSelectedFinalPosition(null);
     // Keep section selected if student has a saved section
     if (!studentSavedSectionId) {
       setSelectedSection('');
@@ -1294,7 +1317,24 @@ const App: React.FC = () => {
     // Check if scenario selection is required and valid
     const scenarioRequirementMet = !useScenarios || selectedScenarioId !== null;
     const allScenariosCompleted = useScenarios && availableScenarios.length > 0 && availableScenarios.every((s: any) => s.completed);
-    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted;
+
+    // Get position tracking settings from selected scenario (if scenarios enabled)
+    const selectedScenario = selectedScenarioId
+      ? availableScenarios.find((s: any) => s.scenario_id === selectedScenarioId)
+      : null;
+    const scenarioPositionSettings = selectedScenario?.chat_options_override || {};
+
+    // Position tracking: enabled if scenario has it AND section hasn't disabled it
+    const isPositionTrackingEnabled = scenarioPositionSettings.position_tracking_enabled === true &&
+                                      chatOptions?.disable_position_tracking !== true;
+    const positionCaptureMethod = scenarioPositionSettings.position_capture_method || 'explicit';
+    const positionOptions = scenarioPositionSettings.position_options || ['for', 'against'];
+
+    // Position selection requirement: if explicit method enabled and no position selected, can't start
+    const positionRequirementMet = !isPositionTrackingEnabled ||
+                                   positionCaptureMethod !== 'explicit' ||
+                                   selectedInitialPosition !== null;
+    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted && positionRequirementMet;
     const sectionName = sections.find(s => s.section_id === selectedSection)?.section_title || selectedSection;
 
     return (
@@ -1537,7 +1577,41 @@ const App: React.FC = () => {
                 </select>
               </div>
             )}
-            
+
+            {/* Position Selection - shown when explicit capture method is enabled (scenario-based) */}
+            {isPositionTrackingEnabled &&
+             positionCaptureMethod === 'explicit' &&
+             activeCaseData && (
+              <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  What is your initial position on this case? <span className="text-red-500">*</span>
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {positionOptions.map((option: string) => {
+                    const displayLabel = scenarioPositionSettings.position_labels?.[option] ||
+                      option.charAt(0).toUpperCase() + option.slice(1);
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        onClick={() => setSelectedInitialPosition(option)}
+                        className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                          selectedInitialPosition === option
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-white text-gray-700 border border-gray-300 hover:bg-blue-50'
+                        }`}
+                      >
+                        {displayLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+                {!selectedInitialPosition && (
+                  <p className="text-xs text-blue-600 mt-2">Please select your position to start the chat</p>
+                )}
+              </div>
+            )}
+
             <p className="text-xs text-gray-500 italic px-2">Disclosure: Some courses and cases allow you to share your chat conversation with the instructor to track progress and improve the dialog for future students.</p>
             
             {error && (
@@ -1559,7 +1633,7 @@ const App: React.FC = () => {
               disabled={isLoading || !canStartChat}
               className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : 'Start Chat'}
+              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : !positionRequirementMet ? 'Select Your Position' : 'Start Chat'}
             </button>
           </form>
         </div>

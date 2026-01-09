@@ -43,14 +43,31 @@ interface ScoreDistribution {
   count: number;
 }
 
+interface PositionData {
+  total_with_positions: number;
+  initial_distribution: Array<{ position: string; count: number; percentage: number }>;
+  final_distribution: Array<{ position: string; count: number; percentage: number }>;
+  position_changes: { changed: number; unchanged: number; change_rate: number };
+  students_by_position: Record<string, Array<{ id: string; name: string; changed: boolean; final_position: string | null }>>;
+}
+
 const Analytics: React.FC<AnalyticsProps> = ({ onNavigate }) => {
   const [isLoading, setIsLoading] = useState(true);
-  const [activeView, setActiveView] = useState<'overview' | 'sections' | 'cases' | 'trends'>('overview');
+  const [activeView, setActiveView] = useState<'overview' | 'sections' | 'cases' | 'positions'>('overview');
   const [sectionPerformance, setSectionPerformance] = useState<SectionPerformance[]>([]);
   const [casePerformance, setCasePerformance] = useState<CasePerformance[]>([]);
   const [overallStats, setOverallStats] = useState<OverallStats | null>(null);
   const [scoreDistribution, setScoreDistribution] = useState<ScoreDistribution[]>([]);
   const [dateRange, setDateRange] = useState<'7d' | '30d' | '90d' | 'all'>('30d');
+
+  // Position tracking state
+  const [positionSections, setPositionSections] = useState<Array<{ section_id: string; section_title: string }>>([]);
+  const [positionCases, setPositionCases] = useState<Array<{ case_id: string; case_title: string }>>([]);
+  const [selectedPositionSection, setSelectedPositionSection] = useState<string>('');
+  const [selectedPositionCase, setSelectedPositionCase] = useState<string>('');
+  const [positionData, setPositionData] = useState<PositionData | null>(null);
+  const [isLoadingPositions, setIsLoadingPositions] = useState(false);
+  const [showStudentList, setShowStudentList] = useState(false);
 
   const fetchAnalytics = useCallback(async () => {
     setIsLoading(true);
@@ -181,6 +198,51 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate }) => {
     fetchAnalytics();
   }, [fetchAnalytics]);
 
+  // Fetch sections and cases for position filters when switching to positions tab
+  useEffect(() => {
+    if (activeView === 'positions' && positionSections.length === 0) {
+      const fetchPositionFilters = async () => {
+        try {
+          const [sectionsRes, casesRes] = await Promise.all([
+            api.from('sections').select('section_id, section_title, enabled'),
+            api.from('cases').select('case_id, case_title, enabled')
+          ]);
+          setPositionSections(((sectionsRes.data as any[]) || []).filter(s => s.enabled));
+          setPositionCases(((casesRes.data as any[]) || []).filter(c => c.enabled));
+        } catch (error) {
+          console.error('Failed to fetch position filters:', error);
+        }
+      };
+      fetchPositionFilters();
+    }
+  }, [activeView, positionSections.length]);
+
+  // Fetch position data when section and case are selected
+  const fetchPositionData = useCallback(async () => {
+    if (!selectedPositionSection || !selectedPositionCase) {
+      setPositionData(null);
+      return;
+    }
+    setIsLoadingPositions(true);
+    try {
+      const response = await api.get(`/case-chats/analytics/positions?section_id=${selectedPositionSection}&case_id=${selectedPositionCase}`);
+      if (response.data) {
+        setPositionData(response.data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch position data:', error);
+      setPositionData(null);
+    } finally {
+      setIsLoadingPositions(false);
+    }
+  }, [selectedPositionSection, selectedPositionCase]);
+
+  useEffect(() => {
+    if (activeView === 'positions' && selectedPositionSection && selectedPositionCase) {
+      fetchPositionData();
+    }
+  }, [activeView, selectedPositionSection, selectedPositionCase, fetchPositionData]);
+
   const getScoreColor = (score: number | null) => {
     if (score === null) return 'text-gray-400';
     if (score >= 12) return 'text-green-600';
@@ -285,7 +347,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate }) => {
 
       {/* View Tabs */}
       <div className="flex gap-1 p-1 bg-gray-100 rounded-lg w-fit">
-        {(['overview', 'sections', 'cases'] as const).map(view => (
+        {(['overview', 'sections', 'cases', 'positions'] as const).map(view => (
           <button
             key={view}
             onClick={() => setActiveView(view)}
@@ -537,6 +599,164 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate }) => {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {activeView === 'positions' && (
+        <div className="space-y-6">
+          {/* Section/Case Filters */}
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Position Distribution</h3>
+            <p className="text-sm text-gray-500 mb-4">View student positions (for/against) on case proposals</p>
+
+            <div className="flex flex-wrap gap-4">
+              <div className="min-w-48">
+                <label className="block text-xs font-medium text-gray-700 mb-1">Section</label>
+                <select
+                  value={selectedPositionSection}
+                  onChange={(e) => setSelectedPositionSection(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="">Select a section...</option>
+                  {positionSections.map(s => (
+                    <option key={s.section_id} value={s.section_id}>{s.section_title}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="min-w-48">
+                <label className="block text-xs font-medium text-gray-700 mb-1">Case</label>
+                <select
+                  value={selectedPositionCase}
+                  onChange={(e) => setSelectedPositionCase(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="">Select a case...</option>
+                  {positionCases.map(c => (
+                    <option key={c.case_id} value={c.case_id}>{c.case_title}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Position Data Display */}
+          {!selectedPositionSection || !selectedPositionCase ? (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center">
+              <svg className="w-12 h-12 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+              <p className="text-gray-500">Select a section and case to view position data</p>
+            </div>
+          ) : isLoadingPositions ? (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center">
+              <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent mb-4"></div>
+              <p className="text-gray-500">Loading position data...</p>
+            </div>
+          ) : positionData && positionData.total_with_positions > 0 ? (
+            <>
+              {/* Distribution Chart */}
+              <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                <h4 className="text-md font-semibold text-gray-800 mb-4">Initial Position Distribution</h4>
+                <div className="flex items-end gap-4 h-48">
+                  {positionData.initial_distribution.map(({ position, count, percentage }) => (
+                    <div key={position} className="flex-1 flex flex-col items-center max-w-32">
+                      <div
+                        className={`w-full rounded-t transition-all ${
+                          position === 'for' ? 'bg-green-500' :
+                          position === 'against' ? 'bg-red-500' :
+                          'bg-blue-500'
+                        }`}
+                        style={{ height: `${percentage}%`, minHeight: count > 0 ? '8px' : '0' }}
+                      ></div>
+                      <div className="text-center mt-2">
+                        <span className="text-sm font-medium text-gray-900 capitalize">{position}</span>
+                        <p className="text-xs text-gray-500">{count} ({percentage}%)</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-400 mt-4 text-center">
+                  Total: {positionData.total_with_positions} students with position data
+                </p>
+              </div>
+
+              {/* Position Changes Card */}
+              <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                <h4 className="text-md font-semibold text-gray-800 mb-4">Position Changes</h4>
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  <div className="p-4 bg-green-50 rounded-lg">
+                    <p className="text-3xl font-bold text-green-600">{positionData.position_changes.unchanged}</p>
+                    <p className="text-sm text-gray-600">Unchanged</p>
+                  </div>
+                  <div className="p-4 bg-amber-50 rounded-lg">
+                    <p className="text-3xl font-bold text-amber-600">{positionData.position_changes.changed}</p>
+                    <p className="text-sm text-gray-600">Changed Position</p>
+                  </div>
+                  <div className="p-4 bg-blue-50 rounded-lg">
+                    <p className="text-3xl font-bold text-blue-600">{positionData.position_changes.change_rate}%</p>
+                    <p className="text-sm text-gray-600">Change Rate</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Students by Position (collapsible) */}
+              <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                <button
+                  onClick={() => setShowStudentList(!showStudentList)}
+                  className="w-full p-4 flex justify-between items-center hover:bg-gray-50"
+                >
+                  <h4 className="text-md font-semibold text-gray-800">Students by Position</h4>
+                  <svg
+                    className={`w-5 h-5 text-gray-400 transition-transform ${showStudentList ? 'rotate-180' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {showStudentList && (
+                  <div className="border-t border-gray-200">
+                    {Object.entries(positionData.students_by_position).map(([position, students]) => (
+                      <div key={position} className="p-4 border-b last:border-b-0">
+                        <h5 className={`font-medium mb-2 capitalize ${
+                          position === 'for' ? 'text-green-700' :
+                          position === 'against' ? 'text-red-700' :
+                          'text-blue-700'
+                        }`}>
+                          {position} ({students.length})
+                        </h5>
+                        <div className="flex flex-wrap gap-2">
+                          {students.map((s) => (
+                            <span
+                              key={s.id}
+                              className={`px-2 py-1 text-sm rounded ${
+                                s.changed ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700'
+                              }`}
+                            >
+                              {s.name || 'Unknown'}
+                              {s.changed && s.final_position && (
+                                <span className="text-amber-600 ml-1">→ {s.final_position}</span>
+                              )}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center">
+              <svg className="w-12 h-12 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+              </svg>
+              <p className="text-gray-500">No position data available for this section and case</p>
+              <p className="text-xs text-gray-400 mt-2">Position tracking may not be enabled for this assignment</p>
+            </div>
+          )}
         </div>
       )}
     </div>

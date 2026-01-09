@@ -11,7 +11,7 @@ const VALID_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'kill
 // POST /api/case-chats - Create a new chat session
 router.post('/', async (req, res) => {
   try {
-    const { student_id, case_id, section_id, scenario_id, persona, chat_model } = req.body;
+    const { student_id, case_id, section_id, scenario_id, persona, chat_model, initial_position, position_method } = req.body;
 
     if (!student_id || !case_id) {
       return res.status(400).json({
@@ -35,10 +35,19 @@ router.post('/', async (req, res) => {
     }
 
     await pool.execute(
-      `INSERT INTO case_chats (id, student_id, case_id, section_id, scenario_id, persona, chat_model, status, time_limit_minutes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?)`,
-      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, chat_model || null, timeLimitMinutes]
+      `INSERT INTO case_chats (id, student_id, case_id, section_id, scenario_id, persona, chat_model, status, time_limit_minutes, initial_position, position_method)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?)`,
+      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, chat_model || null, timeLimitMinutes, initial_position || null, position_method || null]
     );
+
+    // Log initial position if provided
+    if (initial_position && position_method) {
+      await pool.execute(
+        `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
+         VALUES (?, 'initial', ?, ?, NULL)`,
+        [id, initial_position, position_method === 'explicit' ? 'student' : 'instructor']
+      );
+    }
 
     const [rows] = await pool.execute('SELECT * FROM case_chats WHERE id = ?', [id]);
 
@@ -674,6 +683,215 @@ router.get('/check-scenario-completion/:studentId/:caseId', async (req, res) => 
     });
   } catch (error) {
     console.error('Error checking scenario completion:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// =====================================================
+// POSITION TRACKING ENDPOINTS
+// =====================================================
+
+// PATCH /api/case-chats/:id/position - Set or update position for a chat
+router.patch('/:id/position', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { position_type, position_value, recorded_by, notes } = req.body;
+
+    // Validate position_type
+    if (!position_type || !['initial', 'final'].includes(position_type)) {
+      return res.status(400).json({
+        data: null,
+        error: { message: "position_type must be 'initial' or 'final'" }
+      });
+    }
+
+    if (!position_value) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'position_value is required' }
+      });
+    }
+
+    // Validate recorded_by
+    const validRecordedBy = ['student', 'ai', 'instructor'];
+    if (!recorded_by || !validRecordedBy.includes(recorded_by)) {
+      return res.status(400).json({
+        data: null,
+        error: { message: `recorded_by must be one of: ${validRecordedBy.join(', ')}` }
+      });
+    }
+
+    const [existing] = await pool.execute('SELECT id, position_method FROM case_chats WHERE id = ?', [id]);
+
+    if (existing.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
+
+    // Update the appropriate position column
+    const column = position_type === 'initial' ? 'initial_position' : 'final_position';
+    const positionMethod = existing[0].position_method ||
+      (recorded_by === 'student' ? 'explicit' : recorded_by === 'ai' ? 'ai_inferred' : 'instructor_manual');
+
+    await pool.execute(
+      `UPDATE case_chats SET ${column} = ?, position_method = ? WHERE id = ?`,
+      [position_value, positionMethod, id]
+    );
+
+    // Insert into position logs
+    await pool.execute(
+      `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
+       VALUES (?, ?, ?, ?, ?)`,
+      [id, position_type, position_value, recorded_by, notes || null]
+    );
+
+    const [rows] = await pool.execute('SELECT * FROM case_chats WHERE id = ?', [id]);
+
+    res.json({ data: rows[0], error: null });
+  } catch (error) {
+    console.error('Error updating chat position:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/case-chats/:id/positions - Get position history for a chat
+router.get('/:id/positions', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [chat] = await pool.execute(
+      'SELECT id, initial_position, final_position, position_method FROM case_chats WHERE id = ?',
+      [id]
+    );
+
+    if (chat.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
+
+    const [logs] = await pool.execute(
+      'SELECT * FROM chat_position_logs WHERE case_chat_id = ? ORDER BY recorded_at ASC',
+      [id]
+    );
+
+    res.json({
+      data: {
+        initial_position: chat[0].initial_position,
+        final_position: chat[0].final_position,
+        position_method: chat[0].position_method,
+        position_changed: chat[0].initial_position !== chat[0].final_position &&
+                         chat[0].final_position !== null,
+        logs
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching chat positions:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/case-chats/analytics/positions - Get position distribution for a section/case (admin only)
+router.get('/analytics/positions', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { section_id, case_id, scenario_id } = req.query;
+
+    if (!section_id || !case_id) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'section_id and case_id are required' }
+      });
+    }
+
+    // Build query based on filters
+    let query = `
+      SELECT
+        cc.initial_position,
+        cc.final_position,
+        cc.position_method,
+        cc.student_id,
+        s.full_name as student_name,
+        cc.status
+      FROM case_chats cc
+      LEFT JOIN students s ON cc.student_id = s.id
+      WHERE cc.section_id = ? AND cc.case_id = ?
+        AND cc.initial_position IS NOT NULL
+    `;
+    const params = [section_id, case_id];
+
+    if (scenario_id) {
+      query += ' AND cc.scenario_id = ?';
+      params.push(scenario_id);
+    }
+
+    query += ' ORDER BY cc.start_time DESC';
+
+    const [rows] = await pool.execute(query, params);
+
+    // Calculate distributions
+    const initialDistribution = {};
+    const finalDistribution = {};
+    let changedCount = 0;
+    let unchangedCount = 0;
+
+    const studentsByPosition = {};
+
+    rows.forEach(row => {
+      // Initial position distribution
+      if (row.initial_position) {
+        initialDistribution[row.initial_position] = (initialDistribution[row.initial_position] || 0) + 1;
+
+        // Track students by initial position
+        if (!studentsByPosition[row.initial_position]) {
+          studentsByPosition[row.initial_position] = [];
+        }
+        studentsByPosition[row.initial_position].push({
+          id: row.student_id,
+          name: row.student_name,
+          changed: row.final_position !== null && row.final_position !== row.initial_position,
+          final_position: row.final_position
+        });
+      }
+
+      // Final position distribution
+      if (row.final_position) {
+        finalDistribution[row.final_position] = (finalDistribution[row.final_position] || 0) + 1;
+
+        if (row.initial_position !== row.final_position) {
+          changedCount++;
+        } else {
+          unchangedCount++;
+        }
+      } else if (row.initial_position) {
+        // No final position yet, count as unchanged
+        unchangedCount++;
+      }
+    });
+
+    // Convert to arrays with percentages
+    const total = rows.length || 1;
+    const formatDistribution = (dist) => {
+      return Object.entries(dist).map(([position, count]) => ({
+        position,
+        count,
+        percentage: Math.round((count / total) * 100)
+      })).sort((a, b) => b.count - a.count);
+    };
+
+    res.json({
+      data: {
+        total_with_positions: rows.length,
+        initial_distribution: formatDistribution(initialDistribution),
+        final_distribution: formatDistribution(finalDistribution),
+        position_changes: {
+          changed: changedCount,
+          unchanged: unchangedCount,
+          change_rate: total > 0 ? Math.round((changedCount / total) * 100) : 0
+        },
+        students_by_position: studentsByPosition
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching position analytics:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
