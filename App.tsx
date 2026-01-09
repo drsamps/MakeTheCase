@@ -73,9 +73,12 @@ const App: React.FC = () => {
   
   // View mode state
   const [isReady, setIsReady] = useState(false);
-  const [view, setView] = useState<'student' | 'admin'>('student');
+  const [view, setView] = useState<'student' | 'admin' | 'evaluation'>('student');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [sessionUser, setSessionUser] = useState<any>(null);
+  const [viewingEvaluationId, setViewingEvaluationId] = useState<string | null>(null);
+  const [viewingEvaluationData, setViewingEvaluationData] = useState<EvaluationResult | null>(null);
+  const [isLoadingEvaluation, setIsLoadingEvaluation] = useState(false);
   
   // Student-specific state
   const [studentFirstName, setStudentFirstName] = useState<string | null>(null);
@@ -118,7 +121,11 @@ const App: React.FC = () => {
     ask_for_feedback: false,
     ask_save_transcript: false,
     allowed_personas: 'moderate,strict,liberal,leading,sycophantic',
-    default_persona: 'moderate'
+    default_persona: 'moderate',
+    allow_repeat: false,
+    timeout_chat: false,
+    restart_chat: false,
+    allow_exit: false
   };
 
   // Available cases for selected section
@@ -152,7 +159,7 @@ const App: React.FC = () => {
         const { data: { session } } = await api.auth.getSession();
         setSessionUser(session?.user || null);
         const urlParams = new URLSearchParams(window.location.search);
-        
+
         // If CAS delivered an admin token, immediately move to the admin view
         // even before the session fetch resolves. This avoids bouncing back to
         // the student login when the browser already holds a student token.
@@ -168,6 +175,42 @@ const App: React.FC = () => {
             if (window.location.hash !== '#/admin') {
                 window.location.hash = '#/admin';
             }
+        }
+
+        // Check for evaluation view route: #evaluation/:id
+        const evaluationMatch = window.location.hash.match(/^#evaluation\/([a-f0-9-]+)$/);
+        if (evaluationMatch) {
+            const evaluationId = evaluationMatch[1];
+            setView('evaluation');
+            setViewingEvaluationId(evaluationId);
+            setIsLoadingEvaluation(true);
+
+            // Fetch the evaluation data
+            try {
+                const response = await fetch(`${getApiBaseUrl()}/evaluations/${evaluationId}`);
+                const result = await response.json();
+
+                if (result.data) {
+                    // Convert the API response to EvaluationResult format
+                    const evalData: EvaluationResult = {
+                        totalScore: result.data.score || 0,
+                        summary: result.data.summary || '',
+                        criteria: result.data.criteria || [],
+                        hints: result.data.hints || 0
+                    };
+                    setViewingEvaluationData(evalData);
+                } else {
+                    console.error('Evaluation not found:', result.error);
+                    setViewingEvaluationData(null);
+                }
+            } catch (err) {
+                console.error('Error fetching evaluation:', err);
+                setViewingEvaluationData(null);
+            } finally {
+                setIsLoadingEvaluation(false);
+            }
+            setIsReady(true);
+            return;
         }
 
         // Use hash-based routing for robust SPA navigation.
@@ -267,6 +310,53 @@ const App: React.FC = () => {
         fetchSections();
     }
   }, [conversationPhase, view]);
+
+  // Ensure enrolled sections still appear even if the section is disabled (so the student's saved section shows up)
+  useEffect(() => {
+    const fetchMissingEnrolledSections = async () => {
+      if (view !== 'student' || conversationPhase !== ConversationPhase.PRE_CHAT) return;
+      if (enrolledSectionIds.length === 0) return;
+
+      const missing = enrolledSectionIds.filter(
+        (id) => !sections.some((s) => s.section_id === id)
+      );
+      if (missing.length === 0) return;
+
+      try {
+        const results = await Promise.all(
+          missing.map((id) => api.get(`/sections/${id}`))
+        );
+
+        const found = results
+          .map((res) => (res && !res.error ? res.data : null))
+          .filter(Boolean);
+
+        if (found.length > 0) {
+          setSections((prev) => {
+            const existing = new Set(prev.map((s) => s.section_id));
+            const merged = [...prev];
+            for (const sec of found as any[]) {
+              if (!existing.has(sec.section_id)) {
+                merged.push({
+                  section_id: sec.section_id,
+                  section_title: sec.section_title,
+                  year_term: sec.year_term,
+                  chat_model: sec.chat_model,
+                  super_model: sec.super_model,
+                  accept_new_students: sec.accept_new_students,
+                });
+              }
+            }
+            return merged;
+          });
+        }
+      } catch (err) {
+        console.error('Error fetching disabled sections:', err);
+      }
+    };
+
+    fetchMissingEnrolledSections();
+  }, [enrolledSectionIds, sections, view, conversationPhase]);
 
   // Fetch student's saved section(s) when they log in
   useEffect(() => {
@@ -563,10 +653,22 @@ const App: React.FC = () => {
   
   const handleSendMessage = async (userMessage: string) => {
     if (conversationPhase === ConversationPhase.CHATTING) {
+        // Start timer on first user message (only if there are exactly 1 message - the initial CEO greeting)
+        if (currentCaseChatId && messages.length === 1) {
+          try {
+            await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/start-timer`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+            });
+          } catch (err) {
+            console.error('Failed to start timer:', err);
+          }
+        }
+
         const lowerCaseMessage = userMessage.toLowerCase();
         if (lowerCaseMessage.includes("time is up") || lowerCaseMessage.includes("time's up")) {
             const finalUserMessage: Message = { role: MessageRole.USER, content: userMessage };
-            
+
             // Check chat options to determine next phase
             const askForFeedback = chatOptions?.ask_for_feedback ?? false;
             const askSaveTranscript = chatOptions?.ask_save_transcript ?? false;
@@ -1035,10 +1137,99 @@ const App: React.FC = () => {
     handleRestart();
   };
 
+  const handleExitChat = async () => {
+    if (!confirm('Are you sure you want to exit this chat? Your progress will be lost and you may need to start over.')) return;
+
+    // Mark the chat as canceled
+    if (currentCaseChatId) {
+      try {
+        await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/status`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'canceled' })
+        });
+      } catch (err) {
+        console.error('Error canceling chat:', err);
+      }
+    }
+
+    // Reset to the pre-chat state
+    handleRestart();
+  };
+
+  const handleRestartChat = async () => {
+    if (!confirm('Are you sure you want to restart this chat? All your current progress will be lost.')) return;
+
+    // Mark the current chat as canceled
+    if (currentCaseChatId) {
+      try {
+        await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/status`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'canceled' })
+        });
+      } catch (err) {
+        console.error('Error canceling chat:', err);
+      }
+    }
+
+    // Clear heartbeat interval
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
+
+    // Reset messages and restart the conversation with the same settings
+    setMessages([]);
+    setIsLoading(false);
+    setChatSession(null);
+    setError(null);
+    setConversationPhase(ConversationPhase.PRE_CHAT);
+    setCurrentCaseChatId(null);
+    setHintsUsed(0);
+
+    // Immediately start a new conversation with the same settings
+    if (studentFirstName && selectedChatModel) {
+      await startConversation(studentFirstName, ceoPersona, selectedChatModel);
+    }
+  };
+
   if (!isReady) {
     return <div className="flex items-center justify-center min-h-screen">Loading...</div>;
   }
-  
+
+  // Evaluation view mode - for viewing evaluations from admin links
+  if (view === 'evaluation') {
+    if (isLoadingEvaluation) {
+      return <div className="flex items-center justify-center min-h-screen">Loading evaluation...</div>;
+    }
+
+    if (!viewingEvaluationData) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-screen">
+          <p className="text-red-600 mb-4">Evaluation not found</p>
+          <button
+            onClick={() => window.close()}
+            className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700"
+          >
+            Close Window
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <Evaluation
+        result={viewingEvaluationData}
+        studentName="Student"
+        onRestart={() => window.close()}
+        superModelName={null}
+        onLogout={() => window.close()}
+        onTitleContextNav={() => window.close()}
+      />
+    );
+  }
+
   if (view === 'admin') {
     if (isAdminAuthenticated) {
       return <Dashboard onLogout={handleAdminLogout} user={sessionUser as any} />;
@@ -1096,7 +1287,10 @@ const App: React.FC = () => {
   if (conversationPhase === ConversationPhase.PRE_CHAT) {
     const isSectionValid = selectedSection !== '' && selectedSection !== 'other';
     const selectedCaseStatus = selectedCaseId ? caseCompletionStatus[selectedCaseId] : null;
-    const isCaseCompleted = selectedCaseStatus?.completed && !selectedCaseStatus?.allowRechat;
+    // Check if case is completed and repeating is NOT allowed
+    // Allow repeat if: allow_repeat is true OR allow_rechat is true
+    const allowRepeat = chatOptions?.allow_repeat ?? false;
+    const isCaseCompleted = selectedCaseStatus?.completed && !selectedCaseStatus?.allowRechat && !allowRepeat;
     // Check if scenario selection is required and valid
     const scenarioRequirementMet = !useScenarios || selectedScenarioId !== null;
     const allScenariosCompleted = useScenarios && availableScenarios.length > 0 && availableScenarios.every((s: any) => s.completed);
@@ -1303,8 +1497,8 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {/* Scenario Selection */}
-            {selectedCaseId && activeCaseData && useScenarios && availableScenarios.length > 0 && (
+            {/* Scenario Selection - show even if case content failed to load */}
+            {selectedCaseId && useScenarios && availableScenarios.length > 0 && (
               <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
                 <label className="block text-sm font-medium text-gray-700 mb-3">
                   Select a Scenario
@@ -1376,66 +1570,107 @@ const App: React.FC = () => {
   const chatModelName = models.find(m => m.model_id === selectedChatModel)?.model_name || selectedChatModel;
   const superModelName = models.find(m => m.model_id === selectedSuperModel)?.model_name || selectedSuperModel;
 
+  // Check if case content should be shown (defaults to true if not specified)
+  const showCaseContent = chatOptions?.show_case !== false;
+
+  // Chat panel content - reused for both layouts
+  const chatPanel = (
+    <aside className="w-full h-full flex flex-col bg-gray-200 rounded-xl shadow-lg">
+      {error && <div className="p-4 bg-red-500 text-white text-center font-semibold rounded-t-xl">{error}</div>}
+      {currentCaseChatId && (
+        <div className="flex justify-end px-3 py-1 mt-12">
+          <ChatTimer
+            chatId={currentCaseChatId}
+            warningMinutes={5}
+            onTimeUp={() => {
+              // Auto-submit "time is up" when timer expires (only if timeout_chat is enabled)
+              if (chatOptions?.timeout_chat !== false) {
+                handleSendMessage("time is up");
+              }
+            }}
+          />
+        </div>
+      )}
+      <ChatWindow 
+        messages={messages} 
+        isLoading={isLoading} 
+        ceoPersona={ceoPersona} 
+        chatModelName={chatModelName} 
+        chatFontSize={chatFontSize}
+        protagonistName={activeCaseData?.protagonist}
+        protagonistInitials={activeCaseData?.protagonist_initials}
+        caseTitle={activeCaseData?.case_title}
+      />
+      {conversationPhase === ConversationPhase.FEEDBACK_COMPLETE ? (
+          <div className="p-4 bg-white border-t border-gray-200 flex justify-center items-center">
+              <button
+                  onClick={handleProceedToEvaluation}
+                  className="px-6 py-3 bg-orange-600 text-white font-semibold rounded-xl hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 animate-pulse"
+              >
+                  Click here to engage the AI Supervisor
+              </button>
+          </div>
+      ) : (
+          <>
+            {/* Chat control buttons */}
+            {conversationPhase === ConversationPhase.CHATTING && (chatOptions?.allow_exit || chatOptions?.restart_chat) && (
+              <div className="px-4 py-2 bg-white border-t border-gray-200 flex gap-2 justify-end">
+                {chatOptions?.restart_chat && (
+                  <button
+                    onClick={handleRestartChat}
+                    disabled={isLoading}
+                    className="px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Restart Chat
+                  </button>
+                )}
+                {chatOptions?.allow_exit && (
+                  <button
+                    onClick={handleExitChat}
+                    disabled={isLoading}
+                    className="px-3 py-1.5 text-sm font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Exit Chat
+                  </button>
+                )}
+              </div>
+            )}
+            <MessageInput
+              ref={inputRef}
+              onSendMessage={handleSendMessage}
+              isLoading={isLoading}
+              chatFontSize={chatFontSize}
+              onFontSizeChange={setChatFontSize}
+              fontSizes={FONT_SIZES}
+              defaultFontSize={DEFAULT_FONT_SIZE}
+            />
+          </>
+      )}
+    </aside>
+  );
+
   const studentShell = (
     <div className="h-screen w-screen p-4 lg:p-6 font-sans bg-gray-100 overflow-hidden relative">
       {logoutButton}
-      <ResizablePanes direction={direction} initialSize={initialSize}>
-        <div className="w-full h-full">
-          <BusinessCase 
-            fontSize={caseFontSize} 
-            onFontSizeChange={setCaseFontSize}
-            fontSizes={FONT_SIZES}
-            defaultFontSize={DEFAULT_FONT_SIZE}
-            caseTitle={activeCaseData?.case_title}
-            caseContent={activeCaseData?.case_content}
-          />
+      {showCaseContent ? (
+        <ResizablePanes direction={direction} initialSize={initialSize}>
+          <div className="w-full h-full">
+            <BusinessCase 
+              fontSize={caseFontSize} 
+              onFontSizeChange={setCaseFontSize}
+              fontSizes={FONT_SIZES}
+              defaultFontSize={DEFAULT_FONT_SIZE}
+              caseTitle={activeCaseData?.case_title}
+              caseContent={activeCaseData?.case_content}
+            />
+          </div>
+          {chatPanel}
+        </ResizablePanes>
+      ) : (
+        <div className="w-full h-full max-w-4xl mx-auto">
+          {chatPanel}
         </div>
-        <aside className="w-full h-full flex flex-col bg-gray-200 rounded-xl shadow-lg">
-          {error && <div className="p-4 bg-red-500 text-white text-center font-semibold rounded-t-xl">{error}</div>}
-          {currentCaseChatId && (
-            <div className="flex justify-end px-3 py-1">
-              <ChatTimer
-                chatId={currentCaseChatId}
-                warningMinutes={5}
-                onTimeUp={() => {
-                  // Auto-submit "time is up" when timer expires
-                  handleSendMessage("time is up");
-                }}
-              />
-            </div>
-          )}
-          <ChatWindow 
-            messages={messages} 
-            isLoading={isLoading} 
-            ceoPersona={ceoPersona} 
-            chatModelName={chatModelName} 
-            chatFontSize={chatFontSize}
-            protagonistName={activeCaseData?.protagonist}
-            protagonistInitials={activeCaseData?.protagonist_initials}
-            caseTitle={activeCaseData?.case_title}
-          />
-          {conversationPhase === ConversationPhase.FEEDBACK_COMPLETE ? (
-              <div className="p-4 bg-white border-t border-gray-200 flex justify-center items-center">
-                  <button
-                      onClick={handleProceedToEvaluation}
-                      className="px-6 py-3 bg-orange-600 text-white font-semibold rounded-xl hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 animate-pulse"
-                  >
-                      Click here to engage the AI Supervisor
-                  </button>
-              </div>
-          ) : (
-              <MessageInput 
-                ref={inputRef} 
-                onSendMessage={handleSendMessage} 
-                isLoading={isLoading} 
-                chatFontSize={chatFontSize} 
-                onFontSizeChange={setChatFontSize}
-                fontSizes={FONT_SIZES}
-                defaultFontSize={DEFAULT_FONT_SIZE}
-              />
-          )}
-        </aside>
-      </ResizablePanes>
+      )}
     </div>
   );
 

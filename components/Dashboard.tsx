@@ -185,6 +185,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [isLoadingSections, setIsLoadingSections] = useState(true);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('completion_time');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
@@ -294,7 +295,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     default_persona: 'moderate',
     show_case: true,
     do_evaluation: true,
-    chatbot_personality: ''
+    chatbot_personality: '',
+    allow_repeat: false,
+    timeout_chat: false,
+    restart_chat: false,
+    allow_exit: false
   };
 
   // Personas management
@@ -779,7 +784,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const fetchPersonas = async () => {
     setIsLoadingPersonas(true);
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/personas`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -828,7 +833,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
     setIsSavingPersona(true);
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
       const url = editingPersona
         ? `${getApiBaseUrl()}/personas/${editingPersona.persona_id}`
         : `${getApiBaseUrl()}/personas`;
@@ -859,7 +864,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleDeletePersona = async (personaId: string) => {
     if (!confirm(`Are you sure you want to delete persona "${personaId}"? This cannot be undone.`)) return;
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/personas/${personaId}`, {
         method: 'DELETE',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
@@ -878,7 +883,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   const handleTogglePersonaEnabled = async (persona: any) => {
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/personas/${persona.persona_id}`, {
         method: 'PATCH',
         headers: {
@@ -1035,7 +1040,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       formData.append('file', file);
       formData.append('file_type', fileType);
       
-      const token = localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/cases/${caseId}/upload`, {
         method: 'POST',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {},
@@ -1105,7 +1110,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   const handleActivateSectionCase = async (sectionId: string, caseId: string) => {
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/activate`, {
         method: 'PATCH',
         headers: {
@@ -1126,7 +1131,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   const handleDeactivateSectionCase = async (sectionId: string, caseId: string) => {
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/deactivate`, {
         method: 'PATCH',
         headers: {
@@ -1159,7 +1164,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleSaveChatOptions = async (sectionId: string, caseId: string) => {
     setIsSavingChatOptions(true);
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/options`, {
         method: 'PATCH',
         headers: {
@@ -1175,6 +1180,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       fetchSectionCases(sectionId);
       setExpandedCaseOptions(null);
       setEditingChatOptions(null);
+      // Show success message and auto-dismiss after 3 seconds
+      setSuccessMessage('Chat options saved successfully');
+      setTimeout(() => setSuccessMessage(null), 3000);
     } catch (err: any) {
       setError(err.message || 'Failed to save chat options');
     } finally {
@@ -1213,7 +1221,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleSaveScheduling = async (sectionId: string, caseId: string) => {
     setIsSavingScheduling(true);
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
 
       // Convert datetime-local values back to ISO strings or null
       const schedulingData = {
@@ -1260,7 +1268,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     setIsLoadingScenarioAssignment(true);
 
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
 
       // Fetch all scenarios for this case
       const scenariosResponse = await fetch(`${getApiBaseUrl()}/cases/${caseId}/scenarios`, {
@@ -1296,7 +1304,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   // Toggle scenario assignment
   const handleToggleScenarioAssignment = async (sectionId: string, caseId: string, scenarioId: number, isAssigned: boolean) => {
-    const token = localStorage.getItem('auth_token');
+    const token = localStorage.getItem('admin_auth_token');
     try {
       if (isAssigned) {
         // Remove assignment
@@ -1334,7 +1342,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleSaveScenarioSettings = async (sectionId: string, caseId: string) => {
     setIsSavingScenarioAssignment(true);
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/selection-mode`, {
         method: 'PATCH',
         headers: {
@@ -1361,7 +1369,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Toggle allow_rechat for a student's evaluation
   const handleToggleRechat = async (evaluationId: string, currentAllowRechat: boolean) => {
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/evaluations/${evaluationId}/allow-rechat`, {
         method: 'PATCH',
         headers: {
@@ -1846,7 +1854,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     const newStatus = !section.enabled;
     
     try {
-      const authToken = localStorage.getItem('auth_token');
+      const authToken = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/sections/${section.section_id}`, {
         method: 'PATCH',
         headers: {
@@ -1883,7 +1891,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     const newStatus = !section.accept_new_students;
 
     try {
-      const authToken = localStorage.getItem('auth_token');
+      const authToken = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/sections/${section.section_id}`, {
         method: 'PATCH',
         headers: {
@@ -1947,7 +1955,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       alert('Model ID and Model Name are required.');
       return;
     }
-    const authToken = localStorage.getItem('auth_token');
+    const authToken = localStorage.getItem('admin_auth_token');
     if (!authToken) {
       alert('You must be signed in to manage models.');
       return;
@@ -2015,7 +2023,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   const handleToggleModel = async (model: Model) => {
-    const authToken = localStorage.getItem('auth_token');
+    const authToken = localStorage.getItem('admin_auth_token');
     if (!authToken) {
       alert('You must be signed in to manage models.');
       return;
@@ -2042,7 +2050,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   const handleMakeDefault = async (model: Model) => {
-    const authToken = localStorage.getItem('auth_token');
+    const authToken = localStorage.getItem('admin_auth_token');
     if (!authToken) {
       alert('You must be signed in to manage models.');
       return;
@@ -2069,7 +2077,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   const handleTestModel = async (model: Model) => {
-    const authToken = localStorage.getItem('auth_token');
+    const authToken = localStorage.getItem('admin_auth_token');
     if (!authToken) {
       alert('You must be signed in to test models.');
       return;
@@ -2114,7 +2122,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleDeleteModel = async (model: Model) => {
     const confirmed = window.confirm(`Delete model "${model.model_name}"? This cannot be undone.`);
     if (!confirmed) return;
-    const authToken = localStorage.getItem('auth_token');
+    const authToken = localStorage.getItem('admin_auth_token');
     if (!authToken) {
       alert('You must be signed in to manage models.');
       return;
@@ -2491,6 +2499,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </button>
       </div>
 
+      {/* Success/Error Messages */}
+      {error && (
+        <div className="mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</div>
+      )}
+      {successMessage && (
+        <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg flex items-center gap-2">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+          </svg>
+          {successMessage}
+        </div>
+      )}
+
       {isLoadingAssignments ? (
         <div className="text-center py-12">
           <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
@@ -2741,6 +2762,47 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                       placeholder="Additional AI instructions to customize chatbot behavior..."
                                       className="w-full px-2 py-1 border border-gray-300 rounded text-sm h-20 resize-y"
                                     />
+                                  </div>
+
+                                  {/* Chat Control Options */}
+                                  <div className="space-y-2 pt-2 border-t">
+                                    <h5 className="text-xs font-semibold text-gray-700">Chat Control Options</h5>
+                                    <label className="flex items-center gap-2 text-sm">
+                                      <input
+                                        type="checkbox"
+                                        checked={editingChatOptions.allow_repeat ?? false}
+                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_repeat: e.target.checked})}
+                                        className="rounded border-gray-300"
+                                      />
+                                      <span>Allow students to repeat the chat multiple times</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 text-sm">
+                                      <input
+                                        type="checkbox"
+                                        checked={editingChatOptions.timeout_chat ?? false}
+                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, timeout_chat: e.target.checked})}
+                                        className="rounded border-gray-300"
+                                      />
+                                      <span>Auto-end chat when time limit expires</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 text-sm">
+                                      <input
+                                        type="checkbox"
+                                        checked={editingChatOptions.restart_chat ?? false}
+                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, restart_chat: e.target.checked})}
+                                        className="rounded border-gray-300"
+                                      />
+                                      <span>Allow students to restart the chat</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 text-sm">
+                                      <input
+                                        type="checkbox"
+                                        checked={editingChatOptions.allow_exit ?? false}
+                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_exit: e.target.checked})}
+                                        className="rounded border-gray-300"
+                                      />
+                                      <span>Provide exit button to leave chat</span>
+                                    </label>
                                   </div>
 
                                   {/* Action Buttons */}
@@ -3061,7 +3123,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         await fetch(`${getApiBaseUrl()}/case-chats/mark-abandoned`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+            'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({ timeout_minutes: 1440 }) // 24 hours = 1440 minutes
@@ -3078,7 +3140,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
       const response = await fetch(`${getApiBaseUrl()}/case-chats?${params.toString()}`, {
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`
         }
       });
       const result = await response.json();
@@ -3127,7 +3189,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const response = await fetch(`${getApiBaseUrl()}/case-chats/${chatId}/kill`, {
         method: 'PATCH',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
           'Content-Type': 'application/json'
         }
       });
@@ -3143,13 +3205,51 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
+  // Delete a chat session (allows student to try again)
+  const handleDeleteChat = async (chatId: string) => {
+    if (!confirm('Are you sure you want to delete this chat session? This will allow the student to start a new chat for this case. This action cannot be undone.')) return;
+
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/case-chats/${chatId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (response.ok) {
+        fetchCaseChats();
+      } else {
+        const result = await response.json();
+        alert(result.error?.message || 'Failed to delete chat');
+      }
+    } catch (err) {
+      console.error('Error deleting chat:', err);
+      alert('Failed to delete chat');
+    }
+  };
+
   // Format duration between two timestamps
   const formatDuration = (startTime: string, endTime: string | null) => {
+    if (!startTime) return '0m';
+
     const start = new Date(startTime);
     const end = endTime ? new Date(endTime) : new Date();
     const diffMs = end.getTime() - start.getTime();
+
+    // Handle invalid or negative durations
+    if (diffMs < 0) return '0m';
+
     const diffMins = Math.floor(diffMs / 60000);
+    const diffSecs = Math.floor((diffMs % 60000) / 1000);
+
+    // Show seconds for durations under 1 minute
+    if (diffMins < 1) return `${diffSecs}s`;
+
+    // Show minutes for durations under 1 hour
     if (diffMins < 60) return `${diffMins}m`;
+
+    // Show hours and minutes for longer durations
     const hours = Math.floor(diffMins / 60);
     const mins = diffMins % 60;
     return `${hours}h ${mins}m`;
@@ -3286,6 +3386,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           Kill
                         </button>
                       )}
+                      <button
+                        onClick={() => handleDeleteChat(chat.id)}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-700 border-red-300 hover:bg-red-100"
+                        title="Delete this chat session to allow student to try again"
+                      >
+                        Delete
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -3861,6 +3968,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               <div className="mb-6 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</div>
             )}
 
+            {successMessage && (
+              <div className="mb-6 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                </svg>
+                {successMessage}
+              </div>
+            )}
+
             {/* Section Display: Tiles or List */}
             {isLoadingSections && !sectionStats.length ? (
               <div className="text-center p-12 text-gray-500">Loading sections...</div>
@@ -4151,6 +4267,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             </nav>
 
             {error && <p className="mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</p>}
+
+            {successMessage && (
+              <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                </svg>
+                {successMessage}
+              </div>
+            )}
             
             {/* Section Summary Stats */}
             {sectionSummaryStats && sectionSummaryStats.totalStudents > 0 && (

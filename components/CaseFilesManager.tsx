@@ -186,7 +186,7 @@ export const CaseFilesManager: React.FC = () => {
         formData.append('file_version', uploadVersion);
       }
 
-      const token = localStorage.getItem('token') || localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
       if (!token) {
         throw new Error('Not authenticated. Please log in again.');
       }
@@ -337,14 +337,18 @@ export const CaseFilesManager: React.FC = () => {
     try {
       const response = await api.post(`/case-files/${confirmingFile.id}/confirm-proprietary`);
       if (response.error) {
-        throw new Error(response.error.message);
+        const errorMsg = typeof response.error === 'string' 
+          ? response.error 
+          : response.error.message || JSON.stringify(response.error);
+        throw new Error(errorMsg);
       }
 
       await fetchFiles(selectedCase);
       setConfirmingFile(null);
       setSuccess('Proprietary content confirmed');
     } catch (err: any) {
-      setError(err.message || 'Confirmation failed');
+      const errorMsg = err?.message || (typeof err === 'string' ? err : 'Confirmation failed');
+      setError(errorMsg);
     }
   };
 
@@ -644,13 +648,19 @@ export const CaseFilesManager: React.FC = () => {
                         <td className="px-3 py-2">{formatFileSize(file.file_size)}</td>
                         <td className="px-3 py-2 text-center">
                           {file.proprietary ? (
-                            <span className={`px-2 py-0.5 rounded text-xs ${
-                              file.proprietary_confirmed_by
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-red-100 text-red-800'
-                            }`}>
-                              {file.proprietary_confirmed_by ? 'Confirmed' : 'Unconfirmed'}
-                            </span>
+                            file.proprietary_confirmed_by ? (
+                              <span className="px-2 py-0.5 rounded text-xs bg-green-100 text-green-800">
+                                Confirmed
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => setConfirmingFile(file)}
+                                className="px-2 py-0.5 rounded text-xs bg-red-100 text-red-800 hover:bg-red-200 cursor-pointer"
+                                title="Click to confirm proprietary usage rights"
+                              >
+                                ⚠️ Unconfirmed - Click to Confirm
+                              </button>
+                            )
                           ) : (
                             <span className="text-gray-400">-</span>
                           )}

@@ -14,15 +14,48 @@ export function getApiBaseUrl(): string {
   return API_BASE;
 }
 
-// Auth token management
-let authToken: string | null = localStorage.getItem('auth_token');
+// Auth token management - separate tokens for admin and student to prevent conflicts
+// when multiple tabs are open with different roles
+let adminAuthToken: string | null = localStorage.getItem('admin_auth_token');
+let studentAuthToken: string | null = localStorage.getItem('student_auth_token');
 
-export function setAuthToken(token: string | null) {
-  authToken = token;
-  if (token) {
-    localStorage.setItem('auth_token', token);
+// Determine current context based on URL hash
+function isAdminContext(): boolean {
+  return window.location.hash === '#/admin' || window.location.hash.startsWith('#/admin');
+}
+
+// Get the appropriate token for the current context
+function getActiveToken(): string | null {
+  if (isAdminContext()) {
+    return adminAuthToken;
+  }
+  return studentAuthToken;
+}
+
+export function setAuthToken(token: string | null, role?: 'admin' | 'student') {
+  // Determine role from context if not specified
+  const effectiveRole = role || (isAdminContext() ? 'admin' : 'student');
+  
+  if (effectiveRole === 'admin') {
+    adminAuthToken = token;
+    if (token) {
+      localStorage.setItem('admin_auth_token', token);
+    } else {
+      localStorage.removeItem('admin_auth_token');
+    }
   } else {
-    localStorage.removeItem('auth_token');
+    studentAuthToken = token;
+    if (token) {
+      localStorage.setItem('student_auth_token', token);
+    } else {
+      localStorage.removeItem('student_auth_token');
+    }
+  }
+  
+  // Also maintain legacy auth_token for backward compatibility (use the current context token)
+  const activeToken = getActiveToken();
+  if (activeToken) {
+    localStorage.setItem('auth_token', activeToken);
   }
 }
 
@@ -30,8 +63,9 @@ function getAuthHeaders(): HeadersInit {
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
   };
-  if (authToken) {
-    headers['Authorization'] = `Bearer ${authToken}`;
+  const token = getActiveToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
   }
   return headers;
 }
@@ -78,8 +112,8 @@ export const auth = {
       return { data: null, error: { message: result.error || 'Login failed' } };
     }
 
-    // Store the token
-    setAuthToken(result.token);
+    // Store the token as admin (signInWithPassword is only used for admin login)
+    setAuthToken(result.token, 'admin');
 
     return {
       data: {
@@ -98,12 +132,13 @@ export const auth = {
   applyCasCallbackFromUrl() {
     const url = new URL(window.location.href);
     const token = url.searchParams.get('token');
-    const role = url.searchParams.get('role');
+    const role = url.searchParams.get('role') as 'admin' | 'student' | null;
     const fullName = url.searchParams.get('fullName');
     const email = url.searchParams.get('email');
 
     if (token) {
-      setAuthToken(token);
+      // Store token with the appropriate role from CAS callback
+      setAuthToken(token, role || 'student');
       url.searchParams.delete('token');
       url.searchParams.delete('role');
       url.searchParams.delete('fullName');
@@ -116,7 +151,8 @@ export const auth = {
   },
 
   async getSession() {
-    if (!authToken) {
+    const token = getActiveToken();
+    if (!token) {
       return { data: { session: null }, error: null };
     }
 
@@ -126,6 +162,7 @@ export const auth = {
       });
 
       if (!response.ok) {
+        // Clear the token for the current context
         setAuthToken(null);
         return { data: { session: null }, error: null };
       }
@@ -133,7 +170,7 @@ export const auth = {
       const result = await response.json();
       return {
         data: {
-          session: { access_token: authToken, user: result.user },
+          session: { access_token: token, user: result.user },
         },
         error: null,
       };
@@ -143,6 +180,7 @@ export const auth = {
   },
 
   async signOut() {
+    // Clear token for current context
     setAuthToken(null);
     return { error: null };
   },

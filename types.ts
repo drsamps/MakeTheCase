@@ -136,6 +136,10 @@ export interface ChatOptions {
   chatbot_personality: string;
   chat_repeats: number;
   save_dead_transcripts: boolean;
+  allow_repeat: boolean;         // Allow students to repeat the chat more than once
+  timeout_chat: boolean;          // Stop the chat at the designated duration
+  restart_chat: boolean;          // Allow students to exit chat and restart it
+  allow_exit: boolean;            // Provide students an exit button to exit the chat
 }
 
 export interface EvaluationCriterion {

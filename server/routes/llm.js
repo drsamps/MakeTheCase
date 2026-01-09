@@ -24,10 +24,13 @@ async function loadFileContent(caseId, filename, fileType) {
   const uploadsPath = path.join(CASE_FILES_DIR, caseId, 'uploads', filename);
   try {
     await fs.access(uploadsPath);
+    console.log(`[loadFileContent] Found file at: ${uploadsPath}`);
     const ext = path.extname(filename);
     const { text } = await convertFile(uploadsPath, ext);
+    console.log(`[loadFileContent] Converted ${filename}: ${text ? text.length + ' chars' : 'empty'}`);
     return text;
   } catch (e) {
+    console.log(`[loadFileContent] File not in uploads or conversion failed for ${filename}:`, e.message);
     // Not in uploads, try standard location for legacy files
   }
 
@@ -35,8 +38,11 @@ async function loadFileContent(caseId, filename, fileType) {
   if (fileType === 'case' || fileType === 'teaching_note') {
     const standardPath = path.join(CASE_FILES_DIR, caseId, `${fileType}.md`);
     try {
-      return await fs.readFile(standardPath, 'utf-8');
+      const content = await fs.readFile(standardPath, 'utf-8');
+      console.log(`[loadFileContent] Loaded from standard path: ${standardPath}`);
+      return content;
     } catch (e) {
+      console.log(`[loadFileContent] Standard path not found: ${standardPath}`);
       // File not found
     }
   }
@@ -61,7 +67,7 @@ async function loadCaseData(caseId) {
   caseData.supplementary_content = '';
 
   // Try to load files from database with ordering
-  const [baseFiles] = await pool.execute(
+  let [baseFiles] = await pool.execute(
     `SELECT id, filename, file_type, file_format, proprietary, proprietary_confirmed_by,
             include_in_chat_prompt, prompt_order
      FROM case_files
@@ -78,6 +84,39 @@ async function loadCaseData(caseId) {
      ORDER BY prompt_order ASC, created_at ASC`,
     [caseId]
   );
+
+  // Fallback: if nothing is explicitly marked include_in_chat_prompt, pull the first available case file
+  if (baseFiles.length === 0) {
+    console.log(`[loadCaseData] No files with include_in_chat_prompt=1 found for ${caseId}, trying fallback...`);
+    
+    // First try file_type='case'
+    let [fallbackCaseFiles] = await pool.execute(
+      `SELECT id, filename, file_type, file_format, proprietary, proprietary_confirmed_by,
+              include_in_chat_prompt, prompt_order
+       FROM case_files
+       WHERE case_id = ? AND file_type = 'case' AND is_outline = 0
+       ORDER BY prompt_order ASC, created_at ASC
+       LIMIT 1`,
+      [caseId]
+    );
+    
+    // If still nothing, try ANY file for this case (might be uploaded with wrong type)
+    if (fallbackCaseFiles.length === 0) {
+      console.log(`[loadCaseData] No file_type='case' found, trying any file for ${caseId}...`);
+      [fallbackCaseFiles] = await pool.execute(
+        `SELECT id, filename, file_type, file_format, proprietary, proprietary_confirmed_by,
+                include_in_chat_prompt, prompt_order
+         FROM case_files
+         WHERE case_id = ? AND is_outline = 0
+         ORDER BY prompt_order ASC, created_at ASC`,
+        [caseId]
+      );
+      console.log(`[loadCaseData] Found ${fallbackCaseFiles.length} files for ${caseId}:`, 
+        fallbackCaseFiles.map(f => `${f.filename} (type: ${f.file_type})`));
+    }
+    
+    baseFiles = fallbackCaseFiles;
+  }
 
   if (baseFiles.length > 0) {
     // Organize outlines by parent
@@ -183,13 +222,30 @@ router.get('/case-data/:caseId', async (req, res) => {
     
     // Check if case content was loaded
     if (!caseData.case_content || caseData.case_content.trim() === '') {
-      const casePath = path.join(CASE_FILES_DIR, caseId, 'case.md');
-      console.error(`[case-data] Case content is empty. Expected file: ${casePath}`);
+      // Check what files exist in the database for this case
+      const [dbFiles] = await pool.execute(
+        'SELECT filename, file_type, include_in_chat_prompt, proprietary, proprietary_confirmed_by FROM case_files WHERE case_id = ?',
+        [caseId]
+      );
+      console.error(`[case-data] Case content is empty for: ${caseId}`);
+      console.error(`[case-data] Files in database:`, dbFiles);
+      
+      let errorMsg = `No case content found for "${caseId}". `;
+      if (dbFiles.length === 0) {
+        errorMsg += 'No files have been uploaded. Please upload case files via the Case Files manager.';
+      } else {
+        // Check if files are blocked due to proprietary status
+        const proprietaryUnconfirmed = dbFiles.filter(f => f.proprietary && !f.proprietary_confirmed_by);
+        if (proprietaryUnconfirmed.length > 0) {
+          errorMsg += `Found ${dbFiles.length} file(s) but ${proprietaryUnconfirmed.length} are marked as proprietary and require admin confirmation in the Case Files manager before they can be used.`;
+        } else {
+          errorMsg += `Found ${dbFiles.length} file(s) in database but none could be loaded. Check that files have file_type='case' and include_in_chat_prompt=1, or verify the file exists on disk.`;
+        }
+      }
+      
       return res.status(500).json({ 
         data: null, 
-        error: { 
-          message: `Case content file not found or empty. Expected: case_files/${caseId}/case.md` 
-        } 
+        error: { message: errorMsg } 
       });
     }
     

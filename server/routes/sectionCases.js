@@ -12,6 +12,7 @@ router.get('/:sectionId/cases', async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
               sc.open_date, sc.close_date, sc.manual_status,
+              sc.selection_mode, sc.require_order, sc.use_scenarios,
               c.case_title, c.protagonist, c.protagonist_initials, c.chat_topic, c.chat_question, c.enabled as case_enabled
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
@@ -20,7 +21,40 @@ router.get('/:sectionId/cases', async (req, res) => {
       [sectionId]
     );
 
-    res.json({ data: rows, error: null });
+    // For cases that use scenarios, fetch the assigned scenarios (enabled only)
+    const withScenarios = await Promise.all(
+      rows.map(async (row) => {
+        const parsedChatOptions = typeof row.chat_options === 'string'
+          ? (() => {
+              try { return JSON.parse(row.chat_options); } catch { return row.chat_options; }
+            })()
+          : row.chat_options;
+
+        if (!row.use_scenarios) {
+          return { ...row, chat_options: parsedChatOptions };
+        }
+
+        const [scenarios] = await pool.execute(
+          `SELECT scs.id as assignment_id, scs.scenario_id, scs.enabled, scs.sort_order,
+                  cs.scenario_name, cs.protagonist, cs.protagonist_initials, cs.protagonist_role,
+                  cs.chat_topic, cs.chat_question, cs.chat_time_limit, cs.chat_time_warning,
+                  cs.chat_options_override
+           FROM section_case_scenarios scs
+           JOIN case_scenarios cs ON scs.scenario_id = cs.id
+           WHERE scs.section_case_id = ? AND scs.enabled = TRUE AND cs.enabled = TRUE
+           ORDER BY scs.sort_order ASC`,
+          [row.id]
+        );
+
+        return {
+          ...row,
+          chat_options: parsedChatOptions,
+          scenarios
+        };
+      })
+    );
+
+    res.json({ data: withScenarios, error: null });
   } catch (error) {
     console.error('Error fetching section cases:', error);
     res.status(500).json({ data: null, error: { message: error.message } });

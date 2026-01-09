@@ -17,7 +17,7 @@ ALTER TABLE `case_files`
   ADD COLUMN `file_version` VARCHAR(100) DEFAULT NULL COMMENT 'Descriptive version info (e.g., Fall 2025 revision)',
   ADD COLUMN `original_filename` VARCHAR(255) DEFAULT NULL COMMENT 'Original filename before standardization',
   ADD COLUMN `file_size` INT DEFAULT NULL COMMENT 'File size in bytes',
-  ADD COLUMN `proprietary_confirmed_by` INT DEFAULT NULL COMMENT 'Admin ID who confirmed proprietary content use',
+  ADD COLUMN `proprietary_confirmed_by` CHAR(36) DEFAULT NULL COMMENT 'Admin ID who confirmed proprietary content use',
   ADD COLUMN `proprietary_confirmed_at` TIMESTAMP NULL DEFAULT NULL COMMENT 'When proprietary content use was confirmed';
 
 -- ============================================================================

@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permissions.js';
+import { requirePermission, hasPermission } from '../middleware/permissions.js';
 
 const router = express.Router();
 
@@ -108,8 +108,7 @@ router.patch('/:id', async (req, res) => {
 
     // Check admin permission if user is admin
     if (isAdmin) {
-      const hasPermission = req.user.permissions && req.user.permissions.includes('students');
-      if (!hasPermission) {
+      if (!hasPermission(req.user, 'students')) {
         return res.status(403).json({ data: null, error: { message: 'Forbidden' } });
       }
     }

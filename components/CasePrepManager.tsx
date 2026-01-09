@@ -188,7 +188,7 @@ export const CasePrepManager: React.FC = () => {
       formData.append('file', file);
       formData.append('file_type', fileType);
 
-      const token = localStorage.getItem('token') || localStorage.getItem('auth_token');
+      const token = localStorage.getItem('admin_auth_token');
       if (!token) {
         throw new Error('Not authenticated. Please log in again.');
       }

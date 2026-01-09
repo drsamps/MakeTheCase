@@ -93,6 +93,8 @@ router.post('/enroll', verifyToken, async (req, res) => {
 });
 
 // GET /api/student-sections/my-sections - Get current student's sections (for student use)
+// Also reconciles the legacy students.section_id with the junction table so the
+// student and instructor views stay in sync on login.
 router.get('/my-sections', verifyToken, async (req, res) => {
   try {
     // Get student ID from the JWT token
@@ -102,17 +104,94 @@ router.get('/my-sections', verifyToken, async (req, res) => {
       return res.status(401).json({ data: null, error: { message: 'Student ID not found in token' } });
     }
 
-    const [rows] = await pool.execute(
-      `SELECT ss.section_id, ss.enrolled_at, ss.enrolled_by, ss.is_primary,
-              s.section_title, s.year_term, s.enabled, s.accept_new_students
-       FROM student_sections ss
-       JOIN sections s ON ss.section_id = s.section_id
-       WHERE ss.student_id = ?
-       ORDER BY ss.is_primary DESC, ss.enrolled_at DESC`,
+    // Helper to load current section enrollments
+    const loadSections = async () => {
+      const [rows] = await pool.execute(
+        `SELECT ss.section_id, ss.enrolled_at, ss.enrolled_by, ss.is_primary,
+                s.section_title, s.year_term, s.enabled, s.accept_new_students
+         FROM student_sections ss
+         JOIN sections s ON ss.section_id = s.section_id
+         WHERE ss.student_id = ?
+         ORDER BY ss.is_primary DESC, ss.enrolled_at DESC`,
+        [studentId]
+      );
+      return rows;
+    };
+
+    // Load current enrollments and legacy value
+    let sections = await loadSections();
+    const [legacyRows] = await pool.execute(
+      'SELECT section_id FROM students WHERE id = ?',
       [studentId]
     );
+    const legacySectionId = legacyRows[0]?.section_id || null;
 
-    res.json({ data: rows, error: null });
+    let didSync = false;
+
+    if (sections.length > 0) {
+      // Ensure exactly one primary; if none, promote first enrollment
+      const primaryRows = sections.filter((s) => !!s.is_primary);
+      if (primaryRows.length === 0) {
+        const primarySectionId = sections[0].section_id;
+        await pool.execute(
+          'UPDATE student_sections SET is_primary = 0 WHERE student_id = ?',
+          [studentId]
+        );
+        await pool.execute(
+          'UPDATE student_sections SET is_primary = 1 WHERE student_id = ? AND section_id = ?',
+          [studentId, primarySectionId]
+        );
+        didSync = true;
+        // Mirror to legacy field
+        await pool.execute(
+          'UPDATE students SET section_id = ? WHERE id = ?',
+          [primarySectionId, studentId]
+        );
+      } else if (primaryRows.length > 1) {
+        // If multiple primaries, keep the most recent and clear others
+        const primarySectionId = primaryRows[0].section_id;
+        await pool.execute(
+          'UPDATE student_sections SET is_primary = CASE WHEN section_id = ? THEN 1 ELSE 0 END WHERE student_id = ?',
+          [primarySectionId, studentId]
+        );
+        didSync = true;
+        await pool.execute(
+          'UPDATE students SET section_id = ? WHERE id = ?',
+          [primarySectionId, studentId]
+        );
+      } else {
+        // Single primary exists; keep legacy in sync with it
+        const primarySectionId = primaryRows[0].section_id;
+        if (legacySectionId !== primarySectionId) {
+          await pool.execute(
+            'UPDATE students SET section_id = ? WHERE id = ?',
+            [primarySectionId, studentId]
+          );
+          didSync = true;
+        }
+      }
+    } else if (legacySectionId) {
+      // No enrollments yet: seed from legacy section_id for backward compatibility
+      const [sectionInfo] = await pool.execute(
+        'SELECT section_id FROM sections WHERE section_id = ?',
+        [legacySectionId]
+      );
+      if (sectionInfo.length > 0) {
+        await pool.execute(
+          'INSERT INTO student_sections (student_id, section_id, enrolled_by, is_primary) VALUES (?, ?, ?, 1)',
+          [studentId, legacySectionId, 'legacy_sync']
+        );
+        didSync = true;
+        sections = await loadSections();
+      }
+    }
+
+    // Reload after reconciliation so client receives the final state
+    if (didSync) {
+      sections = await loadSections();
+    }
+
+    res.json({ data: sections, error: null });
   } catch (error) {
     console.error('Error fetching student sections:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
