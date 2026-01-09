@@ -61,18 +61,34 @@ async function loadCaseData(caseId) {
   caseData.supplementary_content = '';
 
   // Try to load files from database with ordering
-  const [files] = await pool.execute(
+  const [baseFiles] = await pool.execute(
     `SELECT id, filename, file_type, file_format, proprietary, proprietary_confirmed_by,
             include_in_chat_prompt, prompt_order
      FROM case_files
-     WHERE case_id = ? AND include_in_chat_prompt = 1
+     WHERE case_id = ? AND include_in_chat_prompt = 1 AND is_outline = 0
      ORDER BY prompt_order ASC, created_at ASC`,
     [caseId]
   );
 
-  if (files.length > 0) {
-    // Load content from each file in order
-    for (const file of files) {
+  const [outlineFiles] = await pool.execute(
+    `SELECT id, parent_file_id, filename, file_type, file_format, include_in_chat_prompt,
+            prompt_order, is_latest_outline, outline_content
+     FROM case_files
+     WHERE case_id = ? AND include_in_chat_prompt = 1 AND is_outline = 1 AND is_latest_outline = 1
+     ORDER BY prompt_order ASC, created_at ASC`,
+    [caseId]
+  );
+
+  if (baseFiles.length > 0) {
+    // Organize outlines by parent
+    const outlinesByParent = outlineFiles.reduce((acc, outline) => {
+      if (!acc[outline.parent_file_id]) acc[outline.parent_file_id] = [];
+      acc[outline.parent_file_id].push(outline);
+      return acc;
+    }, {});
+
+    // Load content from each file in order, then its outlines immediately after
+    for (const file of baseFiles) {
       // Skip proprietary files without confirmation
       if (file.proprietary && !file.proprietary_confirmed_by) {
         console.warn(`[loadCaseData] Skipping unconfirmed proprietary file: ${file.filename}`);
@@ -81,23 +97,50 @@ async function loadCaseData(caseId) {
 
       try {
         const content = await loadFileContent(caseId, file.filename, file.file_type);
-        if (!content) continue;
-
-        // Aggregate by file type
-        if (file.file_type === 'case') {
-          caseData.case_content += (caseData.case_content ? '\n\n' : '') + content;
-        } else if (file.file_type === 'teaching_note') {
-          caseData.teaching_note += (caseData.teaching_note ? '\n\n' : '') + content;
-        } else {
-          // Supplementary content (chapters, readings, articles, etc.)
-          const typeLabel = file.file_type.startsWith('other:')
-            ? file.file_type.substring(6)
-            : file.file_type.replace('_', ' ').toUpperCase();
-          caseData.supplementary_content +=
-            `\n\n=== ${typeLabel}: ${file.filename} ===\n${content}`;
+        if (content) {
+          if (file.file_type === 'case') {
+            caseData.case_content += (caseData.case_content ? '\n\n' : '') + content;
+          } else if (file.file_type === 'teaching_note') {
+            caseData.teaching_note += (caseData.teaching_note ? '\n\n' : '') + content;
+          } else {
+            // Supplementary content (chapters, readings, articles, etc.)
+            const typeLabel = file.file_type.startsWith('other:')
+              ? file.file_type.substring(6)
+              : file.file_type.replace('_', ' ').toUpperCase();
+            caseData.supplementary_content +=
+              `\n\n=== ${typeLabel}: ${file.filename} ===\n${content}`;
+          }
         }
       } catch (e) {
         console.error(`[loadCaseData] Failed to load file ${file.filename}:`, e.message);
+      }
+
+      // Append outlines tied to this file, if any
+      const outlines = outlinesByParent[file.id] || [];
+      for (const outline of outlines) {
+        try {
+          const outlineContent =
+            (await loadFileContent(caseId, outline.filename, outline.file_type)) ||
+            outline.outline_content ||
+            '';
+          if (!outlineContent) continue;
+
+          const outlineLabel = `=== OUTLINE FOR ${file.filename} ===`;
+
+          if (file.file_type === 'case') {
+            caseData.case_content += `\n\n${outlineLabel}\n${outlineContent}`;
+          } else if (file.file_type === 'teaching_note') {
+            caseData.teaching_note += `\n\n${outlineLabel}\n${outlineContent}`;
+          } else {
+            const typeLabel = file.file_type.startsWith('other:')
+              ? file.file_type.substring(6)
+              : file.file_type.replace('_', ' ').toUpperCase();
+            caseData.supplementary_content +=
+              `\n\n=== ${typeLabel}: ${file.filename} ===\n${outlineLabel}\n${outlineContent}`;
+          }
+        } catch (e) {
+          console.error(`[loadCaseData] Failed to load outline ${outline.filename}:`, e.message);
+        }
       }
     }
   } else {

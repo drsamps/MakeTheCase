@@ -20,8 +20,8 @@ const CASE_FILES_DIR = path.join(__dirname, '../../case_files');
 
 const router = express.Router();
 
-// Predefined file types
-const PREDEFINED_FILE_TYPES = ['case', 'teaching_note', 'chapter', 'reading', 'article', 'instructor_notes'];
+// Predefined file types (outline reserved for AI-generated derived files)
+const PREDEFINED_FILE_TYPES = ['case', 'teaching_note', 'chapter', 'reading', 'article', 'instructor_notes', 'outline'];
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -81,6 +81,7 @@ function validateFileType(fileType) {
  */
 function getFileTypeLabel(fileType) {
   if (PREDEFINED_FILE_TYPES.includes(fileType)) {
+    if (fileType === 'outline') return 'Outline';
     return fileType.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase());
   }
   if (fileType.startsWith('other:')) {
@@ -105,11 +106,11 @@ router.get('/:caseId', verifyToken, requireRole(['admin']), requirePermission('c
 
     // Get all files with extended metadata
     const [files] = await pool.execute(
-      `SELECT id, case_id, filename, file_type, file_format, file_source, source_url,
+      `SELECT id, case_id, parent_file_id, filename, file_type, file_format, file_source, source_url,
               proprietary, proprietary_confirmed_by, proprietary_confirmed_at,
               include_in_chat_prompt, prompt_order, file_version, original_filename,
               file_size, processing_status, processing_model, outline_content,
-              processed_at, created_at
+              processed_at, created_at, is_outline, is_latest_outline
        FROM case_files
        WHERE case_id = ?
        ORDER BY prompt_order ASC, created_at ASC`,

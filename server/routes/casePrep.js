@@ -166,7 +166,7 @@ router.post('/:caseId/process', verifyToken, requireRole(['admin']), requirePerm
 
     // Get file record
     const [files] = await pool.execute(
-      'SELECT id, case_id, filename, file_type, processing_status FROM case_files WHERE id = ? AND case_id = ?',
+      'SELECT id, case_id, filename, file_type, processing_status, prompt_order FROM case_files WHERE id = ? AND case_id = ?',
       [file_id, caseId]
     );
 
@@ -238,7 +238,7 @@ router.post('/:caseId/process', verifyToken, requireRole(['admin']), requirePerm
       });
       console.log('[CasePrep] LLM returned outline length:', outline ? outline.length : 0);
 
-      // Step 6: Save outline and update status
+      // Step 6: Save outline and update status (parent file)
       console.log('[CasePrep] Step 6: Saving outline to database...');
       await pool.execute(
         `UPDATE case_files
@@ -246,21 +246,72 @@ router.post('/:caseId/process', verifyToken, requireRole(['admin']), requirePerm
          WHERE id = ?`,
         [outline, 'completed', file_id]
       );
-      console.log('[CasePrep] Database updated successfully');
+      console.log('[CasePrep] Parent file updated successfully');
 
-      // Return generated outline
+      // Step 6b: Persist outline as its own promptable asset linked to the source file
+      const parentPromptOrder = fileRecord.prompt_order || 0;
+      const outlineFilename = `${path.basename(fileRecord.filename, path.extname(fileRecord.filename))}-outline-${Date.now()}.md`;
+      const outlineDir = path.join(CASE_FILES_DIR, caseId, 'uploads');
+      await fs.mkdir(outlineDir, { recursive: true });
+      const outlinePath = path.join(outlineDir, outlineFilename);
+      await fs.writeFile(outlinePath, outline || '', 'utf-8');
+
+      // Capture file size
+      const outlineStats = await fs.stat(outlinePath);
+
+      // Mark previous outlines for this parent as not-latest and default-excluded
+      await pool.execute(
+        `UPDATE case_files
+         SET is_latest_outline = 0, include_in_chat_prompt = 0
+         WHERE parent_file_id = ? AND is_outline = 1`,
+        [file_id]
+      );
+
+      // Insert outline as a case_files row so it participates in prompt ordering
+      const [outlineInsert] = await pool.execute(
+        `INSERT INTO case_files (
+          case_id, parent_file_id, filename, file_type, file_format,
+          file_source, include_in_chat_prompt, prompt_order, file_version,
+          original_filename, file_size, processing_status, outline_content,
+          is_outline, is_latest_outline, created_at
+        ) VALUES (?, ?, ?, 'outline', 'md',
+          'ai_prepped', 1, ?, ?, ?, ?, 'completed', ?, 1, 1, NOW())`,
+        [
+          caseId,
+          file_id,
+          outlineFilename,
+          parentPromptOrder * 1000 + 1, // places outline right after parent by default
+          `outline-${new Date().toISOString()}`,
+          outlineFilename,
+          outlineStats.size,
+          outline
+        ]
+      );
+
+      // Return generated outline (both parent and new outline record)
       const [updatedFile] = await pool.execute(
         `SELECT id, case_id, filename, file_type, processing_status, processing_model,
                 outline_content, processed_at, created_at
          FROM case_files WHERE id = ?`,
         [file_id]
       );
+      const [outlineFile] = await pool.execute(
+        `SELECT id, case_id, parent_file_id, filename, file_type, include_in_chat_prompt,
+                prompt_order, is_outline, is_latest_outline, outline_content, created_at
+         FROM case_files WHERE id = ?`,
+        [outlineInsert.insertId]
+      );
 
-      console.log('[CasePrep] Returning file record with outline_content length:', 
-        updatedFile[0]?.outline_content?.length || 0);
+      console.log('[CasePrep] Returning file record with outline_content length:',
+        updatedFile[0]?.outline_content?.length || 0,
+        'outline asset length:',
+        outlineFile[0]?.outline_content?.length || 0);
 
       res.json({
-        data: updatedFile[0],
+        data: {
+          parent_file: updatedFile[0],
+          outline_file: outlineFile[0]
+        },
         error: null
       });
 
@@ -299,8 +350,8 @@ router.get('/:caseId/files', verifyToken, requireRole(['admin']), requirePermiss
 
     // Get all files for this case
     const [files] = await pool.execute(
-      `SELECT id, case_id, filename, file_type, processing_status, processing_model,
-              processing_error, outline_content, processed_at, created_at
+      `SELECT id, case_id, parent_file_id, filename, file_type, processing_status, processing_model,
+              processing_error, outline_content, processed_at, created_at, is_outline, is_latest_outline
        FROM case_files
        WHERE case_id = ?
        ORDER BY created_at DESC`,
@@ -334,26 +385,57 @@ router.patch('/files/:fileId/outline', verifyToken, requireRole(['admin']), requ
       });
     }
 
-    // Update outline content
+    // Fetch parent file (source) and latest outline child if present
+    const [parentRows] = await pool.execute(
+      'SELECT id, case_id, filename FROM case_files WHERE id = ?',
+      [fileId]
+    );
+    if (parentRows.length === 0) {
+      return res.status(404).json({
+        data: null,
+        error: { message: 'File not found' }
+      });
+    }
+    const parent = parentRows[0];
+
+    const [outlineRows] = await pool.execute(
+      `SELECT id, filename
+       FROM case_files
+       WHERE parent_file_id = ? AND is_outline = 1 AND is_latest_outline = 1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [fileId]
+    );
+
+    // Update parent outline_content for backwards compatibility
     await pool.execute(
       'UPDATE case_files SET outline_content = ? WHERE id = ?',
       [outline_content, fileId]
     );
 
-    // Return updated record
+    // If we have a latest outline asset, update both DB and the file on disk
+    if (outlineRows.length > 0) {
+      const outlineFile = outlineRows[0];
+      const outlinePath = path.join(CASE_FILES_DIR, parent.case_id, 'uploads', outlineFile.filename);
+      try {
+        await fs.writeFile(outlinePath, outline_content || '', 'utf-8');
+        const stats = await fs.stat(outlinePath);
+        await pool.execute(
+          'UPDATE case_files SET outline_content = ?, file_size = ? WHERE id = ?',
+          [outline_content, stats.size, outlineFile.id]
+        );
+      } catch (writeErr) {
+        console.error('[CasePrep] Failed to update outline file on disk:', writeErr);
+      }
+    }
+
+    // Return updated parent record
     const [files] = await pool.execute(
       `SELECT id, case_id, filename, file_type, processing_status, processing_model,
               outline_content, processed_at, created_at
        FROM case_files WHERE id = ?`,
       [fileId]
     );
-
-    if (files.length === 0) {
-      return res.status(404).json({
-        data: null,
-        error: { message: 'File not found' }
-      });
-    }
 
     res.json({
       data: files[0],

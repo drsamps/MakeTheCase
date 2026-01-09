@@ -18,13 +18,15 @@ interface CasePrepFile {
   id: number;
   case_id: string;
   filename: string;
-  file_type: 'case' | 'notes';
+  file_type: 'case' | 'notes' | 'outline' | string;
   processing_status: 'pending' | 'processing' | 'completed' | 'failed' | null;
   processing_model: string | null;
   processing_error: string | null;
   outline_content: string | null;
   processed_at: string | null;
   created_at: string;
+  is_outline?: boolean;
+  parent_file_id?: number | null;
 }
 
 export const CasePrepManager: React.FC = () => {
@@ -499,6 +501,7 @@ export const CasePrepManager: React.FC = () => {
   // Check if we have no cases or models available
   const noCasesAvailable = !isInitializing && cases.length === 0;
   const noModelsAvailable = !isInitializing && models.length === 0;
+  const visibleFiles = files.filter(f => !f.is_outline);
 
   return (
     <div className="p-6">
@@ -662,13 +665,13 @@ export const CasePrepManager: React.FC = () => {
 
         {isLoading ? (
           <div className="text-center py-8">Loading files...</div>
-        ) : files.length === 0 ? (
+        ) : visibleFiles.length === 0 ? (
           <div className="text-center py-8 text-gray-500">
             No files uploaded yet. Upload a file above to get started.
           </div>
         ) : (
           <div className="space-y-3">
-            {files.map(file => (
+            {visibleFiles.map(file => (
               <div 
                 key={file.id} 
                 className={`border rounded-lg p-4 hover:bg-gray-50 ${
