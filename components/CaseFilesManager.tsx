@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { api } from '../services/apiClient';
+import { api, getApiBaseUrl } from '../services/apiClient';
 
 interface Case {
   case_id: string;
@@ -191,7 +191,7 @@ export const CaseFilesManager: React.FC = () => {
         throw new Error('Not authenticated. Please log in again.');
       }
 
-      const response = await fetch(`http://localhost:3001/api/case-files/${selectedCase}/upload`, {
+      const response = await fetch(`${getApiBaseUrl()}/case-files/${selectedCase}/upload`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,

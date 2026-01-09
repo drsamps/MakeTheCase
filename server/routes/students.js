@@ -7,13 +7,11 @@ import { requirePermission } from '../middleware/permissions.js';
 
 const router = express.Router();
 
-// All routes require admin authentication and 'students' permission (available to all admins)
+// All routes require authentication
 router.use(verifyToken);
-router.use(requireRole(['admin']));
-router.use(requirePermission('students'));
 
-// GET /api/students - Get all students (optionally filter by section_id)
-router.get('/', async (req, res) => {
+// GET /api/students - Get all students (optionally filter by section_id) - Admin only
+router.get('/', requireRole(['admin']), requirePermission('students'), async (req, res) => {
   try {
     const { section_id } = req.query;
 
@@ -35,8 +33,8 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/students/:id - Get single student
-router.get('/:id', async (req, res) => {
+// GET /api/students/:id - Get single student - Admin only
+router.get('/:id', requireRole(['admin']), requirePermission('students'), async (req, res) => {
   try {
     const [rows] = await pool.execute(
       'SELECT id, created_at, first_name, last_name, full_name, email, favorite_persona, section_id, finished_at FROM students WHERE id = ?',
@@ -54,8 +52,8 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// POST /api/students - Create new student
-router.post('/', async (req, res) => {
+// POST /api/students - Create new student - Admin only
+router.post('/', requireRole(['admin']), requirePermission('students'), async (req, res) => {
   try {
     const { id, first_name, last_name, full_name, email, password, favorite_persona, section_id } = req.body;
 
@@ -95,14 +93,32 @@ router.post('/', async (req, res) => {
   }
 });
 
-// PATCH /api/students/:id - Update student
+// PATCH /api/students/:id - Update student (Admins can update any student, students can update themselves)
 router.patch('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
+    const isAdmin = req.user.role === 'admin';
+    const isSelf = req.user.id === id;
 
-    // Build dynamic update query
-    const allowedFields = ['first_name', 'last_name', 'full_name', 'email', 'favorite_persona', 'section_id', 'finished_at'];
+    // Students can only update their own records
+    if (!isAdmin && !isSelf) {
+      return res.status(403).json({ data: null, error: { message: 'Forbidden' } });
+    }
+
+    // Check admin permission if user is admin
+    if (isAdmin) {
+      const hasPermission = req.user.permissions && req.user.permissions.includes('students');
+      if (!hasPermission) {
+        return res.status(403).json({ data: null, error: { message: 'Forbidden' } });
+      }
+    }
+
+    // Define allowed fields based on role
+    const allowedFields = isAdmin
+      ? ['first_name', 'last_name', 'full_name', 'email', 'favorite_persona', 'section_id', 'finished_at']
+      : ['first_name', 'last_name', 'full_name', 'favorite_persona', 'section_id']; // Students can't change email or finished_at
+
     const setClauses = [];
     const params = [];
 
@@ -113,8 +129,11 @@ router.patch('/:id', async (req, res) => {
       }
     }
 
-    // Handle password separately
+    // Handle password separately (admin only)
     if (updates.password) {
+      if (!isAdmin) {
+        return res.status(403).json({ data: null, error: { message: 'Students cannot change password via this endpoint' } });
+      }
       const password_hash = await bcrypt.hash(updates.password, 10);
       setClauses.push('password_hash = ?');
       params.push(password_hash);
@@ -148,8 +167,8 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
-// DELETE /api/students/:id - Delete student
-router.delete('/:id', async (req, res) => {
+// DELETE /api/students/:id - Delete student - Admin only
+router.delete('/:id', requireRole(['admin']), requirePermission('students'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -169,8 +188,8 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// POST /api/students/:id/reset-password - Reset student password
-router.post('/:id/reset-password', async (req, res) => {
+// POST /api/students/:id/reset-password - Reset student password - Admin only
+router.post('/:id/reset-password', requireRole(['admin']), requirePermission('students'), async (req, res) => {
   try {
     const { id } = req.params;
     const { password } = req.body;
@@ -199,8 +218,8 @@ router.post('/:id/reset-password', async (req, res) => {
 // Multi-Section Enrollment Endpoints
 // ============================================================================
 
-// GET /api/students/:id/sections - Get all sections a student is enrolled in
-router.get('/:id/sections', async (req, res) => {
+// GET /api/students/:id/sections - Get all sections a student is enrolled in - Admin only
+router.get('/:id/sections', requireRole(['admin']), requirePermission('students'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -221,8 +240,8 @@ router.get('/:id/sections', async (req, res) => {
   }
 });
 
-// POST /api/students/:id/sections - Enroll student in a section (instructor use)
-router.post('/:id/sections', async (req, res) => {
+// POST /api/students/:id/sections - Enroll student in a section (instructor use) - Admin only
+router.post('/:id/sections', requireRole(['admin']), requirePermission('students'), async (req, res) => {
   try {
     const { id } = req.params;
     const { section_id, is_primary } = req.body;
@@ -289,8 +308,8 @@ router.post('/:id/sections', async (req, res) => {
   }
 });
 
-// DELETE /api/students/:id/sections/:sectionId - Remove student from section
-router.delete('/:id/sections/:sectionId', async (req, res) => {
+// DELETE /api/students/:id/sections/:sectionId - Remove student from section - Admin only
+router.delete('/:id/sections/:sectionId', requireRole(['admin']), requirePermission('students'), async (req, res) => {
   try {
     const { id, sectionId } = req.params;
 
@@ -338,8 +357,8 @@ router.delete('/:id/sections/:sectionId', async (req, res) => {
   }
 });
 
-// PATCH /api/students/:id/sections/:sectionId - Update enrollment (e.g., set primary)
-router.patch('/:id/sections/:sectionId', async (req, res) => {
+// PATCH /api/students/:id/sections/:sectionId - Update enrollment (e.g., set primary) - Admin only
+router.patch('/:id/sections/:sectionId', requireRole(['admin']), requirePermission('students'), async (req, res) => {
   try {
     const { id, sectionId } = req.params;
     const { is_primary } = req.body;
