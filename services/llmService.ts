@@ -147,6 +147,7 @@ export const createChatSession = (
           systemPrompt,
           history: currentHistory,
           message,
+          caseId: caseData?.case_id,  // Pass caseId for metrics tracking
         }),
       });
 

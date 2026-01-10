@@ -255,7 +255,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [sectionCasesList, setSectionCasesList] = useState<any[]>([]);
   const [isLoadingSectionCases, setIsLoadingSectionCases] = useState(false);
 
-  // Case Chats management (Chats tab)
+  // Case Chats management (Latest Chats tab)
   const [caseChatsList, setCaseChatsList] = useState<any[]>([]);
   const [isLoadingCaseChats, setIsLoadingCaseChats] = useState(false);
   const [caseChatsFilter, setCaseChatsFilter] = useState<{ status: string; section_id: string; search: string }>({
@@ -263,6 +263,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     section_id: 'all',
     search: ''
   });
+  const [chatsSortKey, setChatsSortKey] = useState<string>('start_time');
+  const [chatsSortDirection, setChatsSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [chatsLimit, setChatsLimit] = useState<number>(50);
   const [showChatTranscriptModal, setShowChatTranscriptModal] = useState(false);
   const [selectedCaseChat, setSelectedCaseChat] = useState<any | null>(null);
   
@@ -2225,10 +2228,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     const labels = {
       completed: 'Completed',
       in_progress: 'In Progress',
-      not_started: 'Not Started',
+      not_started: 'No Evaluation',
+    };
+    const tooltips = {
+      completed: 'Student has completed the case and received an evaluation',
+      in_progress: 'Student started but has not completed an evaluation yet',
+      not_started: 'No evaluation record yet (student may have an active chat - check Monitor tab)',
     };
     return (
-      <span className={`px-2 py-1 text-xs font-medium rounded-full border ${styles[status]}`}>
+      <span 
+        className={`px-2 py-1 text-xs font-medium rounded-full border ${styles[status]}`}
+        title={tooltips[status]}
+      >
         {labels[status]}
       </span>
     );
@@ -4021,7 +4032,37 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     </div>
   );
 
-// Fetch case chats for Chats tab
+  // Handle sorting for Latest Chats table
+  const handleChatsSort = (key: string) => {
+    if (chatsSortKey === key) {
+      setChatsSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setChatsSortKey(key);
+      setChatsSortDirection('asc');
+    }
+  };
+
+  // Sort case chats list
+  const sortedCaseChatsList = useMemo(() => {
+    return [...caseChatsList].sort((a, b) => {
+      let valA = a[chatsSortKey];
+      let valB = b[chatsSortKey];
+
+      // Handle null/undefined values
+      if (valA === null || valA === undefined) return 1;
+      if (valB === null || valB === undefined) return -1;
+
+      // Convert to lowercase for string comparison
+      if (typeof valA === 'string') valA = valA.toLowerCase();
+      if (typeof valB === 'string') valB = valB.toLowerCase();
+
+      if (valA < valB) return chatsSortDirection === 'asc' ? -1 : 1;
+      if (valA > valB) return chatsSortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [caseChatsList, chatsSortKey, chatsSortDirection]);
+
+// Fetch case chats for Latest Chats tab
   const fetchCaseChats = useCallback(async () => {
     setIsLoadingCaseChats(true);
     try {
@@ -4044,7 +4085,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const params = new URLSearchParams();
       if (caseChatsFilter.status !== 'all') params.append('status', caseChatsFilter.status);
       if (caseChatsFilter.section_id !== 'all') params.append('section_id', caseChatsFilter.section_id);
-      params.append('limit', '200');
+      params.append('limit', chatsLimit.toString());
 
       const response = await fetch(`${getApiBaseUrl()}/case-chats?${params.toString()}`, {
         headers: {
@@ -4075,7 +4116,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     } finally {
       setIsLoadingCaseChats(false);
     }
-  }, [caseChatsFilter]);
+  }, [caseChatsFilter, chatsLimit]);
 
   // Fetch case chats when filters change or monitor tab is active
   useEffect(() => {
@@ -4163,12 +4204,29 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     return `${hours}h ${mins}m`;
   };
 
+  const ChatsSortableHeader = ({ label, sortKey }: { label: string; sortKey: string }) => (
+    <th
+      onClick={() => handleChatsSort(sortKey)}
+      className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+    >
+      <div className="flex items-center gap-2">
+        <span>{label}</span>
+        {chatsSortKey === sortKey && (
+          <svg className={`w-4 h-4 transition-transform ${chatsSortDirection === 'asc' ? 'rotate-180' : ''}`} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M10 3a.75.75 0 01.75.75v10.5a.75.75 0 01-1.5 0V3.75A.75.75 0 0110 3z" clipRule="evenodd" />
+            <path fillRule="evenodd" d="M5.22 9.22a.75.75 0 011.06 0L10 12.94l3.72-3.72a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 10.28a.75.75 0 010-1.06z" clipRule="evenodd" />
+          </svg>
+        )}
+      </div>
+    </th>
+  );
+
   const renderChatsTab = () => (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Chat Sessions</h2>
-          <p className="text-sm text-gray-500">Monitor and manage student chat sessions</p>
+          <h2 className="text-2xl font-bold text-gray-900">Latest Chat Sessions</h2>
+          <p className="text-sm text-gray-500">Monitor and manage the latest (most recent) chat sessions</p>
         </div>
         <button
           onClick={fetchCaseChats}
@@ -4211,6 +4269,22 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           onChange={(e) => setCaseChatsFilter(prev => ({ ...prev, search: e.target.value }))}
           className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-blue-500 focus:border-blue-500 w-64"
         />
+        <div className="flex items-center gap-2">
+          <label className="text-sm font-medium text-gray-700">Show:</label>
+          <select
+            value={chatsLimit}
+            onChange={(e) => setChatsLimit(Number(e.target.value))}
+            className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option value="5">5</option>
+            <option value="10">10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+          <span className="text-sm text-gray-500">most recent</span>
+        </div>
       </div>
 
       {/* Chats Table */}
@@ -4228,18 +4302,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Student</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Case</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Section</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Position</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Started</th>
+                <ChatsSortableHeader label="Student" sortKey="student_name" />
+                <ChatsSortableHeader label="Case" sortKey="case_title" />
+                <ChatsSortableHeader label="Section" sortKey="section_title" />
+                <ChatsSortableHeader label="Status" sortKey="status" />
+                <ChatsSortableHeader label="Position" sortKey="initial_position" />
+                <ChatsSortableHeader label="Started" sortKey="start_time" />
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Duration</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {caseChatsList.map((chat) => (
+              {sortedCaseChatsList.map((chat) => (
                 <tr key={chat.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 text-sm font-medium text-gray-900">{chat.student_name || 'Unknown'}</td>
                   <td className="px-4 py-3 text-sm text-gray-700">{chat.case_title || chat.case_id}</td>
@@ -4675,7 +4749,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                Live Chats
+                Latest Chats
               </button>
               <button
                 onClick={() => setMonitorSubTab('cache')}
@@ -5400,7 +5474,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
                         {sortedStudentDetails.map(student => (
-                          <tr key={student.id} className={`hover:bg-gray-50 ${student.status === 'in_progress' ? 'bg-yellow-50' : ''} ${selectedStudentIds.has(student.id) ? 'bg-blue-50' : ''}`}>
+                          <tr key={student.evaluation_id || `${student.id}-not-started`} className={`hover:bg-gray-50 ${student.status === 'in_progress' ? 'bg-yellow-50' : ''} ${selectedStudentIds.has(student.id) ? 'bg-blue-50' : ''}`}>
                             <td className="p-3">
                               <input
                                 type="checkbox"

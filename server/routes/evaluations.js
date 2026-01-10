@@ -2,6 +2,7 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import { inferPositionFromTranscript } from '../services/positionInference.js';
 
 const router = express.Router();
 
@@ -182,6 +183,88 @@ router.post('/', async (req, res) => {
         `UPDATE case_chats SET status = 'completed', end_time = CURRENT_TIMESTAMP, evaluation_id = ? WHERE id = ?`,
         [id, case_chat_id]
       );
+
+      // AI Position Inference: If position tracking is enabled with ai_inferred method and no position set yet
+      try {
+        const [chatRows] = await pool.execute(
+          `SELECT cc.*, cs.chat_options_override, c.case_title
+           FROM case_chats cc
+           LEFT JOIN case_scenarios cs ON cc.scenario_id = cs.id
+           LEFT JOIN cases c ON cc.case_id = c.case_id
+           WHERE cc.id = ?`,
+          [case_chat_id]
+        );
+
+        if (chatRows.length > 0) {
+          const chat = chatRows[0];
+          const scenarioSettings = chat.chat_options_override ? JSON.parse(chat.chat_options_override) : {};
+
+          // Check if AI inference is needed
+          const needsInference =
+            scenarioSettings.position_tracking_enabled === true &&
+            scenarioSettings.position_capture_method === 'ai_inferred' &&
+            (!chat.initial_position || !chat.final_position) &&
+            transcript; // Make sure we have a transcript to analyze
+
+          if (needsInference) {
+            const positionOptions = scenarioSettings.position_options || ['for', 'against'];
+
+            // Get case data for the prompt
+            const [caseRows] = await pool.execute(
+              `SELECT case_title, arguments_for, arguments_against
+               FROM cases WHERE case_id = ?`,
+              [chat.case_id]
+            );
+
+            const caseData = caseRows.length > 0 ? caseRows[0] : {};
+            if (chat.case_title) caseData.case_title = chat.case_title;
+
+            // Get chat question from scenario
+            if (chat.scenario_id) {
+              const [scenarioRows] = await pool.execute(
+                `SELECT chat_question FROM case_scenarios WHERE id = ?`,
+                [chat.scenario_id]
+              );
+              if (scenarioRows.length > 0) {
+                caseData.chat_question = scenarioRows[0].chat_question;
+              }
+            }
+
+            // Infer position using AI
+            const modelId = chat_model || 'gemini-1.5-flash'; // Use chat model or default
+            const inferenceResult = await inferPositionFromTranscript(
+              transcript,
+              caseData,
+              positionOptions,
+              modelId
+            );
+
+            if (inferenceResult && inferenceResult.position) {
+              // Update case_chat with inferred position
+              await pool.execute(
+                `UPDATE case_chats
+                 SET initial_position = ?, final_position = ?, position_method = 'ai_inferred'
+                 WHERE id = ?`,
+                [inferenceResult.position, inferenceResult.position, case_chat_id]
+              );
+
+              // Log the inferred position
+              await pool.execute(
+                `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
+                 VALUES (?, 'initial', ?, 'ai', ?)`,
+                [case_chat_id, inferenceResult.position, `AI inference (confidence: ${inferenceResult.confidence.toFixed(2)}): ${inferenceResult.reasoning}`]
+              );
+
+              console.log(`[AI Position Inference] Chat ${case_chat_id}: ${inferenceResult.position} (confidence: ${inferenceResult.confidence.toFixed(2)})`);
+            } else {
+              console.warn(`[AI Position Inference] Failed to infer position for chat ${case_chat_id}`);
+            }
+          }
+        }
+      } catch (inferenceError) {
+        // Log error but don't fail the evaluation creation
+        console.error('[AI Position Inference] Error during position inference:', inferenceError);
+      }
     }
 
     // Return the created evaluation

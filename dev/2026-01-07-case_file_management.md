@@ -348,3 +348,70 @@ A comprehensive dashboard for monitoring LLM prompt caching performance:
 - Primary tabs: Home, Courses, Content, **Monitor**, **Results**, Admin
 - Monitor sub-tabs: **Live Chats** | **Cache Analytics**
 - Results tab (formerly Analytics) shows student performance and case outcomes
+
+---
+
+## Bug Fix: Cache Metrics Not Tracking (2026-01-10)
+
+### Problem
+The `llm_cache_metrics` table was empty despite students using case chats. Cache Analytics showed 0 requests.
+
+### Root Causes Identified
+1. **Frontend not passing caseId**: The `llmService.ts` was not including `caseId` in the chat request body
+2. **Backend not forwarding caseId**: The `/api/llm/chat` endpoint was not passing `caseId` to `chatWithLLM()`
+3. **Google Gemini had no metrics tracking**: Only Anthropic and OpenAI had cache metrics implementation
+
+### Fixes Applied
+
+**1. Frontend (`services/llmService.ts`)**
+```typescript
+// Added caseId to request body
+body: JSON.stringify({
+  modelId,
+  systemPrompt,
+  history: currentHistory,
+  message,
+  caseId: caseData?.case_id,  // NEW: Pass caseId for metrics tracking
+}),
+```
+
+**2. Backend (`server/routes/llm.js`)**
+```javascript
+// Accept caseId from request and pass to config
+const { modelId, systemPrompt, history, message, caseId } = req.body || {};
+// ...
+config: { ...modelConfig, caseId },  // NEW: Include caseId for metrics tracking
+```
+
+**3. LLM Router (`server/services/llmRouter.js`)**
+Added Google Gemini metrics tracking:
+```javascript
+// Extract usage metrics from Gemini response
+const usageMetadata = response.usageMetadata || response.response?.usageMetadata || {};
+const cacheMetrics = {
+  cache_hit: false,
+  input_tokens: usageMetadata.promptTokenCount || 0,
+  cached_tokens: usageMetadata.cachedContentTokenCount || 0,
+  output_tokens: usageMetadata.candidatesTokenCount || 0,
+};
+
+if (config.caseId) {
+  trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat');
+}
+```
+
+### Files Modified
+- `services/llmService.ts` - Pass caseId in chat request
+- `server/routes/llm.js` - Forward caseId to LLM router
+- `server/services/llmRouter.js` - Add Gemini metrics tracking
+
+### Note on Google Gemini Caching
+Google Gemini does **not** have automatic prompt caching like Anthropic. The `cache_hit` will always be `false` for Gemini unless you explicitly set up [Context Caching](https://ai.google.dev/gemini-api/docs/caching) which requires:
+- Minimum 32,768 tokens of content
+- Explicit cache creation via API
+- TTL management
+
+The metrics tracking now captures input/output token counts for all providers, which is useful for:
+- Cost analysis and budgeting
+- Understanding token usage patterns per case
+- Comparing efficiency across providers

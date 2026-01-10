@@ -5,7 +5,7 @@
  * Used when position_capture_method is set to 'ai_inferred'.
  */
 
-import { routeLLMRequest } from './llmRouter.js';
+import { evaluateWithLLM } from './llmRouter.js';
 
 /**
  * Build the prompt for position inference from transcript
@@ -62,24 +62,25 @@ export async function inferPositionFromTranscript(transcript, caseData, position
 
   try {
     // Use the LLM router to make the request
-    const response = await routeLLMRequest({
-      model: modelId,
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 200,
-      temperature: 0.3, // Low temperature for more deterministic results
+    const content = await evaluateWithLLM({
+      modelId: modelId,
+      prompt: prompt,
+      config: {
+        temperature: 0.3, // Low temperature for more deterministic results
+      }
     });
 
-    if (!response?.content) {
+    if (!content || content.trim().length === 0) {
       console.error('[PositionInference] No content in LLM response');
       return null;
     }
 
     // Parse the JSON response
-    const content = response.content.trim();
+    const contentTrimmed = content.trim();
 
     // Try to extract JSON from the response (handle markdown code blocks)
-    let jsonStr = content;
-    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+    let jsonStr = contentTrimmed;
+    const jsonMatch = contentTrimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (jsonMatch) {
       jsonStr = jsonMatch[1].trim();
     }

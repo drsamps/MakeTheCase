@@ -266,7 +266,7 @@ router.get('/case-data/:caseId', async (req, res) => {
 
 router.post('/chat', async (req, res) => {
   try {
-    const { modelId, systemPrompt, history, message } = req.body || {};
+    const { modelId, systemPrompt, history, message, caseId } = req.body || {};
     if (!modelId || !systemPrompt || !message) {
       return res.status(400).json({ data: null, error: { message: 'modelId, systemPrompt, and message are required' } });
     }
@@ -279,7 +279,7 @@ router.post('/chat', async (req, res) => {
       systemPrompt,
       history: Array.isArray(history) ? history : [],
       message,
-      config: modelConfig,
+      config: { ...modelConfig, caseId },  // Include caseId for metrics tracking
     });
     res.json({ data: { text, meta }, error: null });
   } catch (error) {

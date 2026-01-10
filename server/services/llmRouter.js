@@ -194,7 +194,31 @@ export async function chatWithLLM({ modelId, systemPrompt, history = [], message
     },
   });
   const response = await chat.sendMessage({ message });
-  return { text: response.text, meta: { provider, temperature: temperature ?? null, reasoning_effort: null } };
+
+  // Extract usage metrics from Gemini response
+  // Gemini provides usageMetadata with promptTokenCount, candidatesTokenCount, totalTokenCount
+  const usageMetadata = response.usageMetadata || response.response?.usageMetadata || {};
+  const cacheMetrics = {
+    cache_hit: false, // Gemini context caching requires explicit setup, standard calls don't cache
+    input_tokens: usageMetadata.promptTokenCount || 0,
+    cached_tokens: usageMetadata.cachedContentTokenCount || 0, // If context caching is enabled
+    output_tokens: usageMetadata.candidatesTokenCount || 0,
+  };
+
+  // Track metrics if caseId is provided
+  if (config.caseId) {
+    trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat');
+  }
+
+  return {
+    text: response.text,
+    meta: {
+      provider,
+      temperature: temperature ?? null,
+      reasoning_effort: null,
+      cacheMetrics
+    }
+  };
 }
 
 export async function evaluateWithLLM({ modelId, prompt, config = {} }) {

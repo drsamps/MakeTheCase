@@ -896,4 +896,237 @@ router.get('/analytics/positions', verifyToken, requireRole(['admin']), async (r
   }
 });
 
+// GET /api/case-chats/position-summaries - Get position summaries for all cases
+router.get('/position-summaries', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const [casesWithChats] = await pool.execute(`
+      SELECT DISTINCT cc.case_id
+      FROM case_chats cc
+      WHERE cc.status = 'completed'
+    `);
+
+    const summaries = {};
+
+    for (const { case_id } of casesWithChats) {
+      const [rows] = await pool.execute(`
+        SELECT initial_position, final_position
+        FROM case_chats
+        WHERE case_id = ? AND status = 'completed'
+      `, [case_id]);
+
+      if (rows.length === 0) {
+        summaries[case_id] = 'no positions tracked';
+        continue;
+      }
+
+      // Count positions (using final if available, otherwise initial)
+      const positionCounts = {};
+      let noPositionCount = 0;
+
+      rows.forEach(row => {
+        const position = row.final_position || row.initial_position;
+        if (position) {
+          positionCounts[position] = (positionCounts[position] || 0) + 1;
+        } else {
+          noPositionCount++;
+        }
+      });
+
+      // Build summary string
+      const hasPositions = Object.keys(positionCounts).length > 0 || noPositionCount > 0;
+      if (!hasPositions) {
+        summaries[case_id] = 'no positions tracked';
+      } else {
+        const parts = Object.entries(positionCounts)
+          .sort((a, b) => b[1] - a[1])
+          .map(([pos, count]) => `${count} ${pos}`);
+
+        if (noPositionCount > 0) {
+          parts.push(`${noPositionCount} no position recorded`);
+        }
+
+        summaries[case_id] = parts.join(', ');
+      }
+    }
+
+    res.json({ data: summaries, error: null });
+  } catch (error) {
+    console.error('Error fetching position summaries:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/case-chats/:id/update-position - Manually update a chat position
+router.patch('/:id/update-position', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { position } = req.body;
+
+    if (!position) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'position is required' }
+      });
+    }
+
+    // Update the position
+    await pool.execute(
+      `UPDATE case_chats
+       SET initial_position = ?, final_position = ?, position_method = 'instructor_manual'
+       WHERE id = ?`,
+      [position, position, id]
+    );
+
+    // Log the manual position update
+    await pool.execute(
+      `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
+       VALUES (?, 'initial', ?, 'instructor', 'Manually set by instructor')`,
+      [id, position]
+    );
+
+    res.json({ data: { success: true }, error: null });
+  } catch (error) {
+    console.error('Error updating position:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/case-chats/:id/infer-position - Trigger AI inference for a chat position
+router.post('/:id/infer-position', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get chat details with scenario and case data
+    const [chatRows] = await pool.execute(`
+      SELECT cc.*, cs.chat_options_override, cs.chat_question, c.case_title, c.arguments_for, c.arguments_against, e.transcript
+      FROM case_chats cc
+      LEFT JOIN case_scenarios cs ON cc.scenario_id = cs.id
+      LEFT JOIN cases c ON cc.case_id = c.case_id
+      LEFT JOIN evaluations e ON cc.evaluation_id = e.id
+      WHERE cc.id = ?
+    `, [id]);
+
+    if (chatRows.length === 0) {
+      return res.status(404).json({
+        data: null,
+        error: { message: 'Chat not found' }
+      });
+    }
+
+    const chat = chatRows[0];
+
+    if (!chat.transcript) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'No transcript available for this chat' }
+      });
+    }
+
+    // Get position options from scenario or use defaults
+    const scenarioSettings = chat.chat_options_override ? JSON.parse(chat.chat_options_override) : {};
+    const positionOptions = scenarioSettings.position_options || ['for', 'against'];
+
+    // Import and use the inference service
+    const { inferPositionFromTranscript } = await import('../services/positionInference.js');
+
+    const caseData = {
+      case_title: chat.case_title,
+      chat_question: chat.chat_question,
+      arguments_for: chat.arguments_for,
+      arguments_against: chat.arguments_against
+    };
+
+    const modelId = chat.chat_model || 'gpt-4o-mini';
+    const inferenceResult = await inferPositionFromTranscript(
+      chat.transcript,
+      caseData,
+      positionOptions,
+      modelId
+    );
+
+    if (!inferenceResult || !inferenceResult.position) {
+      return res.status(500).json({
+        data: null,
+        error: { message: 'Failed to infer position from transcript' }
+      });
+    }
+
+    // Update the position
+    await pool.execute(
+      `UPDATE case_chats
+       SET initial_position = ?, final_position = ?, position_method = 'ai_inferred'
+       WHERE id = ?`,
+      [inferenceResult.position, inferenceResult.position, id]
+    );
+
+    // Log the AI inference
+    await pool.execute(
+      `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
+       VALUES (?, 'initial', ?, 'ai', ?)`,
+      [id, inferenceResult.position, `AI inference (confidence: ${inferenceResult.confidence.toFixed(2)}): ${inferenceResult.reasoning}`]
+    );
+
+    res.json({
+      data: {
+        position: inferenceResult.position,
+        confidence: inferenceResult.confidence,
+        reasoning: inferenceResult.reasoning
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error inferring position:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/case-chats/responses - Get all chat responses for a case with student details
+router.get('/responses', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { section_id, case_id } = req.query;
+
+    if (!case_id) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'case_id is required' }
+      });
+    }
+
+    let query = `
+      SELECT
+        cc.id,
+        cc.student_id,
+        s.full_name as student_name,
+        cc.section_id,
+        sec.section_title,
+        cc.initial_position,
+        cc.final_position,
+        cc.status,
+        cc.start_time,
+        cc.end_time,
+        e.transcript
+      FROM case_chats cc
+      LEFT JOIN students s ON cc.student_id = s.id
+      LEFT JOIN sections sec ON cc.section_id = sec.section_id
+      LEFT JOIN evaluations e ON cc.evaluation_id = e.id
+      WHERE cc.case_id = ? AND cc.status = 'completed'
+    `;
+    const params = [case_id];
+
+    if (section_id) {
+      query += ' AND cc.section_id = ?';
+      params.push(section_id);
+    }
+
+    query += ' ORDER BY cc.end_time DESC';
+
+    const [rows] = await pool.execute(query, params);
+
+    res.json({ data: rows, error: null });
+  } catch (error) {
+    console.error('Error fetching chat responses:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 export default router;
