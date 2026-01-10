@@ -671,6 +671,17 @@ const App: React.FC = () => {
 
         const lowerCaseMessage = userMessage.toLowerCase();
         if (lowerCaseMessage.includes("time is up") || lowerCaseMessage.includes("time's up")) {
+            // Check minimum exchanges requirement
+            const minExchanges = chatOptions?.require_minimum_exchanges ?? 0;
+            const userMessageCount = messages.filter(m => m.role === MessageRole.USER).length;
+            if (minExchanges > 0 && userMessageCount < minExchanges) {
+              const ceoWarning: Message = {
+                role: MessageRole.MODEL,
+                content: `I appreciate your time management, but we haven't had enough of a discussion yet. Let's continue our conversation a bit longer - I'd like to hear more of your analysis before we wrap up.`
+              };
+              setMessages(prev => [...prev, { role: MessageRole.USER, content: userMessage }, ceoWarning]);
+              return;
+            }
             const finalUserMessage: Message = { role: MessageRole.USER, content: userMessage };
 
             // Check chat options to determine next phase
@@ -1651,14 +1662,14 @@ const App: React.FC = () => {
   const chatPanel = (
     <aside className="w-full h-full flex flex-col bg-gray-200 rounded-xl shadow-lg">
       {error && <div className="p-4 bg-red-500 text-white text-center font-semibold rounded-t-xl">{error}</div>}
-      {currentCaseChatId && (
+      {currentCaseChatId && (chatOptions?.show_timer !== false) && (
         <div className="flex justify-end px-3 py-1 mt-12">
           <ChatTimer
             chatId={currentCaseChatId}
             warningMinutes={5}
             onTimeUp={() => {
               // Auto-submit "time is up" when timer expires (only if timeout_chat is enabled)
-              if (chatOptions?.timeout_chat !== false) {
+              if (chatOptions?.timeout_chat) {
                 handleSendMessage("time is up");
               }
             }}
@@ -1717,6 +1728,7 @@ const App: React.FC = () => {
               onFontSizeChange={setChatFontSize}
               fontSizes={FONT_SIZES}
               defaultFontSize={DEFAULT_FONT_SIZE}
+              maxMessageLength={chatOptions?.max_message_length ?? 0}
             />
           </>
       )}
@@ -1758,6 +1770,7 @@ const App: React.FC = () => {
         superModelName={superModelName}
         onLogout={handleStudentLogout}
         onTitleContextNav={handleRestart}
+        showDetails={chatOptions?.show_evaluation_details !== false}
       />
     );
   }

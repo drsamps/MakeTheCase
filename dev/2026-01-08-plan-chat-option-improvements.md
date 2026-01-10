@@ -294,3 +294,67 @@ Here is Claude's plan:
  4. Run existing test suite
  5. Test with various option combinations
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+
+## Implementation Summary (2026-01-08)
+
+The following changes were implemented:
+
+### 1. Collapsible Categories with Expand/Collapse All
+
+Added collapsible category sections to the Chat Options tab in the Dashboard:
+- **Hints** - hints_allowed, free_hints
+- **Display & Flow** - show_case, show_timer, do_evaluation, show_evaluation_details, ask_for_feedback, ask_save_transcript
+- **Persona** - default_persona
+- **Custom Instructions** - chatbot_personality
+- **Chat Controls** - allow_repeat, timeout_chat, restart_chat, allow_exit, require_minimum_exchanges, max_message_length
+- **Advanced** - disable_position_tracking
+
+Features:
+- Each category has a clickable header to expand/collapse
+- "Expand All" and "Collapse All" buttons at the top
+- Triangle indicators show expanded/collapsed state
+
+### 2. Four New Chat Options Implemented
+
+#### 2.1 `show_timer` (boolean, default: true)
+- Toggle visibility of countdown timer during chat
+- Implemented in: `App.tsx` (conditionally renders ChatTimer)
+- Dashboard control: Checkbox in Display & Flow section
+
+#### 2.2 `require_minimum_exchanges` (number, default: 0)
+- Require N exchanges before allowing "time is up"
+- When student tries to end chat early, CEO responds asking to continue
+- Implemented in: `App.tsx` (handleSendMessage function)
+- Dashboard control: Number input in Chat Controls section
+
+#### 2.3 `max_message_length` (number, default: 0 = unlimited)
+- Limit characters per student message
+- Shows character count when limit is set
+- Red border and disabled send button when over limit
+- Implemented in: `MessageInput.tsx`
+- Dashboard control: Number input in Chat Controls section
+
+#### 2.4 `show_evaluation_details` (boolean, default: true)
+- Toggle full evaluation criteria vs just overall score
+- When false, hides individual criterion scores and feedback
+- Implemented in: `Evaluation.tsx` (showDetails prop)
+- Dashboard control: Checkbox in Display & Flow section
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `types.ts` | Added 4 new fields to ChatOptions interface |
+| `server/routes/chatOptions.js` | Added defaults and schema for new options + chat_control category |
+| `components/Dashboard.tsx` | Added collapsible categories, expand/collapse all, new option controls |
+| `components/MessageInput.tsx` | Added maxMessageLength prop with character count display |
+| `components/Evaluation.tsx` | Added showDetails prop to conditionally hide criteria |
+| `App.tsx` | Implemented show_timer, require_minimum_exchanges, max_message_length behaviors |
+| `help/dashboard/ChatOptionsHelp.tsx` | Updated documentation for all categories and options |
+
+### Not Implemented (deferred for future)
+
+- `allow_scenario_change`, `enable_notes`, `show_message_count`, `require_case_read`
+- `allow_model_selection`, `cool_down_period`, `enable_audio_mode`
+- `collaborative_mode`, `instructor_observe`
+- Schema-driven UI component (ChatOptionsEditor.tsx) - collapsible categories added directly to Dashboard.tsx instead

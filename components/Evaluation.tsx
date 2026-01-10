@@ -8,6 +8,7 @@ interface EvaluationProps {
   superModelName: string | null;
   onLogout?: () => void;
   onTitleContextNav?: () => void;
+  showDetails?: boolean; // Show detailed criteria (default: true)
 }
 
 const LoadingSpinner: React.FC<{ modelName: string | null }> = ({ modelName }) => (
@@ -20,7 +21,7 @@ const LoadingSpinner: React.FC<{ modelName: string | null }> = ({ modelName }) =
 );
 
 // FIX: Correctly type the component's props using React.FC<EvaluationProps> to resolve type errors.
-const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart, superModelName, onLogout, onTitleContextNav }) => {
+const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart, superModelName, onLogout, onTitleContextNav, showDetails = true }) => {
   if (!result) {
     return (
         <div className="flex items-center justify-center min-h-screen bg-gray-200">
@@ -59,19 +60,21 @@ const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart,
           </div>
         )}
 
-        <div className="space-y-6">
-            {result.criteria.map((criterion, index) => (
-                <div key={index} className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex justify-between items-start">
-                        <p className="text-md font-semibold text-gray-800 flex-1 pr-4">{criterion.question}</p>
-                        <div className="text-lg font-bold text-white bg-blue-600 rounded-full w-12 h-12 flex items-center justify-center flex-shrink-0">
-                            {criterion.score}/5
-                        </div>
-                    </div>
-                    <p className="text-sm text-gray-600 mt-2 pl-1"><strong className="font-medium">Feedback:</strong> {criterion.feedback}</p>
-                </div>
-            ))}
-        </div>
+        {showDetails && (
+          <div className="space-y-6">
+              {result.criteria.map((criterion, index) => (
+                  <div key={index} className="border border-gray-200 rounded-lg p-4">
+                      <div className="flex justify-between items-start">
+                          <p className="text-md font-semibold text-gray-800 flex-1 pr-4">{criterion.question}</p>
+                          <div className="text-lg font-bold text-white bg-blue-600 rounded-full w-12 h-12 flex items-center justify-center flex-shrink-0">
+                              {criterion.score}/5
+                          </div>
+                      </div>
+                      <p className="text-sm text-gray-600 mt-2 pl-1"><strong className="font-medium">Feedback:</strong> {criterion.feedback}</p>
+                  </div>
+              ))}
+          </div>
+        )}
         
         <div className="text-center pt-4 border-t">
              <div className="text-2xl font-bold text-gray-800 mb-4">

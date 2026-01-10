@@ -155,6 +155,12 @@ export interface ChatOptions {
   timeout_chat: boolean;          // Stop the chat at the designated duration
   restart_chat: boolean;          // Allow students to exit chat and restart it
   allow_exit: boolean;            // Provide students an exit button to exit the chat
+  // Display options
+  show_timer: boolean;            // Show countdown timer during chat (default: true)
+  show_evaluation_details: boolean; // Show full evaluation criteria vs just score (default: true)
+  // Chat flow control
+  require_minimum_exchanges: number; // Minimum exchanges before allowing "time is up" (default: 0)
+  max_message_length: number;     // Maximum character count per message (0 = unlimited)
   // Position tracking override (position config is now per-scenario in chat_options_override)
   disable_position_tracking: boolean; // Override to disable scenario-level position tracking
 }

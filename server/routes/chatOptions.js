@@ -16,12 +16,21 @@ const DEFAULT_CHAT_OPTIONS = {
   default_persona: 'moderate',
   // Display and flow options
   show_case: true,
+  show_timer: true,              // Show countdown timer during chat
   do_evaluation: true,
+  show_evaluation_details: true, // Show full evaluation criteria vs just score
   // Chatbot personality customization
   chatbot_personality: '',
   // Multi-chat options
   chat_repeats: 0,           // 0 = one chat only, 1+ = can repeat N times
   save_dead_transcripts: false,  // Save transcripts for abandoned/canceled/killed chats
+  // Chat control options
+  allow_repeat: false,
+  timeout_chat: false,
+  restart_chat: false,
+  allow_exit: false,
+  require_minimum_exchanges: 0,  // 0 = no minimum, N = require N exchanges before "time is up"
+  max_message_length: 0,         // 0 = unlimited, N = max N characters per message
   // Position tracking override (position config is now per-scenario)
   disable_position_tracking: false  // Override to disable scenario-level position tracking
 };
@@ -74,11 +83,27 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     category: 'display'
   },
   {
+    key: 'show_timer',
+    label: 'Show Timer',
+    type: 'boolean',
+    default: true,
+    description: 'Display countdown timer during chat',
+    category: 'display'
+  },
+  {
     key: 'do_evaluation',
     label: 'Run Evaluation',
     type: 'boolean',
     default: true,
     description: 'Run supervisor evaluation after chat completes',
+    category: 'flow'
+  },
+  {
+    key: 'show_evaluation_details',
+    label: 'Show Evaluation Details',
+    type: 'boolean',
+    default: true,
+    description: 'Show full evaluation criteria and feedback (vs just overall score)',
     category: 'flow'
   },
   {
@@ -106,6 +131,59 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     default: false,
     description: 'Save transcripts for abandoned, canceled, or killed chats',
     category: 'flow'
+  },
+  // Chat control options
+  {
+    key: 'allow_repeat',
+    label: 'Allow Repeat',
+    type: 'boolean',
+    default: false,
+    description: 'Allow students to repeat the chat multiple times',
+    category: 'chat_control'
+  },
+  {
+    key: 'timeout_chat',
+    label: 'Auto-End on Timeout',
+    type: 'boolean',
+    default: false,
+    description: 'Automatically end chat when time limit expires',
+    category: 'chat_control'
+  },
+  {
+    key: 'restart_chat',
+    label: 'Allow Restart',
+    type: 'boolean',
+    default: false,
+    description: 'Allow students to restart the chat',
+    category: 'chat_control'
+  },
+  {
+    key: 'allow_exit',
+    label: 'Allow Exit',
+    type: 'boolean',
+    default: false,
+    description: 'Provide exit button to leave chat early',
+    category: 'chat_control'
+  },
+  {
+    key: 'require_minimum_exchanges',
+    label: 'Minimum Exchanges',
+    type: 'number',
+    default: 0,
+    min: 0,
+    max: 20,
+    description: 'Require N exchanges before allowing "time is up" (0 = no minimum)',
+    category: 'chat_control'
+  },
+  {
+    key: 'max_message_length',
+    label: 'Max Message Length',
+    type: 'number',
+    default: 0,
+    min: 0,
+    max: 10000,
+    description: 'Maximum characters per student message (0 = unlimited)',
+    category: 'chat_control'
   },
   // Position tracking override (position config is now per-scenario)
   {
