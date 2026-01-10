@@ -14,12 +14,14 @@ import InstructorManager from './InstructorManager';
 import StudentManager from './StudentManager';
 import DashboardHome from './DashboardHome';
 import Analytics from './Analytics';
+import HelpTooltip from './ui/HelpTooltip';
+import { ChatOptionsHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
 import { AdminUser } from '../types';
 
 // New workflow-centric navigation types
 type PrimaryTab = 'home' | 'courses' | 'content' | 'monitor' | 'results' | 'admin';
-type CoursesSubTab = 'sections' | 'students' | 'assignments';
+type CoursesSubTab = 'sections' | 'students' | 'assignments' | 'chat-options';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache';
 type AdminSubTab = 'personas' | 'prompts' | 'models' | 'settings' | 'instructors';
@@ -322,6 +324,27 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [isLoadingAssignments, setIsLoadingAssignments] = useState(false);
   const [expandedAssignmentSection, setExpandedAssignmentSection] = useState<string | null>(null);
   const [assignmentCasesList, setAssignmentCasesList] = useState<any[]>([]);
+  const [selectedAssignmentSection, setSelectedAssignmentSection] = useState<string | null>(null);
+
+  // Chat Options tab state - pre-selected section/case when navigating from Assignments
+  const [chatOptionsSection, setChatOptionsSection] = useState<string | null>(null);
+  const [chatOptionsCase, setChatOptionsCase] = useState<string | null>(null);
+
+  // Defaults management state
+  const [isEditingDefault, setIsEditingDefault] = useState<'global' | 'section' | null>(null);
+  const [useDefaultOptions, setUseDefaultOptions] = useState(true);
+  const [applicableDefault, setApplicableDefault] = useState<any>(null);
+
+  // Copy assignments state
+  const [copyFromSection, setCopyFromSection] = useState<string | null>(null);
+  const [copyOptions, setCopyOptions] = useState({ options: true, scenarios: true, scheduling: true });
+  const [sourceSectionCases, setSourceSectionCases] = useState<any[]>([]);
+  const [isCopying, setIsCopying] = useState(false);
+  const [copyResult, setCopyResult] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  // Bulk copy chat options state
+  const [isBulkCopying, setIsBulkCopying] = useState(false);
+  const [bulkCopyResult, setBulkCopyResult] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   // Navigation handler for DashboardHome - simplified to just navigate
   const handleNavigate = useCallback((section: string, subTab?: string) => {
@@ -387,6 +410,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         setPrimaryTab('home');
     }
   }, [sectionStats]);
+
+  // Navigate to Chat Options tab with pre-selected section and case
+  const navigateToChatOptions = useCallback(async (sectionId: string, caseId: string) => {
+    setChatOptionsSection(sectionId);
+    setChatOptionsCase(caseId);
+    // Fetch section cases if not already loaded for this section
+    await fetchSectionCases(sectionId);
+    // Find and load the chat options for the selected case
+    const cases = await api.from(`sections/${sectionId}/cases`).select('*');
+    if (cases.data) {
+      const sc = (cases.data as any[]).find((c: any) => c.case_id === caseId);
+      if (sc) {
+        setEditingChatOptions(sc.chat_options ? { ...sc.chat_options } : { ...defaultChatOptions });
+      }
+    }
+    setCoursesSubTab('chat-options');
+  }, [defaultChatOptions]);
 
   const fetchModels = useCallback(async () => {
     setIsLoadingModels(true);
@@ -2484,15 +2524,109 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     </div>
   );
 
+  // Helper to get the selected section object
+  const getSelectedSection = () => {
+    if (!selectedAssignmentSection) return null;
+    return assignmentsSectionsList.find((s: any) => s.section_id === selectedAssignmentSection);
+  };
+
+  // Handle section selection change
+  const handleAssignmentSectionChange = async (sectionId: string) => {
+    setSelectedAssignmentSection(sectionId);
+    if (sectionId) {
+      await fetchSectionCases(sectionId);
+      // Also ensure casesList is loaded for the dropdown
+      if (casesList.length === 0) {
+        fetchCases();
+      }
+    }
+  };
+
+  // Handle copy-from section selection
+  const handleCopyFromSectionChange = async (sectionId: string) => {
+    setCopyFromSection(sectionId);
+    setCopyResult(null);
+    if (sectionId) {
+      try {
+        const { data, error } = await api.from(`sections/${sectionId}/cases`).select('*');
+        if (error) throw new Error(error.message);
+        setSourceSectionCases(data || []);
+      } catch (err) {
+        console.error('Error fetching source section cases:', err);
+        setSourceSectionCases([]);
+      }
+    } else {
+      setSourceSectionCases([]);
+    }
+  };
+
+  // Handle copy cases from source section
+  const handleCopyAssignments = async () => {
+    if (!selectedAssignmentSection || !copyFromSection) return;
+
+    if (!confirm(`Are you sure you want to copy case assignments from the selected section to "${getSelectedSection()?.section_title}"?`)) {
+      return;
+    }
+
+    setIsCopying(true);
+    setCopyResult(null);
+
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/sections/${selectedAssignmentSection}/cases/copy-from/${copyFromSection}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          copy_options: copyOptions.options,
+          copy_scenarios: copyOptions.scenarios,
+          copy_scheduling: copyOptions.scheduling
+        })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to copy assignments');
+      }
+
+      setCopyResult({
+        message: result.message || `Copied ${result.data?.copied || 0} case(s)`,
+        type: 'success'
+      });
+
+      // Refresh the current section's cases
+      await fetchSectionCases(selectedAssignmentSection);
+
+      // Clear copy form
+      setCopyFromSection(null);
+      setSourceSectionCases([]);
+    } catch (err: any) {
+      setCopyResult({
+        message: err.message || 'Failed to copy assignments',
+        type: 'error'
+      });
+    } finally {
+      setIsCopying(false);
+    }
+  };
+
   const renderAssignmentsTab = () => (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Case Assignments</h2>
-          <p className="text-sm text-gray-500">Manage which cases are assigned to which sections with custom options</p>
+          <p className="text-sm text-gray-500">Manage which cases are assigned to each section</p>
         </div>
         <button
-          onClick={fetchAssignmentsSections}
+          onClick={() => {
+            fetchAssignmentsSections();
+            if (selectedAssignmentSection) {
+              fetchSectionCases(selectedAssignmentSection);
+            }
+          }}
           className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
         >
           Refresh
@@ -2512,6 +2646,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       )}
 
+      {/* Section Selector Dropdown */}
+      <div className="mb-6">
+        <label className="block text-sm font-medium text-gray-700 mb-2">Select Course Section</label>
+        <select
+          value={selectedAssignmentSection || ''}
+          onChange={(e) => handleAssignmentSectionChange(e.target.value)}
+          className="w-full max-w-md px-4 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+        >
+          <option value="">Select a course section...</option>
+          {assignmentsSectionsList.filter((s: any) => s.enabled).map((section: any) => (
+            <option key={section.section_id} value={section.section_id}>
+              {section.section_title} ({section.section_id}) - {section.year_term}
+            </option>
+          ))}
+        </select>
+      </div>
+
       {isLoadingAssignments ? (
         <div className="text-center py-12">
           <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
@@ -2521,518 +2672,1087 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
           <p className="text-gray-500">No sections found. Create sections in the Sections tab first.</p>
         </div>
+      ) : !selectedAssignmentSection ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          <p className="text-gray-500">Select a course section above to manage its case assignments.</p>
+        </div>
       ) : (
-        <div className="space-y-3">
-          {assignmentsSectionsList.map((section) => (
-            <div key={section.section_id} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-              <div
-                className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50"
-                onClick={() => handleExpandAssignmentSection(section.section_id)}
-              >
-                <div className="flex items-center gap-3">
-                  <svg
-                    className={`w-5 h-5 text-gray-400 transition-transform ${expandedAssignmentSection === section.section_id ? 'rotate-90' : ''}`}
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                  <div>
-                    <span className="font-medium text-gray-900">{section.section_title}</span>
-                    <span className="ml-2 text-sm text-gray-500">({section.section_id})</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {section.year_term && (
-                    <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded">
-                      {section.year_term}
-                    </span>
-                  )}
-                  <span className={`px-2 py-1 text-xs font-medium rounded ${section.enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                    {section.enabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                </div>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          {/* Section Header */}
+          <div className="p-4 bg-gray-50 border-b border-gray-200">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="font-medium text-gray-900">{getSelectedSection()?.section_title}</span>
+                <span className="ml-2 text-sm text-gray-500">({selectedAssignmentSection})</span>
               </div>
+              <div className="flex items-center gap-2">
+                {getSelectedSection()?.year_term && (
+                  <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded">
+                    {getSelectedSection()?.year_term}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
 
-              {expandedAssignmentSection === section.section_id && (
-                <div className="border-t border-gray-200 p-4 bg-gray-50">
-                  {isLoadingSectionCases ? (
-                    <div className="text-center py-4">
-                      <div className="inline-block animate-spin rounded-full h-6 w-6 border-4 border-blue-500 border-t-transparent"></div>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {/* Add Case Dropdown */}
-                      <div className="flex items-center gap-2">
-                        <select
-                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                          value=""
-                          onChange={async (e) => {
-                            if (e.target.value) {
-                              await handleAssignCaseToSection(section.section_id, e.target.value);
-                              e.target.value = '';
-                            }
-                          }}
-                        >
-                          <option value="">+ Assign a case to this section...</option>
-                          {casesList
-                            .filter(c => !sectionCasesList.find(sc => sc.case_id === c.case_id))
-                            .map(c => (
-                              <option key={c.case_id} value={c.case_id}>
-                                {c.case_title} ({c.case_id})
-                              </option>
-                            ))}
-                        </select>
-                      </div>
+          {/* Section Content */}
+          <div className="p-4">
+            {isLoadingSectionCases ? (
+              <div className="text-center py-4">
+                <div className="inline-block animate-spin rounded-full h-6 w-6 border-4 border-blue-500 border-t-transparent"></div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* Add Case Dropdown */}
+                <div className="flex items-center gap-2">
+                  <select
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                    value=""
+                    onChange={async (e) => {
+                      if (e.target.value && selectedAssignmentSection) {
+                        await handleAssignCaseToSection(selectedAssignmentSection, e.target.value);
+                        e.target.value = '';
+                      }
+                    }}
+                  >
+                    <option value="">+ Assign a case to this section...</option>
+                    {casesList
+                      .filter(c => !sectionCasesList.find(sc => sc.case_id === c.case_id))
+                      .map(c => (
+                        <option key={c.case_id} value={c.case_id}>
+                          {c.case_title} ({c.case_id})
+                        </option>
+                      ))}
+                  </select>
+                </div>
 
-                      {/* Assigned Cases */}
-                      {sectionCasesList.length === 0 ? (
-                        <p className="text-sm text-gray-500 py-2">No cases assigned to this section yet.</p>
-                      ) : (
-                        <div className="space-y-2">
-                          {sectionCasesList.map((sc) => (
-                            <div key={sc.case_id} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-                              <div className="p-3 flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-medium text-gray-900">{sc.case_title}</span>
-                                  <span className="text-sm text-gray-500">({sc.case_id})</span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    onClick={() => handleExpandChatOptions(sc.case_id, sc.chat_options)}
-                                    className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
-                                      expandedCaseOptions === sc.case_id
-                                        ? 'bg-purple-100 text-purple-700 border-purple-200'
-                                        : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-purple-50'
-                                    }`}
-                                  >
-                                    Options
-                                  </button>
-                                  <button
-                                    onClick={() => handleExpandScenarios(section.section_id, sc.case_id, sc)}
-                                    className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
-                                      expandedScenarios === sc.case_id
-                                        ? 'bg-green-100 text-green-700 border-green-200'
-                                        : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-green-50'
-                                    }`}
-                                  >
-                                    Scenarios
-                                  </button>
-                                  <button
-                                    onClick={() => handleExpandScheduling(sc.case_id, sc)}
-                                    className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
-                                      expandedScheduling === sc.case_id
-                                        ? 'bg-blue-100 text-blue-700 border-blue-200'
-                                        : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-blue-50'
-                                    }`}
-                                  >
-                                    Scheduling
-                                  </button>
-                                  {sc.active ? (
-                                    <button
-                                      onClick={() => handleDeactivateSectionCase(section.section_id, sc.case_id)}
-                                      className="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
-                                    >
-                                      Active
-                                    </button>
-                                  ) : (
-                                    <button
-                                      onClick={() => handleActivateSectionCase(section.section_id, sc.case_id)}
-                                      className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-600"
-                                    >
-                                      Set Active
-                                    </button>
-                                  )}
-                                  <button
-                                    onClick={() => handleRemoveCaseFromSection(section.section_id, sc.case_id)}
-                                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
-                                    title="Remove from section"
-                                  >
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                      <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                                    </svg>
-                                  </button>
-                                </div>
+                {/* Assigned Cases */}
+                {sectionCasesList.length === 0 ? (
+                  <p className="text-sm text-gray-500 py-2">No cases assigned to this section yet.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {sectionCasesList.map((sc) => (
+                      <div key={sc.case_id} className="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
+                        <div className="p-3 flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-gray-900">{sc.case_title}</span>
+                            <span className="text-sm text-gray-500">({sc.case_id})</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => navigateToChatOptions(selectedAssignmentSection!, sc.case_id)}
+                              className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-gray-50 text-gray-600 border-gray-200 hover:bg-purple-50 hover:text-purple-700 hover:border-purple-200"
+                            >
+                              Options
+                            </button>
+                            <button
+                              onClick={() => handleExpandScenarios(selectedAssignmentSection!, sc.case_id, sc)}
+                              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                                expandedScenarios === sc.case_id
+                                  ? 'bg-green-100 text-green-700 border-green-200'
+                                  : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-green-50'
+                              }`}
+                            >
+                              Scenarios
+                            </button>
+                            <button
+                              onClick={() => handleExpandScheduling(sc.case_id, sc)}
+                              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                                expandedScheduling === sc.case_id
+                                  ? 'bg-blue-100 text-blue-700 border-blue-200'
+                                  : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-blue-50'
+                              }`}
+                            >
+                              Scheduling
+                            </button>
+                            {sc.active ? (
+                              <button
+                                onClick={() => handleDeactivateSectionCase(selectedAssignmentSection!, sc.case_id)}
+                                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                              >
+                                Active
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleActivateSectionCase(selectedAssignmentSection!, sc.case_id)}
+                                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-600"
+                              >
+                                Set Active
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleRemoveCaseFromSection(selectedAssignmentSection!, sc.case_id)}
+                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
+                              title="Remove from section"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Expanded Scenarios Assignment */}
+                        {expandedScenarios === sc.case_id && (
+                          <div className="p-4 bg-green-50 border-t border-gray-200 space-y-4">
+                            <h4 className="text-sm font-semibold text-gray-800">Scenario Assignment</h4>
+
+                            {isLoadingScenarioAssignment ? (
+                              <div className="text-center py-4">
+                                <div className="inline-block animate-spin rounded-full h-6 w-6 border-4 border-green-500 border-t-transparent"></div>
                               </div>
+                            ) : availableScenariosForCase.length === 0 ? (
+                              <div className="text-sm text-gray-600 bg-yellow-50 p-3 rounded-lg border border-yellow-200">
+                                No scenarios defined for this case yet. Go to the <strong>Cases</strong> tab and click <strong>Scenarios</strong> to create scenarios first.
+                              </div>
+                            ) : (
+                              <>
+                                {/* Enable Scenarios Toggle */}
+                                <label className="flex items-center gap-2 text-sm">
+                                  <input
+                                    type="checkbox"
+                                    checked={scenarioSettings.use_scenarios}
+                                    onChange={(e) => setScenarioSettings({...scenarioSettings, use_scenarios: e.target.checked})}
+                                    className="rounded border-gray-300"
+                                  />
+                                  <span className="font-medium">Enable scenarios for this section-case</span>
+                                </label>
 
-                              {/* Expanded Chat Options */}
-                              {expandedCaseOptions === sc.case_id && editingChatOptions && (
-                                <div className="p-4 bg-gray-50 border-t border-gray-200 space-y-4">
-                                  <h4 className="text-sm font-semibold text-gray-800">Chat Options</h4>
-
-                                  {/* Hints Section */}
-                                  <div className="grid grid-cols-2 gap-4">
+                                {scenarioSettings.use_scenarios && (
+                                  <>
+                                    {/* Selection Mode */}
                                     <div>
-                                      <label className="block text-xs font-medium text-gray-700 mb-1">Hints Allowed</label>
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        max="10"
-                                        value={editingChatOptions.hints_allowed ?? 3}
-                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, hints_allowed: parseInt(e.target.value) || 0})}
+                                      <label className="block text-xs font-medium text-gray-700 mb-1">Selection Mode</label>
+                                      <select
+                                        value={scenarioSettings.selection_mode}
+                                        onChange={(e) => setScenarioSettings({...scenarioSettings, selection_mode: e.target.value})}
                                         className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
-                                      />
-                                    </div>
-                                    <div>
-                                      <label className="block text-xs font-medium text-gray-700 mb-1">Free Hints</label>
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        max="5"
-                                        value={editingChatOptions.free_hints ?? 1}
-                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, free_hints: parseInt(e.target.value) || 0})}
-                                        className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
-                                      />
-                                    </div>
-                                  </div>
-
-                                  {/* Display & Flow Options */}
-                                  <div className="space-y-2">
-                                    <label className="flex items-center gap-2 text-sm">
-                                      <input
-                                        type="checkbox"
-                                        checked={editingChatOptions.show_case ?? true}
-                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, show_case: e.target.checked})}
-                                        className="rounded border-gray-300"
-                                      />
-                                      Show case content in left panel
-                                    </label>
-                                    <label className="flex items-center gap-2 text-sm">
-                                      <input
-                                        type="checkbox"
-                                        checked={editingChatOptions.do_evaluation ?? true}
-                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, do_evaluation: e.target.checked})}
-                                        className="rounded border-gray-300"
-                                      />
-                                      Run evaluation after chat
-                                    </label>
-                                    <label className="flex items-center gap-2 text-sm">
-                                      <input
-                                        type="checkbox"
-                                        checked={editingChatOptions.ask_for_feedback ?? false}
-                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_for_feedback: e.target.checked})}
-                                        className="rounded border-gray-300"
-                                      />
-                                      Ask for feedback at end of chat
-                                    </label>
-                                    <label className="flex items-center gap-2 text-sm">
-                                      <input
-                                        type="checkbox"
-                                        checked={editingChatOptions.ask_save_transcript ?? false}
-                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_save_transcript: e.target.checked})}
-                                        className="rounded border-gray-300"
-                                      />
-                                      Ask to save anonymized transcript
-                                    </label>
-                                  </div>
-
-                                  {/* Persona Options */}
-                                  <div>
-                                    <label className="block text-xs font-medium text-gray-700 mb-1">Default Persona</label>
-                                    <select
-                                      value={editingChatOptions.default_persona ?? 'moderate'}
-                                      onChange={(e) => setEditingChatOptions({...editingChatOptions, default_persona: e.target.value})}
-                                      className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
-                                    >
-                                      {personasList.length > 0 ? (
-                                        personasList.filter(p => p.enabled).map(p => (
-                                          <option key={p.persona_id} value={p.persona_id}>{p.persona_name}</option>
-                                        ))
-                                      ) : (
-                                        <>
-                                          <option value="moderate">Moderate</option>
-                                          <option value="strict">Strict</option>
-                                          <option value="liberal">Liberal</option>
-                                          <option value="leading">Leading</option>
-                                          <option value="sycophantic">Sycophantic</option>
-                                        </>
-                                      )}
-                                    </select>
-                                  </div>
-
-                                  {/* Chatbot Personality */}
-                                  <div>
-                                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                                      Chatbot Personality (additional instructions)
-                                    </label>
-                                    <textarea
-                                      value={editingChatOptions.chatbot_personality ?? ''}
-                                      onChange={(e) => setEditingChatOptions({...editingChatOptions, chatbot_personality: e.target.value})}
-                                      placeholder="Additional AI instructions to customize chatbot behavior..."
-                                      className="w-full px-2 py-1 border border-gray-300 rounded text-sm h-20 resize-y"
-                                    />
-                                  </div>
-
-                                  {/* Chat Control Options */}
-                                  <div className="space-y-2 pt-2 border-t">
-                                    <h5 className="text-xs font-semibold text-gray-700">Chat Control Options</h5>
-                                    <label className="flex items-center gap-2 text-sm">
-                                      <input
-                                        type="checkbox"
-                                        checked={editingChatOptions.allow_repeat ?? false}
-                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_repeat: e.target.checked})}
-                                        className="rounded border-gray-300"
-                                      />
-                                      <span>Allow students to repeat the chat multiple times</span>
-                                    </label>
-                                    <label className="flex items-center gap-2 text-sm">
-                                      <input
-                                        type="checkbox"
-                                        checked={editingChatOptions.timeout_chat ?? false}
-                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, timeout_chat: e.target.checked})}
-                                        className="rounded border-gray-300"
-                                      />
-                                      <span>Auto-end chat when time limit expires</span>
-                                    </label>
-                                    <label className="flex items-center gap-2 text-sm">
-                                      <input
-                                        type="checkbox"
-                                        checked={editingChatOptions.restart_chat ?? false}
-                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, restart_chat: e.target.checked})}
-                                        className="rounded border-gray-300"
-                                      />
-                                      <span>Allow students to restart the chat</span>
-                                    </label>
-                                    <label className="flex items-center gap-2 text-sm">
-                                      <input
-                                        type="checkbox"
-                                        checked={editingChatOptions.allow_exit ?? false}
-                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_exit: e.target.checked})}
-                                        className="rounded border-gray-300"
-                                      />
-                                      <span>Provide exit button to leave chat</span>
-                                    </label>
-                                  </div>
-
-                                  {/* Position Tracking Override */}
-                                  <div className="border-t border-gray-200 pt-3 mt-3">
-                                    <label className="flex items-center gap-2 text-sm text-gray-600">
-                                      <input
-                                        type="checkbox"
-                                        checked={editingChatOptions.disable_position_tracking ?? false}
-                                        onChange={(e) => setEditingChatOptions({...editingChatOptions, disable_position_tracking: e.target.checked})}
-                                        className="rounded border-gray-300"
-                                      />
-                                      <span>Disable position tracking for this assignment</span>
-                                    </label>
-                                    <p className="text-xs text-gray-400 mt-1 ml-6">Override scenario-level position tracking settings</p>
-                                  </div>
-
-                                  {/* Action Buttons */}
-                                  <div className="flex justify-between pt-2 border-t">
-                                    <button
-                                      onClick={handleResetChatOptions}
-                                      className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-800"
-                                    >
-                                      Reset to Defaults
-                                    </button>
-                                    <div className="flex gap-2">
-                                      <button
-                                        onClick={() => { setExpandedCaseOptions(null); setEditingChatOptions(null); }}
-                                        className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
                                       >
-                                        Cancel
-                                      </button>
-                                      <button
-                                        onClick={() => handleSaveChatOptions(section.section_id, sc.case_id)}
-                                        disabled={isSavingChatOptions}
-                                        className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
-                                      >
-                                        {isSavingChatOptions ? 'Saving...' : 'Save Options'}
-                                      </button>
+                                        <option value="student_choice">Student Choice (pick any one)</option>
+                                        <option value="all_required">All Required (must complete all)</option>
+                                      </select>
                                     </div>
-                                  </div>
-                                </div>
-                              )}
 
-                              {/* Expanded Scenarios Assignment */}
-                              {expandedScenarios === sc.case_id && (
-                                <div className="p-4 bg-green-50 border-t border-gray-200 space-y-4">
-                                  <h4 className="text-sm font-semibold text-gray-800">Scenario Assignment</h4>
-
-                                  {isLoadingScenarioAssignment ? (
-                                    <div className="text-center py-4">
-                                      <div className="inline-block animate-spin rounded-full h-6 w-6 border-4 border-green-500 border-t-transparent"></div>
-                                    </div>
-                                  ) : availableScenariosForCase.length === 0 ? (
-                                    <div className="text-sm text-gray-600 bg-yellow-50 p-3 rounded-lg border border-yellow-200">
-                                      No scenarios defined for this case yet. Go to the <strong>Cases</strong> tab and click <strong>Scenarios</strong> to create scenarios first.
-                                    </div>
-                                  ) : (
-                                    <>
-                                      {/* Enable Scenarios Toggle */}
+                                    {/* Require Order (only for all_required) */}
+                                    {scenarioSettings.selection_mode === 'all_required' && (
                                       <label className="flex items-center gap-2 text-sm">
                                         <input
                                           type="checkbox"
-                                          checked={scenarioSettings.use_scenarios}
-                                          onChange={(e) => setScenarioSettings({...scenarioSettings, use_scenarios: e.target.checked})}
+                                          checked={scenarioSettings.require_order}
+                                          onChange={(e) => setScenarioSettings({...scenarioSettings, require_order: e.target.checked})}
                                           className="rounded border-gray-300"
                                         />
-                                        <span className="font-medium">Enable scenarios for this section-case</span>
+                                        Require completion in order
                                       </label>
+                                    )}
 
-                                      {scenarioSettings.use_scenarios && (
-                                        <>
-                                          {/* Selection Mode */}
-                                          <div>
-                                            <label className="block text-xs font-medium text-gray-700 mb-1">Selection Mode</label>
-                                            <select
-                                              value={scenarioSettings.selection_mode}
-                                              onChange={(e) => setScenarioSettings({...scenarioSettings, selection_mode: e.target.value})}
-                                              className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
-                                            >
-                                              <option value="student_choice">Student Choice (pick any one)</option>
-                                              <option value="all_required">All Required (must complete all)</option>
-                                            </select>
-                                          </div>
-
-                                          {/* Require Order (only for all_required) */}
-                                          {scenarioSettings.selection_mode === 'all_required' && (
-                                            <label className="flex items-center gap-2 text-sm">
+                                    {/* Scenario Checkboxes */}
+                                    <div>
+                                      <label className="block text-xs font-medium text-gray-700 mb-2">Assign Scenarios</label>
+                                      <div className="space-y-2 max-h-48 overflow-y-auto">
+                                        {availableScenariosForCase.map((scenario) => {
+                                          const isAssigned = Array.isArray(assignedScenarios) && assignedScenarios.some(a => a.scenario_id === scenario.id);
+                                          return (
+                                            <label key={scenario.id} className="flex items-start gap-2 text-sm p-2 bg-white rounded border border-gray-200 hover:bg-gray-50">
                                               <input
                                                 type="checkbox"
-                                                checked={scenarioSettings.require_order}
-                                                onChange={(e) => setScenarioSettings({...scenarioSettings, require_order: e.target.checked})}
-                                                className="rounded border-gray-300"
+                                                checked={isAssigned}
+                                                onChange={() => handleToggleScenarioAssignment(selectedAssignmentSection!, sc.case_id, scenario.id, isAssigned)}
+                                                className="mt-0.5 rounded border-gray-300"
                                               />
-                                              Require completion in order
+                                              <div className="flex-1">
+                                                <div className="font-medium text-gray-900">{scenario.scenario_name}</div>
+                                                <div className="text-xs text-gray-500">
+                                                  {scenario.protagonist}
+                                                  {scenario.chat_time_limit > 0 && ` • ${scenario.chat_time_limit}min limit`}
+                                                </div>
+                                              </div>
                                             </label>
-                                          )}
-
-                                          {/* Scenario Checkboxes */}
-                                          <div>
-                                            <label className="block text-xs font-medium text-gray-700 mb-2">Assign Scenarios</label>
-                                            <div className="space-y-2 max-h-48 overflow-y-auto">
-                                              {availableScenariosForCase.map((scenario) => {
-                                                const isAssigned = Array.isArray(assignedScenarios) && assignedScenarios.some(a => a.scenario_id === scenario.id);
-                                                return (
-                                                  <label key={scenario.id} className="flex items-start gap-2 text-sm p-2 bg-white rounded border border-gray-200 hover:bg-gray-50">
-                                                    <input
-                                                      type="checkbox"
-                                                      checked={isAssigned}
-                                                      onChange={() => handleToggleScenarioAssignment(expandedAssignmentSection!, sc.case_id, scenario.id, isAssigned)}
-                                                      className="mt-0.5 rounded border-gray-300"
-                                                    />
-                                                    <div className="flex-1">
-                                                      <div className="font-medium text-gray-900">{scenario.scenario_name}</div>
-                                                      <div className="text-xs text-gray-500">
-                                                        {scenario.protagonist}
-                                                        {scenario.chat_time_limit > 0 && ` • ${scenario.chat_time_limit}min limit`}
-                                                      </div>
-                                                    </div>
-                                                  </label>
-                                                );
-                                              })}
-                                            </div>
-                                          </div>
-                                        </>
-                                      )}
-
-                                      {/* Action Buttons */}
-                                      <div className="flex justify-end gap-2 pt-2 border-t">
-                                        <button
-                                          onClick={() => { setExpandedScenarios(null); }}
-                                          className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
-                                        >
-                                          Close
-                                        </button>
-                                        <button
-                                          onClick={() => handleSaveScenarioSettings(expandedAssignmentSection!, sc.case_id)}
-                                          disabled={isSavingScenarioAssignment}
-                                          className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50"
-                                        >
-                                          {isSavingScenarioAssignment ? 'Saving...' : 'Save Settings'}
-                                        </button>
+                                          );
+                                        })}
                                       </div>
-                                    </>
-                                  )}
+                                    </div>
+                                  </>
+                                )}
+
+                                {/* Action Buttons */}
+                                <div className="flex justify-end gap-2 pt-2 border-t">
+                                  <button
+                                    onClick={() => { setExpandedScenarios(null); }}
+                                    className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
+                                  >
+                                    Close
+                                  </button>
+                                  <button
+                                    onClick={() => handleSaveScenarioSettings(selectedAssignmentSection!, sc.case_id)}
+                                    disabled={isSavingScenarioAssignment}
+                                    className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50"
+                                  >
+                                    {isSavingScenarioAssignment ? 'Saving...' : 'Save Settings'}
+                                  </button>
                                 </div>
-                              )}
+                              </>
+                            )}
+                          </div>
+                        )}
 
-                              {/* Expanded Scheduling */}
-                              {expandedScheduling === sc.case_id && editingScheduling && (
-                                <div className="p-4 bg-blue-50 border-t border-gray-200 space-y-4">
-                                  <h4 className="text-sm font-semibold text-gray-800">Scheduling & Availability</h4>
+                        {/* Expanded Scheduling */}
+                        {expandedScheduling === sc.case_id && editingScheduling && (
+                          <div className="p-4 bg-blue-50 border-t border-gray-200 space-y-4">
+                            <h4 className="text-sm font-semibold text-gray-800">Scheduling & Availability</h4>
 
-                                  {/* Manual Status Override */}
-                                  <div>
-                                    <label className="block text-xs font-medium text-gray-700 mb-2">Availability Control</label>
-                                    <select
-                                      value={editingScheduling.manual_status}
-                                      onChange={(e) => setEditingScheduling({...editingScheduling, manual_status: e.target.value})}
-                                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                                    >
-                                      <option value="auto">Auto (use dates below)</option>
-                                      <option value="manually_opened">Always Available (manually opened)</option>
-                                      <option value="manually_closed">Never Available (manually closed)</option>
-                                    </select>
-                                    <p className="text-xs text-gray-500 mt-1">
-                                      {editingScheduling.manual_status === 'auto' && 'Case availability will be determined by the open and close dates below.'}
-                                      {editingScheduling.manual_status === 'manually_opened' && 'Case will be available to students regardless of dates.'}
-                                      {editingScheduling.manual_status === 'manually_closed' && 'Case will not be available to students regardless of dates.'}
-                                    </p>
-                                  </div>
-
-                                  {/* Date/Time Controls - only show if auto mode */}
-                                  {editingScheduling.manual_status === 'auto' && (
-                                    <>
-                                      <div>
-                                        <label className="block text-xs font-medium text-gray-700 mb-1">Open Date & Time</label>
-                                        <input
-                                          type="datetime-local"
-                                          value={editingScheduling.open_date}
-                                          onChange={(e) => setEditingScheduling({...editingScheduling, open_date: e.target.value})}
-                                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                                        />
-                                        <p className="text-xs text-gray-500 mt-1">
-                                          When the case becomes available to students. Leave empty for no open restriction.
-                                        </p>
-                                      </div>
-
-                                      <div>
-                                        <label className="block text-xs font-medium text-gray-700 mb-1">Close Date & Time</label>
-                                        <input
-                                          type="datetime-local"
-                                          value={editingScheduling.close_date}
-                                          onChange={(e) => setEditingScheduling({...editingScheduling, close_date: e.target.value})}
-                                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                                        />
-                                        <p className="text-xs text-gray-500 mt-1">
-                                          When the case is no longer available for starting new chats. Students can continue existing chats after this time.
-                                        </p>
-                                      </div>
-                                    </>
-                                  )}
-
-                                  {/* Action Buttons */}
-                                  <div className="flex justify-end gap-2 pt-2 border-t">
-                                    <button
-                                      onClick={() => { setExpandedScheduling(null); setEditingScheduling(null); }}
-                                      className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
-                                    >
-                                      Cancel
-                                    </button>
-                                    <button
-                                      onClick={() => handleSaveScheduling(section.section_id, sc.case_id)}
-                                      disabled={isSavingScheduling}
-                                      className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
-                                    >
-                                      {isSavingScheduling ? 'Saving...' : 'Save Scheduling'}
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
+                            {/* Manual Status Override */}
+                            <div>
+                              <label className="block text-xs font-medium text-gray-700 mb-2">Availability Control</label>
+                              <select
+                                value={editingScheduling.manual_status}
+                                onChange={(e) => setEditingScheduling({...editingScheduling, manual_status: e.target.value})}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                              >
+                                <option value="auto">Auto (use dates below)</option>
+                                <option value="manually_opened">Always Available (manually opened)</option>
+                                <option value="manually_closed">Never Available (manually closed)</option>
+                              </select>
+                              <p className="text-xs text-gray-500 mt-1">
+                                {editingScheduling.manual_status === 'auto' && 'Case availability will be determined by the open and close dates below.'}
+                                {editingScheduling.manual_status === 'manually_opened' && 'Case will be available to students regardless of dates.'}
+                                {editingScheduling.manual_status === 'manually_closed' && 'Case will not be available to students regardless of dates.'}
+                              </p>
                             </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+
+                            {/* Date/Time Controls - only show if auto mode */}
+                            {editingScheduling.manual_status === 'auto' && (
+                              <>
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-700 mb-1">Open Date & Time</label>
+                                  <input
+                                    type="datetime-local"
+                                    value={editingScheduling.open_date}
+                                    onChange={(e) => setEditingScheduling({...editingScheduling, open_date: e.target.value})}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                                  />
+                                  <p className="text-xs text-gray-500 mt-1">
+                                    When the case becomes available to students. Leave empty for no open restriction.
+                                  </p>
+                                </div>
+
+                                <div>
+                                  <label className="block text-xs font-medium text-gray-700 mb-1">Close Date & Time</label>
+                                  <input
+                                    type="datetime-local"
+                                    value={editingScheduling.close_date}
+                                    onChange={(e) => setEditingScheduling({...editingScheduling, close_date: e.target.value})}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                                  />
+                                  <p className="text-xs text-gray-500 mt-1">
+                                    When the case is no longer available for starting new chats. Students can continue existing chats after this time.
+                                  </p>
+                                </div>
+                              </>
+                            )}
+
+                            {/* Action Buttons */}
+                            <div className="flex justify-end gap-2 pt-2 border-t">
+                              <button
+                                onClick={() => { setExpandedScheduling(null); setEditingScheduling(null); }}
+                                className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={() => handleSaveScheduling(selectedAssignmentSection!, sc.case_id)}
+                                disabled={isSavingScheduling}
+                                className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                              >
+                                {isSavingScheduling ? 'Saving...' : 'Save Scheduling'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Copy Assignments Section */}
+          <div className="mt-6 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+            <h4 className="text-sm font-semibold text-gray-800 mb-3">Copy Case Assignments</h4>
+
+            {/* Copy Result Message */}
+            {copyResult && (
+              <div className={`mb-4 p-3 rounded-lg text-sm ${
+                copyResult.type === 'success'
+                  ? 'bg-green-100 border border-green-200 text-green-700'
+                  : 'bg-red-100 border border-red-200 text-red-700'
+              }`}>
+                {copyResult.message}
+              </div>
+            )}
+
+            <div className="mb-4">
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Copy case assignments from course section...
+              </label>
+              <select
+                value={copyFromSection || ''}
+                onChange={(e) => handleCopyFromSectionChange(e.target.value)}
+                className="w-full max-w-md px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+              >
+                <option value="">Select a source section...</option>
+                {assignmentsSectionsList
+                  .filter((s: any) => s.enabled && s.section_id !== selectedAssignmentSection)
+                  .map((section: any) => (
+                    <option key={section.section_id} value={section.section_id}>
+                      {section.section_title} ({section.section_id}) - {section.year_term}
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            {copyFromSection && (
+              <div className="space-y-4">
+                {/* Copy Options */}
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={copyOptions.options}
+                      onChange={(e) => setCopyOptions({...copyOptions, options: e.target.checked})}
+                      className="rounded border-gray-300"
+                    />
+                    Also copy chat options
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={copyOptions.scenarios}
+                      onChange={(e) => setCopyOptions({...copyOptions, scenarios: e.target.checked})}
+                      className="rounded border-gray-300"
+                    />
+                    Also copy scenarios
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={copyOptions.scheduling}
+                      onChange={(e) => setCopyOptions({...copyOptions, scheduling: e.target.checked})}
+                      className="rounded border-gray-300"
+                    />
+                    Also copy scheduling
+                  </label>
+                </div>
+
+                {/* Source Section Cases Preview */}
+                <div className="bg-white border border-gray-200 rounded-lg p-3">
+                  <p className="text-xs font-medium text-gray-700 mb-2">
+                    Cases in source section ({sourceSectionCases.length}):
+                  </p>
+                  {sourceSectionCases.length === 0 ? (
+                    <p className="text-xs text-gray-500">No cases assigned to this section.</p>
+                  ) : (
+                    <ul className="text-xs text-gray-600 space-y-1">
+                      {sourceSectionCases.map((sc: any) => (
+                        <li key={sc.case_id} className="flex items-center gap-2">
+                          <span className="w-1.5 h-1.5 bg-gray-400 rounded-full"></span>
+                          <span className="font-medium">{sc.case_title}</span>
+                          <span className="text-gray-400">
+                            {sc.use_scenarios && `(${(sc.scenarios?.length || 0)} scenarios)`}
+                            {sc.open_date && ` • Scheduled`}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
                   )}
                 </div>
+
+                {/* Copy Button */}
+                <button
+                  onClick={handleCopyAssignments}
+                  disabled={isCopying || sourceSectionCases.length === 0}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isCopying ? 'Copying...' : `Copy cases from "${assignmentsSectionsList.find((s: any) => s.section_id === copyFromSection)?.section_title || copyFromSection}"`}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  // Fetch defaults from API
+  const fetchChatOptionsDefaults = async (sectionId?: string) => {
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const url = sectionId
+        ? `${getApiBaseUrl()}/chat-options/defaults?section_id=${sectionId}`
+        : `${getApiBaseUrl()}/chat-options/defaults`;
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const result = await response.json();
+      return result.data || defaultChatOptions;
+    } catch (error) {
+      console.error('Error fetching defaults:', error);
+      return defaultChatOptions;
+    }
+  };
+
+  // Handle chat options section/case selection change
+  const handleChatOptionsSectionChange = async (sectionId: string) => {
+    setChatOptionsSection(sectionId);
+    setChatOptionsCase(null);
+    setUseDefaultOptions(true);
+
+    if (sectionId === '__global_default__') {
+      // Editing global default
+      setIsEditingDefault('global');
+      const defaults = await fetchChatOptionsDefaults();
+      setEditingChatOptions({ ...defaults });
+      setApplicableDefault(null);
+    } else if (sectionId) {
+      // Regular section selected - reset default editing mode
+      setIsEditingDefault(null);
+      await fetchSectionCases(sectionId);
+      // Fetch applicable default for this section
+      const defaults = await fetchChatOptionsDefaults(sectionId);
+      setApplicableDefault(defaults);
+    } else {
+      // Nothing selected
+      setIsEditingDefault(null);
+      setApplicableDefault(null);
+    }
+  };
+
+  // Handle chat options case selection change
+  const handleChatOptionsCaseChange = async (caseId: string) => {
+    setChatOptionsCase(caseId);
+
+    if (caseId === '__section_default__') {
+      // Editing section default
+      setIsEditingDefault('section');
+      setUseDefaultOptions(true);
+      // Fetch section-specific default (will fall back to global if not set)
+      const defaults = await fetchChatOptionsDefaults(chatOptionsSection || undefined);
+      setEditingChatOptions({ ...defaults });
+    } else if (caseId) {
+      // Regular case selected
+      setIsEditingDefault(null);
+      const sc = sectionCasesList.find((s: any) => s.case_id === caseId);
+      if (sc) {
+        // If chat_options is null, use defaults and set useDefaultOptions to true
+        const hasCustomOptions = sc.chat_options !== null;
+        setUseDefaultOptions(!hasCustomOptions);
+        if (hasCustomOptions) {
+          setEditingChatOptions({ ...sc.chat_options });
+        } else {
+          // Use the applicable default
+          setEditingChatOptions({ ...applicableDefault } || { ...defaultChatOptions });
+        }
+      }
+    } else {
+      setIsEditingDefault(null);
+    }
+  };
+
+  // Get the selected chat options case data
+  const getSelectedChatOptionsCase = () => {
+    if (!chatOptionsCase) return null;
+    return sectionCasesList.find((sc: any) => sc.case_id === chatOptionsCase);
+  };
+
+  // Handle bulk copy chat options
+  const handleBulkCopyChatOptions = async (target: 'section' | 'all') => {
+    if (!chatOptionsSection || !chatOptionsCase) return;
+
+    const targetDescription = target === 'section'
+      ? `all cases in "${assignmentsSectionsList.find((s: any) => s.section_id === chatOptionsSection)?.section_title || chatOptionsSection}"`
+      : 'all cases in all sections';
+
+    if (!confirm(`Are you sure you want to copy these chat options to ${targetDescription}?`)) {
+      return;
+    }
+
+    setIsBulkCopying(true);
+    setBulkCopyResult(null);
+
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/chat-options/bulk-copy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          source_section_id: chatOptionsSection,
+          source_case_id: chatOptionsCase,
+          target,
+          target_section_id: target === 'section' ? chatOptionsSection : undefined
+        })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to copy chat options');
+      }
+
+      setBulkCopyResult({
+        message: result.message || `Chat options copied to ${result.data?.updated || 0} assignment(s)`,
+        type: 'success'
+      });
+    } catch (err: any) {
+      setBulkCopyResult({
+        message: err.message || 'Failed to copy chat options',
+        type: 'error'
+      });
+    } finally {
+      setIsBulkCopying(false);
+    }
+  };
+
+  // Handle saving chat options as defaults
+  const handleSaveAsDefaults = async (forSection: boolean) => {
+    if (!editingChatOptions) return;
+
+    const description = forSection
+      ? `section "${assignmentsSectionsList.find((s: any) => s.section_id === chatOptionsSection)?.section_title || chatOptionsSection}"`
+      : 'all sections';
+
+    if (!confirm(`Save these settings as default for ${description}?`)) {
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/chat-options/defaults`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          section_id: forSection ? chatOptionsSection : null,
+          chat_options: editingChatOptions
+        })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to save defaults');
+      }
+
+      setSuccessMessage(result.message || 'Defaults saved successfully');
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (err: any) {
+      setError(err.message || 'Failed to save defaults');
+    }
+  };
+
+  // Handle saving the default directly (when in defaults editing mode)
+  const handleSaveDefault = async () => {
+    if (!editingChatOptions) return;
+
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/chat-options/defaults`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          section_id: isEditingDefault === 'section' ? chatOptionsSection : null,
+          chat_options: editingChatOptions
+        })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to save defaults');
+      }
+
+      setSuccessMessage(result.message || 'Default saved successfully');
+      setTimeout(() => setSuccessMessage(null), 3000);
+
+      // Update applicable default if we just saved section default
+      if (isEditingDefault === 'section') {
+        setApplicableDefault({ ...editingChatOptions });
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to save defaults');
+    }
+  };
+
+  // Handle clearing custom options (revert to defaults by setting chat_options to NULL)
+  const handleClearCustomOptions = async () => {
+    if (!chatOptionsSection || !chatOptionsCase) return;
+
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/sections/${chatOptionsSection}/cases/${chatOptionsCase}/options`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          chat_options: null
+        })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to clear custom options');
+      }
+
+      // Refresh section cases to update local state
+      await fetchSectionCases(chatOptionsSection);
+      setSuccessMessage('Reverted to default options');
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (err: any) {
+      setError(err.message || 'Failed to clear custom options');
+    }
+  };
+
+  const renderChatOptionsTab = () => (
+    <div className="p-6 max-w-4xl mx-auto">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-2xl font-bold text-gray-900">Chat Options</h2>
+            <HelpTooltip title="Chat Options Help">
+              <ChatOptionsHelp />
+            </HelpTooltip>
+          </div>
+          <p className="text-sm text-gray-500">Configure chat settings for each section-case assignment</p>
+        </div>
+        <button
+          onClick={() => {
+            fetchAssignmentsSections();
+            if (chatOptionsSection) {
+              fetchSectionCases(chatOptionsSection);
+            }
+          }}
+          className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {/* Success/Error Messages */}
+      {error && (
+        <div className="mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</div>
+      )}
+      {successMessage && (
+        <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg flex items-center gap-2">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+          </svg>
+          {successMessage}
+        </div>
+      )}
+
+      {/* Section and Case Selectors */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Course Section</label>
+            <select
+              value={chatOptionsSection || ''}
+              onChange={(e) => handleChatOptionsSectionChange(e.target.value)}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+            >
+              <option value="">Select a section...</option>
+              <option value="__global_default__" className="font-medium text-purple-700">Default for all sections</option>
+              {assignmentsSectionsList.filter((s: any) => s.enabled).map((section: any) => (
+                <option key={section.section_id} value={section.section_id}>
+                  {section.section_title} ({section.section_id})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Case</label>
+            <select
+              value={chatOptionsCase || ''}
+              onChange={(e) => handleChatOptionsCaseChange(e.target.value)}
+              disabled={!chatOptionsSection || chatOptionsSection === '__global_default__'}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-purple-500 focus:border-purple-500 disabled:bg-gray-100 disabled:text-gray-400"
+            >
+              <option value="">{chatOptionsSection === '__global_default__' ? '-- Not applicable --' : 'Select a case...'}</option>
+              {chatOptionsSection && chatOptionsSection !== '__global_default__' && (
+                <option value="__section_default__" className="font-medium text-purple-700">Default for this section</option>
               )}
+              {sectionCasesList.map((sc: any) => (
+                <option key={sc.case_id} value={sc.case_id}>
+                  {sc.case_title} ({sc.case_id})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Chat Options Form */}
+      {((chatOptionsSection && chatOptionsCase && editingChatOptions) || isEditingDefault === 'global') ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          {/* Header - changes based on what we're editing */}
+          <div className={`p-4 border-b border-gray-200 ${isEditingDefault ? 'bg-amber-50' : 'bg-purple-50'}`}>
+            {isEditingDefault === 'global' ? (
+              <>
+                <h3 className="font-medium text-gray-900">Global Default Chat Options</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  These settings apply to all new case assignments unless overridden by section or assignment-specific settings.
+                </p>
+              </>
+            ) : isEditingDefault === 'section' ? (
+              <>
+                <h3 className="font-medium text-gray-900">
+                  Default for Section: {assignmentsSectionsList.find((s: any) => s.section_id === chatOptionsSection)?.section_title}
+                </h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  These settings apply to new case assignments in this section unless overridden at the assignment level.
+                </p>
+              </>
+            ) : (
+              <h3 className="font-medium text-gray-900">
+                Chat Options for {getSelectedChatOptionsCase()?.case_title}
+              </h3>
+            )}
+          </div>
+
+          {/* Use Default Checkbox - only for regular section-case assignments */}
+          {!isEditingDefault && (
+            <div className="p-4 bg-gray-50 border-b border-gray-200">
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useDefaultOptions}
+                  onChange={async (e) => {
+                    const checked = e.target.checked;
+                    setUseDefaultOptions(checked);
+                    if (checked) {
+                      // When checking, clear custom options in database and show defaults (read-only)
+                      await handleClearCustomOptions();
+                      if (applicableDefault) {
+                        setEditingChatOptions({ ...applicableDefault });
+                      }
+                    } else if (applicableDefault) {
+                      // When unchecking, initialize with default values for editing
+                      setEditingChatOptions({ ...applicableDefault });
+                    }
+                  }}
+                  className="w-4 h-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                />
+                <div>
+                  <span className="font-medium text-gray-900">Use default chat options</span>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {useDefaultOptions
+                      ? 'Using inherited defaults. Uncheck to customize settings for this assignment.'
+                      : 'Custom settings for this assignment. Check to revert to defaults.'}
+                  </p>
+                </div>
+              </label>
             </div>
-          ))}
+          )}
+
+          <div className={`p-4 space-y-6 ${!isEditingDefault && useDefaultOptions ? 'opacity-60 pointer-events-none' : ''}`}>
+            {/* Hints Section */}
+            <div>
+              <h4 className="text-sm font-semibold text-gray-800 mb-3">Hints</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Hints Allowed</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="10"
+                    value={editingChatOptions.hints_allowed ?? 3}
+                    onChange={(e) => setEditingChatOptions({...editingChatOptions, hints_allowed: parseInt(e.target.value) || 0})}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Free Hints (no score penalty)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="5"
+                    value={editingChatOptions.free_hints ?? 1}
+                    onChange={(e) => setEditingChatOptions({...editingChatOptions, free_hints: parseInt(e.target.value) || 0})}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Display & Flow Options */}
+            <div>
+              <h4 className="text-sm font-semibold text-gray-800 mb-3">Display & Flow</h4>
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={editingChatOptions.show_case ?? true}
+                    onChange={(e) => setEditingChatOptions({...editingChatOptions, show_case: e.target.checked})}
+                    className="rounded border-gray-300"
+                  />
+                  Show case content in left panel
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={editingChatOptions.do_evaluation ?? true}
+                    onChange={(e) => setEditingChatOptions({...editingChatOptions, do_evaluation: e.target.checked})}
+                    className="rounded border-gray-300"
+                  />
+                  Run evaluation after chat
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={editingChatOptions.ask_for_feedback ?? false}
+                    onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_for_feedback: e.target.checked})}
+                    className="rounded border-gray-300"
+                  />
+                  Ask for feedback at end of chat
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={editingChatOptions.ask_save_transcript ?? false}
+                    onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_save_transcript: e.target.checked})}
+                    className="rounded border-gray-300"
+                  />
+                  Ask to save anonymized transcript
+                </label>
+              </div>
+            </div>
+
+            {/* Persona Options */}
+            <div>
+              <h4 className="text-sm font-semibold text-gray-800 mb-3">Persona</h4>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Default Persona</label>
+                <select
+                  value={editingChatOptions.default_persona ?? 'moderate'}
+                  onChange={(e) => setEditingChatOptions({...editingChatOptions, default_persona: e.target.value})}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                >
+                  {personasList.length > 0 ? (
+                    personasList.filter(p => p.enabled).map(p => (
+                      <option key={p.persona_id} value={p.persona_id}>{p.persona_name}</option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="moderate">Moderate</option>
+                      <option value="strict">Strict</option>
+                      <option value="liberal">Liberal</option>
+                      <option value="leading">Leading</option>
+                      <option value="sycophantic">Sycophantic</option>
+                    </>
+                  )}
+                </select>
+              </div>
+            </div>
+
+            {/* Chatbot Personality */}
+            <div>
+              <h4 className="text-sm font-semibold text-gray-800 mb-3">Custom Instructions</h4>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Chatbot Personality (additional instructions)
+              </label>
+              <textarea
+                value={editingChatOptions.chatbot_personality ?? ''}
+                onChange={(e) => setEditingChatOptions({...editingChatOptions, chatbot_personality: e.target.value})}
+                placeholder="Additional AI instructions to customize chatbot behavior..."
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm h-24 resize-y"
+              />
+            </div>
+
+            {/* Chat Control Options */}
+            <div>
+              <h4 className="text-sm font-semibold text-gray-800 mb-3">Chat Controls</h4>
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={editingChatOptions.allow_repeat ?? false}
+                    onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_repeat: e.target.checked})}
+                    className="rounded border-gray-300"
+                  />
+                  Allow students to repeat the chat multiple times
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={editingChatOptions.timeout_chat ?? false}
+                    onChange={(e) => setEditingChatOptions({...editingChatOptions, timeout_chat: e.target.checked})}
+                    className="rounded border-gray-300"
+                  />
+                  Auto-end chat when time limit expires
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={editingChatOptions.restart_chat ?? false}
+                    onChange={(e) => setEditingChatOptions({...editingChatOptions, restart_chat: e.target.checked})}
+                    className="rounded border-gray-300"
+                  />
+                  Allow students to restart the chat
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={editingChatOptions.allow_exit ?? false}
+                    onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_exit: e.target.checked})}
+                    className="rounded border-gray-300"
+                  />
+                  Provide exit button to leave chat
+                </label>
+              </div>
+            </div>
+
+            {/* Position Tracking Override */}
+            <div className="border-t border-gray-200 pt-4">
+              <label className="flex items-center gap-2 text-sm text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={editingChatOptions.disable_position_tracking ?? false}
+                  onChange={(e) => setEditingChatOptions({...editingChatOptions, disable_position_tracking: e.target.checked})}
+                  className="rounded border-gray-300"
+                />
+                <span>Disable position tracking for this assignment</span>
+              </label>
+              <p className="text-xs text-gray-400 mt-1 ml-6">Override scenario-level position tracking settings</p>
+            </div>
+
+            {/* Save Actions - different based on what we're editing */}
+            {isEditingDefault ? (
+              /* Editing default: show save default button */
+              <div className="flex justify-end pt-4 border-t">
+                <button
+                  onClick={handleSaveDefault}
+                  disabled={isSavingChatOptions}
+                  className="px-4 py-2 text-sm font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {isSavingChatOptions ? 'Saving...' : isEditingDefault === 'global' ? 'Save Global Default' : 'Save Section Default'}
+                </button>
+              </div>
+            ) : useDefaultOptions ? (
+              /* Using defaults: show info message */
+              <div className="pt-4 border-t text-center">
+                <p className="text-sm text-gray-500">
+                  Using default settings. Uncheck "Use default chat options" above to customize.
+                </p>
+              </div>
+            ) : (
+              /* Custom options: show normal save buttons */
+              <div className="flex justify-between pt-4 border-t">
+                <button
+                  onClick={handleResetChatOptions}
+                  className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800"
+                >
+                  Reset to Defaults
+                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      const sc = sectionCasesList.find((s: any) => s.case_id === chatOptionsCase);
+                      if (sc) {
+                        setEditingChatOptions(sc.chat_options ? { ...sc.chat_options } : { ...defaultChatOptions });
+                      }
+                    }}
+                    className="px-4 py-2 text-sm font-medium text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-100"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => handleSaveChatOptions(chatOptionsSection!, chatOptionsCase!)}
+                    disabled={isSavingChatOptions}
+                    className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:opacity-50"
+                  >
+                    {isSavingChatOptions ? 'Saving...' : 'Save Options'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Bulk Actions Section - only show when editing custom options (not defaults, not using defaults) */}
+            {!isEditingDefault && !useDefaultOptions && (
+              <div className="mt-6 pt-4 border-t border-gray-200">
+                <h4 className="text-sm font-semibold text-gray-800 mb-4">Bulk Actions</h4>
+
+                {/* Bulk Copy Result Message */}
+                {bulkCopyResult && (
+                  <div className={`mb-4 p-3 rounded-lg text-sm ${
+                    bulkCopyResult.type === 'success'
+                      ? 'bg-green-100 border border-green-200 text-green-700'
+                      : 'bg-red-100 border border-red-200 text-red-700'
+                  }`}>
+                    {bulkCopyResult.message}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Defaults Column */}
+                  <div className="space-y-2">
+                    <p className="text-xs text-gray-500 mb-2">Save as default for new assignments:</p>
+                    <button
+                      onClick={() => handleSaveAsDefaults(true)}
+                      className="w-full px-3 py-2 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 text-left"
+                    >
+                      Make default for this section
+                    </button>
+                    <button
+                      onClick={() => handleSaveAsDefaults(false)}
+                      className="w-full px-3 py-2 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 text-left"
+                    >
+                      Make default for all sections
+                    </button>
+                  </div>
+
+                  {/* Copy Column */}
+                  <div className="space-y-2">
+                    <p className="text-xs text-gray-500 mb-2">Copy to existing assignments:</p>
+                    <button
+                      onClick={() => handleBulkCopyChatOptions('section')}
+                      disabled={isBulkCopying}
+                      className="w-full px-3 py-2 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 text-left disabled:opacity-50"
+                    >
+                      {isBulkCopying ? 'Copying...' : 'Copy to all cases in this section'}
+                    </button>
+                    <button
+                      onClick={() => handleBulkCopyChatOptions('all')}
+                      disabled={isBulkCopying}
+                      className="w-full px-3 py-2 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 text-left disabled:opacity-50"
+                    >
+                      {isBulkCopying ? 'Copying...' : 'Copy to all cases in all sections'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          <p className="text-gray-500">
+            {!chatOptionsSection
+              ? 'Select "Default for all sections" to manage global defaults, or select a section and case to configure specific chat options.'
+              : chatOptionsSection === '__global_default__'
+                ? 'Global defaults will appear above once loaded.'
+                : 'Select a case to configure its chat options, or select "Default for this section" to manage section-specific defaults.'}
+          </p>
         </div>
       )}
     </div>
@@ -3710,6 +4430,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   Assignments
                 </button>
               )}
+              {hasAccess(user, 'assignments') && (
+                <button
+                  onClick={() => {
+                    setCoursesSubTab('chat-options');
+                    fetchAssignmentsSections();
+                  }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    coursesSubTab === 'chat-options'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Chat Options
+                </button>
+              )}
             </div>
           )}
 
@@ -3887,6 +4622,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <StudentManager />
           ) : coursesSubTab === 'assignments' ? (
             renderAssignmentsTab()
+          ) : coursesSubTab === 'chat-options' ? (
+            renderChatOptionsTab()
           ) : !selectedSection ? (
           /* ==================== SCREEN 1: SECTION LIST ==================== */
           <div className="p-6 max-w-7xl mx-auto">

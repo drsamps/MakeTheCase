@@ -29,7 +29,10 @@ npm run seed-malawis   # Seed sample case data
 ### Key Directories
 ```
 components/          # React components (TypeScript)
+  └── ui/            # Reusable UI components (HelpTooltip, etc.)
 services/            # Client-side API/LLM services
+help/                # Help content files (editable separately from components)
+  └── dashboard/     # Instructor dashboard help content
 server/
   ├── routes/        # Express API endpoints (~20 route files)
   ├── services/      # Business logic (llmRouter.js, fileConverter.js)
@@ -96,3 +99,82 @@ Copy `env.local.example` to `.env.local` and configure:
 - `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
 - `MYSQL_USER`, `MYSQL_PASSWORD`, `JWT_SECRET`
 - `CAS_ENABLED` (false for local dev)
+
+## UI Components
+
+### HelpTooltip Component
+Location: `components/ui/HelpTooltip.tsx`
+Styles: `admin.css` (`.help-tooltip-*` classes)
+
+A standardized help info component for providing contextual help throughout the instructor dashboard. Displays a circled "i" icon that opens a resizable popup when clicked.
+
+**Features:**
+- Scrollable content area
+- Resizable popup (drag bottom-right corner to resize)
+- Closes on click outside or Escape key
+
+**Usage:**
+```tsx
+import HelpTooltip from './ui/HelpTooltip';
+import { SomeFeatureHelp } from '../help/dashboard';
+
+<HelpTooltip title="Feature Name">
+  <SomeFeatureHelp />
+</HelpTooltip>
+```
+
+### Help Content Files
+Location: `help/dashboard/`
+
+Help content is stored in separate TSX files for easy editing without modifying component code. Each file exports a React component containing the help text.
+
+**Directory structure:**
+```
+help/
+  └── dashboard/           # Instructor dashboard help content
+      ├── index.ts         # Exports all help components
+      ├── ChatOptionsHelp.tsx
+      └── (future help files)
+```
+
+**To edit existing help content:**
+1. Open the relevant file in `help/dashboard/` (e.g., `ChatOptionsHelp.tsx`)
+2. Edit the JSX content using supported HTML elements
+3. Save and rebuild
+
+**To add new help content:**
+1. Create a new file in `help/dashboard/` (e.g., `AssignmentsHelp.tsx`)
+2. Export a React component with the help content
+3. Add export to `help/dashboard/index.ts`
+4. Import and use with `<HelpTooltip>` in the relevant component
+
+**Supported HTML elements (styled via admin.css):**
+- `<h4>` - Section headers within help content
+- `<p>`, `<ul>`, `<ol>`, `<li>` - Standard text and lists
+- `<strong>` - Bold/emphasized text
+- `<code>` - Inline code snippets
+- `<div className="help-callout">` - Highlighted tip/note box
+
+**Example help file:**
+```tsx
+import React from 'react';
+
+const MyFeatureHelp: React.FC = () => (
+  <>
+    <h4>Overview</h4>
+    <p>Description of the feature...</p>
+
+    <h4>How to Use</h4>
+    <ul>
+      <li><strong>Step 1</strong> - Do this first</li>
+      <li><strong>Step 2</strong> - Then do this</li>
+    </ul>
+
+    <div className="help-callout">
+      <strong>Tip:</strong> Helpful advice here
+    </div>
+  </>
+);
+
+export default MyFeatureHelp;
+```

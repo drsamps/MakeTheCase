@@ -176,8 +176,140 @@ router.get('/schema', async (req, res) => {
 });
 
 // GET /api/chat-options/defaults - Returns default options
-router.get('/defaults', (req, res) => {
-  res.json({ data: DEFAULT_CHAT_OPTIONS, error: null });
+// Query params: ?section_id=X for section-specific, omit for global
+router.get('/defaults', async (req, res) => {
+  const { section_id } = req.query;
+
+  try {
+    // Try to get section-specific default first
+    if (section_id) {
+      const [rows] = await pool.execute(
+        'SELECT chat_options FROM chat_options_defaults WHERE section_id = ?',
+        [section_id]
+      );
+      if (rows.length > 0) {
+        return res.json({ data: rows[0].chat_options, section_specific: true, error: null });
+      }
+    }
+
+    // Fall back to global default
+    const [globalRows] = await pool.execute(
+      'SELECT chat_options FROM chat_options_defaults WHERE section_id IS NULL'
+    );
+    if (globalRows.length > 0) {
+      return res.json({ data: globalRows[0].chat_options, section_specific: false, error: null });
+    }
+
+    // Final fallback to hardcoded defaults
+    res.json({ data: DEFAULT_CHAT_OPTIONS, section_specific: false, error: null });
+  } catch (error) {
+    console.error('Error fetching defaults:', error);
+    res.json({ data: DEFAULT_CHAT_OPTIONS, section_specific: false, error: null });
+  }
+});
+
+// POST /api/chat-options/defaults - Create or update defaults
+// Body: { section_id: string|null, chat_options: object }
+router.post('/defaults', async (req, res) => {
+  const { section_id, chat_options } = req.body;
+
+  if (!chat_options) {
+    return res.status(400).json({ data: null, error: { message: 'chat_options is required' } });
+  }
+
+  try {
+    const chatOptionsJson = JSON.stringify(chat_options);
+
+    // Use REPLACE to insert or update (handles unique constraint on section_id)
+    await pool.execute(
+      `INSERT INTO chat_options_defaults (section_id, chat_options)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE chat_options = ?, updated_at = CURRENT_TIMESTAMP`,
+      [section_id || null, chatOptionsJson, chatOptionsJson]
+    );
+
+    res.json({
+      data: { section_id: section_id || null, chat_options },
+      message: section_id ? `Defaults saved for section ${section_id}` : 'Global defaults saved',
+      error: null
+    });
+  } catch (error) {
+    console.error('Error saving defaults:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/chat-options/bulk-copy - Copy chat options to multiple section-cases
+// Body: { source_section_id, source_case_id, target: 'section'|'all', target_section_id? }
+router.post('/bulk-copy', async (req, res) => {
+  const { source_section_id, source_case_id, target, target_section_id } = req.body;
+
+  if (!source_section_id || !source_case_id || !target) {
+    return res.status(400).json({
+      data: null,
+      error: { message: 'source_section_id, source_case_id, and target are required' }
+    });
+  }
+
+  if (target !== 'section' && target !== 'all') {
+    return res.status(400).json({
+      data: null,
+      error: { message: 'target must be "section" or "all"' }
+    });
+  }
+
+  if (target === 'section' && !target_section_id) {
+    return res.status(400).json({
+      data: null,
+      error: { message: 'target_section_id is required when target is "section"' }
+    });
+  }
+
+  try {
+    // Get source chat options
+    const [sourceRows] = await pool.execute(
+      'SELECT chat_options FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [source_section_id, source_case_id]
+    );
+
+    if (sourceRows.length === 0) {
+      return res.status(404).json({
+        data: null,
+        error: { message: 'Source section-case not found' }
+      });
+    }
+
+    const sourceOptions = sourceRows[0].chat_options || DEFAULT_CHAT_OPTIONS;
+    const chatOptionsJson = JSON.stringify(sourceOptions);
+
+    let result;
+    if (target === 'section') {
+      // Copy to all cases in target section
+      [result] = await pool.execute(
+        `UPDATE section_cases
+         SET chat_options = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE section_id = ? AND NOT (section_id = ? AND case_id = ?)`,
+        [chatOptionsJson, target_section_id, source_section_id, source_case_id]
+      );
+    } else {
+      // Copy to all cases in all sections
+      [result] = await pool.execute(
+        `UPDATE section_cases
+         SET chat_options = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE NOT (section_id = ? AND case_id = ?)`,
+        [chatOptionsJson, source_section_id, source_case_id]
+      );
+    }
+
+    res.json({
+      data: { updated: result.affectedRows },
+      message: `Chat options copied to ${result.affectedRows} section-case assignment(s)`,
+      error: null
+    });
+  } catch (error) {
+    console.error('Error bulk copying chat options:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
 });
 
 export default router;

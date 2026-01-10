@@ -788,4 +788,137 @@ router.patch('/:sectionId/cases/:caseId/scenarios/reorder', verifyToken, require
   }
 });
 
+// POST /api/sections/:targetSectionId/cases/copy-from/:sourceSectionId
+// Copy case assignments from one section to another
+router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, requireRole(['admin']), async (req, res) => {
+  const { targetSectionId, sourceSectionId } = req.params;
+  const { copy_options = true, copy_scenarios = true, copy_scheduling = true } = req.body;
+
+  if (targetSectionId === sourceSectionId) {
+    return res.status(400).json({
+      data: null,
+      error: { message: 'Cannot copy cases to the same section' }
+    });
+  }
+
+  try {
+    // Verify both sections exist
+    const [sections] = await pool.execute(
+      'SELECT section_id FROM sections WHERE section_id IN (?, ?)',
+      [targetSectionId, sourceSectionId]
+    );
+
+    if (sections.length < 2) {
+      return res.status(404).json({
+        data: null,
+        error: { message: 'One or both sections not found' }
+      });
+    }
+
+    // Get all cases from source section with their settings
+    const [sourceCases] = await pool.execute(
+      `SELECT sc.case_id, sc.chat_options, sc.open_date, sc.close_date, sc.manual_status,
+              sc.selection_mode, sc.require_order, sc.use_scenarios, sc.id as source_section_case_id,
+              c.case_title
+       FROM section_cases sc
+       JOIN cases c ON sc.case_id = c.case_id
+       WHERE sc.section_id = ?`,
+      [sourceSectionId]
+    );
+
+    if (sourceCases.length === 0) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'No cases assigned to source section' }
+      });
+    }
+
+    // Get cases already assigned to target section
+    const [existingCases] = await pool.execute(
+      'SELECT case_id FROM section_cases WHERE section_id = ?',
+      [targetSectionId]
+    );
+    const existingCaseIds = new Set(existingCases.map(c => c.case_id));
+
+    const results = {
+      copied: 0,
+      skipped: 0,
+      details: []
+    };
+
+    for (const sourceCase of sourceCases) {
+      // Skip if case already assigned to target section
+      if (existingCaseIds.has(sourceCase.case_id)) {
+        results.skipped++;
+        results.details.push({
+          case_id: sourceCase.case_id,
+          case_title: sourceCase.case_title,
+          status: 'skipped',
+          reason: 'Already assigned to target section'
+        });
+        continue;
+      }
+
+      // Build insert values based on copy options
+      const chatOptions = copy_options ? sourceCase.chat_options : null;
+      const openDate = copy_scheduling ? sourceCase.open_date : null;
+      const closeDate = copy_scheduling ? sourceCase.close_date : null;
+      const manualStatus = copy_scheduling ? sourceCase.manual_status : 'auto';
+      const selectionMode = copy_scenarios ? sourceCase.selection_mode : 'student_choice';
+      const requireOrder = copy_scenarios ? sourceCase.require_order : false;
+      const useScenarios = copy_scenarios ? sourceCase.use_scenarios : false;
+
+      // Insert the new section-case assignment
+      const [insertResult] = await pool.execute(
+        `INSERT INTO section_cases (section_id, case_id, active, chat_options, open_date, close_date, manual_status, selection_mode, require_order, use_scenarios)
+         VALUES (?, ?, FALSE, ?, ?, ?, ?, ?, ?, ?)`,
+        [targetSectionId, sourceCase.case_id, chatOptions ? JSON.stringify(chatOptions) : null, openDate, closeDate, manualStatus, selectionMode, requireOrder, useScenarios]
+      );
+
+      const newSectionCaseId = insertResult.insertId;
+
+      // Copy scenario assignments if requested
+      let scenariosCopied = 0;
+      if (copy_scenarios && useScenarios) {
+        const [sourceScenarios] = await pool.execute(
+          'SELECT scenario_id, enabled, sort_order FROM section_case_scenarios WHERE section_case_id = ?',
+          [sourceCase.source_section_case_id]
+        );
+
+        for (const scenario of sourceScenarios) {
+          try {
+            await pool.execute(
+              'INSERT INTO section_case_scenarios (section_case_id, scenario_id, enabled, sort_order) VALUES (?, ?, ?, ?)',
+              [newSectionCaseId, scenario.scenario_id, scenario.enabled, scenario.sort_order]
+            );
+            scenariosCopied++;
+          } catch (err) {
+            // Skip duplicate or invalid scenario assignments
+            console.error('Error copying scenario:', err.message);
+          }
+        }
+      }
+
+      results.copied++;
+      results.details.push({
+        case_id: sourceCase.case_id,
+        case_title: sourceCase.case_title,
+        status: 'copied',
+        options_copied: copy_options,
+        scheduling_copied: copy_scheduling,
+        scenarios_copied: scenariosCopied
+      });
+    }
+
+    res.json({
+      data: results,
+      message: `Copied ${results.copied} case(s), skipped ${results.skipped} already assigned`,
+      error: null
+    });
+  } catch (error) {
+    console.error('Error copying case assignments:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 export default router;
