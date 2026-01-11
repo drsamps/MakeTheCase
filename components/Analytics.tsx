@@ -300,18 +300,24 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate }) => {
   useEffect(() => {
     if (activeView === 'responses' && responsesCase) {
       const fetchResponses = async () => {
+        console.log(`[Analytics] Fetching responses for case_id="${responsesCase}", section_id="${responsesSection || 'all'}"`);
         setIsLoadingResponses(true);
         try {
           const params = new URLSearchParams({ case_id: responsesCase });
           if (responsesSection) {
             params.append('section_id', responsesSection);
           }
+          console.log(`[Analytics] API call: /case-chats/responses?${params.toString()}`);
           const response = await api.get(`/case-chats/responses?${params.toString()}`);
+          console.log(`[Analytics] API response:`, response);
+          console.log(`[Analytics] Response data:`, response.data);
+          console.log(`[Analytics] Response data length:`, response.data?.length);
           if (response.data) {
             setCaseResponses(response.data);
+            console.log(`[Analytics] Set caseResponses to ${response.data.length} items`);
           }
         } catch (error) {
-          console.error('Failed to fetch case responses:', error);
+          console.error('[Analytics] Failed to fetch case responses:', error);
           setCaseResponses([]);
         } finally {
           setIsLoadingResponses(false);
