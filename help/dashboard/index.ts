@@ -14,6 +14,7 @@
  */
 
 export { default as ChatOptionsHelp } from './ChatOptionsHelp';
+export { default as ResultsHelp } from './ResultsHelp';
 
 // Future help content exports:
 // export { default as AssignmentsHelp } from './AssignmentsHelp';

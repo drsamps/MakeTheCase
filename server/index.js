@@ -31,6 +31,7 @@ import promptsRoutes from './routes/prompts.js';
 import settingsRoutes from './routes/settings.js';
 import adminsRoutes from './routes/admins.js';
 import studentSectionsRoutes from './routes/studentSections.js';
+import analyticsRoutes from './routes/analytics.js';
 
 // Load environment variables
 // Use absolute path to ensure .env.local is found regardless of working directory
@@ -74,6 +75,8 @@ app.use('/api/prompts', promptsRoutes); // AI prompt template management
 app.use('/api/settings', settingsRoutes); // Application settings
 app.use('/api/admins', adminsRoutes); // Instructor management (superuser only)
 app.use('/api/student-sections', studentSectionsRoutes); // Student self-enrollment
+app.use('/api/analytics', analyticsRoutes); // Consolidated results analytics
+console.log('✓ Analytics routes mounted at /api/analytics');
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

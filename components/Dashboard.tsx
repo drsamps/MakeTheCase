@@ -153,6 +153,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   const [sectionStats, setSectionStats] = useState<SectionStat[]>([]);
   const [selectedSection, setSelectedSection] = useState<SectionStat | null>(null);
+  const [resultsInitialSectionId, setResultsInitialSectionId] = useState<string | undefined>(undefined);
   const [studentDetails, setStudentDetails] = useState<StudentDetail[]>([]);
 
   // Stats for navigation badges
@@ -409,7 +410,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         setPrimaryTab('monitor');
         break;
       case 'analytics':
-        setPrimaryTab('analytics');
+        setPrimaryTab('results');
+        break;
+      case 'results':
+        setPrimaryTab('results');
+        if (subTab) {
+          // subTab is a section_id to pre-filter results
+          setResultsInitialSectionId(subTab);
+        } else {
+          setResultsInitialSectionId(undefined);
+        }
         break;
       case 'admin':
         setPrimaryTab('admin');
@@ -799,13 +809,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   }, [autoRefresh, selectedSection, fetchStudentDetails, fetchSectionStats, filterCaseId]);
 
   const handleSectionClick = (section: SectionStat) => {
-    setSelectedSection(section);
-    setSortKey('completion_time');
-    setSortDirection('desc');
-    setSearchQuery('');
-    setFilterMode('all');
-    setFilterCaseId('all');
-    setSectionCasesForFilter([]);
+    // Navigate to Results tab with this section pre-filtered
+    setResultsInitialSectionId(section.section_id);
+    setPrimaryTab('results');
   };
 
   const handleTabChange = (tab: 'chats' | 'assignments' | 'sections' | 'students' | 'cases' | 'caseprep' | 'personas' | 'prompts' | 'models' | 'settings' | 'instructors') => {
@@ -4838,7 +4844,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         {primaryTab === 'home' ? (
           <DashboardHome user={user} onNavigate={handleNavigate} />
         ) : primaryTab === 'results' ? (
-          <Analytics onNavigate={handleNavigate} />
+          <Analytics onNavigate={handleNavigate} initialSectionId={resultsInitialSectionId} />
         ) : primaryTab === 'monitor' ? (
           monitorSubTab === 'cache' ? (
             <CacheMetrics />
@@ -4872,8 +4878,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             renderAssignmentsTab()
           ) : coursesSubTab === 'chat-options' ? (
             renderChatOptionsTab()
-          ) : !selectedSection ? (
-          /* ==================== SCREEN 1: SECTION LIST ==================== */
+          ) : (
+          /* ==================== SECTION LIST ==================== */
           <div className="p-6 max-w-7xl mx-auto">
             {/* Section List Header */}
             <div className="mb-6 flex flex-wrap justify-between items-center gap-4">
@@ -5256,313 +5262,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 </table>
               </div>
             )}
-          </div>
-        ) : (
-          /* ==================== SCREEN 2: SECTION RESULTS ==================== */
-          <div className="p-6 max-w-7xl mx-auto">
-            {/* Breadcrumb Navigation */}
-            <nav className="mb-6">
-              <ol className="flex items-center gap-2 text-sm">
-                <li>
-                  <button
-                    onClick={handleBackToSections}
-                    className="text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1 hover:underline"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clipRule="evenodd" />
-                    </svg>
-                    Sections
-                  </button>
-                </li>
-                <li className="text-gray-400">/</li>
-                <li className="text-gray-900 font-medium">{selectedSection.section_title}</li>
-                {!selectedSection.enabled && selectedSection.section_id !== 'unassigned' && (
-                  <li>
-                    <span className="px-2 py-0.5 text-xs font-medium bg-gray-200 text-gray-600 rounded-full">
-                      disabled
-                    </span>
-                  </li>
-                )}
-              </ol>
-            </nav>
-
-            {error && <p className="mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</p>}
-
-            {successMessage && (
-              <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg flex items-center gap-2">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                </svg>
-                {successMessage}
-              </div>
-            )}
-            
-            {/* Section Summary Stats */}
-            {sectionSummaryStats && sectionSummaryStats.totalStudents > 0 && (
-              <div className="mb-6 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-                  <div className="text-sm text-gray-500">Completion Rate</div>
-                  <div className="text-2xl font-bold text-gray-900">{sectionSummaryStats.completionRate.toFixed(0)}%</div>
-                  <div className="text-xs text-gray-400">{sectionSummaryStats.completedStudents} of {sectionSummaryStats.totalStudents}</div>
-                </div>
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-                  <div className="text-sm text-gray-500">Avg Score</div>
-                  <div className="text-2xl font-bold text-gray-900">{sectionSummaryStats.avgScore !== null ? sectionSummaryStats.avgScore.toFixed(1) : 'N/A'}</div>
-                  <div className="text-xs text-gray-400">out of 15</div>
-                </div>
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-                  <div className="text-sm text-gray-500">Avg Hints</div>
-                  <div className="text-2xl font-bold text-gray-900">{sectionSummaryStats.avgHints !== null ? sectionSummaryStats.avgHints.toFixed(1) : 'N/A'}</div>
-                </div>
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-                  <div className="text-sm text-gray-500">Avg Helpful</div>
-                  <div className="text-2xl font-bold text-gray-900">{sectionSummaryStats.avgHelpful !== null ? sectionSummaryStats.avgHelpful.toFixed(1) : 'N/A'}</div>
-                  <div className="text-xs text-gray-400">out of 5</div>
-                </div>
-                {incompleteCount > 0 && (
-                  <div className="bg-yellow-50 rounded-lg shadow-sm border border-yellow-200 p-4 col-span-2">
-                    <div className="flex items-center gap-2">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-600" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                      </svg>
-                      <span className="text-sm font-medium text-yellow-800">{incompleteCount} student{incompleteCount !== 1 ? 's' : ''} in progress</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Score Distribution Chart */}
-            {sectionSummaryStats && sectionSummaryStats.completedStudents > 0 && (
-              <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-                <h3 className="text-sm font-medium text-gray-700 mb-3">Score Distribution</h3>
-                <ScoreChart distribution={scoreDistribution} />
-              </div>
-            )}
-
-            {/* Student Table */}
-            <div className="bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden">
-              <div className="p-4 border-b">
-                <div className="flex flex-wrap justify-between items-center gap-4">
-                  <div>
-                    <h2 className="text-xl font-bold text-gray-900">{selectedSection.section_title}</h2>
-                    <p className="text-sm text-gray-500">{selectedSection.year_term}</p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-4">
-                    {/* Search */}
-                    <div className="relative">
-                      <input
-                        type="text"
-                        placeholder="Search students..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="pl-8 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-48"
-                      />
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
-                      </svg>
-                    </div>
-                    
-                    {/* Filter */}
-                    <select
-                      value={filterMode}
-                      onChange={(e) => setFilterMode(e.target.value as FilterMode)}
-                      className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    >
-                      <option value="all">All Students</option>
-                      <option value="completed">Completed</option>
-                      <option value="in_progress">In Progress</option>
-                      <option value="not_started">Not Started</option>
-                    </select>
-
-                    {/* Case Filter */}
-                    {sectionCasesForFilter.length > 0 && (
-                      <select
-                        value={filterCaseId}
-                        onChange={(e) => setFilterCaseId(e.target.value)}
-                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      >
-                        <option value="all">All Cases</option>
-                        {sectionCasesForFilter.map((sc) => (
-                          <option key={sc.case_id} value={sc.case_id}>
-                            {sc.case_title}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-
-                    {/* CSV Export */}
-                    <button
-                      onClick={handleDownloadCSV}
-                      className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
-                      </svg>
-                      Export CSV
-                    </button>
-
-                    {/* Edit Section */}
-                    {selectedSection.section_id !== 'unassigned' && (
-                      <button
-                        onClick={() => handleEditSection(selectedSection)}
-                        className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                          <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
-                        </svg>
-                        Edit Section
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <div>
-                {isLoadingDetails ? (
-                  <div className="p-6 text-center text-gray-500">Loading student data...</div>
-                ) : !studentDetails.length ? (
-                  <div className="p-6 text-center text-gray-500">No students have started the simulation for this section yet.</div>
-                ) : !sortedStudentDetails.length ? (
-                  <div className="p-6 text-center text-gray-500">No students match the current filter.</div>
-                ) : (
-                  <>
-                  {/* Bulk Actions Bar */}
-                  {selectedStudentIds.size > 0 && (
-                    <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
-                      <span className="text-sm font-medium text-blue-800">
-                        {selectedStudentIds.size} student{selectedStudentIds.size !== 1 ? 's' : ''} selected
-                      </span>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={handleBulkExportCSV}
-                          className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-white border border-blue-300 rounded hover:bg-blue-50"
-                        >
-                          Export Selected
-                        </button>
-                        <button
-                          onClick={handleClearSelection}
-                          className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-800"
-                        >
-                          Clear Selection
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-gray-200">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="p-3 w-10">
-                            <input
-                              type="checkbox"
-                              checked={selectedStudentIds.size === sortedStudentDetails.length && sortedStudentDetails.length > 0}
-                              onChange={handleSelectAllStudents}
-                              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                              title="Select all"
-                            />
-                          </th>
-                          <SortableHeader label="Student" sortableKey="full_name" />
-                          <SortableHeader label="Status" sortableKey="status" />
-                          <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Case</th>
-                          <SortableHeader label="Persona" sortableKey="persona" />
-                          <SortableHeader label="Score" sortableKey="score" />
-                          <SortableHeader label="Hints" sortableKey="hints" />
-                          <SortableHeader label="Helpful" sortableKey="helpful" />
-                          <SortableHeader label="Time" sortableKey="completion_time" />
-                          <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white divide-y divide-gray-200">
-                        {sortedStudentDetails.map(student => (
-                          <tr key={student.evaluation_id || `${student.id}-not-started`} className={`hover:bg-gray-50 ${student.status === 'in_progress' ? 'bg-yellow-50' : ''} ${selectedStudentIds.has(student.id) ? 'bg-blue-50' : ''}`}>
-                            <td className="p-3">
-                              <input
-                                type="checkbox"
-                                checked={selectedStudentIds.has(student.id)}
-                                onChange={() => handleToggleSelectStudent(student.id)}
-                                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                              />
-                            </td>
-                            <td className="p-3 whitespace-nowrap">
-                              <div className="text-sm font-medium text-gray-900">{student.full_name}</div>
-                            </td>
-                            <td className="p-3 whitespace-nowrap">
-                              <StatusBadge status={student.status} />
-                              {!!student.allow_rechat && student.status === 'completed' && (
-                                <span className="ml-1 text-xs text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded">Re-chat</span>
-                              )}
-                            </td>
-                            <td className="p-3 whitespace-nowrap text-sm text-gray-600">
-                              {student.case_title || <span className="text-gray-400">-</span>}
-                            </td>
-                            <td className="p-3 whitespace-nowrap text-sm text-gray-600">
-                              {student.persona ? student.persona.charAt(0).toUpperCase() + student.persona.slice(1) : <span className="text-gray-400">-</span>}
-                            </td>
-                            <td className="p-3 whitespace-nowrap text-sm text-gray-900">
-                              {student.score !== null ? (
-                                <span className={`font-medium ${student.score >= 12 ? 'text-green-600' : student.score >= 8 ? 'text-yellow-600' : 'text-red-600'}`}>
-                                  {student.score}/15
-                                </span>
-                              ) : <span className="text-gray-400">-</span>}
-                            </td>
-                            <td className="p-3 whitespace-nowrap text-sm text-gray-600">
-                              {student.hints !== null ? student.hints : <span className="text-gray-400">-</span>}
-                            </td>
-                            <td className="p-3 whitespace-nowrap text-sm text-gray-600">
-                              {student.helpful !== null ? `${student.helpful.toFixed(1)}/5` : <span className="text-gray-400">-</span>}
-                            </td>
-                            <td className="p-3 whitespace-nowrap text-sm text-gray-600">
-                              {student.completion_time ? new Date(student.completion_time).toLocaleString() : <span className="text-gray-400">-</span>}
-                            </td>
-                            <td className="p-3 whitespace-nowrap text-sm">
-                              <div className="flex gap-1">
-                                {student.transcript && (
-                                  <button
-                                    onClick={() => { setSelectedStudent(student); setShowTranscriptModal(true); }}
-                                    className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded"
-                                    title="View transcript"
-                                  >
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                      <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
-                                    </svg>
-                                  </button>
-                                )}
-                                {student.summary && (
-                                  <button
-                                    onClick={() => { setSelectedStudent(student); setShowEvaluationModal(true); }}
-                                    className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded"
-                                    title="View evaluation"
-                                  >
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                      <path fillRule="evenodd" d="M6 2a2 2 0 00-2 2v12a2 2 0 002 2h8a2 2 0 002-2V7.414A2 2 0 0015.414 6L12 2.586A2 2 0 0010.586 2H6zm5 6a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V8z" clipRule="evenodd" />
-                                    </svg>
-                                  </button>
-                                )}
-                                {/* Re-chat toggle button for completed students */}
-                                {student.status === 'completed' && student.evaluation_id && (
-                                  <button
-                                    onClick={() => handleToggleRechat(student.evaluation_id!, student.allow_rechat)}
-                                    className={`p-1.5 rounded ${student.allow_rechat 
-                                      ? 'text-orange-600 hover:text-orange-800 hover:bg-orange-50' 
-                                      : 'text-gray-400 hover:text-orange-600 hover:bg-orange-50'}`}
-                                    title={student.allow_rechat ? 'Disable re-chat (mark as completed)' : 'Allow re-chat'}
-                                  >
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                      <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 110 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
-                                    </svg>
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  </>
-                )}
-              </div>
-            </div>
           </div>
         )
         ) : null}
