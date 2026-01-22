@@ -2,6 +2,7 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import { inferPositionsFromChat, shouldInferPositions } from '../services/positionInference.js';
 
 const router = express.Router();
 
@@ -11,7 +12,7 @@ const VALID_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'kill
 // POST /api/case-chats - Create a new chat session
 router.post('/', async (req, res) => {
   try {
-    const { student_id, case_id, section_id, scenario_id, persona, chat_model, initial_position, position_method } = req.body;
+    const { student_id, case_id, section_id, scenario_id, persona, chat_model, initial_position, initial_position_id, position_method } = req.body;
 
     if (!student_id || !case_id) {
       return res.status(400).json({
@@ -34,18 +35,30 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // Get position_name from scenario_positions if initial_position_id is provided
+    let positionName = initial_position || null;
+    if (initial_position_id) {
+      const [posRows] = await pool.execute(
+        'SELECT position_name FROM scenario_positions WHERE position_id = ?',
+        [initial_position_id]
+      );
+      if (posRows.length > 0) {
+        positionName = posRows[0].position_name;
+      }
+    }
+
     await pool.execute(
-      `INSERT INTO case_chats (id, student_id, case_id, section_id, scenario_id, persona, chat_model, status, time_limit_minutes, initial_position, position_method)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?)`,
-      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, chat_model || null, timeLimitMinutes, initial_position || null, position_method || null]
+      `INSERT INTO case_chats (id, student_id, case_id, section_id, scenario_id, persona, chat_model, status, time_limit_minutes, initial_position, initial_position_id, position_method)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?)`,
+      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, chat_model || null, timeLimitMinutes, positionName, initial_position_id || null, position_method || null]
     );
 
-    // Log initial position if provided
-    if (initial_position && position_method) {
+    // Log initial position if provided (using position_id or position string)
+    if ((initial_position_id || initial_position) && position_method) {
       await pool.execute(
         `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
          VALUES (?, 'initial', ?, ?, NULL)`,
-        [id, initial_position, position_method === 'explicit' ? 'student' : 'instructor']
+        [id, positionName, position_method === 'explicit' ? 'student' : 'instructor']
       );
     }
 
@@ -131,6 +144,22 @@ router.patch('/:id/status', async (req, res) => {
 
     const [rows] = await pool.execute('SELECT * FROM case_chats WHERE id = ?', [id]);
 
+    // Auto-trigger position inference if chat is completed and uses ai_inferred method
+    if (status === 'completed') {
+      // Run async - don't block the response
+      shouldInferPositions(id).then(async (shouldInfer) => {
+        if (shouldInfer) {
+          console.log(`[CaseChats] Auto-triggering position inference for chat ${id}`);
+          try {
+            await inferPositionsFromChat(id);
+            console.log(`[CaseChats] Position inference completed for chat ${id}`);
+          } catch (inferError) {
+            console.error(`[CaseChats] Position inference failed for chat ${id}:`, inferError.message);
+          }
+        }
+      }).catch(e => console.error('[CaseChats] Error checking inference:', e));
+    }
+
     res.json({ data: rows[0], error: null });
   } catch (error) {
     console.error('Error updating chat status:', error);
@@ -166,6 +195,20 @@ router.patch('/:id/complete', async (req, res) => {
     await pool.execute(`UPDATE case_chats SET ${updates.join(', ')} WHERE id = ?`, params);
 
     const [rows] = await pool.execute('SELECT * FROM case_chats WHERE id = ?', [id]);
+
+    // Auto-trigger position inference if uses ai_inferred method
+    // Run async - don't block the response
+    shouldInferPositions(id).then(async (shouldInfer) => {
+      if (shouldInfer) {
+        console.log(`[CaseChats] Auto-triggering position inference for chat ${id}`);
+        try {
+          await inferPositionsFromChat(id);
+          console.log(`[CaseChats] Position inference completed for chat ${id}`);
+        } catch (inferError) {
+          console.error(`[CaseChats] Position inference failed for chat ${id}:`, inferError.message);
+        }
+      }
+    }).catch(e => console.error('[CaseChats] Error checking inference:', e));
 
     res.json({ data: rows[0], error: null });
   } catch (error) {
@@ -1003,6 +1046,117 @@ router.get('/:id/positions', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching chat positions:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/case-chats/:id/final-position - Set final position by position_id (new FK-based system)
+router.patch('/:id/final-position', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { final_position_id } = req.body;
+
+    if (!final_position_id) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'final_position_id is required' }
+      });
+    }
+
+    const [existing] = await pool.execute('SELECT id, position_method FROM case_chats WHERE id = ?', [id]);
+
+    if (existing.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
+
+    // Get position_name from scenario_positions
+    const [posRows] = await pool.execute(
+      'SELECT position_name FROM scenario_positions WHERE position_id = ?',
+      [final_position_id]
+    );
+    const positionName = posRows.length > 0 ? posRows[0].position_name : null;
+
+    // Update the final_position_id and final_position (string for backward compatibility)
+    await pool.execute(
+      `UPDATE case_chats SET final_position_id = ?, final_position = ? WHERE id = ?`,
+      [final_position_id, positionName, id]
+    );
+
+    // Insert into position logs
+    await pool.execute(
+      `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
+       VALUES (?, 'final', ?, 'student', NULL)`,
+      [id, positionName]
+    );
+
+    const [rows] = await pool.execute('SELECT * FROM case_chats WHERE id = ?', [id]);
+
+    res.json({ data: rows[0], error: null });
+  } catch (error) {
+    console.error('Error updating chat final position:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/case-chats/:id/infer-position - Trigger AI position inference (admin only)
+router.post('/:id/infer-position', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { model_id = 'gemini-1.5-flash' } = req.body;
+
+    // Check if chat exists
+    const [existing] = await pool.execute(
+      `SELECT cc.id, cc.status, cc.position_inferred_at, sc.position_tracking_enabled
+       FROM case_chats cc
+       JOIN section_cases sc ON cc.section_id = sc.section_id AND cc.case_id = sc.case_id
+       WHERE cc.id = ?`,
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
+
+    const chat = existing[0];
+
+    if (!chat.position_tracking_enabled) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'Position tracking is not enabled for this assignment' }
+      });
+    }
+
+    if (chat.status !== 'completed') {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'Can only infer positions for completed chats' }
+      });
+    }
+
+    // Perform inference
+    const result = await inferPositionsFromChat(id, model_id);
+
+    res.json({
+      data: result,
+      message: chat.position_inferred_at
+        ? 'Position inference updated'
+        : 'Position inference completed',
+      error: null
+    });
+  } catch (error) {
+    console.error('Error inferring chat position:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/case-chats/:id/should-infer - Check if chat should have positions inferred
+router.get('/:id/should-infer', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const shouldInfer = await shouldInferPositions(id);
+    res.json({ data: { should_infer: shouldInfer }, error: null });
+  } catch (error) {
+    console.error('Error checking inference status:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

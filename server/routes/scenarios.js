@@ -1,8 +1,13 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import scenarioPositionsRoutes from './scenarioPositions.js';
 
 const router = express.Router();
+
+// Mount scenario positions routes
+// Routes: /api/cases/:caseId/scenarios/:scenarioId/positions/*
+router.use('/:caseId/scenarios/:scenarioId/positions', scenarioPositionsRoutes);
 
 // GET /api/cases/:caseId/scenarios - List all scenarios for a case
 router.get('/:caseId/scenarios', async (req, res) => {

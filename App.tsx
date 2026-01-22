@@ -114,9 +114,9 @@ const App: React.FC = () => {
   // Chat options from section-case assignment (Phase 2)
   const [chatOptions, setChatOptions] = useState<any>(null);
 
-  // Position tracking state
-  const [selectedInitialPosition, setSelectedInitialPosition] = useState<string | null>(null);
-  const [selectedFinalPosition, setSelectedFinalPosition] = useState<string | null>(null);
+  // Position tracking state (using position IDs from scenario_positions table)
+  const [selectedInitialPositionId, setSelectedInitialPositionId] = useState<number | null>(null);
+  const [selectedFinalPositionId, setSelectedFinalPositionId] = useState<number | null>(null);
   
   // Default chat options
   const defaultChatOptions = {
@@ -625,6 +625,26 @@ const App: React.FC = () => {
       if (selectedScenarioId && availableScenarios.length > 0) {
         const selectedScenario = availableScenarios.find(s => s.scenario_id === selectedScenarioId);
         if (selectedScenario) {
+          // Start with scenario's arguments
+          let argumentsFor = selectedScenario.arguments_for || undefined;
+          let argumentsAgainst = selectedScenario.arguments_against || undefined;
+
+          // If a position is selected and has position-specific arguments, use those instead
+          if (selectedInitialPositionId && selectedScenario.positions?.length > 0) {
+            const selectedPosition = selectedScenario.positions.find(
+              (p: any) => p.position_id === selectedInitialPositionId
+            );
+            if (selectedPosition) {
+              // Position-specific arguments override scenario arguments
+              if (selectedPosition.arguments_for) {
+                argumentsFor = selectedPosition.arguments_for;
+              }
+              if (selectedPosition.arguments_against) {
+                argumentsAgainst = selectedPosition.arguments_against;
+              }
+            }
+          }
+
           caseData = {
             ...caseData,
             protagonist: selectedScenario.protagonist,
@@ -632,8 +652,8 @@ const App: React.FC = () => {
             protagonist_role: selectedScenario.protagonist_role || undefined,
             chat_topic: selectedScenario.chat_topic || undefined,
             chat_question: selectedScenario.chat_question,
-            arguments_for: selectedScenario.arguments_for || undefined,
-            arguments_against: selectedScenario.arguments_against || undefined,
+            arguments_for: argumentsFor,
+            arguments_against: argumentsAgainst,
           };
         }
       }
@@ -653,7 +673,7 @@ const App: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [activeCaseData, selectedScenarioId, availableScenarios]);
+  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId]);
   
   const handleSendMessage = async (userMessage: string) => {
     if (conversationPhase === ConversationPhase.CHATTING) {
@@ -898,6 +918,22 @@ const App: React.FC = () => {
     return text.replace(/;/g, '').replace(/--/g, '');
   };
 
+  // Save final position to case_chat when student selects it at chat end
+  const handleFinalPositionSelect = async (positionId: number) => {
+    setSelectedFinalPositionId(positionId);
+    if (currentCaseChatId) {
+      try {
+        await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/final-position`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ final_position_id: positionId })
+        });
+      } catch (err) {
+        console.error('Failed to save final position:', err);
+      }
+    }
+  };
+
   const handleProceedToEvaluation = async () => {
     if (!studentFirstName || !selectedSuperModel) return;
     setConversationPhase(ConversationPhase.EVALUATION_LOADING);
@@ -1055,18 +1091,15 @@ const App: React.FC = () => {
           scenario_id: selectedScenarioId || undefined,
         };
 
-        // Include position if explicit capture method is enabled (from scenario settings)
-        // Check scenario's chat_options_override for position tracking settings
-        const scenarioForChat = selectedScenarioId
-          ? availableScenarios.find((s: any) => s.scenario_id === selectedScenarioId)
-          : null;
-        const scenarioPosSettings = scenarioForChat?.chat_options_override || {};
-        const isPosTrackingEnabled = scenarioPosSettings.position_tracking_enabled === true &&
-                                     chatOptions?.disable_position_tracking !== true;
-        const posCaptureMethod = scenarioPosSettings.position_capture_method || 'explicit';
+        // Include position_id if explicit capture method is enabled (from assignment-level settings)
+        // Check assignment's position tracking settings (from active-case endpoint)
+        const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
+        const isPosTrackingEnabled = activeCaseInfo?.position_tracking_enabled === true ||
+                                     activeCaseInfo?.position_tracking_enabled === 1;
+        const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
 
-        if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && selectedInitialPosition) {
-          caseChatPayload.initial_position = selectedInitialPosition;
+        if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && selectedInitialPositionId) {
+          caseChatPayload.initial_position_id = selectedInitialPositionId;
           caseChatPayload.position_method = 'explicit';
         }
 
@@ -1113,8 +1146,8 @@ const App: React.FC = () => {
     setEvaluationResult(null);
     setCeoPersona(CEOPersona.MODERATE);
     setCurrentCaseChatId(null);
-    setSelectedInitialPosition(null);
-    setSelectedFinalPosition(null);
+    setSelectedInitialPositionId(null);
+    setSelectedFinalPositionId(null);
     // Keep section selected if student has a saved section
     if (!studentSavedSectionId) {
       setSelectedSection('');
@@ -1343,22 +1376,28 @@ const App: React.FC = () => {
     const scenarioRequirementMet = !useScenarios || selectedScenarioId !== null;
     const allScenariosCompleted = useScenarios && availableScenarios.length > 0 && availableScenarios.every((s: any) => s.completed);
 
-    // Get position tracking settings from selected scenario (if scenarios enabled)
+    // Get selected scenario (if scenarios enabled)
     const selectedScenario = selectedScenarioId
       ? availableScenarios.find((s: any) => s.scenario_id === selectedScenarioId)
       : null;
-    const scenarioPositionSettings = selectedScenario?.chat_options_override || {};
 
-    // Position tracking: enabled if scenario has it AND section hasn't disabled it
-    const isPositionTrackingEnabled = scenarioPositionSettings.position_tracking_enabled === true &&
-                                      chatOptions?.disable_position_tracking !== true;
-    const positionCaptureMethod = scenarioPositionSettings.position_capture_method || 'explicit';
-    const positionOptions = scenarioPositionSettings.position_options || ['for', 'against'];
+    // Position tracking settings from assignment level (section_cases table)
+    // These come from the active-case endpoint response
+    const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
+    const isPositionTrackingEnabled = activeCaseInfo?.position_tracking_enabled === true ||
+                                      activeCaseInfo?.position_tracking_enabled === 1;
+    const positionCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
+    const trackPositionChange = activeCaseInfo?.track_position_change !== false &&
+                                activeCaseInfo?.track_position_change !== 0;
 
-    // Position selection requirement: if explicit method enabled and no position selected, can't start
+    // Available positions come from the selected scenario's positions array
+    const availablePositions = selectedScenario?.positions || [];
+
+    // Position selection requirement: if explicit method enabled and positions exist but none selected
     const positionRequirementMet = !isPositionTrackingEnabled ||
                                    positionCaptureMethod !== 'explicit' ||
-                                   selectedInitialPosition !== null;
+                                   availablePositions.length === 0 ||
+                                   selectedInitialPositionId !== null;
     const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted && positionRequirementMet;
     const sectionName = sections.find(s => s.section_id === selectedSection)?.section_title || selectedSection;
 
@@ -1603,35 +1642,39 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {/* Position Selection - shown when explicit capture method is enabled (scenario-based) */}
+            {/* Position Selection - shown when explicit capture method is enabled and positions defined */}
             {isPositionTrackingEnabled &&
              positionCaptureMethod === 'explicit' &&
+             availablePositions.length > 0 &&
              activeCaseData && (
               <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   What is your initial position on this case? <span className="text-red-500">*</span>
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  {positionOptions.map((option: string) => {
-                    const displayLabel = scenarioPositionSettings.position_labels?.[option] ||
-                      option.charAt(0).toUpperCase() + option.slice(1);
-                    return (
-                      <button
-                        key={option}
-                        type="button"
-                        onClick={() => setSelectedInitialPosition(option)}
-                        className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                          selectedInitialPosition === option
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-white text-gray-700 border border-gray-300 hover:bg-blue-50'
-                        }`}
-                      >
-                        {displayLabel}
-                      </button>
-                    );
-                  })}
+                  {availablePositions.map((pos: { position_id: number; position_name: string; position: string }) => (
+                    <button
+                      key={pos.position_id}
+                      type="button"
+                      onClick={() => setSelectedInitialPositionId(pos.position_id)}
+                      title={pos.position}
+                      className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                        selectedInitialPositionId === pos.position_id
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-white text-gray-700 border border-gray-300 hover:bg-blue-50'
+                      }`}
+                    >
+                      {pos.position_name.charAt(0).toUpperCase() + pos.position_name.slice(1).replace(/_/g, ' ')}
+                    </button>
+                  ))}
                 </div>
-                {!selectedInitialPosition && (
+                {/* Show description of selected position */}
+                {selectedInitialPositionId && (
+                  <p className="text-sm text-gray-600 mt-2 italic">
+                    {availablePositions.find((p: any) => p.position_id === selectedInitialPositionId)?.position}
+                  </p>
+                )}
+                {!selectedInitialPositionId && (
                   <p className="text-xs text-blue-600 mt-2">Please select your position to start the chat</p>
                 )}
               </div>
@@ -1701,14 +1744,73 @@ const App: React.FC = () => {
         caseTitle={activeCaseData?.case_title}
       />
       {conversationPhase === ConversationPhase.FEEDBACK_COMPLETE ? (
-          <div className="p-4 bg-white border-t border-gray-200 flex justify-center items-center">
-              <button
-                  onClick={handleProceedToEvaluation}
-                  className="px-6 py-3 bg-orange-600 text-white font-semibold rounded-xl hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 animate-pulse"
-              >
-                  Click here to engage the AI Supervisor
-              </button>
-          </div>
+          (() => {
+            // Get position tracking settings for final position selection
+            const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
+            const isPosTrackingEnabled = activeCaseInfo?.position_tracking_enabled === true ||
+                                         activeCaseInfo?.position_tracking_enabled === 1;
+            const trackPosChange = activeCaseInfo?.track_position_change !== false &&
+                                   activeCaseInfo?.track_position_change !== 0;
+            const selectedScenario = selectedScenarioId
+              ? availableScenarios.find((s: any) => s.scenario_id === selectedScenarioId)
+              : null;
+            const finalPositions = selectedScenario?.positions || [];
+            const shouldShowFinalPosition = isPosTrackingEnabled && trackPosChange && finalPositions.length > 0;
+            const canProceed = !shouldShowFinalPosition || selectedFinalPositionId !== null;
+
+            return (
+              <div className="p-4 bg-white border-t border-gray-200 space-y-4">
+                {/* Final Position Selection - shown when position tracking enabled with change tracking */}
+                {shouldShowFinalPosition && (
+                  <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      After our conversation, what is your <strong>final position</strong> on this case?
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {finalPositions.map((pos: { position_id: number; position_name: string; position: string }) => (
+                        <button
+                          key={pos.position_id}
+                          type="button"
+                          onClick={() => handleFinalPositionSelect(pos.position_id)}
+                          title={pos.position}
+                          className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                            selectedFinalPositionId === pos.position_id
+                              ? 'bg-green-600 text-white'
+                              : 'bg-white text-gray-700 border border-gray-300 hover:bg-green-50'
+                          }`}
+                        >
+                          {pos.position_name.charAt(0).toUpperCase() + pos.position_name.slice(1).replace(/_/g, ' ')}
+                        </button>
+                      ))}
+                    </div>
+                    {selectedFinalPositionId && (
+                      <p className="text-sm text-gray-600 mt-2 italic">
+                        {finalPositions.find((p: any) => p.position_id === selectedFinalPositionId)?.position}
+                      </p>
+                    )}
+                    {selectedInitialPositionId && selectedFinalPositionId && selectedInitialPositionId !== selectedFinalPositionId && (
+                      <p className="text-xs text-green-600 mt-2">
+                        Your position changed from the start of the conversation.
+                      </p>
+                    )}
+                  </div>
+                )}
+                <div className="flex justify-center items-center">
+                  <button
+                      onClick={handleProceedToEvaluation}
+                      disabled={!canProceed}
+                      className={`px-6 py-3 font-semibold rounded-xl focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+                        canProceed
+                          ? 'bg-orange-600 text-white hover:bg-orange-700 focus:ring-orange-500 animate-pulse'
+                          : 'bg-gray-400 text-gray-200 cursor-not-allowed'
+                      }`}
+                  >
+                      {!canProceed ? 'Select your final position to continue' : 'Click here to engage the AI Supervisor'}
+                  </button>
+                </div>
+              </div>
+            );
+          })()
       ) : (
           <>
             {/* Chat control buttons */}

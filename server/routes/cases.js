@@ -56,22 +56,41 @@ async function convertPdfToMarkdown(pdfPath) {
 // GET /api/cases - List all cases
 router.get('/', async (req, res) => {
   try {
-    const { enabled } = req.query;
+    const { enabled, include_scenarios } = req.query;
     let query = `
-      SELECT c.case_id, c.case_title, c.protagonist, c.protagonist_initials, 
+      SELECT c.case_id, c.case_title, c.case_version, c.base_scenario_id,
+             c.protagonist, c.protagonist_initials,
              c.chat_topic, c.chat_question, c.created_at, c.enabled
       FROM cases c
     `;
     const params = [];
-    
+
     if (enabled !== undefined) {
       query += ' WHERE c.enabled = ?';
       params.push(enabled === 'true' ? 1 : 0);
     }
-    
+
     query += ' ORDER BY c.created_at DESC';
-    
+
     const [rows] = await pool.execute(query, params);
+
+    // Optionally include scenarios count and names for each case
+    if (include_scenarios === 'true') {
+      const casesWithScenarios = await Promise.all(rows.map(async (caseRow) => {
+        const [scenarios] = await pool.execute(
+          `SELECT id, scenario_name, enabled FROM case_scenarios
+           WHERE case_id = ? ORDER BY sort_order ASC`,
+          [caseRow.case_id]
+        );
+        return {
+          ...caseRow,
+          scenarios_count: scenarios.length,
+          scenarios: scenarios
+        };
+      }));
+      return res.json({ data: casesWithScenarios, error: null });
+    }
+
     res.json({ data: rows, error: null });
   } catch (error) {
     console.error('Error fetching cases:', error);
@@ -83,22 +102,30 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const [cases] = await pool.execute(
-      `SELECT case_id, case_title, protagonist, protagonist_initials, 
+      `SELECT case_id, case_title, case_version, base_scenario_id,
+              protagonist, protagonist_initials,
               chat_topic, chat_question, created_at, enabled
        FROM cases WHERE case_id = ?`,
       [req.params.id]
     );
-    
+
     if (cases.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Case not found' } });
     }
-    
+
     const [files] = await pool.execute(
       'SELECT id, filename, file_type, created_at FROM case_files WHERE case_id = ?',
       [req.params.id]
     );
-    
-    res.json({ data: { ...cases[0], files }, error: null });
+
+    // Get scenarios for this case
+    const [scenarios] = await pool.execute(
+      `SELECT id, scenario_name, protagonist, protagonist_initials, enabled, sort_order
+       FROM case_scenarios WHERE case_id = ? ORDER BY sort_order ASC`,
+      [req.params.id]
+    );
+
+    res.json({ data: { ...cases[0], files, scenarios }, error: null });
   } catch (error) {
     console.error('Error fetching case:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
@@ -108,38 +135,54 @@ router.get('/:id', async (req, res) => {
 // POST /api/cases - Create new case (admin only)
 router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
-    const { case_id, case_title, protagonist, protagonist_initials, chat_topic, chat_question, enabled } = req.body;
-    
-    if (!case_id || !case_title || !protagonist || !protagonist_initials || !chat_question) {
-      return res.status(400).json({ 
-        data: null, 
-        error: { message: 'case_id, case_title, protagonist, protagonist_initials, and chat_question are required' } 
+    const {
+      case_id, case_title, case_version,
+      protagonist, protagonist_initials, chat_topic, chat_question,
+      enabled
+    } = req.body;
+
+    // Only case_id and case_title are required now
+    // Protagonist fields are optional (scenarios have their own protagonists)
+    if (!case_id || !case_title) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'case_id and case_title are required' }
       });
     }
-    
+
     // Check if case_id already exists
     const [existing] = await pool.execute('SELECT case_id FROM cases WHERE case_id = ?', [case_id]);
     if (existing.length > 0) {
       return res.status(409).json({ data: null, error: { message: 'Case ID already exists' } });
     }
-    
+
     await pool.execute(
-      `INSERT INTO cases (case_id, case_title, protagonist, protagonist_initials, chat_topic, chat_question, enabled)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [case_id, case_title, protagonist, protagonist_initials, chat_topic || null, chat_question, enabled !== false ? 1 : 0]
+      `INSERT INTO cases (case_id, case_title, case_version, protagonist, protagonist_initials, chat_topic, chat_question, enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        case_id,
+        case_title,
+        case_version || null,
+        protagonist || null,
+        protagonist_initials || null,
+        chat_topic || null,
+        chat_question || null,
+        enabled !== false ? 1 : 0
+      ]
     );
-    
+
     // Create case directory
     const caseDir = path.join(CASE_FILES_DIR, case_id);
     await fs.mkdir(caseDir, { recursive: true });
-    
+
     // Return created case
     const [rows] = await pool.execute(
-      `SELECT case_id, case_title, protagonist, protagonist_initials, chat_topic, chat_question, created_at, enabled
+      `SELECT case_id, case_title, case_version, base_scenario_id,
+              protagonist, protagonist_initials, chat_topic, chat_question, created_at, enabled
        FROM cases WHERE case_id = ?`,
       [case_id]
     );
-    
+
     res.status(201).json({ data: rows[0], error: null });
   } catch (error) {
     console.error('Error creating case:', error);
@@ -152,40 +195,47 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
-    
-    const allowedFields = ['case_title', 'protagonist', 'protagonist_initials', 'chat_topic', 'chat_question', 'enabled'];
+
+    const allowedFields = [
+      'case_title', 'case_version', 'base_scenario_id',
+      'protagonist', 'protagonist_initials', 'chat_topic', 'chat_question',
+      'enabled'
+    ];
     const setClauses = [];
     const params = [];
-    
+
     for (const [key, value] of Object.entries(updates)) {
       if (allowedFields.includes(key)) {
         setClauses.push(`${key} = ?`);
         if (key === 'enabled') {
           params.push(value ? 1 : 0);
+        } else if (key === 'base_scenario_id') {
+          params.push(value || null);
         } else {
           params.push(value === '' ? null : value);
         }
       }
     }
-    
+
     if (setClauses.length === 0) {
       return res.status(400).json({ data: null, error: { message: 'No valid fields to update' } });
     }
-    
+
     params.push(id);
-    
+
     await pool.execute(`UPDATE cases SET ${setClauses.join(', ')} WHERE case_id = ?`, params);
-    
+
     const [rows] = await pool.execute(
-      `SELECT case_id, case_title, protagonist, protagonist_initials, chat_topic, chat_question, created_at, enabled
+      `SELECT case_id, case_title, case_version, base_scenario_id,
+              protagonist, protagonist_initials, chat_topic, chat_question, created_at, enabled
        FROM cases WHERE case_id = ?`,
       [id]
     );
-    
+
     if (rows.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Case not found' } });
     }
-    
+
     res.json({ data: rows[0], error: null });
   } catch (error) {
     console.error('Error updating case:', error);

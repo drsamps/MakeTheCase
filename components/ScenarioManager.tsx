@@ -1,12 +1,48 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/apiClient';
 import { CaseScenario } from '../types';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 interface ScenarioManagerProps {
   caseId: string;
   caseTitle: string;
   onClose: () => void;
   onScenariosChanged?: () => void;
+}
+
+interface Position {
+  position_id: number;
+  scenario_id: number;
+  position_name: string;
+  position: string;
+  position_order: number;
+  arguments_for?: string | null;
+  arguments_against?: string | null;
+  position_enabled: boolean;
+}
+
+interface PositionTemplate {
+  template_id: number;
+  template_name: string;
+  template_description: string | null;
+  is_system_template: boolean;
+  items: { item_id: number; position_name: string; position: string; position_order: number }[];
 }
 
 interface FormData {
@@ -18,14 +54,15 @@ interface FormData {
   chat_question: string;
   chat_time_limit: number;
   chat_time_warning: number;
+  enabled: boolean;
+}
+
+interface PositionFormData {
+  position_name: string;
+  position: string;
   arguments_for: string;
   arguments_against: string;
-  enabled: boolean;
-  // Position tracking fields
-  position_tracking_enabled: boolean;
-  position_capture_method: string;
-  position_options: string;  // Comma-separated for form input
-  track_position_change: boolean;
+  position_enabled: boolean;
 }
 
 const defaultFormData: FormData = {
@@ -37,14 +74,103 @@ const defaultFormData: FormData = {
   chat_question: '',
   chat_time_limit: 0,
   chat_time_warning: 5,
+  enabled: true
+};
+
+const defaultPositionFormData: PositionFormData = {
+  position_name: '',
+  position: '',
   arguments_for: '',
   arguments_against: '',
-  enabled: true,
-  // Position tracking defaults
-  position_tracking_enabled: false,
-  position_capture_method: 'explicit',
-  position_options: 'for, against',
-  track_position_change: true
+  position_enabled: true
+};
+
+// Sortable Position Item Component
+interface SortablePositionProps {
+  position: Position;
+  index: number;
+  onEdit: (position: Position) => void;
+  onToggle: (position: Position) => void;
+  onDelete: (position: Position) => void;
+}
+
+const SortablePositionItem: React.FC<SortablePositionProps> = ({
+  position,
+  index,
+  onEdit,
+  onToggle,
+  onDelete
+}) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ id: position.position_id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`flex items-center gap-3 p-3 border rounded-lg ${
+        position.position_enabled ? 'bg-white' : 'bg-gray-50 opacity-75'
+      } ${isDragging ? 'shadow-lg' : ''}`}
+    >
+      {/* Drag Handle */}
+      <button
+        {...attributes}
+        {...listeners}
+        className="cursor-grab active:cursor-grabbing p-1 text-gray-400 hover:text-gray-600"
+        title="Drag to reorder"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+        </svg>
+      </button>
+      <span className="text-xs text-gray-400 w-5">{index + 1}.</span>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-sm text-gray-800">{position.position_name}</span>
+          {!position.position_enabled && (
+            <span className="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">disabled</span>
+          )}
+        </div>
+        <p className="text-xs text-gray-500 truncate">{position.position}</p>
+      </div>
+      <div className="flex gap-1">
+        <button
+          onClick={() => onEdit(position)}
+          className="px-2 py-1 text-xs border rounded hover:bg-gray-50"
+        >
+          Edit
+        </button>
+        <button
+          onClick={() => onToggle(position)}
+          className={`px-2 py-1 text-xs rounded ${
+            position.position_enabled
+              ? 'bg-yellow-50 text-yellow-700 border border-yellow-300 hover:bg-yellow-100'
+              : 'bg-green-50 text-green-700 border border-green-300 hover:bg-green-100'
+          }`}
+        >
+          {position.position_enabled ? 'Disable' : 'Enable'}
+        </button>
+        <button
+          onClick={() => onDelete(position)}
+          className="px-2 py-1 text-xs bg-red-50 text-red-600 border border-red-200 rounded hover:bg-red-100"
+        >
+          Delete
+        </button>
+      </div>
+    </div>
+  );
 };
 
 export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
@@ -61,8 +187,35 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Positions state
+  const [positions, setPositions] = useState<Position[]>([]);
+  const [isLoadingPositions, setIsLoadingPositions] = useState(false);
+  const [showPositionForm, setShowPositionForm] = useState(false);
+  const [editingPosition, setEditingPosition] = useState<Position | null>(null);
+  const [positionFormData, setPositionFormData] = useState<PositionFormData>(defaultPositionFormData);
+  const [isSavingPosition, setIsSavingPosition] = useState(false);
+
+  // Templates state
+  const [templates, setTemplates] = useState<PositionTemplate[]>([]);
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
+  const [showTemplateDropdown, setShowTemplateDropdown] = useState(false);
+  const [isApplyingTemplate, setIsApplyingTemplate] = useState(false);
+
+  // Drag-and-drop sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8, // Require 8px movement before starting drag
+      },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
   useEffect(() => {
     fetchScenarios();
+    fetchTemplates();
   }, [caseId]);
 
   const fetchScenarios = async () => {
@@ -80,16 +233,44 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     }
   };
 
+  const fetchTemplates = async () => {
+    setIsLoadingTemplates(true);
+    try {
+      const response = await api.get('/position-templates');
+      if (response.data) {
+        setTemplates(response.data);
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch templates:', err);
+    } finally {
+      setIsLoadingTemplates(false);
+    }
+  };
+
+  const fetchPositions = async (scenarioId: number) => {
+    setIsLoadingPositions(true);
+    try {
+      const response = await api.get(`/cases/${caseId}/scenarios/${scenarioId}/positions`);
+      if (response.data) {
+        setPositions(response.data);
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch positions:', err);
+      setPositions([]);
+    } finally {
+      setIsLoadingPositions(false);
+    }
+  };
+
   const handleCreate = () => {
     setEditingScenario(null);
     setFormData(defaultFormData);
+    setPositions([]);
     setShowForm(true);
   };
 
   const handleEdit = (scenario: CaseScenario) => {
     setEditingScenario(scenario);
-    // Parse position tracking from chat_options_override if present
-    const override = scenario.chat_options_override || {};
     setFormData({
       scenario_name: scenario.scenario_name,
       protagonist: scenario.protagonist,
@@ -99,17 +280,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       chat_question: scenario.chat_question,
       chat_time_limit: scenario.chat_time_limit || 0,
       chat_time_warning: scenario.chat_time_warning || 5,
-      arguments_for: scenario.arguments_for || '',
-      arguments_against: scenario.arguments_against || '',
-      enabled: scenario.enabled,
-      // Position tracking from chat_options_override
-      position_tracking_enabled: override.position_tracking_enabled ?? false,
-      position_capture_method: override.position_capture_method || 'explicit',
-      position_options: Array.isArray(override.position_options)
-        ? override.position_options.join(', ')
-        : 'for, against',
-      track_position_change: override.track_position_change ?? true
+      enabled: scenario.enabled
     });
+    fetchPositions(scenario.id);
     setShowForm(true);
   };
 
@@ -117,18 +290,6 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     if (!formData.scenario_name || !formData.protagonist || !formData.protagonist_initials || !formData.chat_question) {
       setError('Scenario name, protagonist, initials, and chat question are required');
       return;
-    }
-
-    // Build chat_options_override with position tracking settings
-    const chatOptionsOverride: Record<string, any> = {};
-    if (formData.position_tracking_enabled) {
-      chatOptionsOverride.position_tracking_enabled = true;
-      chatOptionsOverride.position_capture_method = formData.position_capture_method;
-      chatOptionsOverride.position_options = formData.position_options
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean);
-      chatOptionsOverride.track_position_change = formData.track_position_change;
     }
 
     const payload = {
@@ -140,10 +301,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       chat_question: formData.chat_question,
       chat_time_limit: formData.chat_time_limit,
       chat_time_warning: formData.chat_time_warning,
-      arguments_for: formData.arguments_for,
-      arguments_against: formData.arguments_against,
-      enabled: formData.enabled,
-      chat_options_override: Object.keys(chatOptionsOverride).length > 0 ? chatOptionsOverride : null
+      enabled: formData.enabled
     };
 
     setIsSaving(true);
@@ -152,11 +310,18 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       if (editingScenario) {
         await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}`, payload);
       } else {
-        await api.post(`/cases/${caseId}/scenarios`, payload);
+        const response = await api.post(`/cases/${caseId}/scenarios`, payload);
+        // Set editingScenario to the newly created scenario so positions can be added
+        if (response.data) {
+          setEditingScenario(response.data);
+        }
       }
       await fetchScenarios();
-      setShowForm(false);
       onScenariosChanged?.();
+      // Don't close form - stay to add positions if this was a new scenario
+      if (editingScenario) {
+        setShowForm(false);
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to save scenario');
     } finally {
@@ -190,6 +355,141 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
   const handleInputChange = (field: keyof FormData, value: string | number | boolean) => {
     setFormData(prev => ({ ...prev, [field]: value }));
+  };
+
+  // Position handlers
+  const handleCreatePosition = () => {
+    setEditingPosition(null);
+    setPositionFormData(defaultPositionFormData);
+    setShowPositionForm(true);
+  };
+
+  const handleEditPosition = (position: Position) => {
+    setEditingPosition(position);
+    setPositionFormData({
+      position_name: position.position_name,
+      position: position.position,
+      arguments_for: position.arguments_for || '',
+      arguments_against: position.arguments_against || '',
+      position_enabled: position.position_enabled
+    });
+    setShowPositionForm(true);
+  };
+
+  const handleSavePosition = async () => {
+    if (!editingScenario) {
+      setError('Please save the scenario first before adding positions');
+      return;
+    }
+
+    if (!positionFormData.position_name || !positionFormData.position) {
+      setError('Position name and description are required');
+      return;
+    }
+
+    setIsSavingPosition(true);
+    setError(null);
+    try {
+      const payload = {
+        position_name: positionFormData.position_name,
+        position: positionFormData.position,
+        arguments_for: positionFormData.arguments_for || null,
+        arguments_against: positionFormData.arguments_against || null,
+        position_enabled: positionFormData.position_enabled
+      };
+
+      if (editingPosition) {
+        await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${editingPosition.position_id}`, payload);
+      } else {
+        await api.post(`/cases/${caseId}/scenarios/${editingScenario.id}/positions`, payload);
+      }
+      await fetchPositions(editingScenario.id);
+      setShowPositionForm(false);
+    } catch (err: any) {
+      setError(err.message || 'Failed to save position');
+    } finally {
+      setIsSavingPosition(false);
+    }
+  };
+
+  const handleDeletePosition = async (position: Position) => {
+    if (!editingScenario) return;
+    if (!confirm(`Delete position "${position.position_name}"?`)) return;
+
+    try {
+      await api.delete(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${position.position_id}`);
+      await fetchPositions(editingScenario.id);
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete position');
+    }
+  };
+
+  const handleTogglePositionEnabled = async (position: Position) => {
+    if (!editingScenario) return;
+    try {
+      await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${position.position_id}/toggle`);
+      await fetchPositions(editingScenario.id);
+    } catch (err: any) {
+      setError(err.message || 'Failed to toggle position');
+    }
+  };
+
+  const handleApplyTemplate = async (template: PositionTemplate) => {
+    if (!editingScenario) {
+      setError('Please save the scenario first before applying a template');
+      return;
+    }
+
+    const confirmMsg = positions.length > 0
+      ? `Apply "${template.template_name}" template? This will add ${template.items.length} position(s). Existing positions will be kept.`
+      : `Apply "${template.template_name}" template? This will add ${template.items.length} position(s).`;
+
+    if (!confirm(confirmMsg)) return;
+
+    setIsApplyingTemplate(true);
+    setError(null);
+    try {
+      await api.post(`/position-templates/${template.template_id}/apply/${editingScenario.id}`, {
+        clear_existing: false
+      });
+      await fetchPositions(editingScenario.id);
+      setShowTemplateDropdown(false);
+    } catch (err: any) {
+      setError(err.message || 'Failed to apply template');
+    } finally {
+      setIsApplyingTemplate(false);
+    }
+  };
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+
+    if (!over || active.id === over.id || !editingScenario) {
+      return;
+    }
+
+    const oldIndex = positions.findIndex(p => p.position_id === active.id);
+    const newIndex = positions.findIndex(p => p.position_id === over.id);
+
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    // Optimistically update the UI
+    const reorderedPositions = arrayMove(positions, oldIndex, newIndex);
+    setPositions(reorderedPositions);
+
+    // Send reorder to server
+    try {
+      const order = reorderedPositions.map(p => p.position_id);
+      await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/reorder`, { order });
+    } catch (err: any) {
+      // Revert on error
+      setError(err.message || 'Failed to reorder positions');
+      await fetchPositions(editingScenario.id);
+    }
+  };
+
+  const handlePositionInputChange = (field: keyof PositionFormData, value: string | boolean) => {
+    setPositionFormData(prev => ({ ...prev, [field]: value }));
   };
 
   return (
@@ -257,11 +557,6 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                                 {scenario.chat_time_limit}min limit
                               </span>
                             )}
-                            {scenario.chat_options_override?.position_tracking_enabled && (
-                              <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
-                                Position tracking
-                              </span>
-                            )}
                           </div>
                           <p className="text-sm text-gray-600 mt-1">
                             <span className="font-medium">{scenario.protagonist}</span>
@@ -301,6 +596,102 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                 </div>
               )}
             </>
+          ) : showPositionForm ? (
+            /* Position Form */
+            <div className="space-y-4">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-medium">
+                  {editingPosition ? 'Edit Position' : 'Define Position'}
+                </h3>
+                <button
+                  onClick={() => setShowPositionForm(false)}
+                  className="text-gray-500 hover:text-gray-700"
+                >
+                  &larr; Back to scenario
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Position Name *</label>
+                <input
+                  type="text"
+                  value={positionFormData.position_name}
+                  onChange={(e) => handlePositionInputChange('position_name', e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '_'))}
+                  className="w-full border rounded-lg px-3 py-2"
+                  placeholder="e.g., agree, disagree, support"
+                />
+                <p className="text-xs text-gray-500 mt-1">Short identifier (lowercase, underscores allowed)</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Position Description *</label>
+                <textarea
+                  value={positionFormData.position}
+                  onChange={(e) => handlePositionInputChange('position', e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2"
+                  rows={2}
+                  placeholder="e.g., I agree with the recommendation to close the factory"
+                />
+                <p className="text-xs text-gray-500 mt-1">Full description shown to students</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Arguments For This Position
+                  <span className="text-gray-400 font-normal ml-1">(used in AI prompt)</span>
+                </label>
+                <textarea
+                  value={positionFormData.arguments_for}
+                  onChange={(e) => handlePositionInputChange('arguments_for', e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2"
+                  rows={3}
+                  placeholder="Key arguments supporting this position..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Arguments Against This Position
+                  <span className="text-gray-400 font-normal ml-1">(used to challenge students)</span>
+                </label>
+                <textarea
+                  value={positionFormData.arguments_against}
+                  onChange={(e) => handlePositionInputChange('arguments_against', e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2"
+                  rows={3}
+                  placeholder="Counter-arguments to probe and challenge..."
+                />
+              </div>
+
+              <div>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={positionFormData.position_enabled}
+                    onChange={(e) => handlePositionInputChange('position_enabled', e.target.checked)}
+                    className="rounded"
+                  />
+                  <span className="text-sm text-gray-700">Position is enabled (available for selection)</span>
+                </label>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t">
+                <button
+                  onClick={() => setShowPositionForm(false)}
+                  className="px-4 py-2 border rounded-lg hover:bg-gray-100"
+                  disabled={isSavingPosition}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSavePosition}
+                  disabled={isSavingPosition}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {isSavingPosition ? 'Saving...' : (editingPosition ? 'Update Position' : 'Add Position')}
+                </button>
+              </div>
+            </div>
           ) : (
             /* Scenario Form */
             <div className="space-y-4">
@@ -424,112 +815,139 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Arguments For
-                  <span className="text-gray-400 font-normal ml-1">(used in AI prompt, not shown to students)</span>
-                </label>
-                <textarea
-                  value={formData.arguments_for}
-                  onChange={(e) => handleInputChange('arguments_for', e.target.value)}
-                  className="w-full border rounded-lg px-3 py-2"
-                  rows={3}
-                  placeholder="Key arguments supporting one position..."
-                />
-              </div>
+              {/* Save Scenario Button (for new scenarios) */}
+              {!editingScenario && (
+                <div className="flex justify-end pt-2">
+                  <button
+                    onClick={handleSave}
+                    disabled={isSaving}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {isSaving ? 'Saving...' : 'Save Scenario to Add Positions'}
+                  </button>
+                </div>
+              )}
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Arguments Against
-                  <span className="text-gray-400 font-normal ml-1">(used in AI prompt, not shown to students)</span>
-                </label>
-                <textarea
-                  value={formData.arguments_against}
-                  onChange={(e) => handleInputChange('arguments_against', e.target.value)}
-                  className="w-full border rounded-lg px-3 py-2"
-                  rows={3}
-                  placeholder="Key arguments supporting the opposing position..."
-                />
-              </div>
-
-              {/* Position Tracking Section */}
-              <div className="border-t pt-4 mt-4">
-                <h4 className="text-sm font-semibold text-gray-700 mb-3">Position Tracking</h4>
-
-                <label className="flex items-center gap-2 mb-3">
-                  <input
-                    type="checkbox"
-                    checked={formData.position_tracking_enabled}
-                    onChange={(e) => handleInputChange('position_tracking_enabled', e.target.checked)}
-                    className="rounded"
-                  />
-                  <span className="text-sm text-gray-700">Enable position tracking for this scenario</span>
-                </label>
-
-                {formData.position_tracking_enabled && (
-                  <div className="ml-6 space-y-3 bg-blue-50 p-4 rounded-lg">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Capture Method</label>
-                      <select
-                        value={formData.position_capture_method}
-                        onChange={(e) => handleInputChange('position_capture_method', e.target.value)}
-                        className="w-full border rounded-lg px-3 py-2"
+              {/* Defined Positions Section - only show for existing scenarios */}
+              {editingScenario && (
+                <div className="border-t pt-4 mt-4">
+                  <div className="flex justify-between items-center mb-3">
+                    <h4 className="text-sm font-semibold text-gray-700">Defined Positions</h4>
+                    <div className="flex gap-2 relative">
+                      <div className="relative">
+                        <button
+                          onClick={() => setShowTemplateDropdown(!showTemplateDropdown)}
+                          disabled={isApplyingTemplate || isLoadingTemplates}
+                          className="px-3 py-1.5 text-sm border rounded-lg hover:bg-gray-50 flex items-center gap-1"
+                        >
+                          Apply Template
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+                        {showTemplateDropdown && (
+                          <div className="absolute right-0 mt-1 w-64 bg-white border rounded-lg shadow-lg z-10">
+                            <div className="p-2 border-b">
+                              <span className="text-xs text-gray-500">Select a template to apply</span>
+                            </div>
+                            {templates.length === 0 ? (
+                              <div className="p-3 text-sm text-gray-500">No templates available</div>
+                            ) : (
+                              <div className="max-h-48 overflow-y-auto">
+                                {templates.map(template => (
+                                  <button
+                                    key={template.template_id}
+                                    onClick={() => handleApplyTemplate(template)}
+                                    className="w-full text-left px-3 py-2 hover:bg-gray-50 border-b last:border-b-0"
+                                  >
+                                    <div className="text-sm font-medium">{template.template_name}</div>
+                                    <div className="text-xs text-gray-500">
+                                      {template.items.length} position(s)
+                                      {template.is_system_template && ' • System template'}
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            <div className="p-2 border-t">
+                              <button
+                                onClick={() => setShowTemplateDropdown(false)}
+                                className="text-xs text-gray-500 hover:text-gray-700"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={handleCreatePosition}
+                        className="px-3 py-1.5 text-sm bg-teal-600 text-white rounded-lg hover:bg-teal-700"
                       >
-                        <option value="explicit">Student selects at chat start</option>
-                        <option value="ai_inferred">AI infers from transcript</option>
-                        <option value="instructor_manual">Instructor tags after chat</option>
-                      </select>
+                        + Add Position
+                      </button>
                     </div>
+                  </div>
 
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Position Options
-                        <span className="text-gray-400 font-normal ml-1">(comma-separated, at least 2)</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={formData.position_options}
-                        onChange={(e) => handleInputChange('position_options', e.target.value)}
-                        className="w-full border rounded-lg px-3 py-2"
-                        placeholder="for, against"
-                      />
+                  {isLoadingPositions ? (
+                    <div className="text-center py-4 text-gray-500 text-sm">Loading positions...</div>
+                  ) : positions.length === 0 ? (
+                    <div className="bg-gray-50 rounded-lg p-4 text-center">
+                      <p className="text-sm text-gray-600">No positions defined yet.</p>
                       <p className="text-xs text-gray-500 mt-1">
-                        These options will be shown to students (e.g., "Support expansion", "Oppose expansion")
+                        Use "Apply Template" for quick setup or "Add Position" to define custom positions.
+                      </p>
+                      <p className="text-xs text-gray-400 mt-2">
+                        Note: Defining positions is optional, but necessary if you want to track student positions on the chat question.
                       </p>
                     </div>
-
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={formData.track_position_change}
-                        onChange={(e) => handleInputChange('track_position_change', e.target.checked)}
-                        className="rounded"
-                      />
-                      <span className="text-sm text-gray-700">Track if position changes during chat</span>
-                    </label>
-                  </div>
-                )}
-              </div>
+                  ) : (
+                    <DndContext
+                      sensors={sensors}
+                      collisionDetection={closestCenter}
+                      onDragEnd={handleDragEnd}
+                    >
+                      <SortableContext
+                        items={positions.map(p => p.position_id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        <div className="space-y-2">
+                          {positions.map((position, index) => (
+                            <SortablePositionItem
+                              key={position.position_id}
+                              position={position}
+                              index={index}
+                              onEdit={handleEditPosition}
+                              onToggle={handleTogglePositionEnabled}
+                              onDelete={handleDeletePosition}
+                            />
+                          ))}
+                        </div>
+                      </SortableContext>
+                    </DndContext>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
 
         {/* Footer */}
-        {showForm && (
+        {showForm && !showPositionForm && editingScenario && (
           <div className="px-6 py-4 border-t bg-gray-50 flex justify-end gap-3">
             <button
               onClick={() => setShowForm(false)}
               className="px-4 py-2 border rounded-lg hover:bg-gray-100"
               disabled={isSaving}
             >
-              Cancel
+              Close
             </button>
             <button
               onClick={handleSave}
               disabled={isSaving}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
             >
-              {isSaving ? 'Saving...' : (editingScenario ? 'Update Scenario' : 'Create Scenario')}
+              {isSaving ? 'Saving...' : 'Update Scenario'}
             </button>
           </div>
         )}

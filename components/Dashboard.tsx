@@ -14,6 +14,7 @@ import InstructorManager from './InstructorManager';
 import StudentManager from './StudentManager';
 import DashboardHome from './DashboardHome';
 import Analytics from './Analytics';
+import PositionAnalytics from './PositionAnalytics';
 import HelpTooltip from './ui/HelpTooltip';
 import { ChatOptionsHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
@@ -24,6 +25,7 @@ type PrimaryTab = 'home' | 'courses' | 'content' | 'monitor' | 'results' | 'admi
 type CoursesSubTab = 'sections' | 'students' | 'assignments' | 'chat-options';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache';
+type ResultsSubTab = 'responses' | 'positions';
 type AdminSubTab = 'personas' | 'prompts' | 'models' | 'settings' | 'instructors';
 
 interface DashboardProps {
@@ -102,13 +104,17 @@ interface Model {
 interface Case {
   case_id: string;
   case_title: string;
-  protagonist: string;
-  protagonist_initials: string;
+  case_version?: string | null;
+  base_scenario_id?: number | null;
+  protagonist?: string | null;
+  protagonist_initials?: string | null;
   chat_topic?: string | null;
-  chat_question: string;
+  chat_question?: string | null;
   enabled: boolean;
   created_at?: string;
   files?: { id: number; filename: string; file_type: string }[];
+  scenarios_count?: number;
+  scenarios?: { id: number; scenario_name: string; enabled: boolean; sort_order: number }[];
 }
 
 interface SectionStats {
@@ -131,6 +137,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [coursesSubTab, setCoursesSubTab] = useState<CoursesSubTab>('sections');
   const [contentSubTab, setContentSubTab] = useState<ContentSubTab>('cases');
   const [monitorSubTab, setMonitorSubTab] = useState<MonitorSubTab>('chats');
+  const [resultsSubTab, setResultsSubTab] = useState<ResultsSubTab>('responses');
   const [adminSubTab, setAdminSubTab] = useState<AdminSubTab>('personas');
 
   // Check if user has access to any admin functions
@@ -238,6 +245,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [caseForm, setCaseForm] = useState({
     case_id: '',
     case_title: '',
+    case_version: '',
     protagonist: '',
     protagonist_initials: '',
     chat_topic: '',
@@ -245,6 +253,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     enabled: true
   });
   const [isSavingCase, setIsSavingCase] = useState(false);
+  const [goToScenariosAfterCreate, setGoToScenariosAfterCreate] = useState(false);
   const [caseFileUpload, setCaseFileUpload] = useState<{ type: 'case' | 'teaching_note'; file: File | null }>({ type: 'case', file: null });
   const [isUploadingCaseFile, setIsUploadingCaseFile] = useState(false);
 
@@ -292,7 +301,22 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [isLoadingScenarioAssignment, setIsLoadingScenarioAssignment] = useState(false);
   const [isSavingScenarioAssignment, setIsSavingScenarioAssignment] = useState(false);
   const [isSavingScheduling, setIsSavingScheduling] = useState(false);
-  
+
+  // Position settings state (for section-case assignments)
+  const [expandedPositionSettings, setExpandedPositionSettings] = useState<string | null>(null);
+  const [positionSettings, setPositionSettings] = useState<{
+    position_tracking_enabled: boolean;
+    position_capture_method: string;
+    track_position_change: boolean;
+  }>({
+    position_tracking_enabled: false,
+    position_capture_method: 'explicit',
+    track_position_change: true
+  });
+  const [assignmentPositions, setAssignmentPositions] = useState<any[]>([]);
+  const [isLoadingPositionSettings, setIsLoadingPositionSettings] = useState(false);
+  const [isSavingPositionSettings, setIsSavingPositionSettings] = useState(false);
+
   // Default chat options
   const defaultChatOptions = {
     hints_allowed: 3,
@@ -995,7 +1019,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const fetchCases = async () => {
     setIsLoadingCases(true);
     try {
-      const { data, error } = await api.from('cases').select('*').order('created_at', { ascending: false });
+      const { data, error } = await api.from('cases?include_scenarios=true').select('*').order('created_at', { ascending: false });
       if (error) {
         console.error('Error fetching cases:', error);
       } else {
@@ -1012,10 +1036,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       setCaseForm({
         case_id: caseItem.case_id,
         case_title: caseItem.case_title,
-        protagonist: caseItem.protagonist,
-        protagonist_initials: caseItem.protagonist_initials,
+        case_version: caseItem.case_version || '',
+        protagonist: caseItem.protagonist || '',
+        protagonist_initials: caseItem.protagonist_initials || '',
         chat_topic: caseItem.chat_topic || '',
-        chat_question: caseItem.chat_question,
+        chat_question: caseItem.chat_question || '',
         enabled: caseItem.enabled
       });
     } else {
@@ -1023,6 +1048,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       setCaseForm({
         case_id: '',
         case_title: '',
+        case_version: '',
         protagonist: '',
         protagonist_initials: '',
         chat_topic: '',
@@ -1030,23 +1056,27 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         enabled: true
       });
     }
+    setGoToScenariosAfterCreate(false);
     setShowCaseModal(true);
   };
 
-  const handleSaveCase = async () => {
-    if (!caseForm.case_id || !caseForm.case_title || !caseForm.protagonist || !caseForm.protagonist_initials || !caseForm.chat_question) {
-      setError('Please fill in all required fields');
+  const handleSaveCase = async (openScenariosAfter: boolean = false) => {
+    // Only case_id and case_title are required - other fields are optional and moved to scenarios
+    if (!caseForm.case_id || !caseForm.case_title) {
+      setError('Please fill in Case ID and Case Title');
       return;
     }
     setIsSavingCase(true);
+    const createdCaseId = caseForm.case_id;
     try {
       if (editingCase) {
         const { error } = await api.from('cases').update({
           case_title: caseForm.case_title,
-          protagonist: caseForm.protagonist,
-          protagonist_initials: caseForm.protagonist_initials,
+          case_version: caseForm.case_version || null,
+          protagonist: caseForm.protagonist || null,
+          protagonist_initials: caseForm.protagonist_initials || null,
           chat_topic: caseForm.chat_topic || null,
-          chat_question: caseForm.chat_question,
+          chat_question: caseForm.chat_question || null,
           enabled: caseForm.enabled
         }).eq('case_id', editingCase.case_id);
         if (error) throw new Error(error.message);
@@ -1054,16 +1084,27 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         const { error } = await api.from('cases').insert({
           case_id: caseForm.case_id,
           case_title: caseForm.case_title,
-          protagonist: caseForm.protagonist,
-          protagonist_initials: caseForm.protagonist_initials,
+          case_version: caseForm.case_version || null,
+          protagonist: caseForm.protagonist || null,
+          protagonist_initials: caseForm.protagonist_initials || null,
           chat_topic: caseForm.chat_topic || null,
-          chat_question: caseForm.chat_question,
+          chat_question: caseForm.chat_question || null,
           enabled: caseForm.enabled
         });
         if (error) throw new Error(error.message);
       }
       setShowCaseModal(false);
       fetchCases();
+
+      // If user clicked "Create and go to Scenarios", open ScenarioManager for the new case
+      if (openScenariosAfter && !editingCase) {
+        // Fetch the newly created case directly (casesList state won't be updated yet)
+        const { data: newCaseData } = await api.from('cases').select('*').eq('case_id', createdCaseId).single();
+        if (newCaseData) {
+          setManagingScenarioCase(newCaseData);
+          setShowScenarioManager(true);
+        }
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to save case');
     } finally {
@@ -1332,6 +1373,106 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       setError(err.message || 'Failed to update scheduling');
     } finally {
       setIsSavingScheduling(false);
+    }
+  };
+
+  // Expand/collapse position settings panel
+  const handleExpandPositionSettings = async (sectionId: string, caseId: string, sectionCase: any) => {
+    if (expandedPositionSettings === caseId) {
+      setExpandedPositionSettings(null);
+      setAssignmentPositions([]);
+      return;
+    }
+
+    setExpandedPositionSettings(caseId);
+    setIsLoadingPositionSettings(true);
+
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+
+      // Load position settings from section_cases
+      const settingsResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/position-settings`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const settingsResult = await settingsResponse.json();
+      if (settingsResult.data) {
+        setPositionSettings({
+          position_tracking_enabled: settingsResult.data.position_tracking_enabled ?? false,
+          position_capture_method: settingsResult.data.position_capture_method || 'explicit',
+          track_position_change: settingsResult.data.track_position_change ?? true
+        });
+      }
+
+      // Load positions for this assignment (from all assigned scenarios)
+      const positionsResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const positionsResult = await positionsResponse.json();
+      if (positionsResult.data) {
+        setAssignmentPositions(positionsResult.data);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to load position settings');
+    } finally {
+      setIsLoadingPositionSettings(false);
+    }
+  };
+
+  // Save position settings for section-case
+  const handleSavePositionSettings = async (sectionId: string, caseId: string) => {
+    setIsSavingPositionSettings(true);
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+
+      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/position-settings`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(positionSettings)
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to update position settings');
+      }
+      setExpandedPositionSettings(null);
+      // Refresh the section cases list
+      if (selectedAssignmentSection) {
+        fetchSectionCases(selectedAssignmentSection);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to update position settings');
+    } finally {
+      setIsSavingPositionSettings(false);
+    }
+  };
+
+  // Toggle position enabled for an assignment
+  const handleToggleAssignmentPosition = async (sectionId: string, caseId: string, positionId: number) => {
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions/${positionId}/toggle`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to toggle position');
+      }
+      // Refresh positions
+      const positionsResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const positionsResult = await positionsResponse.json();
+      if (positionsResult.data) {
+        setAssignmentPositions(positionsResult.data);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to toggle position');
     }
   };
 
@@ -2459,11 +2600,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     </div>
   );
 
+  // Helper to truncate scenario name to 20 chars
+  const truncateScenarioName = (name: string, maxLen: number = 20) => {
+    if (name.length <= maxLen) return name;
+    return name.substring(0, maxLen) + '...';
+  };
+
   const renderCasesTab = () => (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Business Cases</h2>
+          <h2 className="text-2xl font-bold text-gray-900">Installed Cases</h2>
           <p className="text-sm text-gray-500">{casesList.length} case{casesList.length !== 1 ? 's' : ''} available</p>
         </div>
         <button
@@ -2488,32 +2635,60 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Case ID</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Title</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Protagonist</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Version</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Scenarios</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {casesList.map((caseItem) => (
                 <tr key={caseItem.case_id} className={!caseItem.enabled ? 'bg-gray-50 opacity-60' : 'hover:bg-gray-50'}>
-                  <td className="px-4 py-3 text-sm font-medium text-gray-900">{caseItem.case_id}</td>
-                  <td className="px-4 py-3 text-sm text-gray-700">{caseItem.case_title}</td>
+                  <td className="px-4 py-3">
+                    <div className="text-sm font-medium text-gray-900">{caseItem.case_title}</div>
+                    <div className="text-xs text-gray-400">{caseItem.case_id}</div>
+                  </td>
                   <td className="px-4 py-3 text-sm text-gray-700">
-                    {caseItem.protagonist} <span className="text-gray-400">({caseItem.protagonist_initials})</span>
+                    {caseItem.case_version || <span className="text-gray-400">-</span>}
                   </td>
                   <td className="px-4 py-3">
                     <button
                       onClick={() => handleToggleCaseEnabled(caseItem)}
-                      className={`px-2 py-1 text-xs font-medium rounded-full ${
+                      title="Click to enable/disable"
+                      className={`px-2 py-1 text-xs font-medium rounded-full cursor-pointer ${
                         caseItem.enabled
-                          ? 'bg-green-100 text-green-700'
-                          : 'bg-gray-100 text-gray-500'
+                          ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
                       }`}
                     >
                       {caseItem.enabled ? 'Enabled' : 'Disabled'}
                     </button>
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    {caseItem.scenarios && caseItem.scenarios.length > 0 ? (
+                      <div className="space-y-0.5">
+                        {caseItem.scenarios.slice(0, 3).map((scenario, idx) => (
+                          <div key={scenario.id} className="text-xs text-gray-600" title={scenario.scenario_name}>
+                            {idx + 1}. {truncateScenarioName(scenario.scenario_name)}
+                            {!scenario.enabled && <span className="text-gray-400 ml-1">(disabled)</span>}
+                          </div>
+                        ))}
+                        {caseItem.scenarios.length > 3 && (
+                          <div className="text-xs text-gray-400">+{caseItem.scenarios.length - 3} more</div>
+                        )}
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setManagingScenarioCase(caseItem);
+                          setShowScenarioManager(true);
+                        }}
+                        className="text-xs text-amber-600 hover:text-amber-700 hover:underline"
+                      >
+                        no scenarios defined
+                      </button>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-2">
@@ -2813,6 +2988,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                             >
                               Scheduling
                             </button>
+                            <button
+                              onClick={() => handleExpandPositionSettings(selectedAssignmentSection!, sc.case_id, sc)}
+                              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                                expandedPositionSettings === sc.case_id
+                                  ? 'bg-purple-100 text-purple-700 border-purple-200'
+                                  : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-purple-50'
+                              }`}
+                            >
+                              Positions
+                            </button>
                             {sc.active ? (
                               <button
                                 onClick={() => handleDeactivateSectionCase(selectedAssignmentSection!, sc.case_id)}
@@ -3015,6 +3200,125 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                 {isSavingScheduling ? 'Saving...' : 'Save Scheduling'}
                               </button>
                             </div>
+                          </div>
+                        )}
+
+                        {/* Expanded Position Settings */}
+                        {expandedPositionSettings === sc.case_id && (
+                          <div className="p-4 bg-purple-50 border-t border-gray-200 space-y-4">
+                            <h4 className="text-sm font-semibold text-gray-800">Position Tracking Settings</h4>
+
+                            {isLoadingPositionSettings ? (
+                              <div className="text-center py-4">
+                                <div className="inline-block animate-spin rounded-full h-6 w-6 border-4 border-purple-500 border-t-transparent"></div>
+                              </div>
+                            ) : (
+                              <>
+                                {/* Enable Position Tracking Toggle */}
+                                <label className="flex items-center gap-2 text-sm">
+                                  <input
+                                    type="checkbox"
+                                    checked={positionSettings.position_tracking_enabled}
+                                    onChange={(e) => setPositionSettings({...positionSettings, position_tracking_enabled: e.target.checked})}
+                                    className="rounded border-gray-300"
+                                  />
+                                  <span className="font-medium">Enable position tracking for this assignment</span>
+                                </label>
+
+                                {positionSettings.position_tracking_enabled && (
+                                  <div className="ml-6 space-y-3">
+                                    {/* Capture Method */}
+                                    <div>
+                                      <label className="block text-xs font-medium text-gray-700 mb-1">Position Capture Method</label>
+                                      <select
+                                        value={positionSettings.position_capture_method}
+                                        onChange={(e) => setPositionSettings({...positionSettings, position_capture_method: e.target.value})}
+                                        className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                                      >
+                                        <option value="explicit">Student selects position</option>
+                                        <option value="ai_inferred">AI infers from conversation</option>
+                                        <option value="instructor_manual">Instructor assigns after review</option>
+                                        <option value="none">No position capture</option>
+                                      </select>
+                                    </div>
+
+                                    {/* Track Position Change */}
+                                    <label className="flex items-center gap-2 text-sm">
+                                      <input
+                                        type="checkbox"
+                                        checked={positionSettings.track_position_change}
+                                        onChange={(e) => setPositionSettings({...positionSettings, track_position_change: e.target.checked})}
+                                        className="rounded border-gray-300"
+                                      />
+                                      Track if student's position changes during chat
+                                    </label>
+
+                                    {/* Available Positions */}
+                                    {assignmentPositions.length > 0 && (
+                                      <div>
+                                        <label className="block text-xs font-medium text-gray-700 mb-2">
+                                          Available Positions for This Assignment
+                                        </label>
+                                        <div className="space-y-2 max-h-48 overflow-y-auto">
+                                          {assignmentPositions.map((pos: any) => (
+                                            <div
+                                              key={pos.position_id}
+                                              className={`flex items-center justify-between p-2 rounded border ${
+                                                pos.enabled !== false ? 'bg-white border-gray-200' : 'bg-gray-100 border-gray-200 opacity-60'
+                                              }`}
+                                            >
+                                              <div className="flex-1">
+                                                <div className="flex items-center gap-2">
+                                                  <span className="font-medium text-sm">{pos.position_name}</span>
+                                                  <span className="text-xs text-gray-500">({pos.scenario_name})</span>
+                                                </div>
+                                                <p className="text-xs text-gray-500 truncate">{pos.position}</p>
+                                              </div>
+                                              <button
+                                                onClick={() => handleToggleAssignmentPosition(selectedAssignmentSection!, sc.case_id, pos.position_id)}
+                                                className={`px-2 py-1 text-xs rounded ${
+                                                  pos.enabled !== false
+                                                    ? 'bg-green-100 text-green-700 border border-green-300 hover:bg-green-200'
+                                                    : 'bg-gray-200 text-gray-600 border border-gray-300 hover:bg-gray-300'
+                                                }`}
+                                              >
+                                                {pos.enabled !== false ? 'Enabled' : 'Disabled'}
+                                              </button>
+                                            </div>
+                                          ))}
+                                        </div>
+                                        <p className="text-xs text-gray-500 mt-2">
+                                          Note: To add or edit positions, go to Cases &gt; Scenarios for this case.
+                                        </p>
+                                      </div>
+                                    )}
+
+                                    {assignmentPositions.length === 0 && (
+                                      <div className="text-sm text-gray-600 bg-yellow-50 p-3 rounded-lg border border-yellow-200">
+                                        No positions defined for this case's scenarios yet. Go to <strong>Cases</strong> &gt; <strong>Scenarios</strong> to define positions.
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Action Buttons */}
+                                <div className="flex justify-end gap-2 pt-2 border-t">
+                                  <button
+                                    onClick={() => setExpandedPositionSettings(null)}
+                                    className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
+                                  >
+                                    Close
+                                  </button>
+                                  <button
+                                    onClick={() => handleSavePositionSettings(selectedAssignmentSection!, sc.case_id)}
+                                    disabled={isSavingPositionSettings}
+                                    className="px-3 py-1.5 text-xs font-medium text-white bg-purple-600 rounded hover:bg-purple-700 disabled:opacity-50"
+                                  >
+                                    {isSavingPositionSettings ? 'Saving...' : 'Save Settings'}
+                                  </button>
+                                </div>
+                              </>
+                            )}
                           </div>
                         )}
                       </div>
@@ -4772,6 +5076,32 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             </div>
           )}
 
+          {/* Sub-navigation for Results */}
+          {primaryTab === 'results' && (
+            <div className="flex gap-1 mt-2 pb-2">
+              <button
+                onClick={() => setResultsSubTab('responses')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  resultsSubTab === 'responses'
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Student Responses
+              </button>
+              <button
+                onClick={() => setResultsSubTab('positions')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  resultsSubTab === 'positions'
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Position Analytics
+              </button>
+            </div>
+          )}
+
           {/* Sub-navigation for Admin */}
           {primaryTab === 'admin' && (
             <div className="flex gap-1 mt-2 pb-2">
@@ -4846,7 +5176,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         {primaryTab === 'home' ? (
           <DashboardHome user={user} onNavigate={handleNavigate} />
         ) : primaryTab === 'results' ? (
-          <Analytics onNavigate={handleNavigate} initialSectionId={resultsInitialSectionId} />
+          resultsSubTab === 'positions' ? (
+            <div className="p-6 max-w-7xl mx-auto">
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">Position Analytics</h2>
+              <PositionAnalytics />
+            </div>
+          ) : (
+            <Analytics onNavigate={handleNavigate} initialSectionId={resultsInitialSectionId} />
+          )
         ) : primaryTab === 'monitor' ? (
           monitorSubTab === 'cache' ? (
             <CacheMetrics />
@@ -5889,50 +6226,25 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Protagonist Name *</label>
-                  <input
-                    type="text"
-                    value={caseForm.protagonist}
-                    onChange={(e) => setCaseForm({ ...caseForm, protagonist: e.target.value })}
-                    placeholder="e.g., Kent Beck"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Initials *</label>
-                  <input
-                    type="text"
-                    value={caseForm.protagonist_initials}
-                    onChange={(e) => setCaseForm({ ...caseForm, protagonist_initials: e.target.value.toUpperCase().slice(0, 3) })}
-                    placeholder="e.g., KB"
-                    maxLength={3}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">For chat bubbles</p>
-                </div>
-              </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Chat Topic</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Version</label>
                 <input
                   type="text"
-                  value={caseForm.chat_topic}
-                  onChange={(e) => setCaseForm({ ...caseForm, chat_topic: e.target.value })}
-                  placeholder="e.g., Catering business strategy"
+                  value={caseForm.case_version}
+                  onChange={(e) => setCaseForm({ ...caseForm, case_version: e.target.value })}
+                  placeholder="e.g., 2025, v2.0"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
+                <p className="text-xs text-gray-500 mt-1">Optional version label (such as the year of the case)</p>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Chat Question *</label>
-                <textarea
-                  value={caseForm.chat_question}
-                  onChange={(e) => setCaseForm({ ...caseForm, chat_question: e.target.value })}
-                  placeholder="The main question the protagonist asks the student..."
-                  rows={3}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
+              {/* Info box for editing - encourage going to Scenarios */}
+              {editingCase && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <p className="text-sm text-blue-800">
+                    <strong>Tip:</strong> To edit protagonists, chat questions, and positions, go to the Scenario Manager.
+                  </p>
+                </div>
+              )}
               <div>
                 <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
                   <input
@@ -5944,6 +6256,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   Enabled (available for assignment to sections)
                 </label>
               </div>
+              {!editingCase && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <p className="text-sm text-blue-800">
+                    <strong>Next step:</strong> After creating the case, you'll define scenarios with protagonists, chat questions, and positions.
+                  </p>
+                </div>
+              )}
             </div>
             <div className="flex justify-end gap-2 p-4 border-t bg-gray-50 rounded-b-xl">
               <button
@@ -5952,13 +6271,41 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               >
                 Cancel
               </button>
-              <button
-                onClick={handleSaveCase}
-                disabled={isSavingCase}
-                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
-              >
-                {isSavingCase ? 'Saving...' : editingCase ? 'Save Changes' : 'Create Case'}
-              </button>
+              {editingCase ? (
+                <>
+                  <button
+                    onClick={() => handleSaveCase(false)}
+                    disabled={isSavingCase}
+                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-60"
+                  >
+                    {isSavingCase ? 'Saving...' : 'Save Changes'}
+                  </button>
+                  <button
+                    onClick={() => handleSaveCase(true)}
+                    disabled={isSavingCase}
+                    className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                  >
+                    {isSavingCase ? 'Saving...' : 'Save and go to Scenarios'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => handleSaveCase(false)}
+                    disabled={isSavingCase}
+                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-60"
+                  >
+                    {isSavingCase ? 'Saving...' : 'Create Case'}
+                  </button>
+                  <button
+                    onClick={() => handleSaveCase(true)}
+                    disabled={isSavingCase}
+                    className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                  >
+                    {isSavingCase ? 'Saving...' : 'Create Case and go to Scenarios'}
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

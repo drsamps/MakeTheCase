@@ -100,6 +100,7 @@ router.get('/:sectionId/active-case', async (req, res) => {
       `SELECT sc.id, sc.section_id, sc.case_id, sc.chat_options,
               sc.open_date, sc.close_date, sc.manual_status,
               sc.selection_mode, sc.require_order, sc.use_scenarios,
+              sc.position_tracking_enabled, sc.position_capture_method, sc.track_position_change,
               c.case_title, c.protagonist, c.protagonist_initials, c.chat_topic, c.chat_question
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
@@ -131,6 +132,49 @@ router.get('/:sectionId/active-case', async (req, res) => {
         [caseData.id]
       );
       scenarios = scenarioRows;
+
+      // If position tracking is enabled, fetch positions for each scenario
+      if (caseData.position_tracking_enabled && scenarios.length > 0) {
+        const scenarioIds = scenarios.map(s => s.scenario_id);
+        const placeholders = scenarioIds.map(() => '?').join(',');
+
+        // Get positions with per-assignment overrides (include arguments for AI prompt customization)
+        const [positionRows] = await pool.execute(
+          `SELECT sp.position_id, sp.scenario_id, sp.position_name, sp.position, sp.position_order,
+                  sp.arguments_for, sp.arguments_against,
+                  sp.position_enabled as default_enabled,
+                  COALESCE(scp.enabled, sp.position_enabled) as enabled
+           FROM scenario_positions sp
+           LEFT JOIN section_case_positions scp ON scp.position_id = sp.position_id AND scp.section_case_id = ?
+           WHERE sp.scenario_id IN (${placeholders}) AND sp.position_enabled = 1
+           ORDER BY sp.scenario_id, sp.position_order ASC`,
+          [caseData.id, ...scenarioIds]
+        );
+
+        // Group positions by scenario_id
+        const positionsByScenario = new Map();
+        for (const pos of positionRows) {
+          if (pos.enabled) { // Only include enabled positions
+            if (!positionsByScenario.has(pos.scenario_id)) {
+              positionsByScenario.set(pos.scenario_id, []);
+            }
+            positionsByScenario.get(pos.scenario_id).push({
+              position_id: pos.position_id,
+              position_name: pos.position_name,
+              position: pos.position,
+              position_order: pos.position_order,
+              arguments_for: pos.arguments_for,
+              arguments_against: pos.arguments_against
+            });
+          }
+        }
+
+        // Attach positions to scenarios
+        scenarios = scenarios.map(s => ({
+          ...s,
+          positions: positionsByScenario.get(s.scenario_id) || []
+        }));
+      }
 
       // If student_id provided, check completion status for each scenario
       if (student_id && scenarios.length > 0) {
@@ -784,6 +828,199 @@ router.patch('/:sectionId/cases/:caseId/scenarios/reorder', verifyToken, require
     res.json({ data: rows, error: null });
   } catch (error) {
     console.error('Error reordering scenarios:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// =====================================================
+// POSITION TRACKING SETTINGS ENDPOINTS
+// =====================================================
+
+// GET /api/sections/:sectionId/cases/:caseId/position-settings - Get position tracking settings
+router.get('/:sectionId/cases/:caseId/position-settings', async (req, res) => {
+  try {
+    const { sectionId, caseId } = req.params;
+
+    const [rows] = await pool.execute(
+      `SELECT sc.id, sc.position_tracking_enabled, sc.position_capture_method, sc.track_position_change
+       FROM section_cases sc
+       WHERE sc.section_id = ? AND sc.case_id = ?`,
+      [sectionId, caseId]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    res.json({ data: rows[0], error: null });
+  } catch (error) {
+    console.error('Error fetching position settings:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/sections/:sectionId/cases/:caseId/position-settings - Update position tracking settings (admin only)
+router.patch('/:sectionId/cases/:caseId/position-settings', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { sectionId, caseId } = req.params;
+    const { position_tracking_enabled, position_capture_method, track_position_change } = req.body;
+
+    // Validate position_capture_method
+    const validMethods = ['explicit', 'ai_inferred', 'instructor_manual', 'none'];
+    if (position_capture_method && !validMethods.includes(position_capture_method)) {
+      return res.status(400).json({
+        data: null,
+        error: { message: `position_capture_method must be one of: ${validMethods.join(', ')}` }
+      });
+    }
+
+    // Check if assignment exists
+    const [existing] = await pool.execute(
+      'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [sectionId, caseId]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    // Build update query
+    const updates = [];
+    const params = [];
+
+    if (position_tracking_enabled !== undefined) {
+      updates.push('position_tracking_enabled = ?');
+      params.push(position_tracking_enabled ? 1 : 0);
+    }
+    if (position_capture_method !== undefined) {
+      updates.push('position_capture_method = ?');
+      params.push(position_capture_method);
+    }
+    if (track_position_change !== undefined) {
+      updates.push('track_position_change = ?');
+      params.push(track_position_change ? 1 : 0);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ data: null, error: { message: 'No fields to update' } });
+    }
+
+    params.push(sectionId, caseId);
+
+    await pool.execute(
+      `UPDATE section_cases SET ${updates.join(', ')} WHERE section_id = ? AND case_id = ?`,
+      params
+    );
+
+    // Return updated settings
+    const [rows] = await pool.execute(
+      `SELECT sc.id, sc.position_tracking_enabled, sc.position_capture_method, sc.track_position_change
+       FROM section_cases sc
+       WHERE sc.section_id = ? AND sc.case_id = ?`,
+      [sectionId, caseId]
+    );
+
+    res.json({ data: rows[0], error: null });
+  } catch (error) {
+    console.error('Error updating position settings:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/sections/:sectionId/cases/:caseId/positions - Get all positions for this assignment's scenarios
+router.get('/:sectionId/cases/:caseId/positions', async (req, res) => {
+  try {
+    const { sectionId, caseId } = req.params;
+
+    // Get the section_case id
+    const [sectionCase] = await pool.execute(
+      'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [sectionId, caseId]
+    );
+
+    if (sectionCase.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    const sectionCaseId = sectionCase[0].id;
+
+    // Get all positions for scenarios assigned to this section-case
+    // Include per-assignment enabled override from section_case_positions if exists
+    const [rows] = await pool.execute(
+      `SELECT sp.position_id, sp.scenario_id, sp.position_name, sp.position, sp.position_order,
+              sp.arguments_for, sp.arguments_against, sp.position_enabled as default_enabled,
+              cs.scenario_name,
+              COALESCE(scp.enabled, sp.position_enabled) as enabled,
+              scp.id as override_id
+       FROM section_case_scenarios scs
+       JOIN case_scenarios cs ON scs.scenario_id = cs.id
+       JOIN scenario_positions sp ON sp.scenario_id = cs.id
+       LEFT JOIN section_case_positions scp ON scp.section_case_id = ? AND scp.position_id = sp.position_id
+       WHERE scs.section_case_id = ? AND scs.enabled = TRUE AND cs.enabled = TRUE
+       ORDER BY cs.scenario_name, sp.position_order ASC`,
+      [sectionCaseId, sectionCaseId]
+    );
+
+    res.json({ data: rows, error: null });
+  } catch (error) {
+    console.error('Error fetching positions for assignment:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/sections/:sectionId/cases/:caseId/positions/:positionId/toggle - Toggle position enabled for this assignment
+router.patch('/:sectionId/cases/:caseId/positions/:positionId/toggle', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { sectionId, caseId, positionId } = req.params;
+
+    // Get the section_case id
+    const [sectionCase] = await pool.execute(
+      'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [sectionId, caseId]
+    );
+
+    if (sectionCase.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    const sectionCaseId = sectionCase[0].id;
+
+    // Check if position exists
+    const [position] = await pool.execute(
+      'SELECT position_id, position_enabled FROM scenario_positions WHERE position_id = ?',
+      [positionId]
+    );
+
+    if (position.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Position not found' } });
+    }
+
+    // Check if there's an existing override in section_case_positions
+    const [existingOverride] = await pool.execute(
+      'SELECT id, enabled FROM section_case_positions WHERE section_case_id = ? AND position_id = ?',
+      [sectionCaseId, positionId]
+    );
+
+    let newEnabled;
+    if (existingOverride.length > 0) {
+      // Toggle the existing override
+      newEnabled = !existingOverride[0].enabled;
+      await pool.execute(
+        'UPDATE section_case_positions SET enabled = ? WHERE id = ?',
+        [newEnabled ? 1 : 0, existingOverride[0].id]
+      );
+    } else {
+      // Create new override (toggled from default)
+      newEnabled = !position[0].position_enabled;
+      await pool.execute(
+        'INSERT INTO section_case_positions (section_case_id, position_id, enabled) VALUES (?, ?, ?)',
+        [sectionCaseId, positionId, newEnabled ? 1 : 0]
+      );
+    }
+
+    res.json({ data: { position_id: parseInt(positionId), enabled: newEnabled }, error: null });
+  } catch (error) {
+    console.error('Error toggling position:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

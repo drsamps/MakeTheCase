@@ -104,7 +104,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       JOIN sections sec ON ss.section_id = sec.section_id
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
-      LEFT JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
+      JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
       LEFT JOIN evaluations e ON e.case_chat_id = cc.id
       ${whereClause}
     `;
@@ -169,7 +169,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         JOIN students s ON ss.student_id = s.id
         JOIN section_cases sc ON sec.section_id = sc.section_id
         JOIN cases c ON sc.case_id = c.case_id
-        LEFT JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
+        JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
         LEFT JOIN evaluations e ON e.case_chat_id = cc.id
         ${whereClause}
         GROUP BY sec.section_id, sec.section_title, sec.year_term
@@ -202,7 +202,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         JOIN sections sec ON sc.section_id = sec.section_id
         JOIN student_sections ss ON sec.section_id = ss.section_id
         JOIN students s ON ss.student_id = s.id
-        LEFT JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
+        JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
         LEFT JOIN evaluations e ON e.case_chat_id = cc.id
         ${whereClause}
         GROUP BY c.case_id, c.case_title
@@ -228,7 +228,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       JOIN sections sec ON ss.section_id = sec.section_id
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
-      LEFT JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
+      JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
       LEFT JOIN evaluations e ON e.case_chat_id = cc.id
       ${whereClause}
     `;
@@ -262,7 +262,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       JOIN sections sec ON ss.section_id = sec.section_id
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
-      LEFT JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
+      JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
       LEFT JOIN evaluations e ON e.case_chat_id = cc.id
       ${whereClause}
       ORDER BY ${sortColumn} ${sortDirection}
@@ -358,6 +358,290 @@ router.get('/filters', verifyToken, requireRole(['admin']), async (req, res) => 
 
   } catch (error) {
     console.error('Error fetching analytics filters:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// =====================================================
+// POSITION ANALYTICS ENDPOINTS
+// =====================================================
+
+/**
+ * GET /api/analytics/positions
+ * Position distribution, changes, and student-level data
+ *
+ * Query Parameters:
+ * - section_id: filter by section (optional)
+ * - case_id: filter by case (optional)
+ * - scenario_id: filter by scenario (optional)
+ */
+router.get('/positions', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { section_id, case_id, scenario_id } = req.query;
+
+    // Build WHERE clause
+    let whereConditions = ["cc.status = 'completed'"];
+    let params = [];
+
+    if (section_id) {
+      whereConditions.push('cc.section_id = ?');
+      params.push(section_id);
+    }
+
+    if (case_id) {
+      whereConditions.push('cc.case_id = ?');
+      params.push(case_id);
+    }
+
+    if (scenario_id) {
+      whereConditions.push('cc.scenario_id = ?');
+      params.push(scenario_id);
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    // Get summary statistics
+    const [summaryRows] = await pool.execute(
+      `SELECT
+        COUNT(*) as total_chats,
+        SUM(CASE WHEN cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL THEN 1 ELSE 0 END) as chats_with_initial,
+        SUM(CASE WHEN cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL THEN 1 ELSE 0 END) as chats_with_final,
+        SUM(CASE
+          WHEN (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
+           AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+           AND (cc.initial_position != cc.final_position OR cc.initial_position_id != cc.final_position_id)
+          THEN 1 ELSE 0
+        END) as position_changes
+       FROM case_chats cc
+       WHERE ${whereClause}`,
+      params
+    );
+
+    const summary = summaryRows[0];
+    const totalWithPositions = Math.max(summary.chats_with_initial, summary.chats_with_final);
+    const changeRate = totalWithPositions > 0
+      ? (summary.position_changes / totalWithPositions * 100).toFixed(1)
+      : 0;
+
+    // Get position distribution (using position names for grouping)
+    const [positionRows] = await pool.execute(
+      `SELECT
+        COALESCE(cc.initial_position, sp_init.position_name) as position_name,
+        COALESCE(sp_init.position_id, sp_final.position_id) as position_id,
+        SUM(CASE WHEN cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL THEN 1 ELSE 0 END) as initial_count,
+        SUM(CASE WHEN cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL THEN 1 ELSE 0 END) as final_count
+       FROM case_chats cc
+       LEFT JOIN scenario_positions sp_init ON cc.initial_position_id = sp_init.position_id
+       LEFT JOIN scenario_positions sp_final ON cc.final_position_id = sp_final.position_id
+       WHERE ${whereClause}
+         AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL
+              OR cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+       GROUP BY COALESCE(cc.initial_position, sp_init.position_name, cc.final_position, sp_final.position_name)`,
+      params
+    );
+
+    // Calculate percentages
+    const byPosition = positionRows.map(row => ({
+      position_id: row.position_id,
+      position_name: row.position_name,
+      initial_count: row.initial_count,
+      initial_percentage: totalWithPositions > 0
+        ? (row.initial_count / totalWithPositions * 100).toFixed(1)
+        : 0,
+      final_count: row.final_count,
+      final_percentage: totalWithPositions > 0
+        ? (row.final_count / totalWithPositions * 100).toFixed(1)
+        : 0,
+      net_change: row.final_count - row.initial_count
+    }));
+
+    // Get change matrix
+    const [changeRows] = await pool.execute(
+      `SELECT
+        COALESCE(cc.initial_position, sp_init.position_name) as from_position,
+        COALESCE(cc.final_position, sp_final.position_name) as to_position,
+        COUNT(*) as count
+       FROM case_chats cc
+       LEFT JOIN scenario_positions sp_init ON cc.initial_position_id = sp_init.position_id
+       LEFT JOIN scenario_positions sp_final ON cc.final_position_id = sp_final.position_id
+       WHERE ${whereClause}
+         AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
+         AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+       GROUP BY from_position, to_position`,
+      params
+    );
+
+    // Build change matrix object
+    const changeMatrix = {};
+    for (const row of changeRows) {
+      if (!changeMatrix[row.from_position]) {
+        changeMatrix[row.from_position] = {};
+      }
+      changeMatrix[row.from_position][row.to_position] = row.count;
+    }
+
+    // Get student-level data
+    const [studentRows] = await pool.execute(
+      `SELECT
+        s.id as student_id,
+        s.full_name as student_name,
+        COALESCE(cc.initial_position, sp_init.position_name) as initial_position,
+        COALESCE(cc.final_position, sp_final.position_name) as final_position,
+        cc.initial_position_id,
+        cc.final_position_id,
+        e.score as evaluation_score,
+        cc.end_time as completion_time
+       FROM case_chats cc
+       JOIN students s ON cc.student_id = s.id
+       LEFT JOIN evaluations e ON e.case_chat_id = cc.id
+       LEFT JOIN scenario_positions sp_init ON cc.initial_position_id = sp_init.position_id
+       LEFT JOIN scenario_positions sp_final ON cc.final_position_id = sp_final.position_id
+       WHERE ${whereClause}
+         AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL
+              OR cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+       ORDER BY cc.end_time DESC
+       LIMIT 100`,
+      params
+    );
+
+    const byStudent = studentRows.map(row => ({
+      student_id: row.student_id,
+      student_name: row.student_name,
+      initial_position: row.initial_position,
+      final_position: row.final_position,
+      changed: row.initial_position !== row.final_position &&
+               row.initial_position !== null &&
+               row.final_position !== null,
+      evaluation_score: row.evaluation_score,
+      completion_time: row.completion_time
+    }));
+
+    res.json({
+      data: {
+        summary: {
+          total_chats: summary.total_chats,
+          total_chats_with_positions: totalWithPositions,
+          total_position_changes: summary.position_changes,
+          change_rate: parseFloat(changeRate)
+        },
+        by_position: byPosition,
+        change_matrix: changeMatrix,
+        by_student: byStudent
+      },
+      error: null
+    });
+
+  } catch (error) {
+    console.error('Error fetching position analytics:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+/**
+ * GET /api/analytics/positions/correlation
+ * Position-score correlations
+ *
+ * Query Parameters:
+ * - section_id: filter by section (optional)
+ * - case_id: filter by case (optional)
+ * - scenario_id: filter by scenario (optional)
+ */
+router.get('/positions/correlation', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { section_id, case_id, scenario_id } = req.query;
+
+    // Build WHERE clause
+    let whereConditions = ["cc.status = 'completed'", 'e.score IS NOT NULL'];
+    let params = [];
+
+    if (section_id) {
+      whereConditions.push('cc.section_id = ?');
+      params.push(section_id);
+    }
+
+    if (case_id) {
+      whereConditions.push('cc.case_id = ?');
+      params.push(case_id);
+    }
+
+    if (scenario_id) {
+      whereConditions.push('cc.scenario_id = ?');
+      params.push(scenario_id);
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    // Get average score by final position
+    const [positionScoreRows] = await pool.execute(
+      `SELECT
+        COALESCE(cc.final_position, sp.position_name, cc.initial_position) as position_name,
+        AVG(e.score) as avg_score,
+        COUNT(*) as count
+       FROM case_chats cc
+       JOIN evaluations e ON e.case_chat_id = cc.id
+       LEFT JOIN scenario_positions sp ON cc.final_position_id = sp.position_id
+       WHERE ${whereClause}
+         AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL
+              OR cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
+       GROUP BY position_name
+       ORDER BY avg_score DESC`,
+      params
+    );
+
+    const positionScoreCorrelation = positionScoreRows.map(row => ({
+      position_name: row.position_name,
+      avg_score: parseFloat(row.avg_score?.toFixed(1) || 0),
+      count: row.count
+    }));
+
+    // Get average score for changed vs unchanged positions
+    const [changeScoreRows] = await pool.execute(
+      `SELECT
+        CASE
+          WHEN (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
+           AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+           AND (cc.initial_position != cc.final_position OR cc.initial_position_id != cc.final_position_id)
+          THEN 'changed'
+          ELSE 'unchanged'
+        END as change_status,
+        AVG(e.score) as avg_score,
+        COUNT(*) as count
+       FROM case_chats cc
+       JOIN evaluations e ON e.case_chat_id = cc.id
+       WHERE ${whereClause}
+         AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL
+              OR cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+       GROUP BY change_status`,
+      params
+    );
+
+    let changeScoreCorrelation = {
+      changed_avg_score: null,
+      changed_count: 0,
+      unchanged_avg_score: null,
+      unchanged_count: 0
+    };
+
+    for (const row of changeScoreRows) {
+      if (row.change_status === 'changed') {
+        changeScoreCorrelation.changed_avg_score = parseFloat(row.avg_score?.toFixed(1) || 0);
+        changeScoreCorrelation.changed_count = row.count;
+      } else {
+        changeScoreCorrelation.unchanged_avg_score = parseFloat(row.avg_score?.toFixed(1) || 0);
+        changeScoreCorrelation.unchanged_count = row.count;
+      }
+    }
+
+    res.json({
+      data: {
+        position_score_correlation: positionScoreCorrelation,
+        change_score_correlation: changeScoreCorrelation
+      },
+      error: null
+    });
+
+  } catch (error) {
+    console.error('Error fetching position correlations:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

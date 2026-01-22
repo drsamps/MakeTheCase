@@ -33,6 +33,7 @@ import settingsRoutes from './routes/settings.js';
 import adminsRoutes from './routes/admins.js';
 import studentSectionsRoutes from './routes/studentSections.js';
 import analyticsRoutes from './routes/analytics.js';
+import positionTemplatesRoutes from './routes/positionTemplates.js';
 
 // Load environment variables
 // Use absolute path to ensure .env.local is found regardless of working directory
@@ -79,6 +80,8 @@ app.use('/api/admins', adminsRoutes); // Instructor management (superuser only)
 app.use('/api/student-sections', studentSectionsRoutes); // Student self-enrollment
 app.use('/api/analytics', analyticsRoutes); // Consolidated results analytics
 console.log('✓ Analytics routes mounted at /api/analytics');
+app.use('/api/position-templates', positionTemplatesRoutes); // Position templates management
+console.log('✓ Position templates routes mounted at /api/position-templates');
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
