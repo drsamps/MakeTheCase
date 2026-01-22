@@ -220,26 +220,46 @@ export const SettingsManager: React.FC = () => {
                 {otherSettings.map(([key, setting]) => {
                   const currentValue = getCurrentValue(key);
                   const hasChanged = pendingChanges.hasOwnProperty(key);
+                  const isBooleanSetting = currentValue === 'true' || currentValue === 'false';
 
                   return (
                     <div key={key} className="border-b pb-4 last:border-b-0">
-                      <label className="block font-semibold mb-2">
-                        {key}
-                        {hasChanged && (
-                          <span className="ml-2 text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded">
-                            Modified
-                          </span>
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <label className="block font-semibold mb-1">
+                            {key.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')}
+                            {hasChanged && (
+                              <span className="ml-2 text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded">
+                                Modified
+                              </span>
+                            )}
+                          </label>
+                          {setting.description && (
+                            <p className="text-xs text-gray-500 mt-1">{setting.description}</p>
+                          )}
+                        </div>
+                        {isBooleanSetting ? (
+                          <button
+                            onClick={() => handleChange(key, currentValue === 'true' ? 'false' : 'true')}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                              currentValue === 'true' ? 'bg-blue-600' : 'bg-gray-300'
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                currentValue === 'true' ? 'translate-x-6' : 'translate-x-1'
+                              }`}
+                            />
+                          </button>
+                        ) : (
+                          <input
+                            type="text"
+                            value={currentValue}
+                            onChange={(e) => handleChange(key, e.target.value)}
+                            className="border rounded px-3 py-2 w-full max-w-md"
+                          />
                         )}
-                      </label>
-                      <input
-                        type="text"
-                        value={currentValue}
-                        onChange={(e) => handleChange(key, e.target.value)}
-                        className="border rounded px-3 py-2 w-full max-w-md"
-                      />
-                      {setting.description && (
-                        <p className="text-xs text-gray-500 mt-1">{setting.description}</p>
-                      )}
+                      </div>
                     </div>
                   );
                 })}

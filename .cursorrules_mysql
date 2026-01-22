@@ -1,0 +1,146 @@
+# MySQL Database Migration Rules
+
+## Conditional DDL Operations
+
+**IMPORTANT:** MySQL does NOT support `IF NOT EXISTS` / `IF EXISTS` clauses directly in ALTER TABLE statements for:
+- ADD COLUMN
+- DROP COLUMN
+- ADD CONSTRAINT
+- DROP CONSTRAINT
+- ADD INDEX
+- DROP INDEX
+
+### ❌ INCORRECT (Will cause syntax errors):
+```sql
+ALTER TABLE my_table ADD COLUMN IF NOT EXISTS new_col VARCHAR(255);
+ALTER TABLE my_table DROP COLUMN IF EXISTS old_col;
+ALTER TABLE my_table ADD CONSTRAINT IF NOT EXISTS fk_name FOREIGN KEY ...;
+ALTER TABLE my_table DROP FOREIGN KEY IF EXISTS fk_name;
+ALTER TABLE my_table ADD INDEX IF NOT EXISTS idx_name (col);
+```
+
+### ✅ CORRECT - Use Stored Procedures:
+```sql
+-- Add column conditionally
+DROP PROCEDURE IF EXISTS add_column_name;
+DELIMITER //
+CREATE PROCEDURE add_column_name()
+BEGIN
+  DECLARE column_exists INT DEFAULT 0;
+  
+  SELECT COUNT(*) INTO column_exists FROM information_schema.columns
+    WHERE table_schema = DATABASE() 
+      AND table_name = 'my_table' 
+      AND column_name = 'new_col';
+  
+  IF column_exists = 0 THEN
+    ALTER TABLE my_table ADD COLUMN new_col VARCHAR(255);
+  END IF;
+END //
+DELIMITER ;
+CALL add_column_name();
+DROP PROCEDURE IF EXISTS add_column_name;
+
+-- Drop column conditionally
+DROP PROCEDURE IF EXISTS drop_column_name;
+DELIMITER //
+CREATE PROCEDURE drop_column_name()
+BEGIN
+  IF EXISTS (SELECT * FROM information_schema.columns 
+             WHERE table_schema = DATABASE() 
+               AND table_name = 'my_table' 
+               AND column_name = 'old_col') THEN
+    ALTER TABLE my_table DROP COLUMN old_col;
+  END IF;
+END //
+DELIMITER ;
+CALL drop_column_name();
+DROP PROCEDURE IF EXISTS drop_column_name;
+
+-- Add foreign key conditionally
+DROP PROCEDURE IF EXISTS add_fk_name;
+DELIMITER //
+CREATE PROCEDURE add_fk_name()
+BEGIN
+  DECLARE fk_exists INT DEFAULT 0;
+  
+  SELECT COUNT(*) INTO fk_exists FROM information_schema.table_constraints
+    WHERE table_schema = DATABASE() 
+      AND table_name = 'my_table' 
+      AND constraint_name = 'fk_name';
+  
+  IF fk_exists = 0 THEN
+    ALTER TABLE my_table 
+      ADD CONSTRAINT fk_name 
+      FOREIGN KEY (col) REFERENCES other_table(id);
+  END IF;
+END //
+DELIMITER ;
+CALL add_fk_name();
+DROP PROCEDURE IF EXISTS add_fk_name;
+
+-- Drop foreign key conditionally
+DROP PROCEDURE IF EXISTS drop_fk_name;
+DELIMITER //
+CREATE PROCEDURE drop_fk_name()
+BEGIN
+  DECLARE fk_exists INT DEFAULT 0;
+  
+  SELECT COUNT(*) INTO fk_exists FROM information_schema.table_constraints
+    WHERE table_schema = DATABASE() 
+      AND table_name = 'my_table' 
+      AND constraint_name = 'fk_name';
+  
+  IF fk_exists > 0 THEN
+    ALTER TABLE my_table DROP FOREIGN KEY fk_name;
+  END IF;
+END //
+DELIMITER ;
+CALL drop_fk_name();
+DROP PROCEDURE IF EXISTS drop_fk_name;
+
+-- Add index conditionally
+DROP PROCEDURE IF EXISTS add_idx_name;
+DELIMITER //
+CREATE PROCEDURE add_idx_name()
+BEGIN
+  DECLARE idx_exists INT DEFAULT 0;
+  
+  SELECT COUNT(*) INTO idx_exists FROM information_schema.statistics
+    WHERE table_schema = DATABASE() 
+      AND table_name = 'my_table' 
+      AND index_name = 'idx_name';
+  
+  IF idx_exists = 0 THEN
+    CREATE INDEX idx_name ON my_table(col);
+  END IF;
+END //
+DELIMITER ;
+CALL add_idx_name();
+DROP PROCEDURE IF EXISTS add_idx_name;
+```
+
+## CREATE TABLE Exception
+
+`CREATE TABLE IF NOT EXISTS` IS supported:
+```sql
+✅ CREATE TABLE IF NOT EXISTS my_table (...);
+✅ CREATE INDEX IF NOT EXISTS idx_name ON my_table(col);  -- MySQL 8.0.29+
+```
+
+## General Migration Best Practices
+
+1. **Always use stored procedures for conditional ALTER TABLE operations**
+2. **Test migrations on development database first**
+3. **Include rollback procedures in migration files**
+4. **Add verification queries at the end of migrations**
+5. **Document what each migration does and why**
+6. **Use descriptive procedure names that match the operation**
+7. **Always DROP PROCEDURE IF EXISTS before creating it**
+8. **Always DROP PROCEDURE after calling it (cleanup)**
+
+## References
+
+- See `server/migrations/add_case_chats_table.sql` for examples
+- See `server/migrations/010_migrate_transcripts_data.sql` for stored procedure patterns
+- MySQL Documentation: https://dev.mysql.com/doc/refman/8.0/en/alter-table.html

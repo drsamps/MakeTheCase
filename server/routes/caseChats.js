@@ -93,10 +93,11 @@ router.patch('/:id/activity', async (req, res) => {
 });
 
 // PATCH /api/case-chats/:id/status - Update chat status
+// NOTE: Transcript handling removed - use /api/transcripts instead
 router.patch('/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, hints_used, transcript } = req.body;
+    const { status, hints_used } = req.body;
 
     if (!status || !VALID_STATUSES.includes(status)) {
       return res.status(400).json({
@@ -124,11 +125,6 @@ router.patch('/:id/status', async (req, res) => {
       params.push(hints_used);
     }
 
-    if (transcript !== undefined) {
-      updates.push('transcript = ?');
-      params.push(transcript);
-    }
-
     params.push(id);
 
     await pool.execute(`UPDATE case_chats SET ${updates.join(', ')} WHERE id = ?`, params);
@@ -142,11 +138,14 @@ router.patch('/:id/status', async (req, res) => {
   }
 });
 
-// PATCH /api/case-chats/:id/complete - Complete chat and link to evaluation
+// PATCH /api/case-chats/:id/complete - Complete chat
+// NOTE: evaluation_id and transcript removed from this endpoint
+// - Evaluations link via case_chat_id (one-way reference)
+// - Transcripts saved via /api/transcripts
 router.patch('/:id/complete', async (req, res) => {
   try {
     const { id } = req.params;
-    const { evaluation_id, hints_used, transcript } = req.body;
+    const { hints_used } = req.body;
 
     const [existing] = await pool.execute('SELECT id FROM case_chats WHERE id = ?', [id]);
 
@@ -157,19 +156,9 @@ router.patch('/:id/complete', async (req, res) => {
     const updates = ["status = 'completed'", 'end_time = CURRENT_TIMESTAMP'];
     const params = [];
 
-    if (evaluation_id) {
-      updates.push('evaluation_id = ?');
-      params.push(evaluation_id);
-    }
-
     if (hints_used !== undefined) {
       updates.push('hints_used = ?');
       params.push(hints_used);
-    }
-
-    if (transcript !== undefined) {
-      updates.push('transcript = ?');
-      params.push(transcript);
     }
 
     params.push(id);

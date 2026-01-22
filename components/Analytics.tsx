@@ -130,9 +130,12 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
   const [showTranscriptModal, setShowTranscriptModal] = useState(false);
   const [showEvaluationModal, setShowEvaluationModal] = useState(false);
   const [transcriptContent, setTranscriptContent] = useState<string>('');
+  const [transcriptData, setTranscriptData] = useState<any>(null); // Full transcript object
   const [evaluationData, setEvaluationData] = useState<any>(null);
+  const [isAnonymizing, setIsAnonymizing] = useState(false);
+  const [autoAnonymize, setAutoAnonymize] = useState(false); // Setting for auto-anonymize
 
-  // Fetch filter options on mount
+  // Fetch filter options and settings on mount
   useEffect(() => {
     const fetchFilters = async () => {
       try {
@@ -145,7 +148,19 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
         console.error('Failed to fetch filter options:', error);
       }
     };
+    const fetchSettings = async () => {
+      try {
+        const response = await api.get('/settings/auto_anonymize_transcripts');
+        if (response.data) {
+          setAutoAnonymize(response.data.value === 'true' || response.data.value === true);
+        }
+      } catch (error) {
+        // Setting doesn't exist yet, default to false
+        console.log('Auto-anonymize setting not found, defaulting to false');
+      }
+    };
     fetchFilters();
+    fetchSettings();
   }, []);
 
   // Handle initial section selection from navigation
@@ -227,16 +242,84 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
 
   // View transcript
   const handleViewTranscript = async (student: StudentResult) => {
-    if (!student.case_chat_id) return;
     setSelectedStudent(student);
     try {
-      const response = await api.get(`/case-chats/${student.case_chat_id}`);
-      if (response.data) {
-        setTranscriptContent(response.data.transcript || 'No transcript available');
-        setShowTranscriptModal(true);
+      // Fetch transcript from transcripts table via case_chat_id
+      if (student.case_chat_id) {
+        const response = await api.get(`/transcripts/chat/${student.case_chat_id}`);
+        if (response.data?.transcript) {
+          const transcript = response.data;
+          setTranscriptData(transcript);
+          
+          // Check if auto-anonymize is enabled and transcript is not already anonymized
+          if (autoAnonymize && !transcript.is_anonymized) {
+            // Automatically anonymize the transcript
+            await handleAnonymizeTranscript(transcript.id, student.student_name, student.case_title, true);
+            return; // handleAnonymizeTranscript will refresh the display
+          }
+          
+          setTranscriptContent(transcript.transcript);
+          setShowTranscriptModal(true);
+          return;
+        }
       }
-    } catch (error) {
+      
+      // No transcript found
+      setTranscriptData(null);
+      setTranscriptContent('No transcript available');
+      setShowTranscriptModal(true);
+    } catch (error: any) {
       console.error('Failed to fetch transcript:', error);
+      // If 404, transcript doesn't exist (not an error)
+      if (error.response?.status === 404) {
+        setTranscriptData(null);
+        setTranscriptContent('No transcript available');
+      } else {
+        setTranscriptData(null);
+        setTranscriptContent('Error loading transcript');
+      }
+      setShowTranscriptModal(true);
+    }
+  };
+
+  // Anonymize transcript
+  const handleAnonymizeTranscript = async (
+    transcriptId: string, 
+    studentName: string, 
+    caseTitle: string,
+    autoTriggered: boolean = false
+  ) => {
+    setIsAnonymizing(true);
+    try {
+      // Create anonymized version of the transcript
+      const anonymizedText = transcriptContent.replace(
+        new RegExp(`\\b${studentName.split(/\s+/).join('\\b|\\b')}\\b`, 'gi'),
+        'STUDENT'
+      ).replace(
+        new RegExp(`\\b${caseTitle.split(/\s+/).join('\\b|\\b')}\\b`, 'gi'),
+        'CASE'
+      );
+
+      // Send the anonymized transcript to the server
+      const response = await api.patch(`/transcripts/${transcriptId}/anonymize`, {
+        anonymized_transcript: anonymizedText
+      });
+
+      if (response.data) {
+        // Update the local state
+        setTranscriptData(response.data);
+        setTranscriptContent(response.data.transcript);
+        setShowTranscriptModal(true);
+        
+        if (!autoTriggered) {
+          alert('Transcript anonymized successfully');
+        }
+      }
+    } catch (error: any) {
+      console.error('Failed to anonymize transcript:', error);
+      alert('Failed to anonymize transcript: ' + (error.response?.data?.error?.message || error.message));
+    } finally {
+      setIsAnonymizing(false);
     }
   };
 
@@ -874,18 +957,60 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col">
             <div className="flex justify-between items-center p-4 border-b">
-              <div>
-                <h3 className="text-lg font-bold text-gray-900">Chat Transcript</h3>
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-lg font-bold text-gray-900">Chat Transcript</h3>
+                  {transcriptData && (
+                    <span className={`px-2 py-1 text-xs font-semibold rounded ${
+                      transcriptData.is_anonymized 
+                        ? 'bg-green-100 text-green-800' 
+                        : 'bg-yellow-100 text-yellow-800'
+                    }`}>
+                      {transcriptData.is_anonymized ? 'Anonymized' : 'Not Anonymized'}
+                    </span>
+                  )}
+                </div>
                 <p className="text-sm text-gray-500">{selectedStudent.student_name} - {selectedStudent.case_title}</p>
               </div>
-              <button
-                onClick={() => setShowTranscriptModal(false)}
-                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                </svg>
-              </button>
+              <div className="flex items-center gap-2">
+                {transcriptData && !transcriptData.is_anonymized && (
+                  <button
+                    onClick={() => handleAnonymizeTranscript(
+                      transcriptData.id,
+                      selectedStudent.student_name,
+                      selectedStudent.case_title
+                    )}
+                    disabled={isAnonymizing}
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white text-sm font-medium rounded-lg flex items-center gap-1"
+                    title="Anonymize this transcript"
+                  >
+                    {isAnonymizing ? (
+                      <>
+                        <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span>Anonymizing...</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                        </svg>
+                        <span>Anonymize</span>
+                      </>
+                    )}
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowTranscriptModal(false)}
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                  </svg>
+                </button>
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               <pre className="whitespace-pre-wrap text-sm text-gray-700 font-mono bg-gray-50 p-4 rounded-lg">

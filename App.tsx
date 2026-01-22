@@ -916,14 +916,12 @@ const App: React.FC = () => {
 
         let transcriptToSave: string | null = null;
         if (shareTranscript) {
-          const transcript = messages.map(msg => {
+          // Save the ORIGINAL transcript (NOT anonymized)
+          // Anonymization happens at display time, not save time
+          transcriptToSave = messages.map(msg => {
             const speaker = msg.role === MessageRole.USER ? fullName : 'CEO';
             return `${speaker}: ${msg.content}`;
           }).join('\n\n');
-
-          // Anonymize the transcript
-          const nameRegex = new RegExp(`\\b(${fullName}|${studentFirstName}|${lastName})\\b`, 'gi');
-          transcriptToSave = transcript.replace(nameRegex, 'STUDENT');
         }
 
         const finishedTimestamp = new Date();
@@ -938,19 +936,35 @@ const App: React.FC = () => {
             score: result.totalScore,
             summary: result.summary,
             criteria: result.criteria,
-            persona: ceoPersona,
-            hints: result.hints,
             helpful: helpfulScore,
             liked: sanitizedLiked,
             improve: sanitizedImprove,
-            chat_model: selectedChatModel,
             super_model: selectedSuperModel,
-            transcript: transcriptToSave,
           });
 
         if (evaluationError) {
           console.error("Error saving evaluation:", evaluationError);
         } else {
+          // Save transcript separately to transcripts table
+          if (transcriptToSave && currentCaseChatId) {
+            try {
+              const transcriptResponse = await fetch(`${getApiBaseUrl()}/transcripts`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  case_chat_id: currentCaseChatId,
+                  transcript: transcriptToSave,
+                  saved_with_permission: shareTranscript
+                })
+              });
+              if (!transcriptResponse.ok) {
+                console.error("Error saving transcript:", await transcriptResponse.text());
+              }
+            } catch (transcriptError) {
+              console.error("Error saving transcript:", transcriptError);
+            }
+          }
+
           // If evaluation is saved, try to update the student's finished_at timestamp
           const { error: studentUpdateError } = await api
             .from('students')

@@ -58,7 +58,7 @@ interface StudentDetail {
   super_model: string | null;
   summary: string | null;
   criteria: any[] | null;
-  transcript: string | null;
+  // transcript removed from evaluation data - now fetched separately from transcripts table
   liked: string | null;
   improve: string | null;
   created_at: string | null;
@@ -66,6 +66,7 @@ interface StudentDetail {
   case_id: string | null;
   case_title: string | null;
   evaluation_id: string | null;
+  case_chat_id: string | null;
   allow_rechat: boolean;
 }
 
@@ -212,6 +213,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [showEvaluationModal, setShowEvaluationModal] = useState(false);
   const [showSectionModal, setShowSectionModal] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<StudentDetail | null>(null);
+  const [transcriptContent, setTranscriptContent] = useState<string>('Loading...');
   
   // Section management
   const [editingSection, setEditingSection] = useState<SectionStat | null>(null);
@@ -5287,7 +5289,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               <pre className="whitespace-pre-wrap text-sm text-gray-700 font-mono bg-gray-50 p-4 rounded-lg">
-                {selectedStudent.transcript || 'No transcript available.'}
+                {transcriptContent}
               </pre>
             </div>
           </div>

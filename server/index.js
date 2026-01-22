@@ -24,6 +24,7 @@ import sectionCasesRoutes from './routes/sectionCases.js';
 import chatOptionsRoutes from './routes/chatOptions.js';
 import personasRoutes from './routes/personas.js';
 import caseChatsRoutes from './routes/caseChats.js';
+import transcriptsRoutes from './routes/transcripts.js';
 import casePrepRoutes from './routes/casePrep.js';
 import caseFilesRoutes from './routes/caseFiles.js';
 import llmMetricsRoutes from './routes/llmMetrics.js';
@@ -65,6 +66,7 @@ app.use('/api/sections', sectionCasesRoutes); // Section-case assignments (neste
 app.use('/api/chat-options', chatOptionsRoutes); // Chat options schema and defaults
 app.use('/api/personas', personasRoutes); // Persona management
 app.use('/api/case-chats', caseChatsRoutes); // Chat session tracking
+app.use('/api/transcripts', transcriptsRoutes); // Chat transcript storage and privacy management
 app.use('/api/case-prep', casePrepRoutes); // Case prep file upload and AI processing
 console.log('✓ Case prep routes mounted at /api/case-prep');
 app.use('/api/case-files', caseFilesRoutes); // Case file management

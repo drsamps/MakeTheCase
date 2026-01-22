@@ -47,7 +47,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       'final_position': 'cc.final_position',
       'persona': 'cc.persona',
       'score': 'e.score',
-      'hints': 'e.hints',
+      'hints': 'cc.hints_used',
       'helpful': 'e.helpful',
       'completion_time': 'cc.end_time'
     };
@@ -97,7 +97,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         COUNT(DISTINCT CASE WHEN e.id IS NOT NULL THEN s.id END) as completed_students,
         COUNT(e.id) as total_completions,
         AVG(e.score) as avg_score,
-        AVG(e.hints) as avg_hints,
+        AVG(cc.hints_used) as avg_hints,
         AVG(e.helpful) as avg_helpful
       FROM students s
       JOIN student_sections ss ON s.id = ss.student_id
@@ -105,7 +105,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
       LEFT JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
-      LEFT JOIN evaluations e ON cc.evaluation_id = e.id
+      LEFT JOIN evaluations e ON e.case_chat_id = cc.id
       ${whereClause}
     `;
 
@@ -134,7 +134,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
       JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
-      JOIN evaluations e ON cc.evaluation_id = e.id
+      JOIN evaluations e ON e.case_chat_id = cc.id
       ${whereClause}
       GROUP BY e.score
       ORDER BY e.score
@@ -170,7 +170,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         JOIN section_cases sc ON sec.section_id = sc.section_id
         JOIN cases c ON sc.case_id = c.case_id
         LEFT JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
-        LEFT JOIN evaluations e ON cc.evaluation_id = e.id
+        LEFT JOIN evaluations e ON e.case_chat_id = cc.id
         ${whereClause}
         GROUP BY sec.section_id, sec.section_title, sec.year_term
         ORDER BY sec.section_title
@@ -203,7 +203,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         JOIN student_sections ss ON sec.section_id = ss.section_id
         JOIN students s ON ss.student_id = s.id
         LEFT JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
-        LEFT JOIN evaluations e ON cc.evaluation_id = e.id
+        LEFT JOIN evaluations e ON e.case_chat_id = cc.id
         ${whereClause}
         GROUP BY c.case_id, c.case_title
         ORDER BY c.case_title
@@ -229,7 +229,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
       LEFT JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
-      LEFT JOIN evaluations e ON cc.evaluation_id = e.id
+      LEFT JOIN evaluations e ON e.case_chat_id = cc.id
       ${whereClause}
     `;
 
@@ -250,7 +250,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         cc.final_position,
         cc.persona,
         e.score,
-        e.hints,
+        cc.hints_used as hints,
         e.helpful,
         TIMESTAMPDIFF(MINUTE, cc.start_time, cc.end_time) as time_minutes,
         e.id as evaluation_id,
@@ -263,7 +263,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
       LEFT JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
-      LEFT JOIN evaluations e ON cc.evaluation_id = e.id
+      LEFT JOIN evaluations e ON e.case_chat_id = cc.id
       ${whereClause}
       ORDER BY ${sortColumn} ${sortDirection}
       LIMIT ? OFFSET ?

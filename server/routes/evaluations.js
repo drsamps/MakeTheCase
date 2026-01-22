@@ -7,8 +7,9 @@ import { inferPositionFromTranscript } from '../services/positionInference.js';
 const router = express.Router();
 
 // Field list for SELECT queries (keeps things DRY)
-const EVAL_FIELDS = `id, created_at, student_id, case_id, case_chat_id, score, summary, criteria, persona,
-                     hints, helpful, liked, improve, chat_model, super_model, transcript, allow_rechat`;
+// NOTE: transcript, persona, hints, chat_model removed - now in case_chats and transcripts tables
+const EVAL_FIELDS = `id, created_at, student_id, case_id, case_chat_id, score, summary, criteria,
+                     helpful, liked, improve, super_model, allow_rechat`;
 
 // GET /api/evaluations - Get all evaluations (optionally filter by student_id and/or case_id)
 router.get('/', async (req, res) => {
@@ -158,113 +159,116 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const {
-      student_id, case_id, case_chat_id, score, summary, criteria, persona,
-      hints, helpful, liked, improve, chat_model, super_model, transcript
+      student_id, case_id, case_chat_id, score, summary, criteria,
+      helpful, liked, improve, super_model, transcript
     } = req.body;
 
     if (!student_id || score === undefined) {
       return res.status(400).json({ data: null, error: { message: 'Student ID and score are required' } });
     }
 
+    if (!case_chat_id) {
+      return res.status(400).json({ data: null, error: { message: 'case_chat_id is required' } });
+    }
+
     const id = uuidv4();
     const criteriaJson = criteria ? JSON.stringify(criteria) : null;
 
     await pool.execute(
-      `INSERT INTO evaluations (id, student_id, case_id, case_chat_id, score, summary, criteria, persona, hints, helpful, liked, improve, chat_model, super_model, transcript, allow_rechat)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)`,
-      [id, student_id, case_id || null, case_chat_id || null, score, summary || null, criteriaJson, persona || null,
-       hints || 0, helpful || null, liked || null, improve || null,
-       chat_model || null, super_model || null, transcript || null]
+      `INSERT INTO evaluations (id, student_id, case_id, case_chat_id, score, summary, criteria, helpful, liked, improve, super_model, allow_rechat)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)`,
+      [id, student_id, case_id || null, case_chat_id, score, summary || null, criteriaJson,
+       helpful || null, liked || null, improve || null, super_model || null]
     );
 
-    // If case_chat_id provided, update the case_chat status to completed and link to this evaluation
-    if (case_chat_id) {
-      await pool.execute(
-        `UPDATE case_chats SET status = 'completed', end_time = CURRENT_TIMESTAMP, evaluation_id = ? WHERE id = ?`,
-        [id, case_chat_id]
+    // Update the case_chat status to completed
+    await pool.execute(
+      `UPDATE case_chats SET status = 'completed', end_time = CURRENT_TIMESTAMP WHERE id = ?`,
+      [case_chat_id]
+    );
+
+    // AI Position Inference: If position tracking is enabled with ai_inferred method and no position set yet
+    try {
+      const [chatRows] = await pool.execute(
+        `SELECT cc.*, cs.chat_options_override, c.case_title, t.transcript
+         FROM case_chats cc
+         LEFT JOIN case_scenarios cs ON cc.scenario_id = cs.id
+         LEFT JOIN cases c ON cc.case_id = c.case_id
+         LEFT JOIN transcripts t ON t.case_chat_id = cc.id
+         WHERE cc.id = ?`,
+        [case_chat_id]
       );
 
-      // AI Position Inference: If position tracking is enabled with ai_inferred method and no position set yet
-      try {
-        const [chatRows] = await pool.execute(
-          `SELECT cc.*, cs.chat_options_override, c.case_title
-           FROM case_chats cc
-           LEFT JOIN case_scenarios cs ON cc.scenario_id = cs.id
-           LEFT JOIN cases c ON cc.case_id = c.case_id
-           WHERE cc.id = ?`,
-          [case_chat_id]
-        );
+      if (chatRows.length > 0) {
+        const chat = chatRows[0];
+        const scenarioSettings = chat.chat_options_override ? JSON.parse(chat.chat_options_override) : {};
+        const transcriptText = chat.transcript || transcript; // Use transcript from DB or passed in
 
-        if (chatRows.length > 0) {
-          const chat = chatRows[0];
-          const scenarioSettings = chat.chat_options_override ? JSON.parse(chat.chat_options_override) : {};
+        // Check if AI inference is needed
+        const needsInference =
+          scenarioSettings.position_tracking_enabled === true &&
+          scenarioSettings.position_capture_method === 'ai_inferred' &&
+          (!chat.initial_position || !chat.final_position) &&
+          transcriptText; // Make sure we have a transcript to analyze
 
-          // Check if AI inference is needed
-          const needsInference =
-            scenarioSettings.position_tracking_enabled === true &&
-            scenarioSettings.position_capture_method === 'ai_inferred' &&
-            (!chat.initial_position || !chat.final_position) &&
-            transcript; // Make sure we have a transcript to analyze
+        if (needsInference) {
+          const positionOptions = scenarioSettings.position_options || ['for', 'against'];
 
-          if (needsInference) {
-            const positionOptions = scenarioSettings.position_options || ['for', 'against'];
+          // Get case data for the prompt
+          const [caseRows] = await pool.execute(
+            `SELECT case_title, arguments_for, arguments_against
+             FROM cases WHERE case_id = ?`,
+            [chat.case_id]
+          );
 
-            // Get case data for the prompt
-            const [caseRows] = await pool.execute(
-              `SELECT case_title, arguments_for, arguments_against
-               FROM cases WHERE case_id = ?`,
-              [chat.case_id]
+          const caseData = caseRows.length > 0 ? caseRows[0] : {};
+          if (chat.case_title) caseData.case_title = chat.case_title;
+
+          // Get chat question from scenario
+          if (chat.scenario_id) {
+            const [scenarioRows] = await pool.execute(
+              `SELECT chat_question FROM case_scenarios WHERE id = ?`,
+              [chat.scenario_id]
             );
-
-            const caseData = caseRows.length > 0 ? caseRows[0] : {};
-            if (chat.case_title) caseData.case_title = chat.case_title;
-
-            // Get chat question from scenario
-            if (chat.scenario_id) {
-              const [scenarioRows] = await pool.execute(
-                `SELECT chat_question FROM case_scenarios WHERE id = ?`,
-                [chat.scenario_id]
-              );
-              if (scenarioRows.length > 0) {
-                caseData.chat_question = scenarioRows[0].chat_question;
-              }
-            }
-
-            // Infer position using AI
-            const modelId = chat_model || 'gemini-1.5-flash'; // Use chat model or default
-            const inferenceResult = await inferPositionFromTranscript(
-              transcript,
-              caseData,
-              positionOptions,
-              modelId
-            );
-
-            if (inferenceResult && inferenceResult.position) {
-              // Update case_chat with inferred position
-              await pool.execute(
-                `UPDATE case_chats
-                 SET initial_position = ?, final_position = ?, position_method = 'ai_inferred'
-                 WHERE id = ?`,
-                [inferenceResult.position, inferenceResult.position, case_chat_id]
-              );
-
-              // Log the inferred position
-              await pool.execute(
-                `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
-                 VALUES (?, 'initial', ?, 'ai', ?)`,
-                [case_chat_id, inferenceResult.position, `AI inference (confidence: ${inferenceResult.confidence.toFixed(2)}): ${inferenceResult.reasoning}`]
-              );
-
-              console.log(`[AI Position Inference] Chat ${case_chat_id}: ${inferenceResult.position} (confidence: ${inferenceResult.confidence.toFixed(2)})`);
-            } else {
-              console.warn(`[AI Position Inference] Failed to infer position for chat ${case_chat_id}`);
+            if (scenarioRows.length > 0) {
+              caseData.chat_question = scenarioRows[0].chat_question;
             }
           }
+
+          // Infer position using AI
+          const modelId = chat.chat_model || 'gemini-1.5-flash'; // Use chat model or default
+          const inferenceResult = await inferPositionFromTranscript(
+            transcriptText,
+            caseData,
+            positionOptions,
+            modelId
+          );
+
+          if (inferenceResult && inferenceResult.position) {
+            // Update case_chat with inferred position
+            await pool.execute(
+              `UPDATE case_chats
+               SET initial_position = ?, final_position = ?, position_method = 'ai_inferred'
+               WHERE id = ?`,
+              [inferenceResult.position, inferenceResult.position, case_chat_id]
+            );
+
+            // Log the inferred position
+            await pool.execute(
+              `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
+               VALUES (?, 'initial', ?, 'ai', ?)`,
+              [case_chat_id, inferenceResult.position, `AI inference (confidence: ${inferenceResult.confidence.toFixed(2)}): ${inferenceResult.reasoning}`]
+            );
+
+            console.log(`[AI Position Inference] Chat ${case_chat_id}: ${inferenceResult.position} (confidence: ${inferenceResult.confidence.toFixed(2)})`);
+          } else {
+            console.warn(`[AI Position Inference] Failed to infer position for chat ${case_chat_id}`);
+          }
         }
-      } catch (inferenceError) {
-        // Log error but don't fail the evaluation creation
-        console.error('[AI Position Inference] Error during position inference:', inferenceError);
       }
+    } catch (inferenceError) {
+      // Log error but don't fail the evaluation creation
+      console.error('[AI Position Inference] Error during position inference:', inferenceError);
     }
 
     // Return the created evaluation
