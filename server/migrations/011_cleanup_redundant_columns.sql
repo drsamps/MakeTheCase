@@ -48,6 +48,29 @@ DROP PROCEDURE IF EXISTS cleanup_evaluation_columns;
 DELIMITER //
 CREATE PROCEDURE cleanup_evaluation_columns()
 BEGIN
+  DECLARE fk_exists INT DEFAULT 0;
+  
+  -- Drop foreign key on persona if it exists (evaluations_persona_fkey)
+  SELECT COUNT(*) INTO fk_exists FROM information_schema.table_constraints
+    WHERE table_schema = DATABASE() 
+    AND table_name = 'evaluations' 
+    AND constraint_name = 'evaluations_persona_fkey';
+  
+  IF fk_exists > 0 THEN
+    ALTER TABLE evaluations DROP FOREIGN KEY evaluations_persona_fkey;
+  END IF;
+  
+  -- Drop foreign key on chat_model if it exists (evaluations_chat_model_fkey)
+  SET fk_exists = 0;
+  SELECT COUNT(*) INTO fk_exists FROM information_schema.table_constraints
+    WHERE table_schema = DATABASE() 
+    AND table_name = 'evaluations' 
+    AND constraint_name = 'evaluations_chat_model_fkey';
+  
+  IF fk_exists > 0 THEN
+    ALTER TABLE evaluations DROP FOREIGN KEY evaluations_chat_model_fkey;
+  END IF;
+  
   -- Remove transcript column
   IF EXISTS (SELECT * FROM information_schema.columns 
              WHERE table_schema = DATABASE() 
@@ -72,7 +95,7 @@ BEGIN
     ALTER TABLE evaluations DROP COLUMN hints;
   END IF;
   
-  -- Remove chat_model column
+  -- Remove chat_model column (after dropping FK)
   IF EXISTS (SELECT * FROM information_schema.columns 
              WHERE table_schema = DATABASE() 
              AND table_name = 'evaluations' 
