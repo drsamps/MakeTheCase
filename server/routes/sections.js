@@ -5,28 +5,32 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 const router = express.Router();
 
 // GET /api/sections - Get all sections (optionally filter by enabled)
-// Includes active case info via LEFT JOIN
+// Includes active case info via LEFT JOIN (aggregated to handle multiple active cases)
 router.get('/', async (req, res) => {
   try {
     const { enabled, orderBy } = req.query;
-    
+
     let query = `
       SELECT s.section_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model,
-             sc.case_id as active_case_id, c.case_title as active_case_title
+             COUNT(sc.case_id) as active_case_count,
+             GROUP_CONCAT(c.case_title ORDER BY c.case_title SEPARATOR ', ') as active_case_titles
       FROM sections s
       LEFT JOIN section_cases sc ON s.section_id = sc.section_id AND sc.active = TRUE
       LEFT JOIN cases c ON sc.case_id = c.case_id
     `;
     const params = [];
-    
+
     if (enabled !== undefined) {
       query += ' WHERE s.enabled = ?';
       params.push(enabled === 'true' ? 1 : 0);
     }
-    
+
+    // Group by section to aggregate active cases
+    query += ' GROUP BY s.section_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model';
+
     // Default ordering: year_term DESC, section_title ASC
     query += ' ORDER BY s.year_term DESC, s.section_title ASC';
-    
+
     const [rows] = await pool.execute(query, params);
     res.json({ data: rows, error: null });
   } catch (error) {
@@ -40,18 +44,20 @@ router.get('/:id', async (req, res) => {
   try {
     const [rows] = await pool.execute(
       `SELECT s.section_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model,
-              sc.case_id as active_case_id, c.case_title as active_case_title
+              COUNT(sc.case_id) as active_case_count,
+              GROUP_CONCAT(c.case_title ORDER BY c.case_title SEPARATOR ', ') as active_case_titles
        FROM sections s
        LEFT JOIN section_cases sc ON s.section_id = sc.section_id AND sc.active = TRUE
        LEFT JOIN cases c ON sc.case_id = c.case_id
-       WHERE s.section_id = ?`,
+       WHERE s.section_id = ?
+       GROUP BY s.section_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model`,
       [req.params.id]
     );
-    
+
     if (rows.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Section not found' } });
     }
-    
+
     res.json({ data: rows[0], error: null });
   } catch (error) {
     console.error('Error fetching section:', error);

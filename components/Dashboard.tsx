@@ -44,8 +44,8 @@ interface SectionStat {
   super_model: string | null;
   enabled?: boolean;
   accept_new_students?: boolean;
-  active_case_id?: string | null;
-  active_case_title?: string | null;
+  active_case_count?: number;
+  active_case_titles?: string | null;
 }
 
 interface StudentDetail {
@@ -500,7 +500,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
     const { data: sections, error: sectionsError } = await api
       .from('sections')
-      .select('section_id, section_title, year_term, chat_model, super_model, enabled, active_case_id, active_case_title')
+      .select('section_id, section_title, year_term, chat_model, super_model, enabled, active_case_count, active_case_titles')
       .order('year_term', { ascending: false })
       .order('section_title', { ascending: true });
 
@@ -1482,6 +1482,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       setExpandedScenarios(null);
       setAvailableScenariosForCase([]);
       setAssignedScenarios([]);
+      setAssignmentPositions([]);
       return;
     }
 
@@ -1514,10 +1515,33 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         selection_mode: assignedData.selection_mode || sectionCase.selection_mode || 'student_choice',
         require_order: assignedData.require_order ?? sectionCase.require_order ?? false
       });
+
+      // Also load positions for this assignment (needed for displaying under scenarios)
+      const positionsResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const positionsResult = await positionsResponse.json();
+      if (positionsResult.data) {
+        setAssignmentPositions(positionsResult.data);
+      }
+
+      // Load position settings from section_cases
+      const settingsResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/position-settings`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const settingsResult = await settingsResponse.json();
+      if (settingsResult.data) {
+        setPositionSettings({
+          position_tracking_enabled: settingsResult.data.position_tracking_enabled ?? false,
+          position_capture_method: settingsResult.data.position_capture_method || 'explicit',
+          track_position_change: settingsResult.data.track_position_change ?? true
+        });
+      }
     } catch (err) {
       console.error('Failed to load scenario assignments:', err);
       setAvailableScenariosForCase([]);
       setAssignedScenarios([]);
+      setAssignmentPositions([]);
     } finally {
       setIsLoadingScenarioAssignment(false);
     }
@@ -1564,6 +1588,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     setIsSavingScenarioAssignment(true);
     try {
       const token = localStorage.getItem('admin_auth_token');
+
+      // Save scenario selection settings
       const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/selection-mode`, {
         method: 'PATCH',
         headers: {
@@ -1576,6 +1602,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       if (!response.ok || result.error) {
         throw new Error(result.error?.message || 'Failed to update scenario settings');
       }
+
+      // Also save position tracking settings if there are positions defined
+      if (assignmentPositions.length > 0) {
+        const positionResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/position-settings`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify(positionSettings)
+        });
+        const positionResult = await positionResponse.json();
+        if (!positionResponse.ok || positionResult.error) {
+          throw new Error(positionResult.error?.message || 'Failed to update position settings');
+        }
+      }
+
       // Refresh section cases
       if (expandedAssignmentSection) {
         fetchSectionCases(expandedAssignmentSection);
@@ -2979,6 +3022,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                               Scenarios
                             </button>
                             <button
+                              onClick={() => handleExpandPositionSettings(selectedAssignmentSection!, sc.case_id, sc)}
+                              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                                expandedPositionSettings === sc.case_id
+                                  ? 'bg-purple-100 text-purple-700 border-purple-200'
+                                  : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-purple-50'
+                              }`}
+                            >
+                              Positions
+                            </button>
+                            <button
                               onClick={() => handleExpandScheduling(sc.case_id, sc)}
                               className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
                                 expandedScheduling === sc.case_id
@@ -2989,38 +3042,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                               Scheduling
                             </button>
                             <button
-                              onClick={() => handleExpandPositionSettings(selectedAssignmentSection!, sc.case_id, sc)}
-                              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
-                                expandedPositionSettings === sc.case_id
-                                  ? 'bg-purple-100 text-purple-700 border-purple-200'
-                                  : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-purple-50'
+                              onClick={() => sc.active
+                                ? handleDeactivateSectionCase(selectedAssignmentSection!, sc.case_id)
+                                : handleActivateSectionCase(selectedAssignmentSection!, sc.case_id)
+                              }
+                              className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
+                                sc.active
+                                  ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
                               }`}
+                              title={sc.active ? 'Click to make inactive (students cannot select)' : 'Click to make active (students can select)'}
                             >
-                              Positions
+                              {sc.active ? 'Active' : 'Inactive'}
                             </button>
-                            {sc.active ? (
-                              <button
-                                onClick={() => handleDeactivateSectionCase(selectedAssignmentSection!, sc.case_id)}
-                                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
-                              >
-                                Active
-                              </button>
-                            ) : (
-                              <button
-                                onClick={() => handleActivateSectionCase(selectedAssignmentSection!, sc.case_id)}
-                                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-600"
-                              >
-                                Set Active
-                              </button>
-                            )}
                             <button
                               onClick={() => handleRemoveCaseFromSection(selectedAssignmentSection!, sc.case_id)}
-                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
-                              title="Remove from section"
+                              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-50 text-red-600 border border-gray-200 hover:bg-red-50 hover:border-red-200"
                             >
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                              </svg>
+                              Remove
                             </button>
                           </div>
                         </div>
@@ -3045,7 +3084,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                   <input
                                     type="checkbox"
                                     checked={scenarioSettings.use_scenarios}
-                                    onChange={(e) => setScenarioSettings({...scenarioSettings, use_scenarios: e.target.checked})}
+                                    onChange={(e) => {
+                                      if (!e.target.checked) {
+                                        // Show warning when disabling scenarios
+                                        if (!window.confirm('Without a scenario the chat will not have a topic to discuss. Are you sure you want to disable scenarios?')) {
+                                          return;
+                                        }
+                                      }
+                                      setScenarioSettings({...scenarioSettings, use_scenarios: e.target.checked});
+                                    }}
                                     className="rounded border-gray-300"
                                   />
                                   <span className="font-medium">Enable scenarios for this section-case</span>
@@ -3053,22 +3100,118 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
                                 {scenarioSettings.use_scenarios && (
                                   <>
-                                    {/* Selection Mode */}
+                                    {/* Scenario Checkboxes - now ABOVE selection mode */}
                                     <div>
-                                      <label className="block text-xs font-medium text-gray-700 mb-1">Selection Mode</label>
-                                      <select
-                                        value={scenarioSettings.selection_mode}
-                                        onChange={(e) => setScenarioSettings({...scenarioSettings, selection_mode: e.target.value})}
-                                        className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
-                                      >
-                                        <option value="student_choice">Student Choice (pick any one)</option>
-                                        <option value="all_required">All Required (must complete all)</option>
-                                      </select>
+                                      <label className="block text-xs font-medium text-gray-700 mb-2">Assign Scenarios</label>
+                                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                                        {availableScenariosForCase.map((scenario) => {
+                                          const isAssigned = Array.isArray(assignedScenarios) && assignedScenarios.some(a => a.scenario_id === scenario.id);
+                                          // Get positions for this scenario
+                                          const scenarioPositions = assignmentPositions.filter((p: any) => p.scenario_id === scenario.id);
+                                          return (
+                                            <div key={scenario.id} className="bg-white rounded border border-gray-200">
+                                              <label className="flex items-start gap-2 text-sm p-2 hover:bg-gray-50 cursor-pointer">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={isAssigned}
+                                                  onChange={() => handleToggleScenarioAssignment(selectedAssignmentSection!, sc.case_id, scenario.id, isAssigned)}
+                                                  className="mt-0.5 rounded border-gray-300"
+                                                />
+                                                <div className="flex-1">
+                                                  <div className="font-medium text-gray-900">{scenario.scenario_name}</div>
+                                                  <div className="text-xs text-gray-500">
+                                                    {scenario.protagonist}
+                                                    {scenario.chat_time_limit > 0 && ` • ${scenario.chat_time_limit}min limit`}
+                                                  </div>
+                                                </div>
+                                              </label>
+                                              {/* Positions under this scenario */}
+                                              {isAssigned && scenarioPositions.length > 0 && (
+                                                <div className="px-2 pb-2 ml-6 border-t border-gray-100">
+                                                  <div className="text-xs font-medium text-gray-600 mt-2 mb-1">Defined Positions:</div>
+                                                  <div className="space-y-1">
+                                                    {scenarioPositions.map((pos: any) => (
+                                                      <div
+                                                        key={pos.position_id}
+                                                        className={`flex items-center justify-between p-1.5 rounded text-xs ${
+                                                          pos.enabled !== false ? 'bg-gray-50' : 'bg-gray-100 opacity-60'
+                                                        }`}
+                                                      >
+                                                        <div className="flex items-center gap-1">
+                                                          <span className="text-gray-400">{pos.position_order}.</span>
+                                                          <span className="font-medium">{pos.position_name}</span>
+                                                        </div>
+                                                        <button
+                                                          onClick={() => handleToggleAssignmentPosition(selectedAssignmentSection!, sc.case_id, pos.position_id)}
+                                                          className={`px-1.5 py-0.5 text-xs rounded ${
+                                                            pos.enabled !== false
+                                                              ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                                                              : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                                                          }`}
+                                                          title={pos.position}
+                                                        >
+                                                          {pos.enabled !== false ? 'on' : 'off'}
+                                                        </button>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                </div>
+                                              )}
+                                              {isAssigned && scenarioPositions.length === 0 && (
+                                                <div className="px-2 pb-2 ml-6 border-t border-gray-100">
+                                                  <p className="text-xs text-gray-500 mt-1 italic">No positions defined for this scenario</p>
+                                                </div>
+                                              )}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
                                     </div>
+
+                                    {/* Selection Mode - radio buttons, below scenarios */}
+                                    {(() => {
+                                      const assignedCount = Array.isArray(assignedScenarios) ? assignedScenarios.length : 0;
+                                      if (assignedCount <= 1) {
+                                        return (
+                                          <div className="text-xs text-gray-500 italic">
+                                            Selection Mode: Only one scenario {assignedCount === 1 ? 'assigned' : 'available'}
+                                          </div>
+                                        );
+                                      }
+                                      return (
+                                        <div>
+                                          <label className="block text-xs font-medium text-gray-700 mb-2">Selection Mode</label>
+                                          <div className="space-y-2">
+                                            <label className="flex items-center gap-2 text-sm cursor-pointer">
+                                              <input
+                                                type="radio"
+                                                name={`selection_mode_${sc.case_id}`}
+                                                value="student_choice"
+                                                checked={scenarioSettings.selection_mode === 'student_choice'}
+                                                onChange={(e) => setScenarioSettings({...scenarioSettings, selection_mode: e.target.value})}
+                                                className="text-green-600"
+                                              />
+                                              Student Choice (pick any one)
+                                            </label>
+                                            <label className="flex items-center gap-2 text-sm cursor-pointer">
+                                              <input
+                                                type="radio"
+                                                name={`selection_mode_${sc.case_id}`}
+                                                value="all_required"
+                                                checked={scenarioSettings.selection_mode === 'all_required'}
+                                                onChange={(e) => setScenarioSettings({...scenarioSettings, selection_mode: e.target.value})}
+                                                className="text-green-600"
+                                              />
+                                              All Required (must complete all)
+                                            </label>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
 
                                     {/* Require Order (only for all_required) */}
                                     {scenarioSettings.selection_mode === 'all_required' && (
-                                      <label className="flex items-center gap-2 text-sm">
+                                      <label className="flex items-center gap-2 text-sm ml-6">
                                         <input
                                           type="checkbox"
                                           checked={scenarioSettings.require_order}
@@ -3079,32 +3222,27 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                       </label>
                                     )}
 
-                                    {/* Scenario Checkboxes */}
-                                    <div>
-                                      <label className="block text-xs font-medium text-gray-700 mb-2">Assign Scenarios</label>
-                                      <div className="space-y-2 max-h-48 overflow-y-auto">
-                                        {availableScenariosForCase.map((scenario) => {
-                                          const isAssigned = Array.isArray(assignedScenarios) && assignedScenarios.some(a => a.scenario_id === scenario.id);
-                                          return (
-                                            <label key={scenario.id} className="flex items-start gap-2 text-sm p-2 bg-white rounded border border-gray-200 hover:bg-gray-50">
-                                              <input
-                                                type="checkbox"
-                                                checked={isAssigned}
-                                                onChange={() => handleToggleScenarioAssignment(selectedAssignmentSection!, sc.case_id, scenario.id, isAssigned)}
-                                                className="mt-0.5 rounded border-gray-300"
-                                              />
-                                              <div className="flex-1">
-                                                <div className="font-medium text-gray-900">{scenario.scenario_name}</div>
-                                                <div className="text-xs text-gray-500">
-                                                  {scenario.protagonist}
-                                                  {scenario.chat_time_limit > 0 && ` • ${scenario.chat_time_limit}min limit`}
-                                                </div>
-                                              </div>
-                                            </label>
-                                          );
-                                        })}
+                                    {/* View/Hide Positions Button */}
+                                    {assignmentPositions.length > 0 && (
+                                      <div className="pt-3 border-t border-gray-200">
+                                        <button
+                                          onClick={() => {
+                                            if (expandedPositionSettings === sc.case_id) {
+                                              setExpandedPositionSettings(null);
+                                            } else {
+                                              handleExpandPositionSettings(selectedAssignmentSection!, sc.case_id, sc);
+                                            }
+                                          }}
+                                          className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                                            expandedPositionSettings === sc.case_id
+                                              ? 'bg-purple-100 text-purple-700 border-purple-300'
+                                              : 'bg-purple-50 text-purple-600 border-purple-200 hover:bg-purple-100'
+                                          }`}
+                                        >
+                                          {expandedPositionSettings === sc.case_id ? 'Hide Positions' : 'View Positions'}
+                                        </button>
                                       </div>
-                                    </div>
+                                    )}
                                   </>
                                 )}
 
@@ -3227,33 +3365,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
                                 {positionSettings.position_tracking_enabled && (
                                   <div className="ml-6 space-y-3">
-                                    {/* Capture Method */}
-                                    <div>
-                                      <label className="block text-xs font-medium text-gray-700 mb-1">Position Capture Method</label>
-                                      <select
-                                        value={positionSettings.position_capture_method}
-                                        onChange={(e) => setPositionSettings({...positionSettings, position_capture_method: e.target.value})}
-                                        className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
-                                      >
-                                        <option value="explicit">Student selects position</option>
-                                        <option value="ai_inferred">AI infers from conversation</option>
-                                        <option value="instructor_manual">Instructor assigns after review</option>
-                                        <option value="none">No position capture</option>
-                                      </select>
-                                    </div>
-
-                                    {/* Track Position Change */}
-                                    <label className="flex items-center gap-2 text-sm">
-                                      <input
-                                        type="checkbox"
-                                        checked={positionSettings.track_position_change}
-                                        onChange={(e) => setPositionSettings({...positionSettings, track_position_change: e.target.checked})}
-                                        className="rounded border-gray-300"
-                                      />
-                                      Track if student's position changes during chat
-                                    </label>
-
-                                    {/* Available Positions */}
+                                    {/* Available Positions - now first */}
                                     {assignmentPositions.length > 0 && (
                                       <div>
                                         <label className="block text-xs font-medium text-gray-700 mb-2">
@@ -3288,16 +3400,66 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                           ))}
                                         </div>
                                         <p className="text-xs text-gray-500 mt-2">
-                                          Note: To add or edit positions, go to Cases &gt; Scenarios for this case.
+                                          Note: To add or edit positions, go to{' '}
+                                          <button
+                                            onClick={() => {
+                                              setActiveTab('cases');
+                                              setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title } as Case);
+                                              setShowScenarioManager(true);
+                                              setExpandedPositionSettings(null);
+                                            }}
+                                            className="text-purple-600 hover:text-purple-800 underline font-medium"
+                                          >
+                                            Cases &gt; Scenarios
+                                          </button>{' '}
+                                          for this case.
                                         </p>
                                       </div>
                                     )}
 
                                     {assignmentPositions.length === 0 && (
                                       <div className="text-sm text-gray-600 bg-yellow-50 p-3 rounded-lg border border-yellow-200">
-                                        No positions defined for this case's scenarios yet. Go to <strong>Cases</strong> &gt; <strong>Scenarios</strong> to define positions.
+                                        No positions defined for this case's scenarios yet.{' '}
+                                        <button
+                                          onClick={() => {
+                                            setActiveTab('cases');
+                                            setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title } as Case);
+                                            setShowScenarioManager(true);
+                                            setExpandedPositionSettings(null);
+                                          }}
+                                          className="text-purple-600 hover:text-purple-800 underline font-medium"
+                                        >
+                                          Go to Cases &gt; Scenarios
+                                        </button>{' '}
+                                        to define positions.
                                       </div>
                                     )}
+
+                                    {/* Capture Method - now after positions */}
+                                    <div>
+                                      <label className="block text-xs font-medium text-gray-700 mb-1">Position Capture Method</label>
+                                      <select
+                                        value={positionSettings.position_capture_method}
+                                        onChange={(e) => setPositionSettings({...positionSettings, position_capture_method: e.target.value})}
+                                        className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                                      >
+                                        <option value="explicit">Student selects position</option>
+                                        <option value="ai_inferred">AI infers from conversation</option>
+                                        <option value="instructor_manual">Instructor assigns after review</option>
+                                        <option value="none">No position capture</option>
+                                      </select>
+                                    </div>
+
+                                    {/* Track Position Change - now last */}
+                                    <label className="flex items-center gap-2 text-sm">
+                                      <input
+                                        type="checkbox"
+                                        checked={positionSettings.track_position_change}
+                                        onChange={(e) => setPositionSettings({...positionSettings, track_position_change: e.target.checked})}
+                                        className="rounded border-gray-300"
+                                      />
+                                      Track if student's position changes during chat
+                                    </label>
                                   </div>
                                 )}
 
@@ -5459,7 +5621,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     <tr>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Section</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Term</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Active Case</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Active Cases</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Students</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">New Students</th>
@@ -5505,13 +5667,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                             <button
                               onClick={(e) => { e.stopPropagation(); handleOpenSectionCasesModal(section); }}
                               className={`px-2 py-1 text-xs font-medium rounded-lg border transition-colors ${
-                                section.active_case_title 
+                                section.active_case_count && section.active_case_count > 0
                                   ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                                   : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
                               }`}
-                              title="Manage case assignments"
+                              title={section.active_case_titles || 'Manage case assignments'}
                             >
-                              {section.active_case_title || 'No case'}
+                              {section.active_case_count && section.active_case_count > 0
+                                ? `${section.active_case_count} active`
+                                : 'No case'}
                             </button>
                           ) : (
                             <span className="text-xs text-gray-400">-</span>
@@ -6039,29 +6203,25 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                             >
                               Options
                             </button>
-                            {sc.active ? (
-                              <button
-                                onClick={() => handleDeactivateSectionCase(managingSectionCases.section_id, sc.case_id)}
-                                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
-                              >
-                                Active
-                              </button>
-                            ) : (
-                              <button
-                                onClick={() => handleActivateSectionCase(managingSectionCases.section_id, sc.case_id)}
-                                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-600"
-                              >
-                                Set Active
-                              </button>
-                            )}
+                            <button
+                              onClick={() => sc.active
+                                ? handleDeactivateSectionCase(managingSectionCases.section_id, sc.case_id)
+                                : handleActivateSectionCase(managingSectionCases.section_id, sc.case_id)
+                              }
+                              className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
+                                sc.active
+                                  ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                              }`}
+                              title={sc.active ? 'Click to make inactive (students cannot select)' : 'Click to make active (students can select)'}
+                            >
+                              {sc.active ? 'Active' : 'Inactive'}
+                            </button>
                             <button
                               onClick={() => handleRemoveCaseFromSection(managingSectionCases.section_id, sc.case_id)}
-                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
-                              title="Remove from section"
+                              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-50 text-red-600 border border-gray-200 hover:bg-red-50 hover:border-red-200"
                             >
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                              </svg>
+                              Remove
                             </button>
                           </div>
                         </div>

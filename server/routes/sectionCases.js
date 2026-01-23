@@ -13,7 +13,7 @@ router.get('/:sectionId/cases', async (req, res) => {
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
               sc.open_date, sc.close_date, sc.manual_status,
               sc.selection_mode, sc.require_order, sc.use_scenarios,
-              c.case_title, c.protagonist, c.protagonist_initials, c.chat_topic, c.chat_question, c.enabled as case_enabled
+              c.case_title, c.enabled as case_enabled
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
        WHERE sc.section_id = ?
@@ -101,7 +101,7 @@ router.get('/:sectionId/active-case', async (req, res) => {
               sc.open_date, sc.close_date, sc.manual_status,
               sc.selection_mode, sc.require_order, sc.use_scenarios,
               sc.position_tracking_enabled, sc.position_capture_method, sc.track_position_change,
-              c.case_title, c.protagonist, c.protagonist_initials, c.chat_topic, c.chat_question
+              c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
        WHERE sc.section_id = ? AND sc.active = TRUE AND c.enabled = TRUE
@@ -242,23 +242,17 @@ router.post('/:sectionId/cases', verifyToken, requireRole(['admin']), async (req
       return res.status(409).json({ data: null, error: { message: 'Case is already assigned to this section' } });
     }
 
-    // If setting this case as active, deactivate all others first
-    if (active) {
-      await pool.execute(
-        'UPDATE section_cases SET active = FALSE WHERE section_id = ?',
-        [sectionId]
-      );
-    }
-
     // Insert the assignment with scheduling fields
+    // New cases default to active=true (multiple cases can be active, students choose)
     const chatOptionsJson = chat_options ? JSON.stringify(chat_options) : null;
+    const isActive = active !== false; // Default to true unless explicitly set to false
     await pool.execute(
       `INSERT INTO section_cases (section_id, case_id, active, chat_options, open_date, close_date, manual_status)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         sectionId,
         case_id,
-        active ? 1 : 0,
+        isActive ? 1 : 0,
         chatOptionsJson,
         open_date || null,
         close_date || null,
@@ -270,7 +264,7 @@ router.post('/:sectionId/cases', verifyToken, requireRole(['admin']), async (req
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
               sc.open_date, sc.close_date, sc.manual_status,
-              c.case_title, c.protagonist, c.protagonist_initials
+              c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
        WHERE sc.section_id = ? AND sc.case_id = ?`,
@@ -311,27 +305,22 @@ router.delete('/:sectionId/cases/:caseId', verifyToken, requireRole(['admin']), 
 });
 
 // PATCH /api/sections/:sectionId/cases/:caseId/activate - Set this case as active (admin only)
+// Note: Multiple cases can be active simultaneously - students can choose from active cases
 router.patch('/:sectionId/cases/:caseId/activate', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { sectionId, caseId } = req.params;
-    
+
     // Check if assignment exists
     const [existing] = await pool.execute(
       'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
       [sectionId, caseId]
     );
-    
+
     if (existing.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
     }
-    
-    // Deactivate all cases for this section
-    await pool.execute(
-      'UPDATE section_cases SET active = FALSE WHERE section_id = ?',
-      [sectionId]
-    );
-    
-    // Activate the specified case
+
+    // Activate this case (no longer deactivates other cases - multiple can be active)
     await pool.execute(
       'UPDATE section_cases SET active = TRUE WHERE section_id = ? AND case_id = ?',
       [sectionId, caseId]
@@ -341,7 +330,7 @@ router.patch('/:sectionId/cases/:caseId/activate', verifyToken, requireRole(['ad
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
               sc.open_date, sc.close_date, sc.manual_status,
-              c.case_title, c.protagonist, c.protagonist_initials
+              c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
        WHERE sc.section_id = ? AND sc.case_id = ?`,
@@ -368,7 +357,7 @@ router.patch('/:sectionId/cases/:caseId/deactivate', verifyToken, requireRole(['
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
               sc.open_date, sc.close_date, sc.manual_status,
-              c.case_title, c.protagonist, c.protagonist_initials
+              c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
        WHERE sc.section_id = ? AND sc.case_id = ?`,
@@ -407,7 +396,7 @@ router.patch('/:sectionId/cases/:caseId/options', verifyToken, requireRole(['adm
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
               sc.open_date, sc.close_date, sc.manual_status,
-              c.case_title, c.protagonist, c.protagonist_initials
+              c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
        WHERE sc.section_id = ? AND sc.case_id = ?`,
@@ -481,7 +470,7 @@ router.patch('/:sectionId/cases/:caseId/scheduling', verifyToken, requireRole(['
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
               sc.open_date, sc.close_date, sc.manual_status,
-              c.case_title, c.protagonist, c.protagonist_initials
+              c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
        WHERE sc.section_id = ? AND sc.case_id = ?`,

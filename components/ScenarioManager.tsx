@@ -599,7 +599,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
           ) : showPositionForm ? (
             /* Position Form */
             <div className="space-y-4">
-              <div className="flex justify-between items-center mb-4">
+              <div className="flex justify-between items-center mb-2">
                 <h3 className="text-lg font-medium">
                   {editingPosition ? 'Edit Position' : 'Define Position'}
                 </h3>
@@ -609,6 +609,12 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                 >
                   &larr; Back to scenario
                 </button>
+              </div>
+
+              {/* Chat Question Context */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+                <div className="text-xs font-medium text-blue-600 uppercase tracking-wide mb-1">Chat Question</div>
+                <p className="text-sm text-blue-900">{formData.chat_question || 'No chat question defined'}</p>
               </div>
 
               <div>

@@ -48,13 +48,18 @@ case_files/          # Uploaded case documents organized by case_id
 - Token stored in localStorage as `auth_token`
 
 ### Database Migrations
-Run migrations in order after initial schema. Use the dev credentials from `.claude/settings.local.json` (user: `claudecode@localhost`):
+Run migrations in order after initial schema. Use the dev credentials (user: `claudecode@localhost`, password: `fordevonly`).
+
+**MySQL full path on this machine:**
 ```bash
-mysql -u claudecode -pdevonly ceochat < docs/mysql-database-structure-Oct2025.sql
-mysql -u claudecode -pdevonly ceochat < server/migrations/add_admin_auth.sql
-mysql -u claudecode -pdevonly ceochat < server/migrations/add_cases_tables.sql
-mysql -u claudecode -pdevonly ceochat < server/migrations/001_case_prep_and_prompts.sql
-# ... continue with 002, 003, 004, 005
+"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat < server/migrations/018_example.sql
+```
+
+Example migration sequence:
+```bash
+"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat < docs/mysql-database-structure-Oct2025.sql
+"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat < server/migrations/add_admin_auth.sql
+# ... continue with numbered migrations in order
 ```
 
 ## Key Architectural Patterns

@@ -147,8 +147,9 @@ const App: React.FC = () => {
   const [scenarioRequireOrder, setScenarioRequireOrder] = useState(false);
   const [useScenarios, setUseScenarios] = useState(false);
   
-  // Case completion tracking
+  // Case and scenario completion tracking
   const [caseCompletionStatus, setCaseCompletionStatus] = useState<Record<string, { completed: boolean; allowRechat: boolean }>>({});
+  const [scenarioCompletionStatus, setScenarioCompletionStatus] = useState<Record<number, { completed: boolean; allowRechat: boolean }>>({});
 
   const isLargeScreen = useMediaQuery('(min-width: 1024px)');
   const direction = isLargeScreen ? 'vertical' : 'horizontal';
@@ -413,13 +414,14 @@ const App: React.FC = () => {
     if (!sectionId || sectionId === 'other') {
       setAvailableCases([]);
       setSelectedCaseId(null);
+      setSelectedScenarioId(null);
       return;
     }
-    
+
     setIsLoadingAvailableCases(true);
     try {
       const { data, error } = await api.from(`sections/${sectionId}/cases`).select('*');
-      
+
       if (error) {
         console.error('Error fetching section cases:', error);
         setAvailableCases([]);
@@ -427,38 +429,69 @@ const App: React.FC = () => {
         // Filter to only show active cases
         const activeCases = (data || []).filter((c: any) => c.active && c.case_enabled !== false);
         setAvailableCases(activeCases);
-        
-        // Check completion status for each case
+
+        // Check completion status for each case and scenario
         if (sessionUser?.id && activeCases.length > 0) {
-          const completionStatuses: Record<string, { completed: boolean; allowRechat: boolean }> = {};
+          const caseCompletionStatuses: Record<string, { completed: boolean; allowRechat: boolean }> = {};
+          const scenarioCompletionStatuses: Record<number, { completed: boolean; allowRechat: boolean }> = {};
+
           for (const caseItem of activeCases) {
             try {
+              // Check case-level completion
               const response = await fetch(`${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}`);
               const result = await response.json();
               if (result.data) {
-                completionStatuses[caseItem.case_id] = {
+                caseCompletionStatuses[caseItem.case_id] = {
                   completed: result.data.completed,
                   allowRechat: result.data.allow_rechat
                 };
+              }
+
+              // Check scenario-level completion for each scenario
+              if (caseItem.scenarios && caseItem.scenarios.length > 0) {
+                for (const scenario of caseItem.scenarios) {
+                  try {
+                    const scenarioResponse = await fetch(
+                      `${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}?scenario_id=${scenario.scenario_id}`
+                    );
+                    const scenarioResult = await scenarioResponse.json();
+                    if (scenarioResult.data) {
+                      scenarioCompletionStatuses[scenario.scenario_id] = {
+                        completed: scenarioResult.data.completed,
+                        allowRechat: scenarioResult.data.allow_rechat
+                      };
+                    }
+                  } catch (e) {
+                    console.error('Error checking scenario completion:', e);
+                  }
+                }
               }
             } catch (e) {
               console.error('Error checking completion:', e);
             }
           }
-          setCaseCompletionStatus(completionStatuses);
+          setCaseCompletionStatus(caseCompletionStatuses);
+          setScenarioCompletionStatus(scenarioCompletionStatuses);
         }
-        
-        // Auto-select if only one case available and not completed (or allow_rechat)
-        if (activeCases.length === 1) {
-          const caseId = activeCases[0].case_id;
-          const status = caseCompletionStatus[caseId];
-          if (!status?.completed || status?.allowRechat) {
-            setSelectedCaseId(caseId);
-          } else {
-            setSelectedCaseId(null);
+
+        // Build flattened list of available chats (scenarios)
+        // Auto-select if only one scenario available across all cases
+        const allScenarios: Array<{ caseId: string; scenarioId: number }> = [];
+        for (const caseItem of activeCases) {
+          if (caseItem.scenarios && caseItem.scenarios.length > 0) {
+            for (const scenario of caseItem.scenarios) {
+              allScenarios.push({ caseId: caseItem.case_id, scenarioId: scenario.scenario_id });
+            }
           }
+        }
+
+        if (allScenarios.length === 1) {
+          const { caseId, scenarioId } = allScenarios[0];
+          setSelectedCaseId(caseId);
+          setSelectedScenarioId(scenarioId);
         } else {
           setSelectedCaseId(null);
+          setSelectedScenarioId(null);
         }
       }
     } catch (err) {
@@ -659,7 +692,8 @@ const App: React.FC = () => {
       }
 
       // Build first message using case protagonist and question
-      const firstMessageContent = `Hello ${name}, I am ${caseData.protagonist}, the protagonist of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
+      const roleDescription = caseData.protagonist_role || 'the protagonist';
+      const firstMessageContent = `Hello ${name}, I am ${caseData.protagonist}, ${roleDescription} of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
       const initialHistory: Message[] = [{ role: MessageRole.MODEL, content: firstMessageContent }];
 
       // Create chat session with case data for cache-optimized prompts
@@ -1479,7 +1513,7 @@ const App: React.FC = () => {
               </button>
             )}
 
-            {/* Available Cases for Section */}
+            {/* Available Case Chats (Scenarios) for Section */}
             {isSectionValid && (
               <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
                 <div className="flex items-center justify-between mb-3">
@@ -1498,123 +1532,141 @@ const App: React.FC = () => {
                     Refresh
                   </button>
                 </div>
-                
+
                 {isLoadingAvailableCases ? (
-                  <div className="text-center py-3 text-gray-500 text-sm">Loading available cases...</div>
-                ) : availableCases.length === 0 ? (
-                  <div className="text-center py-3 text-gray-500 text-sm bg-yellow-50 border border-yellow-200 rounded-lg">
-                    Currently no available case chats for this section. Please check back later or contact your instructor.
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {availableCases.map((caseItem) => {
-                      const status = caseCompletionStatus[caseItem.case_id];
-                      const isCompleted = status?.completed && !status?.allowRechat;
-                      const canRechat = status?.completed && status?.allowRechat;
+                  <div className="text-center py-3 text-gray-500 text-sm">Loading available case chats...</div>
+                ) : (() => {
+                  // Flatten cases and scenarios into a single list
+                  const availableChats: Array<{
+                    caseItem: any;
+                    scenario: any;
+                    key: string;
+                  }> = [];
 
-                      // Check scheduling availability
-                      const checkAvailability = () => {
-                        const now = new Date();
-                        if (caseItem.manual_status === 'manually_opened') {
+                  for (const caseItem of availableCases) {
+                    if (caseItem.scenarios && caseItem.scenarios.length > 0) {
+                      for (const scenario of caseItem.scenarios) {
+                        availableChats.push({
+                          caseItem,
+                          scenario,
+                          key: `${caseItem.case_id}-${scenario.scenario_id}`
+                        });
+                      }
+                    }
+                  }
+
+                  if (availableChats.length === 0) {
+                    return (
+                      <div className="text-center py-3 text-gray-500 text-sm bg-yellow-50 border border-yellow-200 rounded-lg">
+                        Currently no available case chats for this section. Please check back later or contact your instructor.
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="space-y-2">
+                      {availableChats.map(({ caseItem, scenario, key }) => {
+                        // Check scenario-level completion
+                        const scenarioStatus = scenarioCompletionStatus[scenario.scenario_id];
+                        const isCompleted = scenarioStatus?.completed && !scenarioStatus?.allowRechat;
+                        const canRechat = scenarioStatus?.completed && scenarioStatus?.allowRechat;
+
+                        // Check case-level scheduling availability
+                        const checkAvailability = () => {
+                          const now = new Date();
+                          if (caseItem.manual_status === 'manually_opened') {
+                            return { available: true, message: null };
+                          }
+                          if (caseItem.manual_status === 'manually_closed') {
+                            return { available: false, message: 'This case has been manually closed by the instructor.' };
+                          }
+                          if (caseItem.open_date && new Date(caseItem.open_date) > now) {
+                            return {
+                              available: false,
+                              message: `Opens ${new Date(caseItem.open_date).toLocaleString()}`
+                            };
+                          }
+                          if (caseItem.close_date && new Date(caseItem.close_date) < now) {
+                            return {
+                              available: false,
+                              message: `Closed ${new Date(caseItem.close_date).toLocaleString()}`
+                            };
+                          }
                           return { available: true, message: null };
-                        }
-                        if (caseItem.manual_status === 'manually_closed') {
-                          return { available: false, message: 'This case has been manually closed by the instructor.' };
-                        }
-                        // Auto mode
-                        if (caseItem.open_date && new Date(caseItem.open_date) > now) {
-                          return {
-                            available: false,
-                            message: `Opens ${new Date(caseItem.open_date).toLocaleString()}`
-                          };
-                        }
-                        if (caseItem.close_date && new Date(caseItem.close_date) < now) {
-                          return {
-                            available: false,
-                            message: `Closed ${new Date(caseItem.close_date).toLocaleString()}`
-                          };
-                        }
-                        return { available: true, message: null };
-                      };
+                        };
 
-                      const availability = checkAvailability();
-                      const isDisabled = isCompleted || !availability.available;
+                        const availability = checkAvailability();
+                        const isDisabled = isCompleted || !availability.available;
+                        const isSelected = selectedCaseId === caseItem.case_id && selectedScenarioId === scenario.scenario_id;
 
-                      return (
-                        <div key={caseItem.case_id}>
-                          <label
-                            className={`flex items-center p-3 rounded-lg border transition-colors ${
-                              isDisabled
-                                ? 'bg-gray-50 border-gray-200 cursor-not-allowed opacity-75'
-                                : selectedCaseId === caseItem.case_id
-                                  ? 'bg-blue-50 border-blue-300 cursor-pointer'
-                                  : 'bg-white border-gray-200 hover:bg-gray-50 cursor-pointer'
-                            }`}
-                          >
-                            <input
-                              type="radio"
-                              name="selectedCase"
-                              value={caseItem.case_id}
-                              checked={selectedCaseId === caseItem.case_id}
-                              onChange={(e) => !isDisabled && setSelectedCaseId(e.target.value)}
-                              disabled={isDisabled}
-                              className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 disabled:opacity-50"
-                            />
-                            <div className="ml-3 flex-1">
-                              <div className="flex items-center justify-between">
-                                <span className={`block font-medium ${isCompleted ? 'text-green-800' : 'text-gray-900'}`}>
-                                  {caseItem.case_title}
+                        const protagonistRole = scenario.protagonist_role ? ` (${scenario.protagonist_role})` : '';
+
+                        return (
+                          <div key={key}>
+                            <label
+                              className={`flex items-start p-3 rounded-lg border transition-colors ${
+                                isDisabled
+                                  ? 'bg-gray-50 border-gray-200 cursor-not-allowed opacity-75'
+                                  : isSelected
+                                    ? 'bg-blue-50 border-blue-300 cursor-pointer'
+                                    : 'bg-white border-gray-200 hover:bg-gray-50 cursor-pointer'
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name="selectedScenario"
+                                value={key}
+                                checked={isSelected}
+                                onChange={() => {
+                                  if (!isDisabled) {
+                                    setSelectedCaseId(caseItem.case_id);
+                                    setSelectedScenarioId(scenario.scenario_id);
+                                  }
+                                }}
+                                disabled={isDisabled}
+                                className="h-4 w-4 mt-0.5 text-blue-600 focus:ring-blue-500 border-gray-300 disabled:opacity-50"
+                              />
+                              <div className="ml-3 flex-1">
+                                <div className="flex items-center justify-between">
+                                  <span className={`block font-medium ${isCompleted ? 'text-green-800' : 'text-gray-900'}`}>
+                                    {caseItem.case_title}
+                                  </span>
+                                  {isCompleted && (
+                                    <span className="text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded">
+                                      ✓ Completed
+                                    </span>
+                                  )}
+                                  {canRechat && (
+                                    <span className="text-xs font-medium text-orange-700 bg-orange-100 px-2 py-0.5 rounded">
+                                      Re-chat Available
+                                    </span>
+                                  )}
+                                  {!availability.available && !isCompleted && (
+                                    <span className="text-xs font-medium text-gray-600 bg-gray-200 px-2 py-0.5 rounded">
+                                      Not Available
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="block text-sm text-gray-600 mt-0.5">
+                                  Chat with {scenario.protagonist}{protagonistRole} about {scenario.scenario_name}.
                                 </span>
-                                {isCompleted && (
-                                  <span className="text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded">
-                                    ✓ Completed
-                                  </span>
-                                )}
-                                {canRechat && (
-                                  <span className="text-xs font-medium text-orange-700 bg-orange-100 px-2 py-0.5 rounded">
-                                    Re-chat Available
-                                  </span>
-                                )}
-                                {!availability.available && !isCompleted && (
-                                  <span className="text-xs font-medium text-gray-600 bg-gray-200 px-2 py-0.5 rounded">
-                                    Not Available
+                                {!availability.available && availability.message && (
+                                  <span className="block text-xs text-amber-600 mt-1">
+                                    {availability.message}
                                   </span>
                                 )}
                               </div>
-                              <span className="block text-xs text-gray-500">Protagonist: {caseItem.protagonist}</span>
-                              {!availability.available && availability.message && (
-                                <span className="block text-xs text-amber-600 mt-1">
-                                  {availability.message}
-                                </span>
-                              )}
-                            </div>
-                          </label>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                
+                            </label>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
                 {isLoadingCase && selectedCaseId && (
                   <p className="mt-2 text-xs text-gray-500">Loading case content...</p>
                 )}
-              </div>
-            )}
-
-            {/* Scenario Selection - show even if case content failed to load */}
-            {selectedCaseId && useScenarios && availableScenarios.length > 0 && (
-              <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                <label className="block text-sm font-medium text-gray-700 mb-3">
-                  Select a Scenario
-                </label>
-                <ScenarioSelector
-                  scenarios={availableScenarios}
-                  selectionMode={scenarioSelectionMode}
-                  requireOrder={scenarioRequireOrder}
-                  selectedScenarioId={selectedScenarioId}
-                  onSelect={(scenarioId) => setSelectedScenarioId(scenarioId)}
-                  allCompleted={allScenariosCompleted}
-                />
               </div>
             )}
 

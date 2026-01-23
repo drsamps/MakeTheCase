@@ -57,34 +57,48 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/evaluations/check-completion/:studentId/:caseId - Check if student has completed a case
+// GET /api/evaluations/check-completion/:studentId/:caseId - Check if student has completed a case or scenario
+// Query params: scenario_id (optional) - filter by specific scenario
 // Returns { completed: boolean, allow_rechat: boolean, evaluation_id: string | null }
 router.get('/check-completion/:studentId/:caseId', async (req, res) => {
   try {
     const { studentId, caseId } = req.params;
-    
-    const [rows] = await pool.execute(
-      `SELECT id, allow_rechat FROM evaluations 
-       WHERE student_id = ? AND case_id = ? 
-       ORDER BY created_at DESC LIMIT 1`,
-      [studentId, caseId]
-    );
-    
+    const { scenario_id } = req.query;
+
+    let query;
+    let params;
+
+    // If scenario_id is provided, join with case_chats to filter by scenario
+    if (scenario_id) {
+      query = `SELECT e.id, e.allow_rechat FROM evaluations e
+         JOIN case_chats cc ON e.case_chat_id = cc.id
+         WHERE e.student_id = ? AND e.case_id = ? AND cc.scenario_id = ?
+         ORDER BY e.created_at DESC LIMIT 1`;
+      params = [studentId, caseId, scenario_id];
+    } else {
+      query = `SELECT id, allow_rechat FROM evaluations
+         WHERE student_id = ? AND case_id = ?
+         ORDER BY created_at DESC LIMIT 1`;
+      params = [studentId, caseId];
+    }
+
+    const [rows] = await pool.execute(query, params);
+
     if (rows.length === 0) {
-      return res.json({ 
-        data: { completed: false, allow_rechat: false, evaluation_id: null }, 
-        error: null 
+      return res.json({
+        data: { completed: false, allow_rechat: false, evaluation_id: null },
+        error: null
       });
     }
-    
+
     const evaluation = rows[0];
-    res.json({ 
-      data: { 
-        completed: true, 
+    res.json({
+      data: {
+        completed: true,
         allow_rechat: !!evaluation.allow_rechat,
         evaluation_id: evaluation.id
-      }, 
-      error: null 
+      },
+      error: null
     });
   } catch (error) {
     console.error('Error checking completion:', error);

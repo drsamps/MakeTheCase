@@ -54,7 +54,7 @@ async function loadFileContent(caseId, filename, fileType) {
 // Now uses ordered prompt context from case_files table
 async function loadCaseData(caseId) {
   const [cases] = await pool.execute(
-    `SELECT case_id, case_title, protagonist, protagonist_initials, chat_topic, chat_question
+    `SELECT case_id, case_title
      FROM cases WHERE case_id = ?`,
     [caseId]
   );

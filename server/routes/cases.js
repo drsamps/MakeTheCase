@@ -59,8 +59,7 @@ router.get('/', async (req, res) => {
     const { enabled, include_scenarios } = req.query;
     let query = `
       SELECT c.case_id, c.case_title, c.case_version, c.base_scenario_id,
-             c.protagonist, c.protagonist_initials,
-             c.chat_topic, c.chat_question, c.created_at, c.enabled
+             c.created_at, c.enabled
       FROM cases c
     `;
     const params = [];
@@ -103,8 +102,7 @@ router.get('/:id', async (req, res) => {
   try {
     const [cases] = await pool.execute(
       `SELECT case_id, case_title, case_version, base_scenario_id,
-              protagonist, protagonist_initials,
-              chat_topic, chat_question, created_at, enabled
+              created_at, enabled
        FROM cases WHERE case_id = ?`,
       [req.params.id]
     );
@@ -135,14 +133,10 @@ router.get('/:id', async (req, res) => {
 // POST /api/cases - Create new case (admin only)
 router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
-    const {
-      case_id, case_title, case_version,
-      protagonist, protagonist_initials, chat_topic, chat_question,
-      enabled
-    } = req.body;
+    const { case_id, case_title, case_version, enabled } = req.body;
 
-    // Only case_id and case_title are required now
-    // Protagonist fields are optional (scenarios have their own protagonists)
+    // Only case_id and case_title are required
+    // Protagonist and chat info are now stored in case_scenarios
     if (!case_id || !case_title) {
       return res.status(400).json({
         data: null,
@@ -157,16 +151,12 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
     }
 
     await pool.execute(
-      `INSERT INTO cases (case_id, case_title, case_version, protagonist, protagonist_initials, chat_topic, chat_question, enabled)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO cases (case_id, case_title, case_version, enabled)
+       VALUES (?, ?, ?, ?)`,
       [
         case_id,
         case_title,
         case_version || null,
-        protagonist || null,
-        protagonist_initials || null,
-        chat_topic || null,
-        chat_question || null,
         enabled !== false ? 1 : 0
       ]
     );
@@ -178,7 +168,7 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
     // Return created case
     const [rows] = await pool.execute(
       `SELECT case_id, case_title, case_version, base_scenario_id,
-              protagonist, protagonist_initials, chat_topic, chat_question, created_at, enabled
+              created_at, enabled
        FROM cases WHERE case_id = ?`,
       [case_id]
     );
@@ -197,9 +187,7 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
     const updates = req.body;
 
     const allowedFields = [
-      'case_title', 'case_version', 'base_scenario_id',
-      'protagonist', 'protagonist_initials', 'chat_topic', 'chat_question',
-      'enabled'
+      'case_title', 'case_version', 'base_scenario_id', 'enabled'
     ];
     const setClauses = [];
     const params = [];
@@ -227,7 +215,7 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
 
     const [rows] = await pool.execute(
       `SELECT case_id, case_title, case_version, base_scenario_id,
-              protagonist, protagonist_initials, chat_topic, chat_question, created_at, enabled
+              created_at, enabled
        FROM cases WHERE case_id = ?`,
       [id]
     );
