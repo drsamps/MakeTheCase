@@ -934,19 +934,20 @@ router.get('/:sectionId/cases/:caseId/positions', async (req, res) => {
     const sectionCaseId = sectionCase[0].id;
 
     // Get all positions for scenarios assigned to this section-case
-    // Include per-assignment enabled override from section_case_positions if exists
+    // Include per-assignment enabled/sort_order override from section_case_positions if exists
     const [rows] = await pool.execute(
       `SELECT sp.position_id, sp.scenario_id, sp.position_name, sp.position, sp.position_order,
               sp.arguments_for, sp.arguments_against, sp.position_enabled as default_enabled,
               cs.scenario_name,
               COALESCE(scp.enabled, sp.position_enabled) as enabled,
+              COALESCE(scp.sort_order, sp.position_order) as sort_order,
               scp.id as override_id
        FROM section_case_scenarios scs
        JOIN case_scenarios cs ON scs.scenario_id = cs.id
        JOIN scenario_positions sp ON sp.scenario_id = cs.id
        LEFT JOIN section_case_positions scp ON scp.section_case_id = ? AND scp.position_id = sp.position_id
        WHERE scs.section_case_id = ? AND scs.enabled = TRUE AND cs.enabled = TRUE
-       ORDER BY cs.scenario_name, sp.position_order ASC`,
+       ORDER BY cs.scenario_name, COALESCE(scp.sort_order, sp.position_order) ASC`,
       [sectionCaseId, sectionCaseId]
     );
 
@@ -1010,6 +1011,58 @@ router.patch('/:sectionId/cases/:caseId/positions/:positionId/toggle', verifyTok
     res.json({ data: { position_id: parseInt(positionId), enabled: newEnabled }, error: null });
   } catch (error) {
     console.error('Error toggling position:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/sections/:sectionId/cases/:caseId/positions/reorder - Reorder positions for this assignment
+router.patch('/:sectionId/cases/:caseId/positions/reorder', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { sectionId, caseId } = req.params;
+    const { positions } = req.body; // Array of { position_id, sort_order }
+
+    if (!Array.isArray(positions)) {
+      return res.status(400).json({ data: null, error: { message: 'positions must be an array' } });
+    }
+
+    // Get the section_case id
+    const [sectionCase] = await pool.execute(
+      'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [sectionId, caseId]
+    );
+
+    if (sectionCase.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    const sectionCaseId = sectionCase[0].id;
+
+    // Update sort_order for each position
+    for (const pos of positions) {
+      // Check if override record exists
+      const [existing] = await pool.execute(
+        'SELECT id FROM section_case_positions WHERE section_case_id = ? AND position_id = ?',
+        [sectionCaseId, pos.position_id]
+      );
+
+      if (existing.length > 0) {
+        // Update existing
+        await pool.execute(
+          'UPDATE section_case_positions SET sort_order = ? WHERE id = ?',
+          [pos.sort_order, existing[0].id]
+        );
+      } else {
+        // Create new record with sort_order (enabled defaults to true)
+        await pool.execute(
+          'INSERT INTO section_case_positions (section_case_id, position_id, enabled, sort_order) VALUES (?, ?, 1, ?)',
+          [sectionCaseId, pos.position_id, pos.sort_order]
+        );
+      }
+    }
+
+    res.json({ data: { success: true }, error: null });
+  } catch (error) {
+    console.error('Error reordering positions:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

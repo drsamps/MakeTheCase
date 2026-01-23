@@ -120,8 +120,10 @@ const SortablePositionItem: React.FC<SortablePositionProps> = ({
     <div
       ref={setNodeRef}
       style={style}
-      className={`flex items-center gap-3 p-3 border rounded-lg ${
-        position.position_enabled ? 'bg-white' : 'bg-gray-50 opacity-75'
+      className={`flex items-center gap-3 p-3 border rounded-lg border-l-4 ${
+        position.position_enabled
+          ? 'bg-white border-l-teal-400'
+          : 'bg-gray-50 opacity-75 border-l-gray-300'
       } ${isDragging ? 'shadow-lg' : ''}`}
     >
       {/* Drag Handle */}
@@ -837,6 +839,14 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
               {/* Defined Positions Section - only show for existing scenarios */}
               {editingScenario && (
                 <div className="border-t pt-4 mt-4">
+                  {/* Hierarchy breadcrumb */}
+                  <div className="text-xs text-gray-500 mb-2 flex items-center gap-1">
+                    <span>{caseTitle}</span>
+                    <span>→</span>
+                    <span className="font-medium text-gray-700">{editingScenario.scenario_name}</span>
+                    <span>→</span>
+                    <span>Positions</span>
+                  </div>
                   <div className="flex justify-between items-center mb-3">
                     <h4 className="text-sm font-semibold text-gray-700">Defined Positions</h4>
                     <div className="flex gap-2 relative">

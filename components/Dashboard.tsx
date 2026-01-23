@@ -19,6 +19,23 @@ import HelpTooltip from './ui/HelpTooltip';
 import { ChatOptionsHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
 import { AdminUser } from '../types';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 // New workflow-centric navigation types
 type PrimaryTab = 'home' | 'courses' | 'content' | 'monitor' | 'results' | 'admin';
@@ -131,6 +148,79 @@ type SortKey = 'full_name' | 'persona' | 'score' | 'hints' | 'helpful' | 'comple
 type SortDirection = 'asc' | 'desc';
 type FilterMode = 'all' | 'completed' | 'in_progress' | 'not_started';
 
+// Sortable Position Item for drag-and-drop reordering
+interface SortablePositionItemProps {
+  position: any;
+  sectionId: string;
+  caseId: string;
+  onToggle: (sectionId: string, caseId: string, positionId: number) => void;
+}
+
+const SortablePositionItem: React.FC<SortablePositionItemProps> = ({ position, sectionId, caseId, onToggle }) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ id: position.position_id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1
+  };
+
+  const handleToggleClick = () => {
+    onToggle(sectionId, caseId, position.position_id);
+  };
+
+  const isEnabled = Boolean(position.enabled);
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`flex items-center justify-between p-2 rounded border border-l-4 ${
+        isEnabled
+          ? 'bg-white border-gray-200 border-l-teal-400'
+          : 'bg-gray-100 border-gray-200 border-l-gray-300 opacity-70'
+      } ${isDragging ? 'shadow-lg z-10' : ''}`}
+    >
+      {/* Drag Handle */}
+      <div
+        {...attributes}
+        {...listeners}
+        className="cursor-grab active:cursor-grabbing p-1 text-gray-400 hover:text-gray-600 mr-2"
+        title="Drag to reorder"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+        </svg>
+      </div>
+      <div className="flex-1">
+        <div className="font-medium text-sm">{position.position_name}</div>
+        <p className="text-xs text-gray-500">{position.position}</p>
+      </div>
+      <button
+        type="button"
+        onClick={handleToggleClick}
+        className={`px-2 py-1 text-xs rounded ${
+          isEnabled
+            ? 'bg-green-100 text-green-700 border border-green-300 hover:bg-green-200'
+            : 'bg-gray-200 text-gray-600 border border-gray-300 hover:bg-gray-300'
+        }`}
+        title={isEnabled
+          ? 'This position is available for student selection, click to disable'
+          : 'Not available for this assignment, click to make available'}
+      >
+        {isEnabled ? 'Available' : 'Disabled ⓘ'}
+      </button>
+    </div>
+  );
+};
+
 const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // New workflow-centric navigation state
   const [primaryTab, setPrimaryTab] = useState<PrimaryTab>('home');
@@ -147,18 +237,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
            hasAccess(user, 'instructors');
   }, [user]);
 
-  // Legacy tab compatibility - determine first accessible tab for the user
-  const getFirstAccessibleTab = (): 'chats' | 'assignments' | 'sections' | 'students' | 'cases' | 'caseprep' | 'personas' | 'prompts' | 'models' | 'settings' | 'instructors' => {
-    const tabs: Array<'chats' | 'assignments' | 'sections' | 'students' | 'cases' | 'caseprep' | 'personas' | 'prompts' | 'models' | 'settings' | 'instructors'> =
-      ['chats', 'assignments', 'sections', 'students', 'cases', 'caseprep', 'personas', 'prompts', 'models', 'settings', 'instructors'];
-    for (const tab of tabs) {
-      if (hasAccess(user, tab)) {
-        return tab;
-      }
-    }
-    return 'sections'; // Fallback
-  };
-
   const [sectionStats, setSectionStats] = useState<SectionStat[]>([]);
   const [selectedSection, setSelectedSection] = useState<SectionStat | null>(null);
   const [resultsInitialSectionId, setResultsInitialSectionId] = useState<string | undefined>(undefined);
@@ -170,7 +248,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [modelsList, setModelsList] = useState<Model[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [testingModelId, setTestingModelId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'chats' | 'assignments' | 'sections' | 'students' | 'cases' | 'caseprep' | 'personas' | 'prompts' | 'models' | 'settings' | 'instructors'>(getFirstAccessibleTab());
   const [showModelModal, setShowModelModal] = useState(false);
   const [editingModel, setEditingModel] = useState<Model | null>(null);
   const [modelForm, setModelForm] = useState<{
@@ -316,6 +393,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [assignmentPositions, setAssignmentPositions] = useState<any[]>([]);
   const [isLoadingPositionSettings, setIsLoadingPositionSettings] = useState(false);
   const [isSavingPositionSettings, setIsSavingPositionSettings] = useState(false);
+
+  // Drag-and-drop sensors for position reordering
+  const positionSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8, // Require 8px of movement before drag starts (allows clicks to work)
+      },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
 
   // Default chat options
   const defaultChatOptions = {
@@ -839,29 +928,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     setResultsInitialSectionId(section.section_id);
     setPrimaryTab('results');
   };
-
-  const handleTabChange = (tab: 'chats' | 'assignments' | 'sections' | 'students' | 'cases' | 'caseprep' | 'personas' | 'prompts' | 'models' | 'settings' | 'instructors') => {
-    if (!hasAccess(user, tab)) {
-      alert(`You don't have access to ${tab}. Contact a superuser for access.`);
-      return;
-    }
-    setActiveTab(tab);
-    if (tab !== 'sections') {
-      setSelectedSection(null);
-    }
-    if (tab === 'cases' && casesList.length === 0) {
-      fetchCases();
-    }
-    if (tab === 'personas' && personasList.length === 0) {
-      fetchPersonas();
-    }
-    if (tab === 'assignments') {
-      fetchAssignmentsSections();
-      if (casesList.length === 0) {
-        fetchCases();
-      }
-    }
-    };
 
   // Personas management functions
   const fetchPersonas = async () => {
@@ -1473,6 +1539,58 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       }
     } catch (err: any) {
       setError(err.message || 'Failed to toggle position');
+    }
+  };
+
+  // Handle drag end for position reordering
+  const handlePositionDragEnd = async (event: DragEndEvent, sectionId: string, caseId: string) => {
+    const { active, over } = event;
+
+    if (!over || active.id === over.id) {
+      return;
+    }
+
+    const oldIndex = assignmentPositions.findIndex(p => p.position_id === active.id);
+    const newIndex = assignmentPositions.findIndex(p => p.position_id === over.id);
+
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    // Reorder locally first for immediate feedback
+    const reordered = arrayMove(assignmentPositions, oldIndex, newIndex);
+    setAssignmentPositions(reordered);
+
+    // Save to API
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const positions = reordered.map((p, idx) => ({
+        position_id: p.position_id,
+        sort_order: idx
+      }));
+
+      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions/reorder`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ positions })
+      });
+
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to reorder positions');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to reorder positions');
+      // Revert on error - refetch positions
+      const token = localStorage.getItem('admin_auth_token');
+      const positionsResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const positionsResult = await positionsResponse.json();
+      if (positionsResult.data) {
+        setAssignmentPositions(positionsResult.data);
+      }
     }
   };
 
@@ -3019,17 +3137,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                   : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-green-50'
                               }`}
                             >
-                              Scenarios
-                            </button>
-                            <button
-                              onClick={() => handleExpandPositionSettings(selectedAssignmentSection!, sc.case_id, sc)}
-                              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
-                                expandedPositionSettings === sc.case_id
-                                  ? 'bg-purple-100 text-purple-700 border-purple-200'
-                                  : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-purple-50'
-                              }`}
-                            >
-                              Positions
+                              Scenarios and Positions
                             </button>
                             <button
                               onClick={() => handleExpandScheduling(sc.case_id, sc)}
@@ -3106,10 +3214,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                       <div className="space-y-2 max-h-64 overflow-y-auto">
                                         {availableScenariosForCase.map((scenario) => {
                                           const isAssigned = Array.isArray(assignedScenarios) && assignedScenarios.some(a => a.scenario_id === scenario.id);
-                                          // Get positions for this scenario
-                                          const scenarioPositions = assignmentPositions.filter((p: any) => p.scenario_id === scenario.id);
                                           return (
-                                            <div key={scenario.id} className="bg-white rounded border border-gray-200">
+                                            <div key={scenario.id} className="bg-white rounded border border-gray-200 border-l-4 border-l-green-400">
                                               <label className="flex items-start gap-2 text-sm p-2 hover:bg-gray-50 cursor-pointer">
                                                 <input
                                                   type="checkbox"
@@ -3125,62 +3231,25 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                                   </div>
                                                 </div>
                                               </label>
-                                              {/* Positions under this scenario */}
-                                              {isAssigned && scenarioPositions.length > 0 && (
-                                                <div className="px-2 pb-2 ml-6 border-t border-gray-100">
-                                                  <div className="text-xs font-medium text-gray-600 mt-2 mb-1">Defined Positions:</div>
-                                                  <div className="space-y-1">
-                                                    {scenarioPositions.map((pos: any) => (
-                                                      <div
-                                                        key={pos.position_id}
-                                                        className={`flex items-center justify-between p-1.5 rounded text-xs ${
-                                                          pos.enabled !== false ? 'bg-gray-50' : 'bg-gray-100 opacity-60'
-                                                        }`}
-                                                      >
-                                                        <div className="flex items-center gap-1">
-                                                          <span className="text-gray-400">{pos.position_order}.</span>
-                                                          <span className="font-medium">{pos.position_name}</span>
-                                                        </div>
-                                                        <button
-                                                          onClick={() => handleToggleAssignmentPosition(selectedAssignmentSection!, sc.case_id, pos.position_id)}
-                                                          className={`px-1.5 py-0.5 text-xs rounded ${
-                                                            pos.enabled !== false
-                                                              ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                                                              : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-                                                          }`}
-                                                          title={pos.position}
-                                                        >
-                                                          {pos.enabled !== false ? 'on' : 'off'}
-                                                        </button>
-                                                      </div>
-                                                    ))}
-                                                  </div>
-                                                </div>
-                                              )}
-                                              {isAssigned && scenarioPositions.length === 0 && (
-                                                <div className="px-2 pb-2 ml-6 border-t border-gray-100">
-                                                  <p className="text-xs text-gray-500 mt-1 italic">No positions defined for this scenario</p>
-                                                </div>
-                                              )}
                                             </div>
                                           );
                                         })}
                                       </div>
                                     </div>
 
-                                    {/* Selection Mode - radio buttons, below scenarios */}
+                                    {/* Scenario Selection Mode - radio buttons, below scenarios */}
                                     {(() => {
                                       const assignedCount = Array.isArray(assignedScenarios) ? assignedScenarios.length : 0;
                                       if (assignedCount <= 1) {
                                         return (
                                           <div className="text-xs text-gray-500 italic">
-                                            Selection Mode: Only one scenario {assignedCount === 1 ? 'assigned' : 'available'}
+                                            Scenario Selection Mode: Only one scenario {assignedCount === 1 ? 'assigned' : 'available'}
                                           </div>
                                         );
                                       }
                                       return (
                                         <div>
-                                          <label className="block text-xs font-medium text-gray-700 mb-2">Selection Mode</label>
+                                          <label className="block text-xs font-medium text-gray-700 mb-2">Scenario Selection Mode</label>
                                           <div className="space-y-2">
                                             <label className="flex items-center gap-2 text-sm cursor-pointer">
                                               <input
@@ -3222,29 +3291,135 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                       </label>
                                     )}
 
-                                    {/* View/Hide Positions Button */}
-                                    {assignmentPositions.length > 0 && (
-                                      <div className="pt-3 border-t border-gray-200">
-                                        <button
-                                          onClick={() => {
-                                            if (expandedPositionSettings === sc.case_id) {
-                                              setExpandedPositionSettings(null);
-                                            } else {
-                                              handleExpandPositionSettings(selectedAssignmentSection!, sc.case_id, sc);
-                                            }
-                                          }}
-                                          className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
-                                            expandedPositionSettings === sc.case_id
-                                              ? 'bg-purple-100 text-purple-700 border-purple-300'
-                                              : 'bg-purple-50 text-purple-600 border-purple-200 hover:bg-purple-100'
-                                          }`}
-                                        >
-                                          {expandedPositionSettings === sc.case_id ? 'Hide Positions' : 'View Positions'}
-                                        </button>
-                                      </div>
-                                    )}
                                   </>
                                 )}
+
+                                {/* Position Tracking Settings */}
+                                <div className="pt-3 mt-3 border-t border-gray-200 space-y-3">
+                                  <h5 className="text-xs font-semibold text-gray-700">Position Tracking</h5>
+
+                                  {/* Enable Position Tracking Toggle */}
+                                  <label className="flex items-center gap-2 text-sm">
+                                    <input
+                                      type="checkbox"
+                                      checked={positionSettings.position_tracking_enabled}
+                                      onChange={(e) => setPositionSettings({...positionSettings, position_tracking_enabled: e.target.checked})}
+                                      className="rounded border-gray-300"
+                                    />
+                                    <span>Enable position tracking for this assignment</span>
+                                  </label>
+
+                                  {/* Case 1: Position tracking enabled but NO positions defined - show message */}
+                                  {positionSettings.position_tracking_enabled && assignmentPositions.length === 0 && (
+                                    <div className="ml-6 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
+                                      No positions have been defined for this case's scenarios yet. To use position tracking, you need to define positions.{' '}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setPrimaryTab('content');
+                                          setContentSubTab('cases');
+                                          setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title } as Case);
+                                          setShowScenarioManager(true);
+                                          setExpandedScenarios(null);
+                                        }}
+                                        className="text-purple-600 hover:text-purple-800 underline font-medium"
+                                      >
+                                        Go to Case Library &gt; Scenarios
+                                      </button>{' '}
+                                      to define positions for each scenario.
+                                    </div>
+                                  )}
+
+                                  {/* Case 2: Position tracking enabled AND positions exist - show full UI */}
+                                  {positionSettings.position_tracking_enabled && assignmentPositions.length > 0 && (
+                                    <div className="ml-6 space-y-3">
+                                      {/* Position Capture Method */}
+                                      <div>
+                                        <label className="block text-xs font-medium text-gray-700 mb-1">Position Capture Method</label>
+                                        <select
+                                          value={positionSettings.position_capture_method}
+                                          onChange={(e) => setPositionSettings({...positionSettings, position_capture_method: e.target.value})}
+                                          className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                                        >
+                                          <option value="explicit">Student selects position</option>
+                                          <option value="ai_inferred">AI infers from conversation</option>
+                                          <option value="instructor_manual">Instructor assigns after review</option>
+                                          <option value="none">No position capture</option>
+                                        </select>
+                                      </div>
+
+                                      {/* Track Position Change */}
+                                      <label className="flex items-center gap-2 text-sm">
+                                        <input
+                                          type="checkbox"
+                                          checked={positionSettings.track_position_change}
+                                          onChange={(e) => setPositionSettings({...positionSettings, track_position_change: e.target.checked})}
+                                          className="rounded border-gray-300"
+                                        />
+                                        Track if student's position changes during chat
+                                      </label>
+
+                                      {/* Available Positions with drag-and-drop reordering */}
+                                      <div>
+                                        <label className="block text-xs font-medium text-gray-700 mb-2">
+                                          Available Positions <span className="text-gray-400 font-normal">(drag to reorder)</span>
+                                        </label>
+                                        <DndContext
+                                          sensors={positionSensors}
+                                          collisionDetection={closestCenter}
+                                          onDragEnd={(event) => handlePositionDragEnd(event, selectedAssignmentSection!, sc.case_id)}
+                                        >
+                                          <SortableContext
+                                            items={assignmentPositions.map(p => p.position_id)}
+                                            strategy={verticalListSortingStrategy}
+                                          >
+                                            <div className="space-y-2">
+                                              {assignmentPositions.map((pos: any) => (
+                                                <SortablePositionItem
+                                                  key={pos.position_id}
+                                                  position={pos}
+                                                  sectionId={selectedAssignmentSection!}
+                                                  caseId={sc.case_id}
+                                                  onToggle={handleToggleAssignmentPosition}
+                                                />
+                                              ))}
+                                            </div>
+                                          </SortableContext>
+                                        </DndContext>
+                                        <p className="text-xs text-gray-500 mt-2">
+                                          Note: To add or edit positions, go to{' '}
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setPrimaryTab('content');
+                                              setContentSubTab('cases');
+                                              setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title } as Case);
+                                              setShowScenarioManager(true);
+                                              setExpandedScenarios(null);
+                                            }}
+                                            className="text-purple-600 hover:text-purple-800 underline font-medium"
+                                          >
+                                            Case Library &gt; Scenarios
+                                          </button>{' '}
+                                          for this case.
+                                        </p>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Save Position Settings Button */}
+                                  {assignmentPositions.length > 0 && (
+                                    <div className="flex justify-end pt-2">
+                                      <button
+                                        onClick={() => handleSavePositionSettings(selectedAssignmentSection!, sc.case_id)}
+                                        disabled={isSavingPositionSettings}
+                                        className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50"
+                                      >
+                                        {isSavingPositionSettings ? 'Saving...' : 'Save Position Settings'}
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
 
                                 {/* Action Buttons */}
                                 <div className="flex justify-end gap-2 pt-2 border-t">
@@ -3341,148 +3516,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           </div>
                         )}
 
-                        {/* Expanded Position Settings */}
-                        {expandedPositionSettings === sc.case_id && (
-                          <div className="p-4 bg-purple-50 border-t border-gray-200 space-y-4">
-                            <h4 className="text-sm font-semibold text-gray-800">Position Tracking Settings</h4>
-
-                            {isLoadingPositionSettings ? (
-                              <div className="text-center py-4">
-                                <div className="inline-block animate-spin rounded-full h-6 w-6 border-4 border-purple-500 border-t-transparent"></div>
-                              </div>
-                            ) : (
-                              <>
-                                {/* Enable Position Tracking Toggle */}
-                                <label className="flex items-center gap-2 text-sm">
-                                  <input
-                                    type="checkbox"
-                                    checked={positionSettings.position_tracking_enabled}
-                                    onChange={(e) => setPositionSettings({...positionSettings, position_tracking_enabled: e.target.checked})}
-                                    className="rounded border-gray-300"
-                                  />
-                                  <span className="font-medium">Enable position tracking for this assignment</span>
-                                </label>
-
-                                {positionSettings.position_tracking_enabled && (
-                                  <div className="ml-6 space-y-3">
-                                    {/* Available Positions - now first */}
-                                    {assignmentPositions.length > 0 && (
-                                      <div>
-                                        <label className="block text-xs font-medium text-gray-700 mb-2">
-                                          Available Positions for This Assignment
-                                        </label>
-                                        <div className="space-y-2 max-h-48 overflow-y-auto">
-                                          {assignmentPositions.map((pos: any) => (
-                                            <div
-                                              key={pos.position_id}
-                                              className={`flex items-center justify-between p-2 rounded border ${
-                                                pos.enabled !== false ? 'bg-white border-gray-200' : 'bg-gray-100 border-gray-200 opacity-60'
-                                              }`}
-                                            >
-                                              <div className="flex-1">
-                                                <div className="flex items-center gap-2">
-                                                  <span className="font-medium text-sm">{pos.position_name}</span>
-                                                  <span className="text-xs text-gray-500">({pos.scenario_name})</span>
-                                                </div>
-                                                <p className="text-xs text-gray-500 truncate">{pos.position}</p>
-                                              </div>
-                                              <button
-                                                onClick={() => handleToggleAssignmentPosition(selectedAssignmentSection!, sc.case_id, pos.position_id)}
-                                                className={`px-2 py-1 text-xs rounded ${
-                                                  pos.enabled !== false
-                                                    ? 'bg-green-100 text-green-700 border border-green-300 hover:bg-green-200'
-                                                    : 'bg-gray-200 text-gray-600 border border-gray-300 hover:bg-gray-300'
-                                                }`}
-                                              >
-                                                {pos.enabled !== false ? 'Enabled' : 'Disabled'}
-                                              </button>
-                                            </div>
-                                          ))}
-                                        </div>
-                                        <p className="text-xs text-gray-500 mt-2">
-                                          Note: To add or edit positions, go to{' '}
-                                          <button
-                                            onClick={() => {
-                                              setActiveTab('cases');
-                                              setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title } as Case);
-                                              setShowScenarioManager(true);
-                                              setExpandedPositionSettings(null);
-                                            }}
-                                            className="text-purple-600 hover:text-purple-800 underline font-medium"
-                                          >
-                                            Cases &gt; Scenarios
-                                          </button>{' '}
-                                          for this case.
-                                        </p>
-                                      </div>
-                                    )}
-
-                                    {assignmentPositions.length === 0 && (
-                                      <div className="text-sm text-gray-600 bg-yellow-50 p-3 rounded-lg border border-yellow-200">
-                                        No positions defined for this case's scenarios yet.{' '}
-                                        <button
-                                          onClick={() => {
-                                            setActiveTab('cases');
-                                            setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title } as Case);
-                                            setShowScenarioManager(true);
-                                            setExpandedPositionSettings(null);
-                                          }}
-                                          className="text-purple-600 hover:text-purple-800 underline font-medium"
-                                        >
-                                          Go to Cases &gt; Scenarios
-                                        </button>{' '}
-                                        to define positions.
-                                      </div>
-                                    )}
-
-                                    {/* Capture Method - now after positions */}
-                                    <div>
-                                      <label className="block text-xs font-medium text-gray-700 mb-1">Position Capture Method</label>
-                                      <select
-                                        value={positionSettings.position_capture_method}
-                                        onChange={(e) => setPositionSettings({...positionSettings, position_capture_method: e.target.value})}
-                                        className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
-                                      >
-                                        <option value="explicit">Student selects position</option>
-                                        <option value="ai_inferred">AI infers from conversation</option>
-                                        <option value="instructor_manual">Instructor assigns after review</option>
-                                        <option value="none">No position capture</option>
-                                      </select>
-                                    </div>
-
-                                    {/* Track Position Change - now last */}
-                                    <label className="flex items-center gap-2 text-sm">
-                                      <input
-                                        type="checkbox"
-                                        checked={positionSettings.track_position_change}
-                                        onChange={(e) => setPositionSettings({...positionSettings, track_position_change: e.target.checked})}
-                                        className="rounded border-gray-300"
-                                      />
-                                      Track if student's position changes during chat
-                                    </label>
-                                  </div>
-                                )}
-
-                                {/* Action Buttons */}
-                                <div className="flex justify-end gap-2 pt-2 border-t">
-                                  <button
-                                    onClick={() => setExpandedPositionSettings(null)}
-                                    className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
-                                  >
-                                    Close
-                                  </button>
-                                  <button
-                                    onClick={() => handleSavePositionSettings(selectedAssignmentSection!, sc.case_id)}
-                                    disabled={isSavingPositionSettings}
-                                    className="px-3 py-1.5 text-xs font-medium text-white bg-purple-600 rounded hover:bg-purple-700 disabled:opacity-50"
-                                  >
-                                    {isSavingPositionSettings ? 'Saving...' : 'Save Settings'}
-                                  </button>
-                                </div>
-                              </>
-                            )}
-                          </div>
-                        )}
                       </div>
                     ))}
                   </div>
@@ -4594,10 +4627,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   // Fetch case chats when filters change or monitor tab is active
   useEffect(() => {
-    if (primaryTab === 'monitor' || activeTab === 'chats') {
+    if (primaryTab === 'monitor') {
       fetchCaseChats();
     }
-  }, [primaryTab, activeTab, caseChatsFilter.status, caseChatsFilter.section_id, fetchCaseChats]);
+  }, [primaryTab, caseChatsFilter.status, caseChatsFilter.section_id, fetchCaseChats]);
 
   // Fetch initial stats on mount
   useEffect(() => {
@@ -5023,7 +5056,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </button>
             )}
 
-            {/* Content Library */}
+            {/* Case Library */}
             {(hasAccess(user, 'cases') || hasAccess(user, 'caseprep')) && (
               <button
                 onClick={() => {
@@ -5040,7 +5073,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
                     <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" />
                   </svg>
-                  Content
+                  Case Library
                 </span>
               </button>
             )}
