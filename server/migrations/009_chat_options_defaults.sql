@@ -11,8 +11,25 @@ CREATE TABLE IF NOT EXISTS chat_options_defaults (
   FOREIGN KEY (section_id) REFERENCES sections(section_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Add index for quick lookups
-CREATE INDEX idx_section_default ON chat_options_defaults(section_id);
+-- Add index for quick lookups (conditionally)
+DROP PROCEDURE IF EXISTS add_idx_section_default;
+DELIMITER //
+CREATE PROCEDURE add_idx_section_default()
+BEGIN
+  DECLARE idx_exists INT DEFAULT 0;
+  
+  SELECT COUNT(*) INTO idx_exists FROM information_schema.statistics
+    WHERE table_schema = DATABASE() 
+      AND table_name = 'chat_options_defaults' 
+      AND index_name = 'idx_section_default';
+  
+  IF idx_exists = 0 THEN
+    CREATE INDEX idx_section_default ON chat_options_defaults(section_id);
+  END IF;
+END //
+DELIMITER ;
+CALL add_idx_section_default();
+DROP PROCEDURE IF EXISTS add_idx_section_default;
 
 -- Insert global default if not exists
 INSERT INTO chat_options_defaults (section_id, chat_options)
