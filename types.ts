@@ -153,8 +153,9 @@ export interface ChatOptions {
   save_dead_transcripts: boolean;
   allow_repeat: boolean;         // Allow students to repeat the chat more than once
   timeout_chat: boolean;          // Stop the chat at the designated duration
-  restart_chat: boolean;          // Allow students to exit chat and restart it
-  allow_exit: boolean;            // Provide students an exit button to exit the chat
+  allow_finish_button: boolean;   // Provide students a "Finish Chat" button to conclude the chat when done
+  restart_chat: boolean;          // Provide students a "Restart Chat" button to restart the current case chat
+  allow_exit: boolean;            // Provide students a "Cancel Chat" button to cancel and perhaps start over
   // Display options
   show_timer: boolean;            // Show countdown timer during chat (default: true)
   show_evaluation_details: boolean; // Show full evaluation criteria vs just score (default: true)

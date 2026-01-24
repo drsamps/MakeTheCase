@@ -1285,10 +1285,12 @@ router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireRole(['
               cc.initial_position, cc.final_position, cc.initial_position_id, cc.final_position_id,
               sp_initial.position_name as initial_position_name,
               sp_final.position_name as final_position_name,
+              cs.chat_topic,
               e.id as evaluation_id, e.score as evaluation_score
        FROM case_chats cc
        LEFT JOIN scenario_positions sp_initial ON cc.initial_position_id = sp_initial.position_id
        LEFT JOIN scenario_positions sp_final ON cc.final_position_id = sp_final.position_id
+       LEFT JOIN case_scenarios cs ON cc.scenario_id = cs.id
        LEFT JOIN evaluations e ON e.case_chat_id = cc.id
        WHERE cc.case_id = ?
          AND (cc.student_id IN (SELECT student_id FROM student_sections WHERE section_id = ?)
@@ -1343,6 +1345,7 @@ router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireRole(['
         chat_id: chat?.chat_id || null,
         start_time: chat?.start_time || null,
         duration_minutes: duration,
+        chat_topic: chat?.chat_topic || null,
         position: position,
         position_changed: chat?.final_position_id && chat.final_position_id !== chat.initial_position_id,
         final_position: chat?.final_position_name || chat?.final_position,

@@ -27,6 +27,7 @@ const DEFAULT_CHAT_OPTIONS = {
   // Chat control options
   allow_repeat: false,
   timeout_chat: false,
+  allow_finish_button: false,
   restart_chat: false,
   allow_exit: false,
   require_minimum_exchanges: 0,  // 0 = no minimum, N = require N exchanges before "time is up"
@@ -150,11 +151,19 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     category: 'chat_control'
   },
   {
+    key: 'allow_finish_button',
+    label: 'Allow Finish Button',
+    type: 'boolean',
+    default: false,
+    description: 'Provide students a "Finish Chat" button to conclude the chat when done',
+    category: 'chat_control'
+  },
+  {
     key: 'restart_chat',
     label: 'Allow Restart',
     type: 'boolean',
     default: false,
-    description: 'Allow students to restart the chat',
+    description: 'Provide students a "Restart Chat" button to restart the current case chat',
     category: 'chat_control'
   },
   {
@@ -162,7 +171,7 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     label: 'Allow Exit',
     type: 'boolean',
     default: false,
-    description: 'Provide exit button to leave chat early',
+    description: 'Provide students a "Cancel Chat" button to cancel and perhaps start over',
     category: 'chat_control'
   },
   {

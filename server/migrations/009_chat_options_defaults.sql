@@ -28,6 +28,7 @@ VALUES (NULL, JSON_OBJECT(
   'chatbot_personality', '',
   'allow_repeat', false,
   'timeout_chat', false,
+  'allow_finish_button', false,
   'restart_chat', false,
   'allow_exit', false,
   'disable_position_tracking', false

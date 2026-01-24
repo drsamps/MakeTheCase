@@ -432,6 +432,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     chatbot_personality: '',
     allow_repeat: false,
     timeout_chat: false,
+    allow_finish_button: false,
     restart_chat: false,
     allow_exit: false,
     require_minimum_exchanges: 0,
@@ -4383,6 +4384,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, timeout_chat: applicableDefault?.timeout_chat ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
                       )}
                     </div>
+                    <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('allow_finish_button', editingChatOptions.allow_finish_button, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={editingChatOptions.allow_finish_button ?? false}
+                          onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_finish_button: e.target.checked})}
+                          disabled={useDefaultOptions}
+                          className="rounded border-gray-300"
+                        />
+                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Provide students a "Finish Chat" button to conclude the chat when done</span>
+                      </label>
+                      {!useDefaultOptions && isOptionModified('allow_finish_button', editingChatOptions.allow_finish_button, applicableDefault) && (
+                        <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, allow_finish_button: applicableDefault?.allow_finish_button ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                      )}
+                    </div>
                     <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('restart_chat', editingChatOptions.restart_chat, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
                       <label className="flex items-center gap-2 text-sm">
                         <input
@@ -4392,7 +4408,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           disabled={useDefaultOptions}
                           className="rounded border-gray-300"
                         />
-                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Allow students to restart the chat</span>
+                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Provide students a "Restart Chat" button to restart the current case chat</span>
                       </label>
                       {!useDefaultOptions && isOptionModified('restart_chat', editingChatOptions.restart_chat, applicableDefault) && (
                         <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, restart_chat: applicableDefault?.restart_chat ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
@@ -4407,7 +4423,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           disabled={useDefaultOptions}
                           className="rounded border-gray-300"
                         />
-                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Provide exit button to leave chat</span>
+                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Provide students a "Cancel Chat" button to cancel and perhaps start over</span>
                       </label>
                       {!useDefaultOptions && isOptionModified('allow_exit', editingChatOptions.allow_exit, applicableDefault) && (
                         <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, allow_exit: applicableDefault?.allow_exit ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
@@ -5106,6 +5122,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Student</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Chat Topic</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Position</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Duration</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Score</th>
@@ -5138,6 +5155,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                        student.status === 'abandoned' ? 'Abandoned' :
                        'Completed'}
                     </span>
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">
+                    {student.chat_topic ? (
+                      <span>{student.chat_topic}</span>
+                    ) : (
+                      <span className="text-gray-400">-</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-sm">
                     {student.position ? (

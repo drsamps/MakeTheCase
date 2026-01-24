@@ -59,10 +59,10 @@ Added four new chat control options to the Case Assignments configuration, givin
 ---
 
 ### 4. Allow Exit (`allow_exit`)
-**Purpose**: Provide an exit button for students to leave the chat before completing it.
+**Purpose**: Provide a cancel button for students to cancel the chat before completing it.
 
 **Behavior**:
-- When **enabled**: An "Exit Chat" button appears in the chat interface during active chats
+- When **enabled**: A "Cancel Chat" button appears in the chat interface during active chats
 - When clicked: Student is prompted to confirm, then the chat is marked as "canceled" and they return to the case selection screen
 - Chat progress is lost
 - Student can start a new chat session (subject to `allow_repeat` and completion rules)
@@ -122,7 +122,7 @@ Added four new chat control options to the Case Assignments configuration, givin
 4. Added chat control buttons (lines 1560-1582):
    - Buttons appear during CHATTING phase if options are enabled
    - "Restart Chat" button (blue) - only if `restart_chat` is enabled
-   - "Exit Chat" button (red) - only if `allow_exit` is enabled
+   - "Cancel Chat" button (red) - only if `allow_exit` is enabled
    - Both disabled while AI is responding
 
 5. Modified completion checking logic (lines 1228-1238):
@@ -145,7 +145,7 @@ Added four new chat control options to the Case Assignments configuration, givin
    - ☑ **Allow students to repeat the chat multiple times** (allow_repeat)
    - ☑ **Auto-end chat when time limit expires** (timeout_chat)
    - ☑ **Allow students to restart the chat** (restart_chat)
-   - ☑ **Provide exit button to leave chat** (allow_exit)
+   - ☑ **Provide students a "Cancel Chat" button to cancel and perhaps start over** (allow_exit)
 
 6. Click **Save Options**
 
@@ -177,10 +177,10 @@ Added four new chat control options to the Case Assignments configuration, givin
 
 ## Student Experience
 
-### Exit Chat Button
+### Cancel Chat Button
 - Location: Bottom of chat interface, right side, red button
-- Action: Confirms exit, marks chat as "canceled", returns to case selection
-- Confirmation: "Are you sure you want to exit this chat? Your progress will be lost and you may need to start over."
+- Action: Confirms cancel, marks chat as "canceled", returns to case selection
+- Confirmation: "Are you sure you want to cancel this chat? Your progress will be lost and you may need to start over."
 
 ### Restart Chat Button
 - Location: Bottom of chat interface, right side, blue button
@@ -250,7 +250,7 @@ const isCaseCompleted = selectedCaseStatus?.completed
 - [ ] Timeout does NOT auto-end when `timeout_chat` is disabled
 - [ ] Students can rechat when `allow_repeat` is enabled
 - [ ] Students blocked from rechat when `allow_repeat` and `allow_rechat` are both false
-- [ ] Exit button cancels chat and returns to case selection
+- [ ] Cancel button cancels chat and returns to case selection
 - [ ] Restart button cancels chat and starts new session
 - [ ] All confirmation dialogs appear before destructive actions
 

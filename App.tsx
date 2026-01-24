@@ -129,6 +129,7 @@ const App: React.FC = () => {
     default_persona: 'moderate',
     allow_repeat: false,
     timeout_chat: false,
+    allow_finish_button: false,
     restart_chat: false,
     allow_exit: false
   };
@@ -743,7 +744,7 @@ const App: React.FC = () => {
         }
 
         const lowerCaseMessage = userMessage.toLowerCase();
-        if (lowerCaseMessage.includes("time is up") || lowerCaseMessage.includes("time's up")) {
+        if (lowerCaseMessage.includes("time is up") || lowerCaseMessage.includes("time's up") || lowerCaseMessage.includes("i would like to finish this chat conversation")) {
             // Check minimum exchanges requirement
             const minExchanges = chatOptions?.require_minimum_exchanges ?? 0;
             const userMessageCount = messages.filter(m => m.role === MessageRole.USER).length;
@@ -1321,7 +1322,7 @@ const App: React.FC = () => {
   };
 
   const handleExitChat = async () => {
-    if (!confirm('Are you sure you want to exit this chat? Your progress will be lost and you may need to start over.')) return;
+    if (!confirm('Are you sure you want to cancel this chat? Your progress will be lost and you may need to start over.')) return;
 
     // Mark the chat as canceled
     if (currentCaseChatId) {
@@ -1375,6 +1376,13 @@ const App: React.FC = () => {
     if (studentFirstName && selectedChatModel) {
       await startConversation(studentFirstName, ceoPersona, selectedChatModel);
     }
+  };
+
+  const handleFinishChat = () => {
+    if (!confirm('Are you finished with this conversation? Would you like to wrap up so that your chat results can be recorded?')) return;
+    
+    // Send the finish message which will trigger the "time is up" flow
+    handleSendMessage("I would like to finish this chat conversation");
   };
 
   if (!isReady) {
@@ -1915,8 +1923,22 @@ const App: React.FC = () => {
       ) : (
           <>
             {/* Chat control buttons */}
-            {conversationPhase === ConversationPhase.CHATTING && (chatOptions?.allow_exit || chatOptions?.restart_chat) && (
+            {conversationPhase === ConversationPhase.CHATTING && (chatOptions?.allow_finish_button || chatOptions?.allow_exit || chatOptions?.restart_chat) && (
               <div className="px-4 py-2 bg-white border-t border-gray-200 flex gap-2 justify-end">
+                {chatOptions?.allow_finish_button && (() => {
+                  const minExchanges = chatOptions?.require_minimum_exchanges ?? 0;
+                  const userMessageCount = messages.filter(m => m.role === MessageRole.USER).length;
+                  const meetsMinimum = minExchanges === 0 || userMessageCount >= minExchanges;
+                  return meetsMinimum ? (
+                    <button
+                      onClick={handleFinishChat}
+                      disabled={isLoading}
+                      className="px-3 py-1.5 text-sm font-medium text-green-600 bg-green-50 border border-green-200 rounded-lg hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Finish Chat
+                    </button>
+                  ) : null;
+                })()}
                 {chatOptions?.restart_chat && (
                   <button
                     onClick={handleRestartChat}
@@ -1932,7 +1954,7 @@ const App: React.FC = () => {
                     disabled={isLoading}
                     className="px-3 py-1.5 text-sm font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Exit Chat
+                    Cancel Chat
                   </button>
                 )}
               </div>

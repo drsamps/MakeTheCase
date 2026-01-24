@@ -88,8 +88,9 @@ const ChatOptionsHelp: React.FC = () => (
     <ul>
       <li><strong>Allow Repeat</strong> - Allow students to repeat the chat multiple times</li>
       <li><strong>Auto-end on Timeout</strong> - Automatically end chat when time expires</li>
-      <li><strong>Allow Restart</strong> - Allow students to restart mid-chat</li>
-      <li><strong>Allow Exit</strong> - Provide exit button to leave chat early</li>
+      <li><strong>Allow Finish Button</strong> - Provide students a "Finish Chat" button to conclude the chat when done (only shows after Minimum Exchanges requirement is met)</li>
+      <li><strong>Allow Restart</strong> - Provide students a "Restart Chat" button to restart the current case chat</li>
+      <li><strong>Allow Exit</strong> - Provide students a "Cancel Chat" button to cancel and perhaps start over</li>
       <li><strong>Minimum Exchanges</strong> - Required exchanges before "time is up" is accepted (0 = none)</li>
       <li><strong>Max Message Length</strong> - Character limit per student message (0 = unlimited)</li>
     </ul>
