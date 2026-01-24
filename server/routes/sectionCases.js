@@ -8,11 +8,13 @@ const router = express.Router();
 router.get('/:sectionId/cases', async (req, res) => {
   try {
     const { sectionId } = req.params;
+    const { student_id } = req.query; // Optional: to check scenario completion
 
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
               sc.open_date, sc.close_date, sc.manual_status,
               sc.selection_mode, sc.require_order, sc.use_scenarios,
+              sc.position_tracking_enabled, sc.position_capture_method, sc.track_position_change,
               c.case_title, c.enabled as case_enabled
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
@@ -46,10 +48,72 @@ router.get('/:sectionId/cases', async (req, res) => {
           [row.id]
         );
 
+        // If position tracking is enabled, fetch positions for each scenario
+        let scenariosWithPositions = scenarios;
+        if (row.position_tracking_enabled && scenarios.length > 0) {
+          const scenarioIds = scenarios.map(s => s.scenario_id);
+          const placeholders = scenarioIds.map(() => '?').join(',');
+
+          const [positionRows] = await pool.execute(
+            `SELECT sp.position_id, sp.scenario_id, sp.position_name, sp.position, sp.position_order,
+                    sp.arguments_for, sp.arguments_against,
+                    sp.position_enabled as default_enabled,
+                    COALESCE(scp.enabled, sp.position_enabled) as enabled
+             FROM scenario_positions sp
+             LEFT JOIN section_case_positions scp ON scp.position_id = sp.position_id AND scp.section_case_id = ?
+             WHERE sp.scenario_id IN (${placeholders}) AND sp.position_enabled = 1
+             ORDER BY sp.scenario_id, sp.position_order ASC`,
+            [row.id, ...scenarioIds]
+          );
+
+          // Group positions by scenario_id
+          const positionsByScenario = new Map();
+          for (const pos of positionRows) {
+            if (pos.enabled) { // Only include enabled positions
+              if (!positionsByScenario.has(pos.scenario_id)) {
+                positionsByScenario.set(pos.scenario_id, []);
+              }
+              positionsByScenario.get(pos.scenario_id).push({
+                position_id: pos.position_id,
+                position_name: pos.position_name,
+                position: pos.position,
+                position_order: pos.position_order,
+                arguments_for: pos.arguments_for,
+                arguments_against: pos.arguments_against
+              });
+            }
+          }
+
+          // Attach positions to scenarios
+          scenariosWithPositions = scenarios.map(s => ({
+            ...s,
+            positions: positionsByScenario.get(s.scenario_id) || []
+          }));
+        }
+
+        // If student_id provided, check completion status for each scenario
+        if (student_id && scenariosWithPositions.length > 0) {
+          const [completedChats] = await pool.execute(
+            `SELECT scenario_id, COUNT(*) as completed_count
+             FROM case_chats
+             WHERE student_id = ? AND case_id = ? AND status = 'completed' AND scenario_id IS NOT NULL
+             GROUP BY scenario_id`,
+            [student_id, row.case_id]
+          );
+
+          const completedMap = new Map(completedChats.map(c => [c.scenario_id, c.completed_count]));
+
+          scenariosWithPositions = scenariosWithPositions.map(s => ({
+            ...s,
+            completed: completedMap.has(s.scenario_id),
+            completed_count: completedMap.get(s.scenario_id) || 0
+          }));
+        }
+
         return {
           ...row,
           chat_options: parsedChatOptions,
-          scenarios
+          scenarios: scenariosWithPositions
         };
       })
     );
@@ -1196,6 +1260,114 @@ router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, r
     });
   } catch (error) {
     console.error('Error copying case assignments:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/sections/:sectionId/cases/:caseId/live-session - Get live session data for monitoring
+router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { sectionId, caseId } = req.params;
+
+    // Get all students enrolled in this section (from both student_sections junction table AND legacy students.section_id)
+    const [students] = await pool.execute(
+      `SELECT DISTINCT s.id as student_id, s.full_name, s.first_name, s.last_name, s.email
+       FROM students s
+       LEFT JOIN student_sections ss ON s.id = ss.student_id AND ss.section_id = ?
+       WHERE ss.section_id = ? OR s.section_id = ?
+       ORDER BY s.full_name ASC`,
+      [sectionId, sectionId, sectionId]
+    );
+
+    // Get chat data for each student for this case
+    const [chats] = await pool.execute(
+      `SELECT cc.student_id, cc.id as chat_id, cc.status, cc.start_time, cc.end_time,
+              cc.initial_position, cc.final_position, cc.initial_position_id, cc.final_position_id,
+              sp_initial.position_name as initial_position_name,
+              sp_final.position_name as final_position_name,
+              e.id as evaluation_id, e.score as evaluation_score
+       FROM case_chats cc
+       LEFT JOIN scenario_positions sp_initial ON cc.initial_position_id = sp_initial.position_id
+       LEFT JOIN scenario_positions sp_final ON cc.final_position_id = sp_final.position_id
+       LEFT JOIN evaluations e ON e.case_chat_id = cc.id
+       WHERE cc.case_id = ?
+         AND (cc.student_id IN (SELECT student_id FROM student_sections WHERE section_id = ?)
+              OR cc.student_id IN (SELECT id FROM students WHERE section_id = ?))
+       ORDER BY cc.start_time DESC`,
+      [caseId, sectionId, sectionId]
+    );
+
+    // Create a map of student_id -> most recent chat
+    const studentChatMap = new Map();
+    for (const chat of chats) {
+      if (!studentChatMap.has(chat.student_id)) {
+        studentChatMap.set(chat.student_id, chat);
+      }
+    }
+
+    // Build student list with status
+    const studentData = students.map(student => {
+      const chat = studentChatMap.get(student.student_id);
+
+      let sessionStatus = 'not_started';
+      let duration = null;
+      let position = null;
+      let evaluationScore = null;
+
+      if (chat) {
+        if (chat.status === 'completed') {
+          sessionStatus = 'completed';
+        } else if (chat.status === 'in_progress' || chat.status === 'started') {
+          sessionStatus = 'in_progress';
+        } else if (chat.status === 'abandoned' || chat.status === 'canceled' || chat.status === 'killed') {
+          sessionStatus = 'abandoned';
+        }
+
+        // Calculate duration
+        if (chat.start_time) {
+          const start = new Date(chat.start_time);
+          const end = chat.end_time ? new Date(chat.end_time) : new Date();
+          duration = Math.round((end - start) / 1000 / 60); // minutes
+        }
+
+        // Get position (prefer position_name from join, fallback to text field)
+        position = chat.initial_position_name || chat.initial_position;
+        evaluationScore = chat.evaluation_score;
+      }
+
+      return {
+        student_id: student.student_id,
+        student_name: student.full_name || `${student.first_name} ${student.last_name}`.trim(),
+        email: student.email,
+        status: sessionStatus,
+        chat_id: chat?.chat_id || null,
+        start_time: chat?.start_time || null,
+        duration_minutes: duration,
+        position: position,
+        position_changed: chat?.final_position_id && chat.final_position_id !== chat.initial_position_id,
+        final_position: chat?.final_position_name || chat?.final_position,
+        evaluation_score: evaluationScore
+      };
+    });
+
+    // Calculate summary
+    const summary = {
+      total: studentData.length,
+      completed: studentData.filter(s => s.status === 'completed').length,
+      in_progress: studentData.filter(s => s.status === 'in_progress').length,
+      not_started: studentData.filter(s => s.status === 'not_started').length,
+      abandoned: studentData.filter(s => s.status === 'abandoned').length
+    };
+
+    res.json({
+      data: {
+        students: studentData,
+        summary
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching live session data:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

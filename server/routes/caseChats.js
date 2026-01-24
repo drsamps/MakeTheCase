@@ -1050,6 +1050,54 @@ router.get('/:id/positions', async (req, res) => {
   }
 });
 
+// PATCH /api/case-chats/:id/initial-position - Set initial position by position_id (for explicit capture method)
+router.patch('/:id/initial-position', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { initial_position_id } = req.body;
+
+    if (!initial_position_id) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'initial_position_id is required' }
+      });
+    }
+
+    const [existing] = await pool.execute('SELECT id FROM case_chats WHERE id = ?', [id]);
+
+    if (existing.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
+
+    // Get position_name from scenario_positions
+    const [posRows] = await pool.execute(
+      'SELECT position_name FROM scenario_positions WHERE position_id = ?',
+      [initial_position_id]
+    );
+    const positionName = posRows.length > 0 ? posRows[0].position_name : null;
+
+    // Update the initial_position_id, initial_position (string), and position_method
+    await pool.execute(
+      `UPDATE case_chats SET initial_position_id = ?, initial_position = ?, position_method = 'explicit' WHERE id = ?`,
+      [initial_position_id, positionName, id]
+    );
+
+    // Insert into position logs
+    await pool.execute(
+      `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
+       VALUES (?, 'initial', ?, 'student', 'Selected during chat via explicit method')`,
+      [id, positionName]
+    );
+
+    const [rows] = await pool.execute('SELECT * FROM case_chats WHERE id = ?', [id]);
+
+    res.json({ data: rows[0], error: null });
+  } catch (error) {
+    console.error('Error updating chat initial position:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 // PATCH /api/case-chats/:id/final-position - Set final position by position_id (new FK-based system)
 router.patch('/:id/final-position', async (req, res) => {
   try {

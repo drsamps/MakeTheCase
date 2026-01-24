@@ -117,6 +117,7 @@ const App: React.FC = () => {
   // Position tracking state (using position IDs from scenario_positions table)
   const [selectedInitialPositionId, setSelectedInitialPositionId] = useState<number | null>(null);
   const [selectedFinalPositionId, setSelectedFinalPositionId] = useState<number | null>(null);
+  const [awaitingPositionSelection, setAwaitingPositionSelection] = useState(false);
   
   // Default chat options
   const defaultChatOptions = {
@@ -688,6 +689,8 @@ const App: React.FC = () => {
             arguments_for: argumentsFor,
             arguments_against: argumentsAgainst,
           };
+          // Update activeCaseData so scenario values are available later (e.g., in final position UI)
+          setActiveCaseData(caseData as CaseData);
         }
       }
 
@@ -701,13 +704,29 @@ const App: React.FC = () => {
       setChatSession(session);
       setMessages(initialHistory);
       setConversationPhase(ConversationPhase.CHATTING);
+
+      // Check if we need position selection in chat (for 'explicit' capture method)
+      const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
+      const isPosTrackingEnabled = activeCaseInfo?.position_tracking_enabled === true ||
+                                   activeCaseInfo?.position_tracking_enabled === 1;
+      const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
+      const selectedScenario = selectedScenarioId
+        ? availableScenarios.find(s => s.scenario_id === selectedScenarioId)
+        : null;
+      const positionsAvailable = selectedScenario?.positions?.length > 0;
+
+      if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && positionsAvailable) {
+        setAwaitingPositionSelection(true);
+      } else {
+        setAwaitingPositionSelection(false);
+      }
     } catch (e) {
       console.error("Failed to start conversation:", e);
       setError("Failed to initialize the chat session. Please check your API key and refresh the page.");
     } finally {
       setIsLoading(false);
     }
-  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId]);
+  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId]);
   
   const handleSendMessage = async (userMessage: string) => {
     if (conversationPhase === ConversationPhase.CHATTING) {
@@ -968,6 +987,54 @@ const App: React.FC = () => {
     }
   };
 
+  // Handle initial position selection during chat (for 'explicit' capture method)
+  const handleInitialPositionSelect = async (position: { position_id: number; position_name: string; position: string }) => {
+    setSelectedInitialPositionId(position.position_id);
+    setAwaitingPositionSelection(false);
+
+    // Save position to database
+    if (currentCaseChatId) {
+      try {
+        await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/initial-position`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initial_position_id: position.position_id })
+        });
+      } catch (err) {
+        console.error('Failed to save initial position:', err);
+      }
+    }
+
+    // Add position as user message and trigger AI response
+    const userPositionMessage: Message = {
+      role: MessageRole.USER,
+      content: position.position
+    };
+    setMessages(prev => [...prev, userPositionMessage]);
+
+    // Now send to LLM to get protagonist response acknowledging the position
+    if (chatSession) {
+      setIsLoading(true);
+      try {
+        const response = await chatSession.sendMessage(position.position);
+        const modelMessage: Message = {
+          role: MessageRole.MODEL,
+          content: response.response.text(),
+        };
+        setMessages(prev => [...prev, modelMessage]);
+      } catch (err) {
+        console.error('Failed to get AI response:', err);
+        const errorMessage: Message = {
+          role: MessageRole.MODEL,
+          content: "I appreciate your position. Could you elaborate on why you believe that?"
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+  };
+
   const handleProceedToEvaluation = async () => {
     if (!studentFirstName || !selectedSuperModel) return;
     setConversationPhase(ConversationPhase.EVALUATION_LOADING);
@@ -1182,6 +1249,7 @@ const App: React.FC = () => {
     setCurrentCaseChatId(null);
     setSelectedInitialPositionId(null);
     setSelectedFinalPositionId(null);
+    setAwaitingPositionSelection(false);
     // Keep section selected if student has a saved section
     if (!studentSavedSectionId) {
       setSelectedSection('');
@@ -1427,11 +1495,9 @@ const App: React.FC = () => {
     // Available positions come from the selected scenario's positions array
     const availablePositions = selectedScenario?.positions || [];
 
-    // Position selection requirement: if explicit method enabled and positions exist but none selected
-    const positionRequirementMet = !isPositionTrackingEnabled ||
-                                   positionCaptureMethod !== 'explicit' ||
-                                   availablePositions.length === 0 ||
-                                   selectedInitialPositionId !== null;
+    // Position selection happens IN CHAT for 'explicit' method, so no pre-chat requirement
+    // For 'explicit' method: positions are selected after protagonist greeting in the chat
+    const positionRequirementMet = true;
     const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted && positionRequirementMet;
     const sectionName = sections.find(s => s.section_id === selectedSection)?.section_title || selectedSection;
 
@@ -1694,43 +1760,7 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {/* Position Selection - shown when explicit capture method is enabled and positions defined */}
-            {isPositionTrackingEnabled &&
-             positionCaptureMethod === 'explicit' &&
-             availablePositions.length > 0 &&
-             activeCaseData && (
-              <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  What is your initial position on this case? <span className="text-red-500">*</span>
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  {availablePositions.map((pos: { position_id: number; position_name: string; position: string }) => (
-                    <button
-                      key={pos.position_id}
-                      type="button"
-                      onClick={() => setSelectedInitialPositionId(pos.position_id)}
-                      title={pos.position}
-                      className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                        selectedInitialPositionId === pos.position_id
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-white text-gray-700 border border-gray-300 hover:bg-blue-50'
-                      }`}
-                    >
-                      {pos.position_name.charAt(0).toUpperCase() + pos.position_name.slice(1).replace(/_/g, ' ')}
-                    </button>
-                  ))}
-                </div>
-                {/* Show description of selected position */}
-                {selectedInitialPositionId && (
-                  <p className="text-sm text-gray-600 mt-2 italic">
-                    {availablePositions.find((p: any) => p.position_id === selectedInitialPositionId)?.position}
-                  </p>
-                )}
-                {!selectedInitialPositionId && (
-                  <p className="text-xs text-blue-600 mt-2">Please select your position to start the chat</p>
-                )}
-              </div>
-            )}
+            {/* Position selection for 'explicit' method now happens IN the chat after protagonist greeting */}
 
             <p className="text-xs text-gray-500 italic px-2">Disclosure: Some courses and cases allow you to share your chat conversation with the instructor to track progress and improve the dialog for future students.</p>
             
@@ -1785,15 +1815,23 @@ const App: React.FC = () => {
           />
         </div>
       )}
-      <ChatWindow 
-        messages={messages} 
-        isLoading={isLoading} 
-        ceoPersona={ceoPersona} 
-        chatModelName={chatModelName} 
+      <ChatWindow
+        messages={messages}
+        isLoading={isLoading}
+        ceoPersona={ceoPersona}
+        chatModelName={chatModelName}
         chatFontSize={chatFontSize}
         protagonistName={activeCaseData?.protagonist}
         protagonistInitials={activeCaseData?.protagonist_initials}
         caseTitle={activeCaseData?.case_title}
+        awaitingPositionSelection={awaitingPositionSelection && conversationPhase === ConversationPhase.CHATTING}
+        positionOptions={(() => {
+          const selectedScenario = selectedScenarioId
+            ? availableScenarios.find(s => s.scenario_id === selectedScenarioId)
+            : null;
+          return selectedScenario?.positions || [];
+        })()}
+        onPositionSelect={handleInitialPositionSelect}
       />
       {conversationPhase === ConversationPhase.FEEDBACK_COMPLETE ? (
           (() => {
@@ -1813,40 +1851,51 @@ const App: React.FC = () => {
             return (
               <div className="p-4 bg-white border-t border-gray-200 space-y-4">
                 {/* Final Position Selection - shown when position tracking enabled with change tracking */}
-                {shouldShowFinalPosition && (
-                  <div className="p-4 bg-green-50 rounded-lg border border-green-200">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      After our conversation, what is your <strong>final position</strong> on this case?
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                      {finalPositions.map((pos: { position_id: number; position_name: string; position: string }) => (
-                        <button
-                          key={pos.position_id}
-                          type="button"
-                          onClick={() => handleFinalPositionSelect(pos.position_id)}
-                          title={pos.position}
-                          className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                            selectedFinalPositionId === pos.position_id
-                              ? 'bg-green-600 text-white'
-                              : 'bg-white text-gray-700 border border-gray-300 hover:bg-green-50'
-                          }`}
-                        >
-                          {pos.position_name.charAt(0).toUpperCase() + pos.position_name.slice(1).replace(/_/g, ' ')}
-                        </button>
-                      ))}
+                {shouldShowFinalPosition && (() => {
+                  const protagonistName = activeCaseData?.protagonist || 'the protagonist';
+                  const chatQuestion = activeCaseData?.chat_question || '';
+                  const initialPositionText = selectedInitialPositionId
+                    ? finalPositions.find((p: any) => p.position_id === selectedInitialPositionId)?.position
+                    : null;
+
+                  return (
+                    <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                      <div className="text-sm text-gray-700 mb-3 space-y-2">
+                        <p>{protagonistName}'s original inquiry was: <strong>{chatQuestion}</strong></p>
+                        {initialPositionText && (
+                          <p>Your initial position on this was: {initialPositionText}</p>
+                        )}
+                        <p>Has your position changed based on this simulated conversation with {protagonistName}?<br />What is your <strong>final position</strong> on this issue? (click one)</p>
+                      </div>
+                      <div className="flex flex-col gap-2 items-start">
+                        {finalPositions.map((pos: { position_id: number; position_name: string; position: string }) => (
+                          <button
+                            key={pos.position_id}
+                            type="button"
+                            onClick={() => handleFinalPositionSelect(pos.position_id)}
+                            className={`px-4 py-3 text-left text-sm rounded-lg transition-colors ${
+                              selectedFinalPositionId === pos.position_id
+                                ? 'bg-green-600 text-white'
+                                : 'bg-white text-gray-700 border border-gray-300 hover:bg-green-100'
+                            }`}
+                          >
+                            {pos.position}
+                          </button>
+                        ))}
+                      </div>
+                      {selectedInitialPositionId && selectedFinalPositionId && selectedInitialPositionId !== selectedFinalPositionId && (
+                        <p className="text-xs text-green-600 mt-3">
+                          Your position changed from the start of the conversation.
+                        </p>
+                      )}
+                      {selectedInitialPositionId && selectedFinalPositionId && selectedInitialPositionId === selectedFinalPositionId && (
+                        <p className="text-xs text-gray-600 mt-3">
+                          It sounds like your position is the same as you started with.
+                        </p>
+                      )}
                     </div>
-                    {selectedFinalPositionId && (
-                      <p className="text-sm text-gray-600 mt-2 italic">
-                        {finalPositions.find((p: any) => p.position_id === selectedFinalPositionId)?.position}
-                      </p>
-                    )}
-                    {selectedInitialPositionId && selectedFinalPositionId && selectedInitialPositionId !== selectedFinalPositionId && (
-                      <p className="text-xs text-green-600 mt-2">
-                        Your position changed from the start of the conversation.
-                      </p>
-                    )}
-                  </div>
-                )}
+                  );
+                })()}
                 <div className="flex justify-center items-center">
                   <button
                       onClick={handleProceedToEvaluation}
@@ -1888,16 +1937,25 @@ const App: React.FC = () => {
                 )}
               </div>
             )}
-            <MessageInput
-              ref={inputRef}
-              onSendMessage={handleSendMessage}
-              isLoading={isLoading}
-              chatFontSize={chatFontSize}
-              onFontSizeChange={setChatFontSize}
-              fontSizes={FONT_SIZES}
-              defaultFontSize={DEFAULT_FONT_SIZE}
-              maxMessageLength={chatOptions?.max_message_length ?? 0}
-            />
+            {/* Position Selection prompt - shown while awaiting position selection */}
+            {awaitingPositionSelection && conversationPhase === ConversationPhase.CHATTING ? (
+              <div className="p-4 bg-blue-50 border-t border-blue-200">
+                <p className="text-sm font-medium text-gray-700 text-center">
+                  Please select your initial position from the options above to continue the conversation.
+                </p>
+              </div>
+            ) : (
+              <MessageInput
+                ref={inputRef}
+                onSendMessage={handleSendMessage}
+                isLoading={isLoading}
+                chatFontSize={chatFontSize}
+                onFontSizeChange={setChatFontSize}
+                fontSizes={FONT_SIZES}
+                defaultFontSize={DEFAULT_FONT_SIZE}
+                maxMessageLength={chatOptions?.max_message_length ?? 0}
+              />
+            )}
           </>
       )}
     </aside>

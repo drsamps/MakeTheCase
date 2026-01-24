@@ -1,6 +1,12 @@
 import React, { useRef, useEffect } from 'react';
 import { Message, MessageRole, CEOPersona } from '../types';
 
+interface PositionOption {
+  position_id: number;
+  position_name: string;
+  position: string;
+}
+
 interface ChatWindowProps {
   messages: Message[];
   isLoading: boolean;
@@ -11,6 +17,10 @@ interface ChatWindowProps {
   protagonistName?: string;
   protagonistInitials?: string;
   caseTitle?: string;
+  // Position selection props (for in-chat position selection)
+  awaitingPositionSelection?: boolean;
+  positionOptions?: PositionOption[];
+  onPositionSelect?: (position: PositionOption) => void;
 }
 
 const renderMessageContent = (content: string) => {
@@ -23,15 +33,18 @@ const renderMessageContent = (content: string) => {
   });
 };
 
-const ChatWindow: React.FC<ChatWindowProps> = ({ 
-  messages, 
-  isLoading, 
-  ceoPersona, 
-  chatModelName, 
+const ChatWindow: React.FC<ChatWindowProps> = ({
+  messages,
+  isLoading,
+  ceoPersona,
+  chatModelName,
   chatFontSize,
   protagonistName = 'Kent Beck',
   protagonistInitials = 'KB',
-  caseTitle = "Malawi's Pizza"
+  caseTitle = "Malawi's Pizza",
+  awaitingPositionSelection = false,
+  positionOptions = [],
+  onPositionSelect
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -58,30 +71,50 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       onCut={handleCopyPaste}
     >
       {messages.map((msg, index) => (
-        <div
-          key={index}
-          className={`flex items-end gap-3 ${
-            msg.role === MessageRole.USER ? 'justify-end' : 'justify-start'
-          }`}
-        >
-          {msg.role === MessageRole.MODEL && (
-            <div 
-              className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
-              title={protagonistTitle}
-            >
-              {protagonistInitials}
-            </div>
-          )}
+        <React.Fragment key={index}>
           <div
-            className={`max-w-md lg:max-w-lg p-4 rounded-2xl shadow-md ${
-              msg.role === MessageRole.USER
-                ? 'bg-blue-600 text-white rounded-br-none'
-                : 'bg-white text-gray-800 rounded-bl-none'
+            className={`flex items-end gap-3 ${
+              msg.role === MessageRole.USER ? 'justify-end' : 'justify-start'
             }`}
           >
-            <p className={chatFontSize} style={{ whiteSpace: 'pre-wrap' }}>{renderMessageContent(msg.content)}</p>
+            {msg.role === MessageRole.MODEL && (
+              <div
+                className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
+                title={protagonistTitle}
+              >
+                {protagonistInitials}
+              </div>
+            )}
+            <div
+              className={`max-w-md lg:max-w-lg p-4 rounded-2xl shadow-md ${
+                msg.role === MessageRole.USER
+                  ? 'bg-blue-600 text-white rounded-br-none'
+                  : 'bg-white text-gray-800 rounded-bl-none'
+              }`}
+            >
+              <p className={chatFontSize} style={{ whiteSpace: 'pre-wrap' }}>{renderMessageContent(msg.content)}</p>
+            </div>
           </div>
-        </div>
+          {/* Position selection buttons - shown after first protagonist message */}
+          {index === 0 && msg.role === MessageRole.MODEL && awaitingPositionSelection && positionOptions.length > 0 && (
+            <div className="flex justify-start pl-[52px]">
+              <div className="max-w-md lg:max-w-lg">
+                <p className="text-sm text-gray-600 mb-2"><strong>What is your position on this issue?</strong> (choose the one you most agree with, even though your opinion may be divided)</p>
+                <div className="flex flex-col gap-2">
+                  {positionOptions.map((pos) => (
+                    <button
+                      key={pos.position_id}
+                      onClick={() => onPositionSelect?.(pos)}
+                      className="w-full px-4 py-3 text-left text-sm bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors"
+                    >
+                      {pos.position}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </React.Fragment>
       ))}
       {isLoading && (
         <div className="flex items-end gap-3 justify-start">

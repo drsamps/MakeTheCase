@@ -41,7 +41,7 @@ import { CSS } from '@dnd-kit/utilities';
 type PrimaryTab = 'home' | 'courses' | 'content' | 'monitor' | 'results' | 'admin';
 type CoursesSubTab = 'sections' | 'students' | 'assignments' | 'chat-options';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
-type MonitorSubTab = 'chats' | 'cache';
+type MonitorSubTab = 'chats' | 'cache' | 'live';
 type ResultsSubTab = 'responses' | 'positions';
 type AdminSubTab = 'personas' | 'prompts' | 'models' | 'settings' | 'instructors';
 
@@ -357,7 +357,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [chatsLimit, setChatsLimit] = useState<number>(50);
   const [showChatTranscriptModal, setShowChatTranscriptModal] = useState(false);
   const [selectedCaseChat, setSelectedCaseChat] = useState<any | null>(null);
-  
+
+  // Live Session Monitor state
+  const [liveSessionSection, setLiveSessionSection] = useState<string>('');
+  const [liveSessionCase, setLiveSessionCase] = useState<string>('');
+  const [liveSessionCases, setLiveSessionCases] = useState<any[]>([]);
+  const [isLoadingLiveSessionCases, setIsLoadingLiveSessionCases] = useState(false);
+  const [liveSessionData, setLiveSessionData] = useState<any[]>([]);
+  const [liveSessionSummary, setLiveSessionSummary] = useState<{ total: number; completed: number; in_progress: number; not_started: number }>({ total: 0, completed: 0, in_progress: 0, not_started: 0 });
+  const [isLoadingLiveSession, setIsLoadingLiveSession] = useState(false);
+  const [liveAutoRefresh, setLiveAutoRefresh] = useState(true);
+  const [lastLiveRefresh, setLastLiveRefresh] = useState<Date | null>(null);
+
   // Chat options editing (Phase 2)
   const [expandedCaseOptions, setExpandedCaseOptions] = useState<string | null>(null);
   const [editingChatOptions, setEditingChatOptions] = useState<any>(null);
@@ -425,6 +436,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     allow_exit: false,
     require_minimum_exchanges: 0,
     max_message_length: 0
+  };
+
+  // Helper to check if a chat option value differs from the applicable default
+  const isOptionModified = (optionKey: string, currentValue: any, applicableDefault: any): boolean => {
+    if (!applicableDefault) return false;
+    const defaultValue = applicableDefault[optionKey];
+    // Handle undefined/null cases
+    if (defaultValue === undefined || defaultValue === null) return currentValue !== undefined && currentValue !== null && currentValue !== '';
+    return currentValue !== defaultValue;
+  };
+
+  // Get inheritance source label
+  const getInheritanceSource = (isEditingDefault: 'global' | 'section' | null, chatOptionsSection: string | null): string => {
+    if (isEditingDefault === 'global') return 'System default';
+    if (isEditingDefault === 'section') return 'Section default';
+    // For assignment-level, show where defaults come from
+    return chatOptionsSection ? 'Section default' : 'Global default';
   };
 
   // Chat options category collapse state (start collapsed)
@@ -4018,6 +4046,30 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           )}
 
           <div className={`p-4 space-y-2 ${!isEditingDefault && useDefaultOptions ? 'opacity-60 pointer-events-none' : ''}`}>
+            {/* Modified options summary */}
+            {!useDefaultOptions && applicableDefault && editingChatOptions && (() => {
+              const optionKeys = Object.keys(defaultChatOptions);
+              const modifiedCount = optionKeys.filter(key => isOptionModified(key, editingChatOptions[key], applicableDefault)).length;
+              if (modifiedCount > 0) {
+                return (
+                  <div className="mb-3 p-2 bg-purple-50 border border-purple-200 rounded-lg flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-purple-600 text-sm font-medium">{modifiedCount} option{modifiedCount !== 1 ? 's' : ''} modified</span>
+                      <span className="text-xs text-purple-500">from {getInheritanceSource(isEditingDefault, chatOptionsSection)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEditingChatOptions({ ...applicableDefault })}
+                      className="text-xs text-purple-600 hover:text-purple-800 underline"
+                    >
+                      Reset all to defaults
+                    </button>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
             {/* Categories Header with Expand/Collapse All */}
             <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-200">
               <h4 className="text-sm font-semibold text-gray-800">Categories of Chat Options</h4>
@@ -4053,27 +4105,65 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               {expandedCategories.has('hints') && (
                 <div className="pb-4 pt-2">
                   <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">Hints Allowed</label>
+                    <div className={`${!useDefaultOptions && isOptionModified('hints_allowed', editingChatOptions.hints_allowed, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-gray-700">Hints Allowed</label>
+                        {!useDefaultOptions && isOptionModified('hints_allowed', editingChatOptions.hints_allowed, applicableDefault) && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">Modified</span>
+                            <button
+                              type="button"
+                              onClick={() => setEditingChatOptions({...editingChatOptions, hints_allowed: applicableDefault?.hints_allowed ?? 3})}
+                              className="text-xs text-gray-500 hover:text-purple-600"
+                              title={`Reset to default (${applicableDefault?.hints_allowed ?? 3})`}
+                            >
+                              ↩
+                            </button>
+                          </div>
+                        )}
+                      </div>
                       <input
                         type="number"
                         min="0"
                         max="10"
                         value={editingChatOptions.hints_allowed ?? 3}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, hints_allowed: parseInt(e.target.value) || 0})}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        disabled={useDefaultOptions}
+                        className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />
+                      {useDefaultOptions && applicableDefault && (
+                        <p className="text-xs text-gray-400 mt-0.5 italic">Inherited from {getInheritanceSource(isEditingDefault, chatOptionsSection)}</p>
+                      )}
                     </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">Free Hints (no score penalty)</label>
+                    <div className={`${!useDefaultOptions && isOptionModified('free_hints', editingChatOptions.free_hints, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-gray-700">Free Hints (no penalty)</label>
+                        {!useDefaultOptions && isOptionModified('free_hints', editingChatOptions.free_hints, applicableDefault) && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">Modified</span>
+                            <button
+                              type="button"
+                              onClick={() => setEditingChatOptions({...editingChatOptions, free_hints: applicableDefault?.free_hints ?? 1})}
+                              className="text-xs text-gray-500 hover:text-purple-600"
+                              title={`Reset to default (${applicableDefault?.free_hints ?? 1})`}
+                            >
+                              ↩
+                            </button>
+                          </div>
+                        )}
+                      </div>
                       <input
                         type="number"
                         min="0"
                         max="5"
                         value={editingChatOptions.free_hints ?? 1}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, free_hints: parseInt(e.target.value) || 0})}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        disabled={useDefaultOptions}
+                        className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />
+                      {useDefaultOptions && applicableDefault && (
+                        <p className="text-xs text-gray-400 mt-0.5 italic">Inherited from {getInheritanceSource(isEditingDefault, chatOptionsSection)}</p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -4092,60 +4182,99 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </button>
               {expandedCategories.has('display') && (
                 <div className="pb-4 pt-2 space-y-2">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={editingChatOptions.show_case ?? true}
-                      onChange={(e) => setEditingChatOptions({...editingChatOptions, show_case: e.target.checked})}
-                      className="rounded border-gray-300"
-                    />
-                    Show case content in left panel
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={editingChatOptions.show_timer ?? true}
-                      onChange={(e) => setEditingChatOptions({...editingChatOptions, show_timer: e.target.checked})}
-                      className="rounded border-gray-300"
-                    />
-                    Show countdown timer during chat
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={editingChatOptions.do_evaluation ?? true}
-                      onChange={(e) => setEditingChatOptions({...editingChatOptions, do_evaluation: e.target.checked})}
-                      className="rounded border-gray-300"
-                    />
-                    Run evaluation after chat
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={editingChatOptions.show_evaluation_details ?? true}
-                      onChange={(e) => setEditingChatOptions({...editingChatOptions, show_evaluation_details: e.target.checked})}
-                      className="rounded border-gray-300"
-                    />
-                    Show full evaluation criteria (vs just score)
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={editingChatOptions.ask_for_feedback ?? false}
-                      onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_for_feedback: e.target.checked})}
-                      className="rounded border-gray-300"
-                    />
-                    Ask for feedback at end of chat
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={editingChatOptions.ask_save_transcript ?? false}
-                      onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_save_transcript: e.target.checked})}
-                      className="rounded border-gray-300"
-                    />
-                    Ask to save anonymized transcript
-                  </label>
+                  <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('show_case', editingChatOptions.show_case, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={editingChatOptions.show_case ?? true}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, show_case: e.target.checked})}
+                        disabled={useDefaultOptions}
+                        className="rounded border-gray-300"
+                      />
+                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Show case content in left panel</span>
+                    </label>
+                    {!useDefaultOptions && isOptionModified('show_case', editingChatOptions.show_case, applicableDefault) && (
+                      <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, show_case: applicableDefault?.show_case ?? true})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                    )}
+                  </div>
+                  <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('show_timer', editingChatOptions.show_timer, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={editingChatOptions.show_timer ?? true}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, show_timer: e.target.checked})}
+                        disabled={useDefaultOptions}
+                        className="rounded border-gray-300"
+                      />
+                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Show countdown timer during chat</span>
+                    </label>
+                    {!useDefaultOptions && isOptionModified('show_timer', editingChatOptions.show_timer, applicableDefault) && (
+                      <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, show_timer: applicableDefault?.show_timer ?? true})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                    )}
+                  </div>
+                  <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('do_evaluation', editingChatOptions.do_evaluation, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={editingChatOptions.do_evaluation ?? true}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, do_evaluation: e.target.checked})}
+                        disabled={useDefaultOptions}
+                        className="rounded border-gray-300"
+                      />
+                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Run evaluation after chat</span>
+                    </label>
+                    {!useDefaultOptions && isOptionModified('do_evaluation', editingChatOptions.do_evaluation, applicableDefault) && (
+                      <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, do_evaluation: applicableDefault?.do_evaluation ?? true})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                    )}
+                  </div>
+                  <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('show_evaluation_details', editingChatOptions.show_evaluation_details, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={editingChatOptions.show_evaluation_details ?? true}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, show_evaluation_details: e.target.checked})}
+                        disabled={useDefaultOptions}
+                        className="rounded border-gray-300"
+                      />
+                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Show full evaluation criteria (vs just score)</span>
+                    </label>
+                    {!useDefaultOptions && isOptionModified('show_evaluation_details', editingChatOptions.show_evaluation_details, applicableDefault) && (
+                      <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, show_evaluation_details: applicableDefault?.show_evaluation_details ?? true})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                    )}
+                  </div>
+                  <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('ask_for_feedback', editingChatOptions.ask_for_feedback, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={editingChatOptions.ask_for_feedback ?? false}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_for_feedback: e.target.checked})}
+                        disabled={useDefaultOptions}
+                        className="rounded border-gray-300"
+                      />
+                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Ask for feedback at end of chat</span>
+                    </label>
+                    {!useDefaultOptions && isOptionModified('ask_for_feedback', editingChatOptions.ask_for_feedback, applicableDefault) && (
+                      <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, ask_for_feedback: applicableDefault?.ask_for_feedback ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                    )}
+                  </div>
+                  <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('ask_save_transcript', editingChatOptions.ask_save_transcript, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={editingChatOptions.ask_save_transcript ?? false}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_save_transcript: e.target.checked})}
+                        disabled={useDefaultOptions}
+                        className="rounded border-gray-300"
+                      />
+                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Ask to save anonymized transcript</span>
+                    </label>
+                    {!useDefaultOptions && isOptionModified('ask_save_transcript', editingChatOptions.ask_save_transcript, applicableDefault) && (
+                      <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, ask_save_transcript: applicableDefault?.ask_save_transcript ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                    )}
+                  </div>
+                  {useDefaultOptions && applicableDefault && (
+                    <p className="text-xs text-gray-400 mt-2 italic">All settings inherited from {getInheritanceSource(isEditingDefault, chatOptionsSection)}</p>
+                  )}
                 </div>
               )}
             </div>
@@ -4224,65 +4353,121 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               {expandedCategories.has('controls') && (
                 <div className="pb-4 pt-2 space-y-3">
                   <div className="space-y-2">
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={editingChatOptions.allow_repeat ?? false}
-                        onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_repeat: e.target.checked})}
-                        className="rounded border-gray-300"
-                      />
-                      Allow students to repeat the chat multiple times
-                    </label>
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={editingChatOptions.timeout_chat ?? false}
-                        onChange={(e) => setEditingChatOptions({...editingChatOptions, timeout_chat: e.target.checked})}
-                        className="rounded border-gray-300"
-                      />
-                      Auto-end chat when time limit expires
-                    </label>
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={editingChatOptions.restart_chat ?? false}
-                        onChange={(e) => setEditingChatOptions({...editingChatOptions, restart_chat: e.target.checked})}
-                        className="rounded border-gray-300"
-                      />
-                      Allow students to restart the chat
-                    </label>
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={editingChatOptions.allow_exit ?? false}
-                        onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_exit: e.target.checked})}
-                        className="rounded border-gray-300"
-                      />
-                      Provide exit button to leave chat
-                    </label>
+                    <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('allow_repeat', editingChatOptions.allow_repeat, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={editingChatOptions.allow_repeat ?? false}
+                          onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_repeat: e.target.checked})}
+                          disabled={useDefaultOptions}
+                          className="rounded border-gray-300"
+                        />
+                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Allow students to repeat the chat multiple times</span>
+                      </label>
+                      {!useDefaultOptions && isOptionModified('allow_repeat', editingChatOptions.allow_repeat, applicableDefault) && (
+                        <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, allow_repeat: applicableDefault?.allow_repeat ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                      )}
+                    </div>
+                    <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('timeout_chat', editingChatOptions.timeout_chat, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={editingChatOptions.timeout_chat ?? false}
+                          onChange={(e) => setEditingChatOptions({...editingChatOptions, timeout_chat: e.target.checked})}
+                          disabled={useDefaultOptions}
+                          className="rounded border-gray-300"
+                        />
+                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Auto-end chat when time limit expires</span>
+                      </label>
+                      {!useDefaultOptions && isOptionModified('timeout_chat', editingChatOptions.timeout_chat, applicableDefault) && (
+                        <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, timeout_chat: applicableDefault?.timeout_chat ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                      )}
+                    </div>
+                    <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('restart_chat', editingChatOptions.restart_chat, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={editingChatOptions.restart_chat ?? false}
+                          onChange={(e) => setEditingChatOptions({...editingChatOptions, restart_chat: e.target.checked})}
+                          disabled={useDefaultOptions}
+                          className="rounded border-gray-300"
+                        />
+                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Allow students to restart the chat</span>
+                      </label>
+                      {!useDefaultOptions && isOptionModified('restart_chat', editingChatOptions.restart_chat, applicableDefault) && (
+                        <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, restart_chat: applicableDefault?.restart_chat ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                      )}
+                    </div>
+                    <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('allow_exit', editingChatOptions.allow_exit, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={editingChatOptions.allow_exit ?? false}
+                          onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_exit: e.target.checked})}
+                          disabled={useDefaultOptions}
+                          className="rounded border-gray-300"
+                        />
+                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Provide exit button to leave chat</span>
+                      </label>
+                      {!useDefaultOptions && isOptionModified('allow_exit', editingChatOptions.allow_exit, applicableDefault) && (
+                        <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, allow_exit: applicableDefault?.allow_exit ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                      )}
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4 pt-2 border-t border-gray-100">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">Minimum Exchanges</label>
+                    <div className={`${!useDefaultOptions && isOptionModified('require_minimum_exchanges', editingChatOptions.require_minimum_exchanges, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-gray-700">Minimum Exchanges</label>
+                        {!useDefaultOptions && isOptionModified('require_minimum_exchanges', editingChatOptions.require_minimum_exchanges, applicableDefault) && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">Modified</span>
+                            <button
+                              type="button"
+                              onClick={() => setEditingChatOptions({...editingChatOptions, require_minimum_exchanges: applicableDefault?.require_minimum_exchanges ?? 0})}
+                              className="text-xs text-gray-500 hover:text-purple-600"
+                              title={`Reset to default (${applicableDefault?.require_minimum_exchanges ?? 0})`}
+                            >
+                              ↩
+                            </button>
+                          </div>
+                        )}
+                      </div>
                       <input
                         type="number"
                         min="0"
                         max="20"
                         value={editingChatOptions.require_minimum_exchanges ?? 0}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, require_minimum_exchanges: parseInt(e.target.value) || 0})}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        disabled={useDefaultOptions}
+                        className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />
                       <p className="text-xs text-gray-500 mt-1">Required before "time is up" (0 = none)</p>
                     </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">Max Message Length</label>
+                    <div className={`${!useDefaultOptions && isOptionModified('max_message_length', editingChatOptions.max_message_length, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-gray-700">Max Message Length</label>
+                        {!useDefaultOptions && isOptionModified('max_message_length', editingChatOptions.max_message_length, applicableDefault) && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">Modified</span>
+                            <button
+                              type="button"
+                              onClick={() => setEditingChatOptions({...editingChatOptions, max_message_length: applicableDefault?.max_message_length ?? 0})}
+                              className="text-xs text-gray-500 hover:text-purple-600"
+                              title={`Reset to default (${applicableDefault?.max_message_length ?? 0})`}
+                            >
+                              ↩
+                            </button>
+                          </div>
+                        )}
+                      </div>
                       <input
                         type="number"
                         min="0"
                         max="10000"
                         value={editingChatOptions.max_message_length ?? 0}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, max_message_length: parseInt(e.target.value) || 0})}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        disabled={useDefaultOptions}
+                        className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />
                       <p className="text-xs text-gray-500 mt-1">Characters per message (0 = unlimited)</p>
                     </div>
@@ -4303,15 +4488,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </button>
               {expandedCategories.has('advanced') && (
                 <div className="pb-4 pt-2">
-                  <label className="flex items-center gap-2 text-sm text-gray-600">
-                    <input
-                      type="checkbox"
-                      checked={editingChatOptions.disable_position_tracking ?? false}
-                      onChange={(e) => setEditingChatOptions({...editingChatOptions, disable_position_tracking: e.target.checked})}
-                      className="rounded border-gray-300"
-                    />
-                    <span>Disable position tracking for this assignment</span>
-                  </label>
+                  <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('disable_position_tracking', editingChatOptions.disable_position_tracking, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                    <label className="flex items-center gap-2 text-sm text-gray-600">
+                      <input
+                        type="checkbox"
+                        checked={editingChatOptions.disable_position_tracking ?? false}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, disable_position_tracking: e.target.checked})}
+                        disabled={useDefaultOptions}
+                        className="rounded border-gray-300"
+                      />
+                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Disable position tracking for this assignment</span>
+                    </label>
+                    {!useDefaultOptions && isOptionModified('disable_position_tracking', editingChatOptions.disable_position_tracking, applicableDefault) && (
+                      <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, disable_position_tracking: applicableDefault?.disable_position_tracking ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                    )}
+                  </div>
                   <p className="text-xs text-gray-400 mt-1 ml-6">Override scenario-level position tracking settings</p>
                 </div>
               )}
@@ -4371,19 +4562,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             {/* Use Settings Elsewhere Section - only show when editing custom options (not defaults, not using defaults) */}
             {!isEditingDefault && !useDefaultOptions && (
               <div className="mt-6 pt-4 border-t border-gray-200">
-                <button
-                  type="button"
-                  onClick={() => setBulkActionsExpanded(!bulkActionsExpanded)}
-                  className="w-full flex items-center justify-between py-2 text-sm font-semibold text-gray-800 hover:text-purple-700"
-                >
-                  <span className="flex items-center gap-2">
+                <div className="flex items-center justify-between py-2">
+                  <button
+                    type="button"
+                    onClick={() => setBulkActionsExpanded(!bulkActionsExpanded)}
+                    className="flex items-center gap-2 text-sm font-semibold text-gray-800 hover:text-purple-700"
+                  >
                     Use these option settings elsewhere
-                    <HelpTooltip title="Use Settings Elsewhere">
-                      <p>These options let you use the above settings as defaults for all new case assignments, or copy these chat options to other existing cases or sections.</p>
-                    </HelpTooltip>
-                  </span>
-                  <span className="text-gray-400">{bulkActionsExpanded ? '\u25BC' : '\u25B6'}</span>
-                </button>
+                    <span className="text-gray-400">{bulkActionsExpanded ? '\u25BC' : '\u25B6'}</span>
+                  </button>
+                  <HelpTooltip title="Use Settings Elsewhere">
+                    <p>These options let you use the above settings as defaults for all new case assignments, or copy these chat options to other existing cases or sections.</p>
+                  </HelpTooltip>
+                </div>
 
                 {bulkActionsExpanded && (
                   <div className="pt-4">
@@ -4642,6 +4833,78 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     fetchCaseChats();
   }, []);
 
+  // Fetch cases for live session when section changes
+  const fetchLiveSessionCases = useCallback(async (sectionId: string) => {
+    if (!sectionId) {
+      setLiveSessionCases([]);
+      return;
+    }
+
+    setIsLoadingLiveSessionCases(true);
+    try {
+      const response = await fetch(
+        `${getApiBaseUrl()}/sections/${sectionId}/cases`,
+        {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`
+          }
+        }
+      );
+      const result = await response.json();
+      if (result.data) {
+        setLiveSessionCases(result.data || []);
+      }
+    } catch (err) {
+      console.error('Error fetching live session cases:', err);
+      setLiveSessionCases([]);
+    } finally {
+      setIsLoadingLiveSessionCases(false);
+    }
+  }, []);
+
+  // Fetch live session data
+  const fetchLiveSession = useCallback(async () => {
+    if (!liveSessionSection || !liveSessionCase) return;
+
+    setIsLoadingLiveSession(true);
+    try {
+      const response = await fetch(
+        `${getApiBaseUrl()}/sections/${liveSessionSection}/cases/${liveSessionCase}/live-session`,
+        {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`
+          }
+        }
+      );
+      const result = await response.json();
+      if (result.data) {
+        setLiveSessionData(result.data.students || []);
+        setLiveSessionSummary(result.data.summary || { total: 0, completed: 0, in_progress: 0, not_started: 0 });
+        setLastLiveRefresh(new Date());
+      }
+    } catch (err) {
+      console.error('Error fetching live session:', err);
+    } finally {
+      setIsLoadingLiveSession(false);
+    }
+  }, [liveSessionSection, liveSessionCase]);
+
+  // Auto-refresh live session data every 30 seconds
+  useEffect(() => {
+    if (primaryTab === 'monitor' && monitorSubTab === 'live' && liveAutoRefresh && liveSessionSection && liveSessionCase) {
+      fetchLiveSession();
+      const interval = setInterval(fetchLiveSession, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [primaryTab, monitorSubTab, liveAutoRefresh, liveSessionSection, liveSessionCase, fetchLiveSession]);
+
+  // Fetch when section or case changes
+  useEffect(() => {
+    if (liveSessionSection && liveSessionCase) {
+      fetchLiveSession();
+    }
+  }, [liveSessionSection, liveSessionCase, fetchLiveSession]);
+
   // Kill a chat session
   const handleKillChat = async (chatId: string) => {
     if (!confirm('Are you sure you want to kill this chat session? The student will not be able to continue.')) return;
@@ -4731,6 +4994,186 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         )}
       </div>
     </th>
+  );
+
+  const renderLiveSession = () => (
+    <div className="p-6 max-w-7xl mx-auto">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Live Session Monitor</h2>
+          <p className="text-sm text-gray-500">Real-time view of student progress during an active case session</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={liveAutoRefresh}
+              onChange={(e) => setLiveAutoRefresh(e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            Auto-refresh (30s)
+          </label>
+          <button
+            onClick={fetchLiveSession}
+            disabled={isLoadingLiveSession || !liveSessionSection || !liveSessionCase}
+            className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          >
+            {isLoadingLiveSession ? 'Refreshing...' : 'Refresh Now'}
+          </button>
+        </div>
+      </div>
+
+      {/* Section and Case Selectors */}
+      <div className="flex flex-wrap gap-3 mb-4">
+        <select
+          value={liveSessionSection}
+          onChange={(e) => {
+            const newSection = e.target.value;
+            setLiveSessionSection(newSection);
+            setLiveSessionCase(''); // Reset case when section changes
+            setLiveSessionCases([]); // Clear cases
+            setLiveSessionData([]);
+            setLiveSessionSummary({ total: 0, completed: 0, in_progress: 0, not_started: 0 });
+            if (newSection) {
+              fetchLiveSessionCases(newSection);
+            }
+          }}
+          className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-green-500 focus:border-green-500"
+        >
+          <option value="">Select Section...</option>
+          {sectionStats.filter(s => s.section_id !== 'unassigned').map(s => (
+            <option key={s.section_id} value={s.section_id}>{s.section_title}</option>
+          ))}
+        </select>
+        <select
+          value={liveSessionCase}
+          onChange={(e) => setLiveSessionCase(e.target.value)}
+          disabled={!liveSessionSection || isLoadingLiveSessionCases}
+          className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-green-500 focus:border-green-500 disabled:opacity-50"
+        >
+          <option value="">{isLoadingLiveSessionCases ? 'Loading cases...' : 'Select Case...'}</option>
+          {liveSessionCases.map((sc: any) => (
+            <option key={sc.case_id} value={sc.case_id}>{sc.case_title}</option>
+          ))}
+        </select>
+        {lastLiveRefresh && (
+          <span className="text-xs text-gray-500 self-center">
+            Last updated: {lastLiveRefresh.toLocaleTimeString()}
+          </span>
+        )}
+      </div>
+
+      {/* Summary Stats Bar */}
+      {liveSessionSection && liveSessionCase && (
+        <div className="grid grid-cols-4 gap-4 mb-6">
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+            <div className="text-2xl font-bold text-gray-800">{liveSessionSummary.total}</div>
+            <div className="text-xs text-gray-500 uppercase tracking-wide">Total Students</div>
+          </div>
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
+            <div className="text-2xl font-bold text-green-600">{liveSessionSummary.completed}</div>
+            <div className="text-xs text-green-600 uppercase tracking-wide">Completed</div>
+          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
+            <div className="text-2xl font-bold text-blue-600">{liveSessionSummary.in_progress}</div>
+            <div className="text-xs text-blue-600 uppercase tracking-wide">In Progress</div>
+          </div>
+          <div className="bg-gray-100 border border-gray-300 rounded-lg p-4 text-center">
+            <div className="text-2xl font-bold text-gray-500">{liveSessionSummary.not_started}</div>
+            <div className="text-xs text-gray-500 uppercase tracking-wide">Not Started</div>
+          </div>
+        </div>
+      )}
+
+      {/* Student List */}
+      {!liveSessionSection || !liveSessionCase ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          <p className="text-gray-500">Select a section and case to view live session data.</p>
+        </div>
+      ) : isLoadingLiveSession && liveSessionData.length === 0 ? (
+        <div className="text-center py-12">
+          <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-green-500 border-t-transparent"></div>
+          <p className="mt-2 text-gray-500">Loading session data...</p>
+        </div>
+      ) : liveSessionData.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          <p className="text-gray-500">No students enrolled in this section.</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Student</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Position</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Duration</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Score</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {liveSessionData.map((student: any) => (
+                <tr
+                  key={student.student_id}
+                  className={`${
+                    student.status === 'completed' ? 'bg-green-50' :
+                    student.status === 'in_progress' ? 'bg-blue-50' :
+                    student.status === 'abandoned' ? 'bg-orange-50' :
+                    'bg-white'
+                  } hover:bg-gray-100`}
+                >
+                  <td className="px-4 py-3">
+                    <div className="text-sm font-medium text-gray-900">{student.student_name}</div>
+                    <div className="text-xs text-gray-500">{student.email}</div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                      student.status === 'completed' ? 'bg-green-100 text-green-700' :
+                      student.status === 'in_progress' ? 'bg-blue-100 text-blue-700' :
+                      student.status === 'abandoned' ? 'bg-orange-100 text-orange-700' :
+                      'bg-gray-100 text-gray-600'
+                    }`}>
+                      {student.status === 'not_started' ? 'Not Started' :
+                       student.status === 'in_progress' ? 'In Progress' :
+                       student.status === 'abandoned' ? 'Abandoned' :
+                       'Completed'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    {student.position ? (
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-gray-700">{student.position}</span>
+                        {student.position_changed && student.final_position && (
+                          <span className="text-xs text-amber-600">Changed to: {student.final_position}</span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-gray-400">-</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">
+                    {student.duration_minutes !== null ? (
+                      <span>{student.duration_minutes} min</span>
+                    ) : (
+                      <span className="text-gray-400">-</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    {student.evaluation_score !== null ? (
+                      <span className="font-medium text-gray-700">
+                        {student.evaluation_score}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400">-</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 
   const renderChatsTab = () => (
@@ -5254,6 +5697,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           {primaryTab === 'monitor' && (
             <div className="flex gap-1 mt-2 pb-2">
               <button
+                onClick={() => setMonitorSubTab('live')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  monitorSubTab === 'live'
+                    ? 'bg-green-100 text-green-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Live Session
+              </button>
+              <button
                 onClick={() => setMonitorSubTab('chats')}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   monitorSubTab === 'chats'
@@ -5385,7 +5838,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <Analytics onNavigate={handleNavigate} initialSectionId={resultsInitialSectionId} />
           )
         ) : primaryTab === 'monitor' ? (
-          monitorSubTab === 'cache' ? (
+          monitorSubTab === 'live' ? (
+            renderLiveSession()
+          ) : monitorSubTab === 'cache' ? (
             <CacheMetrics />
           ) : (
             renderChatsTab()
