@@ -4,7 +4,7 @@ import { AdminUser } from '../types';
 
 interface DashboardHomeProps {
   user: AdminUser | null | undefined;
-  onNavigate: (section: string, subTab?: string) => void;
+  onNavigate: (section: string, subTab?: string, options?: { section_id?: string; case_id?: string }) => void;
 }
 
 interface Alert {
@@ -37,19 +37,41 @@ interface RecentActivity {
   section_title: string;
   case_title: string;
   timestamp: string;
+  score?: number;
+}
+
+interface ActiveSession {
+  section_id: string;
+  section_title: string;
+  case_id: string;
+  case_title: string;
+  open_date: string | null;
+  close_date: string | null;
+  manual_status: 'auto' | 'manually_opened' | 'manually_closed';
+  is_open: boolean;
+  time_remaining_minutes: number | null;
+  opens_in_minutes: number | null;
+  students: {
+    total: number;
+    completed: number;
+    in_progress: number;
+    not_started: number;
+  };
 }
 
 const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [sections, setSections] = useState<SectionOverview[]>([]);
+  const [activeSessions, setActiveSessions] = useState<ActiveSession[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [recentActivity, setRecentActivity] = useState<RecentActivity[]>([]);
   const [stats, setStats] = useState({
     activeSections: 0,
     totalStudents: 0,
-    completedThisWeek: 0,
+    completedToday: 0,
     activeChats: 0,
-    abandonedChats: 0
+    abandonedChats: 0,
+    casesOpenNow: 0
   });
 
   const fetchDashboardData = useCallback(async () => {
@@ -75,6 +97,11 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
       const { data: chatsData } = await api
         .from('case-chats')
         .select('id, student_id, section_id, status, case_id, start_time, last_activity');
+
+      // Fetch section_cases for scheduling data
+      const { data: sectionCasesData } = await api
+        .from('section-cases')
+        .select('id, section_id, case_id, case_title, active, open_date, close_date, manual_status');
 
       // Process sections with stats
       const completedStudentIds = new Set((evaluationsData as any[] || []).map(e => e.student_id));
@@ -121,27 +148,175 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
 
       setSections(sectionOverviews);
 
+      // Build active sessions from section_cases
+      const now = new Date();
+      const sessions: ActiveSession[] = [];
+      const enabledSectionIds = new Set(sectionOverviews.map(s => s.section_id));
+
+      for (const sc of (sectionCasesData as any[] || [])) {
+        // Only include active assignments from enabled sections
+        if (!sc.active || !enabledSectionIds.has(sc.section_id)) continue;
+
+        const section = sectionOverviews.find(s => s.section_id === sc.section_id);
+        if (!section) continue;
+
+        // Calculate availability status
+        const openDate = sc.open_date ? new Date(sc.open_date) : null;
+        const closeDate = sc.close_date ? new Date(sc.close_date) : null;
+
+        let isOpen = false;
+        let timeRemainingMinutes: number | null = null;
+        let opensInMinutes: number | null = null;
+
+        if (sc.manual_status === 'manually_closed') {
+          isOpen = false;
+        } else if (sc.manual_status === 'manually_opened') {
+          isOpen = true;
+          if (closeDate && closeDate > now) {
+            timeRemainingMinutes = Math.round((closeDate.getTime() - now.getTime()) / 60000);
+          }
+        } else {
+          // auto mode - check dates
+          const afterOpen = !openDate || openDate <= now;
+          const beforeClose = !closeDate || closeDate > now;
+          isOpen = afterOpen && beforeClose;
+
+          if (!afterOpen && openDate) {
+            opensInMinutes = Math.round((openDate.getTime() - now.getTime()) / 60000);
+          }
+          if (isOpen && closeDate) {
+            timeRemainingMinutes = Math.round((closeDate.getTime() - now.getTime()) / 60000);
+          }
+        }
+
+        // Count students by status for this specific case
+        const sectionStudentIds = (studentsData as any[] || [])
+          .filter(s => s.section_id === sc.section_id)
+          .map(s => s.id);
+
+        const caseChats = (chatsData as any[] || []).filter(c =>
+          c.case_id === sc.case_id && sectionStudentIds.includes(c.student_id)
+        );
+
+        const completedForCase = caseChats.filter(c => c.status === 'completed').length;
+        const inProgressForCase = caseChats.filter(c => ['started', 'in_progress'].includes(c.status)).length;
+        const totalStudentsInSection = sectionStudentIds.length;
+        const notStartedForCase = totalStudentsInSection - completedForCase - inProgressForCase;
+
+        sessions.push({
+          section_id: sc.section_id,
+          section_title: section.section_title,
+          case_id: sc.case_id,
+          case_title: sc.case_title || 'Unknown Case',
+          open_date: sc.open_date,
+          close_date: sc.close_date,
+          manual_status: sc.manual_status || 'auto',
+          is_open: isOpen,
+          time_remaining_minutes: timeRemainingMinutes,
+          opens_in_minutes: opensInMinutes,
+          students: {
+            total: totalStudentsInSection,
+            completed: completedForCase,
+            in_progress: inProgressForCase,
+            not_started: Math.max(0, notStartedForCase)
+          }
+        });
+      }
+
+      // Sort: open sessions first (by time remaining), then upcoming (by opens_in)
+      sessions.sort((a, b) => {
+        if (a.is_open && !b.is_open) return -1;
+        if (!a.is_open && b.is_open) return 1;
+        if (a.is_open && b.is_open) {
+          // Both open - sort by closing time (sooner first)
+          return (a.time_remaining_minutes || Infinity) - (b.time_remaining_minutes || Infinity);
+        }
+        // Both not open - sort by opening time (sooner first)
+        return (a.opens_in_minutes || Infinity) - (b.opens_in_minutes || Infinity);
+      });
+
+      setActiveSessions(sessions);
+
       // Calculate overall stats
       const enabledSections = sectionOverviews.length;
       const totalStudents = sectionOverviews.reduce((sum, s) => sum + s.total_students, 0);
+      const casesOpenNow = sessions.filter(s => s.is_open).length;
 
-      // Completions this week
-      const weekAgo = new Date();
-      weekAgo.setDate(weekAgo.getDate() - 7);
-      const completedThisWeek = (evaluationsData as any[] || []).filter(e =>
-        new Date(e.created_at) >= weekAgo
+      // Completions today (changed from week)
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const completedToday = (evaluationsData as any[] || []).filter(e =>
+        new Date(e.created_at) >= todayStart
       ).length;
 
       setStats({
         activeSections: enabledSections,
         totalStudents,
-        completedThisWeek,
+        completedToday,
         activeChats: totalActiveChats,
-        abandonedChats: abandonedChatsCount
+        abandonedChats: abandonedChatsCount,
+        casesOpenNow
       });
 
       // Generate alerts
       const newAlerts: Alert[] = [];
+
+      // Cases closing soon (within 2 hours)
+      const closingSoonSessions = sessions.filter(s =>
+        s.is_open && s.time_remaining_minutes !== null && s.time_remaining_minutes <= 120
+      );
+      for (const session of closingSoonSessions) {
+        const timeText = session.time_remaining_minutes! < 60
+          ? `${session.time_remaining_minutes}m`
+          : `${Math.floor(session.time_remaining_minutes! / 60)}h ${session.time_remaining_minutes! % 60}m`;
+        newAlerts.push({
+          id: `closing-soon-${session.section_id}-${session.case_id}`,
+          type: 'warning',
+          message: `${session.case_title} for ${session.section_title} closes in ${timeText}`,
+          action: 'monitor',
+          actionLabel: 'Monitor',
+          data: { section_id: session.section_id, case_id: session.case_id }
+        });
+      }
+
+      // Students not started warning (>50% not started, case closes in < 4 hours)
+      const notStartedAlerts = sessions.filter(s =>
+        s.is_open &&
+        s.time_remaining_minutes !== null &&
+        s.time_remaining_minutes <= 240 &&
+        s.students.total > 0 &&
+        (s.students.not_started / s.students.total) > 0.5
+      );
+      for (const session of notStartedAlerts) {
+        // Don't duplicate if already in closing soon
+        if (!closingSoonSessions.some(cs => cs.section_id === session.section_id && cs.case_id === session.case_id)) {
+          newAlerts.push({
+            id: `not-started-${session.section_id}-${session.case_id}`,
+            type: 'info',
+            message: `${session.students.not_started}/${session.students.total} students haven't started ${session.case_title}`,
+            action: 'monitor',
+            actionLabel: 'View',
+            data: { section_id: session.section_id, case_id: session.case_id }
+          });
+        }
+      }
+
+      // Stuck students (in_progress with no activity for 30+ min)
+      const stuckChats = (chatsData as any[] || []).filter(c => {
+        if (!['started', 'in_progress'].includes(c.status)) return false;
+        const lastActivity = c.last_activity ? new Date(c.last_activity) : new Date(c.start_time);
+        const minutesInactive = (now.getTime() - lastActivity.getTime()) / 60000;
+        return minutesInactive >= 30;
+      });
+      if (stuckChats.length > 0) {
+        newAlerts.push({
+          id: 'stuck-students',
+          type: 'info',
+          message: `${stuckChats.length} student${stuckChats.length > 1 ? 's' : ''} inactive for 30+ minutes`,
+          action: 'monitor',
+          actionLabel: 'View'
+        });
+      }
 
       // Abandoned chats alert
       if (abandonedChatsCount > 0) {
@@ -154,21 +329,12 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
         });
       }
 
-      // Rechat requests (evaluations with allow_rechat pending)
-      const { data: rechatRequests } = await api
-        .from('evaluations')
-        .select('id, student_id')
-        .eq('allow_rechat', false);
-
-      // Check for sections with upcoming deadlines (would need scheduling data)
-      // For now, we'll add a placeholder if there are active cases
-
       setAlerts(newAlerts);
 
       // Generate recent activity from evaluations and chats
       const activities: RecentActivity[] = [];
 
-      // Recent completions
+      // Recent completions (with scores)
       const recentEvals = (evaluationsData as any[] || [])
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
         .slice(0, 5);
@@ -177,17 +343,49 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
         const student = (studentsData as any[] || []).find(s => s.id === evalRecord.student_id);
         if (student) {
           const section = (sectionsData as any[] || []).find(s => s.section_id === student.section_id);
+          // Find the case from the chat record if available
+          const chatRecord = (chatsData as any[] || []).find(c => c.student_id === evalRecord.student_id);
+          const sectionCase = (sectionCasesData as any[] || []).find(sc =>
+            sc.section_id === student.section_id && sc.case_id === chatRecord?.case_id
+          );
           activities.push({
             id: `eval-${evalRecord.id}`,
             type: 'completion',
             student_name: student.full_name || 'Unknown Student',
             section_title: section?.section_title || 'Unknown Section',
-            case_title: section?.active_case_title || 'Unknown Case',
-            timestamp: evalRecord.created_at
+            case_title: sectionCase?.case_title || section?.active_case_title || 'Unknown Case',
+            timestamp: evalRecord.created_at,
+            score: evalRecord.score
           });
         }
       }
 
+      // Recent chat starts
+      const recentStarts = (chatsData as any[] || [])
+        .filter(c => ['started', 'in_progress'].includes(c.status))
+        .sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime())
+        .slice(0, 5);
+
+      for (const chat of recentStarts) {
+        const student = (studentsData as any[] || []).find(s => s.id === chat.student_id);
+        if (student) {
+          const section = (sectionsData as any[] || []).find(s => s.section_id === chat.section_id);
+          const sectionCase = (sectionCasesData as any[] || []).find(sc =>
+            sc.section_id === chat.section_id && sc.case_id === chat.case_id
+          );
+          activities.push({
+            id: `chat-${chat.id}`,
+            type: 'start',
+            student_name: student.full_name || 'Unknown Student',
+            section_title: section?.section_title || 'Unknown Section',
+            case_title: sectionCase?.case_title || 'Unknown Case',
+            timestamp: chat.start_time
+          });
+        }
+      }
+
+      // Sort all activities by timestamp and take the most recent 8
+      activities.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
       setRecentActivity(activities.slice(0, 8));
 
     } catch (error) {
@@ -259,7 +457,8 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
             Welcome back{user?.who ? `, ${user.who.split(' ')[0]}` : ''}
           </h2>
           <p className="text-sm text-gray-500 mt-1">
-            Here's what's happening with your courses
+            {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+            {stats.casesOpenNow > 0 && ` • ${stats.casesOpenNow} case${stats.casesOpenNow > 1 ? 's' : ''} open now`}
           </p>
         </div>
         <button
@@ -273,37 +472,130 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
         </button>
       </div>
 
-      {/* Overview Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
-          <p className="text-sm font-medium text-gray-500">Active Sections</p>
-          <p className="text-3xl font-bold text-gray-900 mt-1">{stats.activeSections}</p>
+      {/* Today's Sessions + Quick Stats row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Today's Sessions */}
+        <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-gray-200">
+            <h3 className="text-lg font-semibold text-gray-900">Today's Sessions</h3>
+          </div>
+          <div className="divide-y divide-gray-100">
+            {activeSessions.length === 0 ? (
+              <div className="p-6 text-center text-gray-500">
+                <p>No active case sessions.</p>
+                <button
+                  onClick={() => onNavigate('courses', 'assignments')}
+                  className="mt-2 text-sm text-blue-600 hover:text-blue-800"
+                >
+                  Assign a case to a section
+                </button>
+              </div>
+            ) : (
+              activeSessions.slice(0, 4).map(session => {
+                const total = session.students.total;
+                const completedPct = total > 0 ? (session.students.completed / total) * 100 : 0;
+                const inProgressPct = total > 0 ? (session.students.in_progress / total) * 100 : 0;
+
+                let timeText = '';
+                if (session.is_open) {
+                  if (session.time_remaining_minutes !== null) {
+                    const hours = Math.floor(session.time_remaining_minutes / 60);
+                    const mins = session.time_remaining_minutes % 60;
+                    timeText = hours > 0 ? `Closes in ${hours}h ${mins}m` : `Closes in ${mins}m`;
+                  } else {
+                    timeText = 'Open (no end time)';
+                  }
+                } else if (session.opens_in_minutes !== null) {
+                  const hours = Math.floor(session.opens_in_minutes / 60);
+                  const mins = session.opens_in_minutes % 60;
+                  timeText = hours > 0 ? `Opens in ${hours}h ${mins}m` : `Opens in ${mins}m`;
+                } else {
+                  timeText = session.manual_status === 'manually_closed' ? 'Manually closed' : 'Not scheduled';
+                }
+
+                return (
+                  <div key={`${session.section_id}-${session.case_id}`} className="px-5 py-4">
+                    <div className="flex justify-between items-start mb-2">
+                      <div>
+                        <h4 className="font-medium text-gray-900">{session.section_title}</h4>
+                        <p className="text-sm text-gray-600">{session.case_title}</p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className={`text-xs font-medium px-2 py-1 rounded-full ${
+                          session.is_open
+                            ? session.time_remaining_minutes !== null && session.time_remaining_minutes <= 60
+                              ? 'bg-amber-100 text-amber-700'
+                              : 'bg-green-100 text-green-700'
+                            : 'bg-gray-100 text-gray-600'
+                        }`}>
+                          {timeText}
+                        </span>
+                        <button
+                          onClick={() => onNavigate('monitor', 'live', { section_id: session.section_id, case_id: session.case_id })}
+                          className="text-sm font-medium text-blue-600 hover:text-blue-800 px-3 py-1 rounded border border-blue-200 hover:border-blue-400"
+                        >
+                          Monitor
+                        </button>
+                      </div>
+                    </div>
+                    {/* Progress bar */}
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                        <span>
+                          {session.students.completed} completed, {session.students.in_progress} active, {session.students.not_started} not started
+                        </span>
+                        <span>{total} students</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2 flex overflow-hidden">
+                        <div
+                          className="bg-green-500 h-2 transition-all"
+                          style={{ width: `${completedPct}%` }}
+                        ></div>
+                        <div
+                          className="bg-blue-500 h-2 transition-all"
+                          style={{ width: `${inProgressPct}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
-        <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
-          <p className="text-sm font-medium text-gray-500">Total Students</p>
-          <p className="text-3xl font-bold text-gray-900 mt-1">{stats.totalStudents}</p>
-        </div>
-        <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
-          <p className="text-sm font-medium text-gray-500">Completed This Week</p>
-          <p className="text-3xl font-bold text-green-600 mt-1">{stats.completedThisWeek}</p>
-        </div>
-        <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
-          <p className="text-sm font-medium text-gray-500">Active Chats</p>
-          <p className="text-3xl font-bold text-blue-600 mt-1">{stats.activeChats}</p>
-          {stats.abandonedChats > 0 && (
-            <p className="text-xs text-amber-600 mt-1">{stats.abandonedChats} abandoned</p>
-          )}
+
+        {/* Quick Stats */}
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+            <p className="text-sm font-medium text-gray-500">Active Chats</p>
+            <p className="text-2xl font-bold text-blue-600 mt-1">{stats.activeChats}</p>
+            {stats.abandonedChats > 0 && (
+              <p className="text-xs text-amber-600 mt-1">{stats.abandonedChats} abandoned</p>
+            )}
+          </div>
+          <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+            <p className="text-sm font-medium text-gray-500">Completed Today</p>
+            <p className="text-2xl font-bold text-green-600 mt-1">{stats.completedToday}</p>
+          </div>
+          <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+            <p className="text-sm font-medium text-gray-500">Cases Open</p>
+            <p className="text-2xl font-bold text-gray-900 mt-1">{stats.casesOpenNow}</p>
+          </div>
+          <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+            <p className="text-sm font-medium text-gray-500">Total Students</p>
+            <p className="text-2xl font-bold text-gray-900 mt-1">{stats.totalStudents}</p>
+          </div>
         </div>
       </div>
 
-      {/* Alerts Section */}
+      {/* Needs Attention Section */}
       {alerts.length > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
           <h3 className="text-sm font-semibold text-amber-800 mb-3 flex items-center gap-2">
             <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
             </svg>
-            Alerts ({alerts.length})
+            Needs Attention ({alerts.length})
           </h3>
           <div className="space-y-2">
             {alerts.map(alert => (
@@ -311,7 +603,13 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
                 <span className="text-sm text-gray-700">{alert.message}</span>
                 {alert.actionLabel && (
                   <button
-                    onClick={() => onNavigate(alert.action || 'monitor')}
+                    onClick={() => {
+                      if (alert.data?.section_id && alert.data?.case_id) {
+                        onNavigate('monitor', 'live', { section_id: alert.data.section_id, case_id: alert.data.case_id });
+                      } else {
+                        onNavigate(alert.action || 'monitor');
+                      }
+                    }}
                     className="text-sm font-medium text-amber-700 hover:text-amber-900"
                   >
                     {alert.actionLabel}
@@ -323,74 +621,116 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
         </div>
       )}
 
-      {/* My Courses Section */}
+      {/* Case Assignments Table */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center">
-          <h3 className="text-lg font-semibold text-gray-900">My Courses</h3>
+          <h3 className="text-lg font-semibold text-gray-900">Case Assignments</h3>
           <button
-            onClick={() => onNavigate('courses')}
+            onClick={() => onNavigate('courses', 'assignments')}
             className="text-sm font-medium text-blue-600 hover:text-blue-800"
           >
             View All
           </button>
         </div>
-        <div className="divide-y divide-gray-100">
-          {sections.length === 0 ? (
-            <div className="p-8 text-center text-gray-500">
-              <p>No active sections found.</p>
-              <button
-                onClick={() => onNavigate('courses', 'sections')}
-                className="mt-2 text-sm text-blue-600 hover:text-blue-800"
-              >
-                Create a section
-              </button>
-            </div>
-          ) : (
-            sections.slice(0, 5).map(section => (
-              <div
-                key={section.section_id}
-                className="px-5 py-4 hover:bg-gray-50 cursor-pointer transition-colors"
-                onClick={() => onNavigate('courses', section.section_id)}
-              >
-                <div className="flex justify-between items-start mb-2">
-                  <div>
-                    <h4 className="font-medium text-gray-900">{section.section_title}</h4>
-                    <p className="text-xs text-gray-500">{section.year_term}</p>
-                  </div>
-                  <div className="text-right">
-                    {section.active_chats > 0 && (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                        {section.active_chats} active
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-4 text-sm">
-                  <span className="text-gray-600">
-                    {section.active_case_title || 'No active case'}
-                  </span>
-                </div>
-                <div className="mt-2">
-                  <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-                    <span>Progress: {section.completed_students}/{section.total_students} completed</span>
-                    <span>{getProgressPercent(section.completed_students, section.total_students)}%</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div
-                      className="bg-green-500 h-2 rounded-full transition-all"
-                      style={{ width: `${getProgressPercent(section.completed_students, section.total_students)}%` }}
-                    ></div>
-                  </div>
-                </div>
-                {section.avg_score !== null && (
-                  <p className="text-xs text-gray-500 mt-2">
-                    Avg Score: {section.avg_score.toFixed(1)}/15
-                  </p>
-                )}
-              </div>
-            ))
-          )}
-        </div>
+        {activeSessions.length === 0 ? (
+          <div className="p-8 text-center text-gray-500">
+            <p>No active case assignments.</p>
+            <button
+              onClick={() => onNavigate('courses', 'assignments')}
+              className="mt-2 text-sm text-blue-600 hover:text-blue-800"
+            >
+              Assign a case to a section
+            </button>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">Section</th>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">Case</th>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">Status</th>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">Schedule</th>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">Progress</th>
+                  <th className="text-right px-4 py-3 font-medium text-gray-600">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {activeSessions.slice(0, 5).map(session => {
+                  const total = session.students.total;
+                  const completedPct = total > 0 ? Math.round((session.students.completed / total) * 100) : 0;
+
+                  // Status badge
+                  let statusText = '';
+                  let statusClass = '';
+                  if (session.is_open) {
+                    statusText = 'Open';
+                    statusClass = 'bg-green-100 text-green-700';
+                  } else if (session.opens_in_minutes !== null && session.opens_in_minutes > 0) {
+                    statusText = 'Scheduled';
+                    statusClass = 'bg-blue-100 text-blue-700';
+                  } else if (session.manual_status === 'manually_closed') {
+                    statusText = 'Closed';
+                    statusClass = 'bg-gray-100 text-gray-600';
+                  } else {
+                    statusText = 'Closed';
+                    statusClass = 'bg-gray-100 text-gray-600';
+                  }
+
+                  // Schedule text
+                  let scheduleText = '';
+                  if (session.is_open && session.time_remaining_minutes !== null) {
+                    const hours = Math.floor(session.time_remaining_minutes / 60);
+                    const mins = session.time_remaining_minutes % 60;
+                    scheduleText = hours > 0 ? `Closes in ${hours}h ${mins}m` : `Closes in ${mins}m`;
+                  } else if (session.opens_in_minutes !== null && session.opens_in_minutes > 0) {
+                    const hours = Math.floor(session.opens_in_minutes / 60);
+                    const mins = session.opens_in_minutes % 60;
+                    scheduleText = hours > 0 ? `Opens in ${hours}h ${mins}m` : `Opens in ${mins}m`;
+                  } else if (session.close_date) {
+                    scheduleText = `Ended ${new Date(session.close_date).toLocaleDateString()}`;
+                  } else {
+                    scheduleText = 'No schedule';
+                  }
+
+                  return (
+                    <tr key={`${session.section_id}-${session.case_id}`} className="hover:bg-gray-50">
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-gray-900">{session.section_title}</div>
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">{session.case_title}</td>
+                      <td className="px-4 py-3">
+                        <span className={`text-xs font-medium px-2 py-1 rounded-full ${statusClass}`}>
+                          {statusText}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">{scheduleText}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-24 bg-gray-200 rounded-full h-2">
+                            <div className="bg-green-500 h-2 rounded-full" style={{ width: `${completedPct}%` }}></div>
+                          </div>
+                          <span className="text-xs text-gray-500">{session.students.completed}/{total}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={() => session.is_open
+                            ? onNavigate('monitor', 'live', { section_id: session.section_id, case_id: session.case_id })
+                            : onNavigate('results', session.section_id)
+                          }
+                          className="text-sm font-medium text-blue-600 hover:text-blue-800"
+                        >
+                          {session.is_open ? 'Monitor' : 'Results'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -468,6 +808,9 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
                       {activity.type === 'start' && ' started '}
                       {activity.type === 'abandoned' && "'s chat was abandoned for "}
                       <span className="text-gray-600">{activity.case_title}</span>
+                      {activity.type === 'completion' && activity.score !== undefined && (
+                        <span className="text-green-600 ml-1">({activity.score}/15)</span>
+                      )}
                     </p>
                     <p className="text-xs text-gray-500">
                       {activity.section_title} • {formatTimeAgo(activity.timestamp)}

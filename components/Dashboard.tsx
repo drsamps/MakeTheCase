@@ -503,7 +503,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [bulkCopyResult, setBulkCopyResult] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   // Navigation handler for DashboardHome - simplified to just navigate
-  const handleNavigate = useCallback((section: string, subTab?: string) => {
+  // options parameter allows passing additional context like section_id and case_id for monitor
+  const handleNavigate = useCallback((section: string, subTab?: string, options?: { section_id?: string; case_id?: string }) => {
     switch (section) {
       case 'courses':
         setPrimaryTab('courses');
@@ -552,6 +553,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         break;
       case 'monitor':
         setPrimaryTab('monitor');
+        if (subTab === 'live') {
+          setMonitorSubTab('live');
+          // Pre-select section and case if provided
+          if (options?.section_id) {
+            setLiveSessionSection(options.section_id);
+            // Case will be set after section's cases are fetched
+            if (options?.case_id) {
+              // Store case_id to set after cases load
+              setTimeout(() => setLiveSessionCase(options.case_id!), 500);
+            }
+          }
+        } else if (subTab === 'chats') {
+          setMonitorSubTab('chats');
+        }
         break;
       case 'analytics':
         setPrimaryTab('results');
