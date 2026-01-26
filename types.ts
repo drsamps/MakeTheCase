@@ -181,11 +181,56 @@ export interface EvaluationResult {
 
 export interface Section {
     section_id: string;
+    course_id: number | null;
     section_title: string;
     year_term: string;
     chat_model: string | null;
     super_model: string | null;
     accept_new_students?: boolean;
+    enabled?: boolean;
+    // Aggregated counts
+    student_count?: number;
+    case_count?: number;
+    active_case_count?: number;
+    active_case_titles?: string;
+    // Joined fields from courses
+    course_name?: string;
+    course_id_num?: number;
+    // Joined fields from semesters
+    semester_id?: number;
+    semester_name?: string;
+    semester_is_current?: boolean;
+}
+
+export interface Semester {
+    id: number;
+    semester_name: string;
+    is_current: boolean;
+    start_date: string | null;
+    end_date: string | null;
+    created_at: string;
+    // Aggregated fields
+    course_count?: number;
+    section_count?: number;
+    // Nested data
+    courses?: Course[];
+}
+
+export interface Course {
+    id: number;
+    semester_id: number;
+    course_name: string;
+    course_code: string | null;
+    description: string | null;
+    primary_section_id: string | null;
+    sync_scheduling: boolean;
+    created_at: string;
+    // Joined fields
+    semester_name?: string;
+    primary_section_title?: string;
+    section_count?: number;
+    // Nested data
+    sections?: Section[];
 }
 
 export interface AdminUser {

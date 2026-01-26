@@ -39,7 +39,7 @@ import { CSS } from '@dnd-kit/utilities';
 
 // New workflow-centric navigation types
 type PrimaryTab = 'home' | 'courses' | 'content' | 'monitor' | 'results' | 'admin';
-type CoursesSubTab = 'sections' | 'students' | 'assignments' | 'chat-options';
+type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students' | 'assignments' | 'chat-options';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live';
 type ResultsSubTab = 'responses' | 'positions';
@@ -237,6 +237,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
            hasAccess(user, 'instructors');
   }, [user]);
 
+  // Semesters and Courses state
+  const [semesters, setSemesters] = useState<any[]>([]);
+  const [courses, setCourses] = useState<any[]>([]);
+  const [allCourses, setAllCourses] = useState<any[]>([]); // All courses for Sections tab dropdown
+  const [selectedSemesterId, setSelectedSemesterId] = useState<number | null>(null);
+  const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
+  const [orphanedSections, setOrphanedSections] = useState<any[]>([]);
+  const [isLoadingSemesters, setIsLoadingSemesters] = useState(false);
+  const [isLoadingCourses, setIsLoadingCourses] = useState(false);
+  const [showSemesterModal, setShowSemesterModal] = useState(false);
+  const [showCourseModal, setShowCourseModal] = useState(false);
+  const [showCloneSemesterModal, setShowCloneSemesterModal] = useState(false);
+  const [editingSemester, setEditingSemester] = useState<any | null>(null);
+  const [editingCourse, setEditingCourse] = useState<any | null>(null);
+
   const [sectionStats, setSectionStats] = useState<SectionStat[]>([]);
   const [selectedSection, setSelectedSection] = useState<SectionStat | null>(null);
   const [resultsInitialSectionId, setResultsInitialSectionId] = useState<string | undefined>(undefined);
@@ -290,7 +305,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [showAllSections, setShowAllSections] = useState(false);
   
   // Section list view mode: tiles (cards) or list (table)
-  const [sectionViewMode, setSectionViewMode] = useState<'tiles' | 'list'>('list');
+  const [sectionViewMode, setSectionViewMode] = useState<'tiles' | 'list' | 'grouped'>('grouped');
+  const [collapsedSemesters, setCollapsedSemesters] = useState<Set<string>>(new Set());
+  const [collapsedCourses, setCollapsedCourses] = useState<Set<string>>(new Set());
   
   // Modal states
   const [showTranscriptModal, setShowTranscriptModal] = useState(false);
@@ -627,6 +644,88 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     fetchModels();
   }, [fetchModels]);
 
+  // Fetch semesters
+  const fetchSemesters = useCallback(async () => {
+    setIsLoadingSemesters(true);
+    try {
+      const response = await fetch('/api/semesters', {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
+      });
+      const result = await response.json();
+      if (result.error) {
+        setError(result.error.message);
+      } else {
+        setSemesters(result.data || []);
+        // Auto-select current semester
+        const currentSemester = (result.data || []).find((s: any) => s.is_current);
+        if (currentSemester && !selectedSemesterId) {
+          setSelectedSemesterId(currentSemester.id);
+        }
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to fetch semesters');
+    } finally {
+      setIsLoadingSemesters(false);
+    }
+  }, [selectedSemesterId]);
+
+  // Fetch courses for selected semester
+  const fetchCourses = useCallback(async (semesterId: number) => {
+    setIsLoadingCourses(true);
+    try {
+      const response = await fetch(`/api/semesters/${semesterId}/courses`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
+      });
+      const result = await response.json();
+      if (result.error) {
+        setError(result.error.message);
+      } else {
+        setCourses(result.data || []);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to fetch courses');
+    } finally {
+      setIsLoadingCourses(false);
+    }
+  }, []);
+
+  // Fetch orphaned sections (not assigned to any course)
+  const fetchOrphanedSections = useCallback(async () => {
+    try {
+      const response = await fetch('/api/sections/orphaned', {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
+      });
+      const result = await response.json();
+      if (!result.error) {
+        setOrphanedSections(result.data || []);
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch orphaned sections:', err);
+    }
+  }, []);
+
+  // Fetch all courses (for Sections tab dropdown)
+  const fetchAllCourses = useCallback(async () => {
+    try {
+      const response = await fetch('/api/courses', {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
+      });
+      const result = await response.json();
+      if (!result.error) {
+        setAllCourses(result.data || []);
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch all courses:', err);
+    }
+  }, []);
+
+  // Fetch courses when semester changes
+  useEffect(() => {
+    if (selectedSemesterId) {
+      fetchCourses(selectedSemesterId);
+    }
+  }, [selectedSemesterId, fetchCourses]);
+
   const fetchSectionStats = useCallback(async () => {
     setIsLoadingSections(true);
     setError(null);
@@ -939,7 +1038,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   useEffect(() => {
     fetchSectionStats();
-  }, [fetchSectionStats]);
+    fetchAllCourses(); // Load all courses for Sections tab dropdown
+  }, [fetchSectionStats, fetchAllCourses]);
 
   useEffect(() => {
     if (selectedSection) {
@@ -1844,6 +1944,96 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     // Show only enabled sections (plus always show unassigned and other_courses if they have students)
     return sectionStats.filter(s => s.enabled || s.section_id === 'unassigned' || s.section_id === 'other_courses');
   }, [sectionStats, showAllSections]);
+
+  // Group sections by semester and course for hierarchical view
+  const groupedSections = useMemo(() => {
+    const groups: {
+      semesterId: number | null;
+      semesterName: string;
+      semesterIsCurrent: boolean;
+      courses: {
+        courseId: number | null;
+        courseName: string;
+        sections: typeof filteredSections;
+      }[];
+    }[] = [];
+
+    // Group by semester first
+    const semesterMap = new Map<number | null, typeof filteredSections>();
+    filteredSections.forEach(section => {
+      const semId = (section as any).semester_id || null;
+      if (!semesterMap.has(semId)) {
+        semesterMap.set(semId, []);
+      }
+      semesterMap.get(semId)!.push(section);
+    });
+
+    // Then group by course within each semester
+    semesterMap.forEach((sections, semId) => {
+      const semesterName = semId ? (sections[0] as any).semester_name || 'Unknown' : 'Unassigned';
+      const semesterIsCurrent = semId ? (sections[0] as any).semester_is_current : false;
+
+      const courseMap = new Map<number | null, typeof filteredSections>();
+      sections.forEach(section => {
+        const courseId = (section as any).course_id_num || null;
+        if (!courseMap.has(courseId)) {
+          courseMap.set(courseId, []);
+        }
+        courseMap.get(courseId)!.push(section);
+      });
+
+      const courses: typeof groups[0]['courses'] = [];
+      courseMap.forEach((courseSections, courseId) => {
+        courses.push({
+          courseId,
+          courseName: courseId ? (courseSections[0] as any).course_name || 'Unknown' : 'No Course',
+          sections: courseSections
+        });
+      });
+
+      // Sort courses alphabetically
+      courses.sort((a, b) => a.courseName.localeCompare(b.courseName));
+
+      groups.push({
+        semesterId: semId,
+        semesterName,
+        semesterIsCurrent,
+        courses
+      });
+    });
+
+    // Sort semesters: current first, then by name descending
+    groups.sort((a, b) => {
+      if (a.semesterIsCurrent && !b.semesterIsCurrent) return -1;
+      if (!a.semesterIsCurrent && b.semesterIsCurrent) return 1;
+      if (a.semesterId === null) return 1;
+      if (b.semesterId === null) return -1;
+      return b.semesterName.localeCompare(a.semesterName);
+    });
+
+    return groups;
+  }, [filteredSections]);
+
+  // Toggle collapse for semester/course
+  const toggleSemesterCollapse = (semesterId: number | null) => {
+    const key = String(semesterId);
+    setCollapsedSemesters(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleCourseCollapse = (semesterId: number | null, courseId: number | null) => {
+    const key = `${semesterId}-${courseId}`;
+    setCollapsedCourses(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   // Calculate section statistics
   const sectionSummaryStats = useMemo((): SectionStats | null => {
@@ -3045,6 +3235,726 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       setIsCopying(false);
     }
   };
+
+  // Handle setting semester as current
+  const handleSetCurrentSemester = async (semesterId: number) => {
+    try {
+      const response = await fetch(`/api/semesters/${semesterId}/current`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const result = await response.json();
+      if (result.error) {
+        setError(result.error.message);
+      } else {
+        setSuccessMessage('Current semester updated');
+        fetchSemesters();
+        setTimeout(() => setSuccessMessage(null), 3000);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to update current semester');
+    }
+  };
+
+  // Handle creating/updating semester
+  const handleSaveSemester = async (semesterData: any) => {
+    try {
+      const isEdit = !!editingSemester;
+      const url = isEdit ? `/api/semesters/${editingSemester.id}` : '/api/semesters';
+      const method = isEdit ? 'PUT' : 'POST';
+
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(semesterData)
+      });
+      const result = await response.json();
+      if (result.error) {
+        setError(result.error.message);
+      } else {
+        setSuccessMessage(isEdit ? 'Semester updated' : 'Semester created');
+        setShowSemesterModal(false);
+        setEditingSemester(null);
+        fetchSemesters();
+        setTimeout(() => setSuccessMessage(null), 3000);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to save semester');
+    }
+  };
+
+  // Handle deleting semester
+  const handleDeleteSemester = async (semesterId: number) => {
+    if (!confirm('Are you sure you want to delete this semester? This cannot be undone.')) return;
+    try {
+      const response = await fetch(`/api/semesters/${semesterId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
+      });
+      const result = await response.json();
+      if (result.error) {
+        setError(result.error.message);
+      } else {
+        setSuccessMessage('Semester deleted');
+        fetchSemesters();
+        setTimeout(() => setSuccessMessage(null), 3000);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete semester');
+    }
+  };
+
+  // Handle creating/updating course
+  const handleSaveCourse = async (courseData: any) => {
+    try {
+      const isEdit = !!editingCourse;
+      const url = isEdit ? `/api/courses/${editingCourse.id}` : `/api/semesters/${selectedSemesterId}/courses`;
+      const method = isEdit ? 'PUT' : 'POST';
+
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(courseData)
+      });
+      const result = await response.json();
+      if (result.error) {
+        setError(result.error.message);
+      } else {
+        setSuccessMessage(isEdit ? 'Course updated' : 'Course created');
+        setShowCourseModal(false);
+        setEditingCourse(null);
+        if (selectedSemesterId) fetchCourses(selectedSemesterId);
+        setTimeout(() => setSuccessMessage(null), 3000);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to save course');
+    }
+  };
+
+  // Handle course sync
+  const handleSyncCourse = async (courseId: number) => {
+    if (!confirm('Push case assignments from the primary section to all other sections in this course?')) return;
+    try {
+      const response = await fetch(`/api/courses/${courseId}/sync`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ sync_options: true, sync_scenarios: true })
+      });
+      const result = await response.json();
+      if (result.error) {
+        setError(result.error.message);
+      } else {
+        setSuccessMessage(result.message || 'Course synced successfully');
+        setTimeout(() => setSuccessMessage(null), 3000);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to sync course');
+    }
+  };
+
+  // Handle deleting a course (with cascade option)
+  const handleDeleteCourse = async (course: Course) => {
+    try {
+      // First, try to delete without cascade to get info about what would be deleted
+      const response = await fetch(`/api/courses/${course.id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`
+        }
+      });
+      const result = await response.json();
+
+      if (result.data?.requires_cascade) {
+        // Show confirmation with details about what will be deleted
+        const { sections_count, students_count, assignments_count } = result.data;
+        const confirmed = confirm(
+          `Are you sure you want to delete "${course.course_name}"?\n\n` +
+          `This will permanently delete:\n` +
+          `• ${sections_count} section(s)\n` +
+          `• ${assignments_count} case assignment(s)\n` +
+          `• ${students_count} student enrollment(s)\n\n` +
+          `This action cannot be undone.`
+        );
+
+        if (confirmed) {
+          // Delete with cascade
+          const cascadeResponse = await fetch(`/api/courses/${course.id}?cascade=true`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`
+            }
+          });
+          const cascadeResult = await cascadeResponse.json();
+          if (cascadeResult.error) {
+            setError(cascadeResult.error.message);
+          } else {
+            setSuccessMessage(`Deleted course "${course.course_name}" and ${cascadeResult.data.sections_deleted} section(s)`);
+            if (selectedSemesterId) fetchCourses(selectedSemesterId);
+            fetchOrphanedSections();
+            setTimeout(() => setSuccessMessage(null), 3000);
+          }
+        }
+      } else if (result.error) {
+        setError(result.error.message);
+      } else {
+        // Course had no sections, deleted successfully
+        setSuccessMessage(`Deleted course "${course.course_name}"`);
+        if (selectedSemesterId) fetchCourses(selectedSemesterId);
+        setTimeout(() => setSuccessMessage(null), 3000);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete course');
+    }
+  };
+
+  // Handle assigning an orphaned section to a course
+  const handleAssignSectionToCourse = async (sectionId: string, courseId: number) => {
+    try {
+      const response = await fetch(`/api/courses/${courseId}/sections/${sectionId}/assign`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const result = await response.json();
+      if (result.error) {
+        setError(result.error.message);
+      } else {
+        setSuccessMessage('Section assigned to course');
+        fetchOrphanedSections();
+        if (selectedSemesterId) fetchCourses(selectedSemesterId);
+        setTimeout(() => setSuccessMessage(null), 3000);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to assign section');
+    }
+  };
+
+  // Handle changing a section's course assignment (or unassigning it)
+  const handleChangeSectionCourse = async (sectionId: string, newCourseId: number | null) => {
+    try {
+      const response = await fetch(`/api/sections/${sectionId}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ course_id: newCourseId })
+      });
+      const result = await response.json();
+      if (result.error) {
+        setError(result.error.message);
+      } else {
+        setSuccessMessage(newCourseId ? 'Section moved to course' : 'Section unassigned from course');
+        fetchSectionStats(); // Refresh sections list
+        fetchOrphanedSections();
+        if (selectedSemesterId) fetchCourses(selectedSemesterId);
+        setTimeout(() => setSuccessMessage(null), 3000);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to change section assignment');
+    }
+  };
+
+  // Render Semesters Tab
+  const renderSemestersTab = () => (
+    <div className="p-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Semesters</h2>
+          <p className="text-sm text-gray-500">Manage academic semesters and clone setups between terms</p>
+        </div>
+        <button
+          onClick={() => {
+            setEditingSemester(null);
+            setShowSemesterModal(true);
+          }}
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+          </svg>
+          New Semester
+        </button>
+      </div>
+
+      {error && <div className="mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</div>}
+      {successMessage && <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg">{successMessage}</div>}
+
+      {isLoadingSemesters ? (
+        <div className="text-center py-8 text-gray-500">Loading semesters...</div>
+      ) : semesters.length === 0 ? (
+        <div className="text-center py-8 text-gray-500">No semesters found. Create one to get started.</div>
+      ) : (
+        <div className="space-y-4">
+          {semesters.map((semester) => (
+            <div
+              key={semester.id}
+              className={`bg-white border rounded-lg p-4 ${semester.is_current ? 'border-indigo-300 ring-2 ring-indigo-100' : 'border-gray-200'}`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {semester.is_current && (
+                    <span className="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded-full">
+                      Current
+                    </span>
+                  )}
+                  <h3 className="text-lg font-semibold text-gray-900">{semester.semester_name}</h3>
+                  <span className="text-sm text-gray-500">
+                    {semester.course_count || 0} courses • {semester.section_count || 0} sections
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {!semester.is_current && (
+                    <button
+                      onClick={() => handleSetCurrentSemester(semester.id)}
+                      className="px-3 py-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded"
+                    >
+                      Set as Current
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setEditingSemester(semester);
+                      setShowCloneSemesterModal(true);
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded"
+                  >
+                    Clone
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditingSemester(semester);
+                      setShowSemesterModal(true);
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => handleDeleteSemester(semester.id)}
+                    className="px-3 py-1.5 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Semester Modal */}
+      {showSemesterModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold mb-4">{editingSemester ? 'Edit Semester' : 'Create Semester'}</h3>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const formData = new FormData(e.currentTarget);
+              handleSaveSemester({
+                semester_name: formData.get('semester_name'),
+                start_date: formData.get('start_date') || null,
+                end_date: formData.get('end_date') || null,
+                is_current: formData.get('is_current') === 'on'
+              });
+            }}>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Semester Name *</label>
+                  <input
+                    name="semester_name"
+                    defaultValue={editingSemester?.semester_name || ''}
+                    required
+                    placeholder="e.g., Fall 2026"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+                    <input
+                      type="date"
+                      name="start_date"
+                      defaultValue={editingSemester?.start_date?.split('T')[0] || ''}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">End Date</label>
+                    <input
+                      type="date"
+                      name="end_date"
+                      defaultValue={editingSemester?.end_date?.split('T')[0] || ''}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    />
+                  </div>
+                </div>
+                {!editingSemester && (
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" name="is_current" className="rounded" />
+                    <span className="text-sm text-gray-700">Set as current semester</span>
+                  </label>
+                )}
+              </div>
+              <div className="flex justify-end gap-2 mt-6">
+                <button
+                  type="button"
+                  onClick={() => { setShowSemesterModal(false); setEditingSemester(null); }}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
+                >
+                  {editingSemester ? 'Save Changes' : 'Create Semester'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Clone Semester Modal */}
+      {showCloneSemesterModal && editingSemester && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold mb-4">Clone Semester</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Clone from: <strong>{editingSemester.semester_name}</strong><br/>
+              This will copy all courses, sections, and case assignments.
+            </p>
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              const formData = new FormData(e.currentTarget);
+              try {
+                const response = await fetch(`/api/semesters/${editingSemester.id}/clone`, {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    new_semester_name: formData.get('new_semester_name'),
+                    clone_case_assignments: formData.get('clone_case_assignments') === 'on',
+                    clone_chat_options: formData.get('clone_chat_options') === 'on',
+                    clone_scenarios: formData.get('clone_scenarios') === 'on'
+                  })
+                });
+                const result = await response.json();
+                if (result.error) {
+                  setError(result.error.message);
+                } else {
+                  setSuccessMessage(`Cloned: ${result.data.stats.courses_cloned} courses, ${result.data.stats.sections_cloned} sections, ${result.data.stats.case_assignments_cloned} assignments`);
+                  setShowCloneSemesterModal(false);
+                  setEditingSemester(null);
+                  fetchSemesters();
+                  setTimeout(() => setSuccessMessage(null), 5000);
+                }
+              } catch (err: any) {
+                setError(err.message || 'Failed to clone semester');
+              }
+            }}>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">New Semester Name *</label>
+                  <input
+                    name="new_semester_name"
+                    required
+                    placeholder="e.g., Fall 2027"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" name="clone_case_assignments" defaultChecked className="rounded" />
+                    <span className="text-sm text-gray-700">Clone case assignments</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" name="clone_chat_options" defaultChecked className="rounded" />
+                    <span className="text-sm text-gray-700">Clone chat options</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" name="clone_scenarios" defaultChecked className="rounded" />
+                    <span className="text-sm text-gray-700">Clone scenarios</span>
+                  </label>
+                </div>
+                <p className="text-xs text-gray-500">Students will NOT be copied. The new semester will start with empty rosters.</p>
+              </div>
+              <div className="flex justify-end gap-2 mt-6">
+                <button
+                  type="button"
+                  onClick={() => { setShowCloneSemesterModal(false); setEditingSemester(null); }}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
+                >
+                  Clone Semester
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  // Render Course Setup Tab
+  const renderCourseSetupTab = () => (
+    <div className="p-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Course Setup</h2>
+          <p className="text-sm text-gray-500">Organize sections into courses for easier assignment management</p>
+        </div>
+      </div>
+
+      {error && <div className="mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</div>}
+      {successMessage && <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg">{successMessage}</div>}
+
+      {/* Semester Selector */}
+      <div className="mb-6">
+        <label className="block text-sm font-medium text-gray-700 mb-2">Select Semester</label>
+        <select
+          value={selectedSemesterId || ''}
+          onChange={(e) => setSelectedSemesterId(e.target.value ? Number(e.target.value) : null)}
+          className="w-full max-w-md px-4 py-2.5 border border-gray-300 rounded-lg text-sm bg-white"
+        >
+          <option value="">Select a semester...</option>
+          {semesters.map((sem) => (
+            <option key={sem.id} value={sem.id}>
+              {sem.semester_name} {sem.is_current ? '(Current)' : ''}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {selectedSemesterId && (
+        <>
+          {/* Create Course Button */}
+          <div className="mb-6">
+            <button
+              onClick={() => {
+                setEditingCourse(null);
+                setShowCourseModal(true);
+              }}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+              </svg>
+              New Course
+            </button>
+          </div>
+
+          {/* Courses List */}
+          {isLoadingCourses ? (
+            <div className="text-center py-8 text-gray-500">Loading courses...</div>
+          ) : courses.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">No courses in this semester. Create one to get started.</div>
+          ) : (
+            <div className="space-y-4">
+              {courses.map((course) => (
+                <div key={course.id} className="bg-white border border-gray-200 rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900">{course.course_name}</h3>
+                      {course.course_code && (
+                        <span className="text-sm text-gray-500">{course.course_code}</span>
+                      )}
+                      <span className="text-sm text-gray-500 ml-2">
+                        • {course.section_count || 0} sections
+                        {course.primary_section_title && (
+                          <span className="text-indigo-600"> • Primary: {course.primary_section_title}</span>
+                        )}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleSyncCourse(course.id)}
+                        className="px-3 py-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded"
+                        title="Push from primary section to all other sections"
+                      >
+                        Sync
+                      </button>
+                      <button
+                        onClick={() => {
+                          setEditingCourse(course);
+                          setShowCourseModal(true);
+                        }}
+                        className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDeleteCourse(course)}
+                        className="px-3 py-1.5 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded"
+                        title="Delete course"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                  {course.description && (
+                    <p className="text-sm text-gray-600 mb-2">{course.description}</p>
+                  )}
+                  <div className="text-xs text-gray-500">
+                    Sync scheduling: {course.sync_scheduling ? 'Yes' : 'No'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Orphaned Sections */}
+          {orphanedSections.length > 0 && (
+            <div className="mt-8">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Unassigned Sections</h3>
+              <p className="text-sm text-gray-500 mb-4">These sections are not assigned to any course. Select a course to assign each section.</p>
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                <div className="space-y-3">
+                  {orphanedSections.map((section: any) => (
+                    <div key={section.section_id} className="flex items-center justify-between gap-4 bg-white rounded-lg p-3 border border-yellow-200">
+                      <div className="flex-1 min-w-0">
+                        <span className="font-medium text-gray-900">{section.section_title}</span>
+                        <span className="text-sm text-gray-500 ml-2">({section.section_id})</span>
+                        {section.year_term && (
+                          <span className="text-sm text-gray-500 ml-2">• {section.year_term}</span>
+                        )}
+                        <div className="text-xs text-gray-400 mt-0.5">
+                          {section.student_count || 0} students • {section.case_count || 0} cases
+                        </div>
+                      </div>
+                      <select
+                        className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
+                        defaultValue=""
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            handleAssignSectionToCourse(section.section_id, Number(e.target.value));
+                            e.target.value = '';
+                          }
+                        }}
+                      >
+                        <option value="">Assign to course...</option>
+                        {courses.map((course) => (
+                          <option key={course.id} value={course.id}>
+                            {course.course_name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Course Modal */}
+      {showCourseModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold mb-4">{editingCourse ? 'Edit Course' : 'Create Course'}</h3>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const formData = new FormData(e.currentTarget);
+              handleSaveCourse({
+                course_name: formData.get('course_name'),
+                course_code: formData.get('course_code') || null,
+                description: formData.get('description') || null,
+                sync_scheduling: formData.get('sync_scheduling') === 'on'
+              });
+            }}>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Course Name *</label>
+                  <p className="text-xs text-gray-500 mb-1">Full descriptive name for this course</p>
+                  <input
+                    name="course_name"
+                    defaultValue={editingCourse?.course_name || ''}
+                    required
+                    placeholder="e.g., MBA 530 - Operations Management"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Course Code</label>
+                  <p className="text-xs text-gray-500 mb-1">Short catalog identifier (optional)</p>
+                  <input
+                    name="course_code"
+                    defaultValue={editingCourse?.course_code || ''}
+                    placeholder="e.g., MBA530"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                  <textarea
+                    name="description"
+                    defaultValue={editingCourse?.description || ''}
+                    placeholder="Optional notes about this course"
+                    rows={2}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <label className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      name="sync_scheduling"
+                      defaultChecked={editingCourse?.sync_scheduling || false}
+                      className="rounded mt-0.5"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-gray-700">Include case schedules when syncing</span>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        When syncing from the primary section to other sections, also copy the case open/close dates. Uncheck if different sections need different schedules (e.g., different class meeting times).
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 mt-6">
+                <button
+                  type="button"
+                  onClick={() => { setShowCourseModal(false); setEditingCourse(null); }}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
+                >
+                  {editingCourse ? 'Save Changes' : 'Create Course'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 
   const renderAssignmentsTab = () => (
     <div className="p-6 max-w-6xl mx-auto">
@@ -5635,7 +6545,41 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <div className="flex gap-1 mt-2 pb-2">
               {hasAccess(user, 'sections') && (
                 <button
-                  onClick={() => setCoursesSubTab('sections')}
+                  onClick={() => {
+                    setCoursesSubTab('semesters');
+                    fetchSemesters();
+                  }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    coursesSubTab === 'semesters'
+                      ? 'bg-indigo-100 text-indigo-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Semesters
+                </button>
+              )}
+              {hasAccess(user, 'sections') && (
+                <button
+                  onClick={() => {
+                    setCoursesSubTab('course-setup');
+                    fetchSemesters();
+                    fetchOrphanedSections();
+                  }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    coursesSubTab === 'course-setup'
+                      ? 'bg-indigo-100 text-indigo-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Course Setup
+                </button>
+              )}
+              {hasAccess(user, 'sections') && (
+                <button
+                  onClick={() => {
+                    setCoursesSubTab('sections');
+                    fetchAllCourses();
+                  }}
                   className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                     coursesSubTab === 'sections'
                       ? 'bg-blue-100 text-blue-700'
@@ -5905,7 +6849,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <InstructorManager user={user} />
           ) : null
         ) : primaryTab === 'courses' ? (
-          coursesSubTab === 'students' ? (
+          coursesSubTab === 'semesters' ? (
+            renderSemestersTab()
+          ) : coursesSubTab === 'course-setup' ? (
+            renderCourseSetupTab()
+          ) : coursesSubTab === 'students' ? (
             <StudentManager />
           ) : coursesSubTab === 'assignments' ? (
             renderAssignmentsTab()
@@ -5950,33 +6898,40 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   </button>
                 </div>
 
-                {/* View Mode Toggle: List / Tiles */}
+                {/* View Mode Toggle: Grouped / List / Tiles */}
                 <div className="flex items-center bg-gray-100 rounded-lg p-1">
                   <button
-                    onClick={() => setSectionViewMode('list')}
-                    className={`p-1.5 rounded-md transition-colors ${
-                      sectionViewMode === 'list' 
-                        ? 'bg-white text-gray-900 shadow-sm' 
+                    onClick={() => setSectionViewMode('grouped')}
+                    className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      sectionViewMode === 'grouped'
+                        ? 'bg-white text-gray-900 shadow-sm'
                         : 'text-gray-500 hover:text-gray-900'
                     }`}
-                    title="List view"
+                    title="Grouped by semester and course"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clipRule="evenodd" />
-                    </svg>
+                    Grouped
+                  </button>
+                  <button
+                    onClick={() => setSectionViewMode('list')}
+                    className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      sectionViewMode === 'list'
+                        ? 'bg-white text-gray-900 shadow-sm'
+                        : 'text-gray-500 hover:text-gray-900'
+                    }`}
+                    title="Flat list view"
+                  >
+                    List
                   </button>
                   <button
                     onClick={() => setSectionViewMode('tiles')}
-                    className={`p-1.5 rounded-md transition-colors ${
-                      sectionViewMode === 'tiles' 
-                        ? 'bg-white text-gray-900 shadow-sm' 
+                    className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      sectionViewMode === 'tiles'
+                        ? 'bg-white text-gray-900 shadow-sm'
                         : 'text-gray-500 hover:text-gray-900'
                     }`}
                     title="Tile view"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
-                      <path d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-                    </svg>
+                    Tiles
                   </button>
                 </div>
 
@@ -6043,6 +6998,149 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               <div className="text-center p-12 text-gray-500">
                 <p className="text-lg font-medium">No sections found</p>
                 <p className="text-sm mt-1">Create a new section to get started.</p>
+              </div>
+            ) : sectionViewMode === 'grouped' ? (
+              /* ========== GROUPED VIEW ========== */
+              <div className="space-y-6">
+                {groupedSections.map((semesterGroup) => {
+                  const semKey = String(semesterGroup.semesterId);
+                  const isSemCollapsed = collapsedSemesters.has(semKey);
+
+                  return (
+                    <div key={semKey} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                      {/* Semester Header */}
+                      <button
+                        onClick={() => toggleSemesterCollapse(semesterGroup.semesterId)}
+                        className={`w-full px-4 py-3 flex items-center justify-between bg-gradient-to-r ${
+                          semesterGroup.semesterIsCurrent
+                            ? 'from-indigo-50 to-purple-50 border-b border-indigo-200'
+                            : semesterGroup.semesterId === null
+                            ? 'from-yellow-50 to-orange-50 border-b border-yellow-200'
+                            : 'from-gray-50 to-gray-100 border-b border-gray-200'
+                        } hover:bg-gray-100 transition-colors`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            className={`w-5 h-5 text-gray-500 transition-transform ${isSemCollapsed ? '' : 'rotate-90'}`}
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                          >
+                            <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                          </svg>
+                          <span className="font-semibold text-gray-900">{semesterGroup.semesterName}</span>
+                          {semesterGroup.semesterIsCurrent && (
+                            <span className="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded-full">
+                              Current
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-sm text-gray-500">
+                          {semesterGroup.courses.reduce((sum, c) => sum + c.sections.length, 0)} sections
+                        </span>
+                      </button>
+
+                      {/* Semester Content */}
+                      {!isSemCollapsed && (
+                        <div className="p-4 space-y-4">
+                          {semesterGroup.courses.map((courseGroup) => {
+                            const courseKey = `${semesterGroup.semesterId}-${courseGroup.courseId}`;
+                            const isCourseCollapsed = collapsedCourses.has(courseKey);
+
+                            return (
+                              <div key={courseKey} className="border border-gray-200 rounded-lg overflow-hidden">
+                                {/* Course Header */}
+                                <button
+                                  onClick={() => toggleCourseCollapse(semesterGroup.semesterId, courseGroup.courseId)}
+                                  className={`w-full px-3 py-2 flex items-center justify-between ${
+                                    courseGroup.courseId === null
+                                      ? 'bg-yellow-50 hover:bg-yellow-100'
+                                      : 'bg-gray-50 hover:bg-gray-100'
+                                  } transition-colors`}
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <svg
+                                      xmlns="http://www.w3.org/2000/svg"
+                                      className={`w-4 h-4 text-gray-400 transition-transform ${isCourseCollapsed ? '' : 'rotate-90'}`}
+                                      viewBox="0 0 20 20"
+                                      fill="currentColor"
+                                    >
+                                      <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                    <span className="font-medium text-gray-800">{courseGroup.courseName}</span>
+                                  </div>
+                                  <span className="text-xs text-gray-500">{courseGroup.sections.length} section(s)</span>
+                                </button>
+
+                                {/* Course Sections */}
+                                {!isCourseCollapsed && (
+                                  <div className="p-3 bg-white space-y-2">
+                                    {courseGroup.sections.map((section) => (
+                                      <div
+                                        key={section.section_id}
+                                        className={`p-3 rounded-lg border transition-all hover:shadow-sm ${
+                                          section.enabled
+                                            ? 'border-gray-200 bg-white hover:border-blue-300'
+                                            : 'border-gray-100 bg-gray-50 opacity-60'
+                                        }`}
+                                      >
+                                        <div className="flex items-center justify-between">
+                                          <div
+                                            className="flex items-center gap-2 cursor-pointer flex-1"
+                                            onClick={() => handleSectionClick(section)}
+                                          >
+                                            <span className={`font-medium ${section.enabled ? 'text-gray-900' : 'text-gray-500'}`}>
+                                              {section.section_title}
+                                            </span>
+                                            <span className="text-xs text-gray-400">({section.section_id})</span>
+                                            {!section.enabled && (
+                                              <span className="px-1.5 py-0.5 text-xs bg-gray-200 text-gray-600 rounded">Disabled</span>
+                                            )}
+                                          </div>
+                                          <div className="flex items-center gap-3 text-xs text-gray-500">
+                                            <span>{(section as any).student_count || 0} students</span>
+                                            <span>{(section as any).case_count || 0} cases</span>
+                                            <select
+                                              className="px-2 py-1 text-xs border border-gray-200 rounded bg-white hover:border-gray-300 max-w-[180px]"
+                                              value={(section as any).course_id_num || ''}
+                                              onClick={(e) => e.stopPropagation()}
+                                              onChange={(e) => {
+                                                e.stopPropagation();
+                                                const newCourseId = e.target.value ? Number(e.target.value) : null;
+                                                handleChangeSectionCourse(section.section_id, newCourseId);
+                                              }}
+                                              title="Assign to course"
+                                            >
+                                              <option value="">Unassigned</option>
+                                              {allCourses.map((course) => (
+                                                <option key={course.id} value={course.id}>
+                                                  {course.semester_name}: {course.course_name}
+                                                </option>
+                                              ))}
+                                            </select>
+                                            <button
+                                              onClick={(e) => handleEditSection(section, e)}
+                                              className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded"
+                                              title="Edit section"
+                                            >
+                                              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                                                <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                                              </svg>
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             ) : sectionViewMode === 'tiles' ? (
               /* ========== TILES VIEW ========== */

@@ -43,6 +43,7 @@ interface RecentActivity {
 interface ActiveSession {
   section_id: string;
   section_title: string;
+  year_term: string;
   case_id: string;
   case_title: string;
   open_date: string | null;
@@ -56,6 +57,7 @@ interface ActiveSession {
     completed: number;
     in_progress: number;
     not_started: number;
+    abandoned: number;
   };
 }
 
@@ -98,10 +100,17 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
         .from('case-chats')
         .select('id, student_id, section_id, status, case_id, start_time, last_activity');
 
-      // Fetch section_cases for scheduling data
-      const { data: sectionCasesData } = await api
-        .from('section-cases')
-        .select('id, section_id, case_id, case_title, active, open_date, close_date, manual_status');
+      // Fetch section_cases for each enabled section (the API is per-section)
+      const enabledSectionsList = (sectionsData as any[] || []).filter(s => s.enabled);
+      const sectionCasesPromises = enabledSectionsList.map(async (section) => {
+        const { data } = await api.from(`sections/${section.section_id}/cases`).select('*');
+        return (data as any[] || []).map(sc => ({
+          ...sc,
+          section_id: section.section_id  // Ensure section_id is included
+        }));
+      });
+      const sectionCasesArrays = await Promise.all(sectionCasesPromises);
+      const sectionCasesData = sectionCasesArrays.flat();
 
       // Process sections with stats
       const completedStudentIds = new Set((evaluationsData as any[] || []).map(e => e.student_id));
@@ -200,12 +209,14 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
 
         const completedForCase = caseChats.filter(c => c.status === 'completed').length;
         const inProgressForCase = caseChats.filter(c => ['started', 'in_progress'].includes(c.status)).length;
+        const abandonedForCase = caseChats.filter(c => c.status === 'abandoned').length;
         const totalStudentsInSection = sectionStudentIds.length;
-        const notStartedForCase = totalStudentsInSection - completedForCase - inProgressForCase;
+        const notStartedForCase = totalStudentsInSection - completedForCase - inProgressForCase - abandonedForCase;
 
         sessions.push({
           section_id: sc.section_id,
           section_title: section.section_title,
+          year_term: section.year_term,
           case_id: sc.case_id,
           case_title: sc.case_title || 'Unknown Case',
           open_date: sc.open_date,
@@ -218,21 +229,27 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
             total: totalStudentsInSection,
             completed: completedForCase,
             in_progress: inProgressForCase,
-            not_started: Math.max(0, notStartedForCase)
+            not_started: Math.max(0, notStartedForCase),
+            abandoned: abandonedForCase
           }
         });
       }
 
-      // Sort: open sessions first (by time remaining), then upcoming (by opens_in)
+      // Sort by year_term (descending), then section_title, then by closing time
       sessions.sort((a, b) => {
+        // First by year_term (descending - most recent first)
+        if (a.year_term !== b.year_term) {
+          return b.year_term.localeCompare(a.year_term);
+        }
+        // Then by section title
+        if (a.section_title !== b.section_title) {
+          return a.section_title.localeCompare(b.section_title);
+        }
+        // Then open sessions before closed
         if (a.is_open && !b.is_open) return -1;
         if (!a.is_open && b.is_open) return 1;
-        if (a.is_open && b.is_open) {
-          // Both open - sort by closing time (sooner first)
-          return (a.time_remaining_minutes || Infinity) - (b.time_remaining_minutes || Infinity);
-        }
-        // Both not open - sort by opening time (sooner first)
-        return (a.opens_in_minutes || Infinity) - (b.opens_in_minutes || Infinity);
+        // Then by closing time (sooner first)
+        return (a.time_remaining_minutes || Infinity) - (b.time_remaining_minutes || Infinity);
       });
 
       setActiveSessions(sessions);
@@ -472,17 +489,23 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
         </button>
       </div>
 
-      {/* Today's Sessions + Quick Stats row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Today's Sessions */}
-        <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-200">
-            <h3 className="text-lg font-semibold text-gray-900">Today's Sessions</h3>
-          </div>
-          <div className="divide-y divide-gray-100">
-            {activeSessions.length === 0 ? (
+      {/* Open Chat Assignments */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center">
+          <h3 className="text-lg font-semibold text-gray-900">Open Chat Assignments</h3>
+          <button
+            onClick={() => onNavigate('courses', 'assignments')}
+            className="text-sm font-medium text-blue-600 hover:text-blue-800"
+          >
+            View All
+          </button>
+        </div>
+        {(() => {
+          const openSessions = activeSessions.filter(s => s.is_open);
+          if (openSessions.length === 0) {
+            return (
               <div className="p-6 text-center text-gray-500">
-                <p>No active case sessions.</p>
+                <p>No open case assignments.</p>
                 <button
                   onClick={() => onNavigate('courses', 'assignments')}
                   className="mt-2 text-sm text-blue-600 hover:text-blue-800"
@@ -490,101 +513,129 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
                   Assign a case to a section
                 </button>
               </div>
-            ) : (
-              activeSessions.slice(0, 4).map(session => {
-                const total = session.students.total;
-                const completedPct = total > 0 ? (session.students.completed / total) * 100 : 0;
-                const inProgressPct = total > 0 ? (session.students.in_progress / total) * 100 : 0;
+            );
+          }
 
-                let timeText = '';
-                if (session.is_open) {
-                  if (session.time_remaining_minutes !== null) {
-                    const hours = Math.floor(session.time_remaining_minutes / 60);
-                    const mins = session.time_remaining_minutes % 60;
-                    timeText = hours > 0 ? `Closes in ${hours}h ${mins}m` : `Closes in ${mins}m`;
-                  } else {
-                    timeText = 'Open (no end time)';
-                  }
-                } else if (session.opens_in_minutes !== null) {
-                  const hours = Math.floor(session.opens_in_minutes / 60);
-                  const mins = session.opens_in_minutes % 60;
-                  timeText = hours > 0 ? `Opens in ${hours}h ${mins}m` : `Opens in ${mins}m`;
-                } else {
-                  timeText = session.manual_status === 'manually_closed' ? 'Manually closed' : 'Not scheduled';
-                }
+          // Group by year_term
+          const groupedByTerm: Record<string, ActiveSession[]> = {};
+          for (const session of openSessions) {
+            if (!groupedByTerm[session.year_term]) {
+              groupedByTerm[session.year_term] = [];
+            }
+            groupedByTerm[session.year_term].push(session);
+          }
 
-                return (
-                  <div key={`${session.section_id}-${session.case_id}`} className="px-5 py-4">
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <h4 className="font-medium text-gray-900">{session.section_title}</h4>
-                        <p className="text-sm text-gray-600">{session.case_title}</p>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className={`text-xs font-medium px-2 py-1 rounded-full ${
-                          session.is_open
-                            ? session.time_remaining_minutes !== null && session.time_remaining_minutes <= 60
-                              ? 'bg-amber-100 text-amber-700'
-                              : 'bg-green-100 text-green-700'
-                            : 'bg-gray-100 text-gray-600'
-                        }`}>
-                          {timeText}
-                        </span>
-                        <button
-                          onClick={() => onNavigate('monitor', 'live', { section_id: session.section_id, case_id: session.case_id })}
-                          className="text-sm font-medium text-blue-600 hover:text-blue-800 px-3 py-1 rounded border border-blue-200 hover:border-blue-400"
-                        >
-                          Monitor
-                        </button>
-                      </div>
-                    </div>
-                    {/* Progress bar */}
-                    <div className="mt-3">
-                      <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-                        <span>
-                          {session.students.completed} completed, {session.students.in_progress} active, {session.students.not_started} not started
-                        </span>
-                        <span>{total} students</span>
-                      </div>
-                      <div className="w-full bg-gray-200 rounded-full h-2 flex overflow-hidden">
-                        <div
-                          className="bg-green-500 h-2 transition-all"
-                          style={{ width: `${completedPct}%` }}
-                        ></div>
-                        <div
-                          className="bg-blue-500 h-2 transition-all"
-                          style={{ width: `${inProgressPct}%` }}
-                        ></div>
-                      </div>
-                    </div>
+          // Sort terms descending (most recent first)
+          const sortedTerms = Object.keys(groupedByTerm).sort((a, b) => b.localeCompare(a));
+
+          return (
+            <div className="divide-y divide-gray-200">
+              {sortedTerms.map(term => (
+                <div key={term}>
+                  <div className="bg-gray-50 px-5 py-2">
+                    <h4 className="text-sm font-semibold text-gray-700">{term}</h4>
                   </div>
-                );
-              })
-            )}
-          </div>
-        </div>
+                  <div className="divide-y divide-gray-100">
+                    {groupedByTerm[term].map(session => {
+                      const total = session.students.total;
+                      const completedPct = total > 0 ? (session.students.completed / total) * 100 : 0;
+                      const inProgressPct = total > 0 ? (session.students.in_progress / total) * 100 : 0;
+                      const abandonedPct = total > 0 ? (session.students.abandoned / total) * 100 : 0;
 
-        {/* Quick Stats */}
-        <div className="space-y-4">
-          <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
-            <p className="text-sm font-medium text-gray-500">Active Chats</p>
-            <p className="text-2xl font-bold text-blue-600 mt-1">{stats.activeChats}</p>
-            {stats.abandonedChats > 0 && (
-              <p className="text-xs text-amber-600 mt-1">{stats.abandonedChats} abandoned</p>
-            )}
-          </div>
-          <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
-            <p className="text-sm font-medium text-gray-500">Completed Today</p>
-            <p className="text-2xl font-bold text-green-600 mt-1">{stats.completedToday}</p>
-          </div>
-          <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
-            <p className="text-sm font-medium text-gray-500">Cases Open</p>
-            <p className="text-2xl font-bold text-gray-900 mt-1">{stats.casesOpenNow}</p>
-          </div>
-          <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
-            <p className="text-sm font-medium text-gray-500">Total Students</p>
-            <p className="text-2xl font-bold text-gray-900 mt-1">{stats.totalStudents}</p>
-          </div>
+                      let scheduleText = '';
+                      if (session.time_remaining_minutes !== null) {
+                        const hours = Math.floor(session.time_remaining_minutes / 60);
+                        const mins = session.time_remaining_minutes % 60;
+                        scheduleText = hours > 0 ? `Closes in ${hours}h ${mins}m` : `Closes in ${mins}m`;
+                      }
+
+                      return (
+                        <div key={`${session.section_id}-${session.case_id}`} className="px-5 py-3 hover:bg-gray-50">
+                          <div className="flex justify-between items-start">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <h5 className="font-medium text-gray-900">{session.section_title}</h5>
+                                <span className="text-gray-400">-</span>
+                                <span className="text-gray-600">{session.case_title}</span>
+                                {scheduleText && (
+                                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                                    session.time_remaining_minutes !== null && session.time_remaining_minutes <= 60
+                                      ? 'bg-amber-100 text-amber-700'
+                                      : 'bg-green-100 text-green-700'
+                                  }`}>
+                                    {scheduleText}
+                                  </span>
+                                )}
+                                {!scheduleText && (
+                                  <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-green-100 text-green-700">
+                                    Open
+                                  </span>
+                                )}
+                              </div>
+                              {/* Progress stats */}
+                              <div className="mt-2 flex items-center gap-4">
+                                <div className="flex-1 max-w-md">
+                                  <div className="w-full bg-gray-200 rounded-full h-2 flex overflow-hidden">
+                                    <div className="bg-green-500 h-2" style={{ width: `${completedPct}%` }}></div>
+                                    <div className="bg-blue-500 h-2" style={{ width: `${inProgressPct}%` }}></div>
+                                    {abandonedPct > 0 && (
+                                      <div className="bg-amber-500 h-2" style={{ width: `${abandonedPct}%` }}></div>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="text-xs text-gray-500 whitespace-nowrap">
+                                  <span className="text-green-600">{session.students.completed} done</span>
+                                  <span className="mx-1">·</span>
+                                  <span className="text-blue-600">{session.students.in_progress} active</span>
+                                  <span className="mx-1">·</span>
+                                  <span>{session.students.not_started} waiting</span>
+                                  {session.students.abandoned > 0 && (
+                                    <>
+                                      <span className="mx-1">·</span>
+                                      <span className="text-amber-600">{session.students.abandoned} abandoned</span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => onNavigate('monitor', 'live', { section_id: session.section_id, case_id: session.case_id })}
+                              className="ml-4 text-sm font-medium text-blue-600 hover:text-blue-800 px-3 py-1 rounded border border-blue-200 hover:border-blue-400"
+                            >
+                              Monitor
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* Quick Stats Row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+          <p className="text-sm font-medium text-gray-500">Active Chats</p>
+          <p className="text-2xl font-bold text-blue-600 mt-1">{stats.activeChats}</p>
+          {stats.abandonedChats > 0 && (
+            <p className="text-xs text-amber-600 mt-1">{stats.abandonedChats} abandoned</p>
+          )}
+        </div>
+        <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+          <p className="text-sm font-medium text-gray-500">Completed Today</p>
+          <p className="text-2xl font-bold text-green-600 mt-1">{stats.completedToday}</p>
+        </div>
+        <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+          <p className="text-sm font-medium text-gray-500">Cases Open</p>
+          <p className="text-2xl font-bold text-gray-900 mt-1">{stats.casesOpenNow}</p>
+        </div>
+        <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+          <p className="text-sm font-medium text-gray-500">Total Students</p>
+          <p className="text-2xl font-bold text-gray-900 mt-1">{stats.totalStudents}</p>
         </div>
       </div>
 

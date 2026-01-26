@@ -15,7 +15,7 @@ export function generateToken(id, email, role = 'admin', extra = {}) {
 
 export function verifyToken(req, res, next) {
   const authHeader = req.headers.authorization;
-  
+
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'No token provided' });
   }
