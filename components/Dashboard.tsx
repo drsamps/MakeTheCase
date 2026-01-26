@@ -3314,7 +3314,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleSaveCourse = async (courseData: any) => {
     try {
       const isEdit = !!editingCourse;
-      const url = isEdit ? `/api/courses/${editingCourse.id}` : `/api/semesters/${selectedSemesterId}/courses`;
+      const url = isEdit
+        ? `${getApiBaseUrl()}/courses/${editingCourse.id}`
+        : `${getApiBaseUrl()}/semesters/${selectedSemesterId}/courses`;
       const method = isEdit ? 'PUT' : 'POST';
 
       const response = await fetch(url, {
