@@ -648,7 +648,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const fetchSemesters = useCallback(async () => {
     setIsLoadingSemesters(true);
     try {
-      const response = await fetch('/api/semesters', {
+      const response = await fetch(`${getApiBaseUrl()}/semesters`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
       });
       const result = await response.json();
@@ -673,7 +673,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const fetchCourses = useCallback(async (semesterId: number) => {
     setIsLoadingCourses(true);
     try {
-      const response = await fetch(`/api/semesters/${semesterId}/courses`, {
+      const response = await fetch(`${getApiBaseUrl()}/semesters/${semesterId}/courses`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
       });
       const result = await response.json();
@@ -692,7 +692,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Fetch orphaned sections (not assigned to any course)
   const fetchOrphanedSections = useCallback(async () => {
     try {
-      const response = await fetch('/api/sections/orphaned', {
+      const response = await fetch(`${getApiBaseUrl()}/sections/orphaned`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
       });
       const result = await response.json();
@@ -707,7 +707,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Fetch all courses (for Sections tab dropdown)
   const fetchAllCourses = useCallback(async () => {
     try {
-      const response = await fetch('/api/courses', {
+      const response = await fetch(`${getApiBaseUrl()}/courses`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
       });
       const result = await response.json();
@@ -3239,7 +3239,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Handle setting semester as current
   const handleSetCurrentSemester = async (semesterId: number) => {
     try {
-      const response = await fetch(`/api/semesters/${semesterId}/current`, {
+      const response = await fetch(`${getApiBaseUrl()}/semesters/${semesterId}/current`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
@@ -3293,7 +3293,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleDeleteSemester = async (semesterId: number) => {
     if (!confirm('Are you sure you want to delete this semester? This cannot be undone.')) return;
     try {
-      const response = await fetch(`/api/semesters/${semesterId}`, {
+      const response = await fetch(`${getApiBaseUrl()}/semesters/${semesterId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
       });
@@ -3344,7 +3344,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleSyncCourse = async (courseId: number) => {
     if (!confirm('Push case assignments from the primary section to all other sections in this course?')) return;
     try {
-      const response = await fetch(`/api/courses/${courseId}/sync`, {
+      const response = await fetch(`${getApiBaseUrl()}/courses/${courseId}/sync`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
@@ -3368,7 +3368,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleDeleteCourse = async (course: Course) => {
     try {
       // First, try to delete without cascade to get info about what would be deleted
-      const response = await fetch(`/api/courses/${course.id}`, {
+      const response = await fetch(`${getApiBaseUrl()}/courses/${course.id}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`
@@ -3390,7 +3390,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
         if (confirmed) {
           // Delete with cascade
-          const cascadeResponse = await fetch(`/api/courses/${course.id}?cascade=true`, {
+          const cascadeResponse = await fetch(`${getApiBaseUrl()}/courses/${course.id}?cascade=true`, {
             method: 'DELETE',
             headers: {
               'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`
@@ -3422,7 +3422,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Handle assigning an orphaned section to a course
   const handleAssignSectionToCourse = async (sectionId: string, courseId: number) => {
     try {
-      const response = await fetch(`/api/courses/${courseId}/sections/${sectionId}/assign`, {
+      const response = await fetch(`${getApiBaseUrl()}/courses/${courseId}/sections/${sectionId}/assign`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
@@ -3446,7 +3446,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Handle changing a section's course assignment (or unassigning it)
   const handleChangeSectionCourse = async (sectionId: string, newCourseId: number | null) => {
     try {
-      const response = await fetch(`/api/sections/${sectionId}`, {
+      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}`, {
         method: 'PATCH',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
@@ -3643,7 +3643,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               e.preventDefault();
               const formData = new FormData(e.currentTarget);
               try {
-                const response = await fetch(`/api/semesters/${editingSemester.id}/clone`, {
+                const response = await fetch(`${getApiBaseUrl()}/semesters/${editingSemester.id}/clone`, {
                   method: 'POST',
                   headers: {
                     'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,

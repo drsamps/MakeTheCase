@@ -44,8 +44,22 @@ case_files/          # Uploaded case documents organized by case_id
 
 ### API Communication
 - Vite proxies `/api` to `http://localhost:3001/api` in development
+- In production, the app runs at `/makethecase/` so API calls must use the correct base path
 - JWT authentication via Bearer token in Authorization header
-- Token stored in localStorage as `auth_token`
+- Token stored in localStorage as `admin_auth_token` (admin) or `student_auth_token` (student)
+
+**IMPORTANT: Making API calls in frontend code**
+Always use `getApiBaseUrl()` from `services/apiClient.ts` for fetch calls:
+```typescript
+import { getApiBaseUrl } from '../services/apiClient';
+
+// Correct - works in both dev and production
+fetch(`${getApiBaseUrl()}/courses`, { ... })
+
+// WRONG - breaks in production (missing /makethecase prefix)
+fetch('/api/courses', { ... })
+```
+The `getApiBaseUrl()` function returns `/api` in development and `/makethecase/api` in production.
 
 ### Database Migrations
 Run migrations in order after initial schema. Use the dev credentials (user: `claudecode@localhost`, password: `fordevonly`).
