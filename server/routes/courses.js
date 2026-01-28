@@ -1,15 +1,21 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import {
+  requireAdminOrInstructor,
+  requireCourseAccess,
+  getAccessibleSemesterIds,
+  getAccessibleCourseIds
+} from '../middleware/instructorAccess.js';
 
 const router = express.Router();
 
 // Note: GET/POST /api/semesters/:semesterId/courses routes are in semesters.js
 
-// GET /api/courses - Get all courses (for dropdowns, etc.)
-router.get('/', async (req, res) => {
+// GET /api/courses - Get all courses (filtered by instructor access)
+router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
-    const [rows] = await pool.execute(`
+    let query = `
       SELECT
         c.id,
         c.semester_id,
@@ -17,14 +23,33 @@ router.get('/', async (req, res) => {
         c.course_code,
         c.description,
         c.primary_section_id,
+        c.primary_instructor_id,
         c.sync_scheduling,
         c.created_at,
         sem.semester_name,
-        sem.is_current as semester_is_current
+        sem.is_current as semester_is_current,
+        i.full_name as primary_instructor_name
       FROM courses c
       JOIN semesters sem ON c.semester_id = sem.id
-      ORDER BY sem.is_current DESC, sem.semester_name DESC, c.course_name ASC
-    `);
+      LEFT JOIN instructors i ON c.primary_instructor_id = i.id
+    `;
+
+    const params = [];
+
+    // Filter by instructor access if not admin
+    if (req.user.role === 'instructor') {
+      const accessibleCourseIds = await getAccessibleCourseIds(req.user.id);
+      if (accessibleCourseIds.length === 0) {
+        return res.json({ data: [], error: null });
+      }
+      const placeholders = accessibleCourseIds.map(() => '?').join(',');
+      query += ` WHERE c.id IN (${placeholders})`;
+      params.push(...accessibleCourseIds);
+    }
+
+    query += ' ORDER BY sem.is_current DESC, sem.semester_name DESC, c.course_name ASC';
+
+    const [rows] = await pool.execute(query, params);
     res.json({ data: rows, error: null });
   } catch (error) {
     console.error('Error fetching all courses:', error);
@@ -33,7 +58,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/courses/:id - Get single course with sections
-router.get('/:id', async (req, res) => {
+router.get('/:id', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
   try {
     const [courseRows] = await pool.execute(`
       SELECT
@@ -43,11 +68,14 @@ router.get('/:id', async (req, res) => {
         c.course_code,
         c.description,
         c.primary_section_id,
+        c.primary_instructor_id,
         c.sync_scheduling,
         c.created_at,
-        sem.semester_name
+        sem.semester_name,
+        i.full_name as primary_instructor_name
       FROM courses c
       JOIN semesters sem ON c.semester_id = sem.id
+      LEFT JOIN instructors i ON c.primary_instructor_id = i.id
       WHERE c.id = ?
     `, [req.params.id]);
 
@@ -92,7 +120,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // PUT /api/courses/:id - Update course
-router.put('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+router.put('/:id', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { course_name, course_code, description, sync_scheduling } = req.body;
@@ -139,7 +167,7 @@ router.put('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
 
 // DELETE /api/courses/:id - Delete course
 // Use ?cascade=true to delete all sections, assignments, and student enrollments
-router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+router.delete('/:id', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { cascade } = req.query;
@@ -247,7 +275,7 @@ router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // POST /api/courses/:id/sections - Add section to course
-router.post('/:id/sections', verifyToken, requireRole(['admin']), async (req, res) => {
+router.post('/:id/sections', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { section_id, section_title, enabled, accept_new_students, chat_model, super_model } = req.body;
@@ -306,7 +334,7 @@ router.post('/:id/sections', verifyToken, requireRole(['admin']), async (req, re
 });
 
 // DELETE /api/courses/:id/sections/:sectionId - Remove section from course (unassign, not delete)
-router.delete('/:id/sections/:sectionId', verifyToken, requireRole(['admin']), async (req, res) => {
+router.delete('/:id/sections/:sectionId', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
   try {
     const { id, sectionId } = req.params;
 
@@ -347,7 +375,7 @@ router.delete('/:id/sections/:sectionId', verifyToken, requireRole(['admin']), a
 });
 
 // PUT /api/courses/:id/primary - Change primary section
-router.put('/:id/primary', verifyToken, requireRole(['admin']), async (req, res) => {
+router.put('/:id/primary', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { section_id } = req.body;
@@ -381,7 +409,7 @@ router.put('/:id/primary', verifyToken, requireRole(['admin']), async (req, res)
 });
 
 // POST /api/courses/:id/sync - Push from primary section to other sections in course
-router.post('/:id/sync', verifyToken, requireRole(['admin']), async (req, res) => {
+router.post('/:id/sync', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const {
@@ -607,7 +635,7 @@ router.post('/:id/sync', verifyToken, requireRole(['admin']), async (req, res) =
 });
 
 // PUT /api/courses/:id/sections/:sectionId/assign - Assign existing orphan section to course
-router.put('/:id/sections/:sectionId/assign', verifyToken, requireRole(['admin']), async (req, res) => {
+router.put('/:id/sections/:sectionId/assign', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
   try {
     const { id, sectionId } = req.params;
 

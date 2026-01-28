@@ -1,31 +1,73 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import {
+  requireAdminOrInstructor,
+  requireSectionAccess,
+  requireSectionPermission,
+  getAccessibleSectionIds
+} from '../middleware/instructorAccess.js';
 
 const router = express.Router();
 
-// GET /api/sections - Get all sections (optionally filter by enabled)
-// Includes student count, total case count, active case count, and course/semester info
-router.get('/', async (req, res) => {
+// GET /api/sections/public - Get enabled sections for student login (no auth required)
+// Returns minimal info: section_id, section_title, year_term for enabled sections
+router.get('/public', async (req, res) => {
   try {
-    const { enabled, orderBy } = req.query;
+    const [rows] = await pool.execute(`
+      SELECT s.section_id, s.section_title, s.year_term, s.accept_new_students
+      FROM sections s
+      WHERE s.enabled = 1
+      ORDER BY s.year_term DESC, s.section_title ASC
+    `);
+    res.json({ data: rows, error: null });
+  } catch (error) {
+    console.error('Error fetching public sections:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/sections - Get all sections (filtered by instructor access)
+// Includes student count, total case count, active case count, and course/semester info
+router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
+  try {
+    const { enabled } = req.query;
 
     let query = `
       SELECT s.section_id, s.course_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model,
+             s.primary_instructor_id,
              co.course_name, co.id as course_id_num,
              sem.id as semester_id, sem.semester_name, sem.is_current as semester_is_current,
+             i.full_name as primary_instructor_name,
              (SELECT COUNT(DISTINCT ss.student_id) FROM student_sections ss WHERE ss.section_id = s.section_id) as student_count,
              (SELECT COUNT(*) FROM section_cases sc2 WHERE sc2.section_id = s.section_id) as case_count,
              (SELECT COUNT(*) FROM section_cases sc3 WHERE sc3.section_id = s.section_id AND sc3.active = TRUE) as active_case_count
       FROM sections s
       LEFT JOIN courses co ON s.course_id = co.id
       LEFT JOIN semesters sem ON co.semester_id = sem.id
+      LEFT JOIN instructors i ON s.primary_instructor_id = i.id
     `;
     const params = [];
+    const whereClauses = [];
+
+    // Filter by instructor access if not admin
+    if (req.user.role === 'instructor') {
+      const accessibleSectionIds = await getAccessibleSectionIds(req.user.id);
+      if (accessibleSectionIds.length === 0) {
+        return res.json({ data: [], error: null });
+      }
+      const placeholders = accessibleSectionIds.map(() => '?').join(',');
+      whereClauses.push(`s.section_id IN (${placeholders})`);
+      params.push(...accessibleSectionIds);
+    }
 
     if (enabled !== undefined) {
-      query += ' WHERE s.enabled = ?';
+      whereClauses.push('s.enabled = ?');
       params.push(enabled === 'true' ? 1 : 0);
+    }
+
+    if (whereClauses.length > 0) {
+      query += ' WHERE ' + whereClauses.join(' AND ');
     }
 
     // Order by semester (current first, then by name), then course, then section
@@ -39,9 +81,9 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/sections/orphaned - Get sections not assigned to any course
+// GET /api/sections/orphaned - Get sections not assigned to any course (admin only)
 // Note: Must be before /:id route to match correctly
-router.get('/orphaned', async (req, res) => {
+router.get('/orphaned', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT
@@ -68,19 +110,22 @@ router.get('/orphaned', async (req, res) => {
 });
 
 // GET /api/sections/:id - Get single section with active case info
-router.get('/:id', async (req, res) => {
+router.get('/:id', verifyToken, requireAdminOrInstructor, requireSectionAccess('id'), async (req, res) => {
   try {
     const [rows] = await pool.execute(
       `SELECT s.section_id, s.course_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model,
+              s.primary_instructor_id,
               co.course_name, co.id as course_id_num,
+              i.full_name as primary_instructor_name,
               COUNT(sc.case_id) as active_case_count,
               GROUP_CONCAT(c.case_title ORDER BY c.case_title SEPARATOR ', ') as active_case_titles
        FROM sections s
        LEFT JOIN courses co ON s.course_id = co.id
+       LEFT JOIN instructors i ON s.primary_instructor_id = i.id
        LEFT JOIN section_cases sc ON s.section_id = sc.section_id AND sc.active = TRUE
        LEFT JOIN cases c ON sc.case_id = c.case_id
        WHERE s.section_id = ?
-       GROUP BY s.section_id, s.course_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model, co.course_name, co.id`,
+       GROUP BY s.section_id, s.course_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model, s.primary_instructor_id, co.course_name, co.id, i.full_name`,
       [req.params.id]
     );
 
@@ -95,7 +140,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// POST /api/sections - Create new section
+// POST /api/sections - Create new section (admin only, instructors use courses/:id/sections)
 router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { section_id, section_title, year_term, enabled, accept_new_students, chat_model, super_model, course_id } = req.body;
@@ -150,7 +195,7 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // PATCH /api/sections/:id - Update section
-router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+router.patch('/:id', verifyToken, requireAdminOrInstructor, requireSectionAccess('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
@@ -204,7 +249,7 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // GET /api/sections/:id/students - Get all students enrolled in a section
-router.get('/:id/students', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/:id/students', verifyToken, requireAdminOrInstructor, requireSectionAccess('id'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -226,8 +271,8 @@ router.get('/:id/students', verifyToken, requireRole(['admin']), async (req, res
   }
 });
 
-// DELETE /api/sections/:id - Delete section
-router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+// DELETE /api/sections/:id - Delete section (admin or primary instructor for the course)
+router.delete('/:id', verifyToken, requireAdminOrInstructor, requireSectionAccess('id'), async (req, res) => {
   try {
     const { id } = req.params;
     

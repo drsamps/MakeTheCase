@@ -43,7 +43,7 @@ type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students' | 'a
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live';
 type ResultsSubTab = 'responses' | 'positions';
-type AdminSubTab = 'personas' | 'prompts' | 'models' | 'settings' | 'instructors';
+type AdminSubTab = 'instructors' | 'settings' | 'models' | 'personas' | 'prompts' | 'admins';
 
 interface DashboardProps {
   onLogout: () => void;
@@ -63,6 +63,12 @@ interface SectionStat {
   accept_new_students?: boolean;
   active_case_count?: number;
   active_case_titles?: string | null;
+  primary_instructor_id?: string | null;
+  primary_instructor_name?: string | null;
+  course_id?: number | null;
+  course_name?: string | null;
+  semester_id?: number | null;
+  semester_name?: string | null;
 }
 
 interface StudentDetail {
@@ -228,7 +234,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [contentSubTab, setContentSubTab] = useState<ContentSubTab>('cases');
   const [monitorSubTab, setMonitorSubTab] = useState<MonitorSubTab>('chats');
   const [resultsSubTab, setResultsSubTab] = useState<ResultsSubTab>('responses');
-  const [adminSubTab, setAdminSubTab] = useState<AdminSubTab>('personas');
+  const [adminSubTab, setAdminSubTab] = useState<AdminSubTab>('instructors');
 
   // Check if user has access to any admin functions
   const hasAdminAccess = useCallback(() => {
@@ -251,6 +257,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [showCloneSemesterModal, setShowCloneSemesterModal] = useState(false);
   const [editingSemester, setEditingSemester] = useState<any | null>(null);
   const [editingCourse, setEditingCourse] = useState<any | null>(null);
+
+  // Instructor assignment state
+  const [semesterInstructors, setSemesterInstructors] = useState<Map<number, any[]>>(new Map());
+  const [showSemesterInstructorsModal, setShowSemesterInstructorsModal] = useState(false);
+  const [selectedSemesterForInstructors, setSelectedSemesterForInstructors] = useState<any | null>(null);
+  const [allInstructors, setAllInstructors] = useState<any[]>([]);
+  const [isLoadingInstructors, setIsLoadingInstructors] = useState(false);
 
   const [sectionStats, setSectionStats] = useState<SectionStat[]>([]);
   const [selectedSection, setSelectedSection] = useState<SectionStat | null>(null);
@@ -720,6 +733,85 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   }, []);
 
+  // Fetch all instructors (for assignment dropdowns)
+  const fetchAllInstructors = useCallback(async () => {
+    setIsLoadingInstructors(true);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/instructors`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
+      });
+      const result = await response.json();
+      if (!result.error) {
+        setAllInstructors(result.data || []);
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch instructors:', err);
+    } finally {
+      setIsLoadingInstructors(false);
+    }
+  }, []);
+
+  // Fetch instructors for a specific semester
+  const fetchSemesterInstructors = useCallback(async (semesterId: number) => {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/semesters/${semesterId}/instructors`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
+      });
+      const result = await response.json();
+      if (!result.error) {
+        setSemesterInstructors(prev => new Map(prev).set(semesterId, result.data || []));
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch semester instructors:', err);
+    }
+  }, []);
+
+  // Assign instructor to semester
+  const handleAssignInstructorToSemester = async (instructorId: string, semesterId: number) => {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/instructors/${instructorId}/semesters`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ semester_id: semesterId })
+      });
+      const result = await response.json();
+      if (result.error) {
+        setError(result.error.message || result.error);
+      } else {
+        // Refresh the instructors for this semester
+        fetchSemesterInstructors(semesterId);
+        setSuccessMessage('Instructor assigned successfully');
+        setTimeout(() => setSuccessMessage(null), 3000);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to assign instructor');
+    }
+  };
+
+  // Remove instructor from semester
+  const handleRemoveInstructorFromSemester = async (instructorId: string, semesterId: number) => {
+    if (!confirm('Remove this instructor from the semester?')) return;
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/instructors/${instructorId}/semesters/${semesterId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
+      });
+      const result = await response.json();
+      if (result.error) {
+        setError(result.error.message || result.error);
+      } else {
+        fetchSemesterInstructors(semesterId);
+        setSuccessMessage('Instructor removed from semester');
+        setTimeout(() => setSuccessMessage(null), 3000);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to remove instructor');
+    }
+  };
+
   // Fetch courses when semester changes
   useEffect(() => {
     if (selectedSemesterId) {
@@ -1041,6 +1133,22 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     fetchSectionStats();
     fetchAllCourses(); // Load all courses for Sections tab dropdown
   }, [fetchSectionStats, fetchAllCourses]);
+
+  // Load instructor data when on semesters tab and semesters are loaded
+  useEffect(() => {
+    if (coursesSubTab === 'semesters' && semesters.length > 0) {
+      // Load instructors for each semester
+      semesters.forEach(sem => {
+        if (!semesterInstructors.has(sem.id)) {
+          fetchSemesterInstructors(sem.id);
+        }
+      });
+      // Also load all instructors for assignment dropdown
+      if (allInstructors.length === 0) {
+        fetchAllInstructors();
+      }
+    }
+  }, [coursesSubTab, semesters, semesterInstructors, allInstructors, fetchSemesterInstructors, fetchAllInstructors]);
 
   useEffect(() => {
     if (selectedSection) {
@@ -3518,9 +3626,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   <h3 className="text-lg font-semibold text-gray-900">{semester.semester_name}</h3>
                   <span className="text-sm text-gray-500">
                     {semester.course_count || 0} courses • {semester.section_count || 0} sections
+                    {(semesterInstructors.get(semester.id)?.length || 0) > 0 && (
+                      <> • <span className="text-purple-600">{semesterInstructors.get(semester.id)?.length} instructor{semesterInstructors.get(semester.id)?.length !== 1 ? 's' : ''}</span></>
+                    )}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setSelectedSemesterForInstructors(semester);
+                      setShowSemesterInstructorsModal(true);
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium text-purple-600 hover:text-purple-700 hover:bg-purple-50 rounded"
+                  >
+                    Instructors
+                  </button>
                   {!semester.is_current && (
                     <button
                       onClick={() => handleSetCurrentSemester(semester.id)}
@@ -3715,6 +3835,88 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Semester Instructors Modal */}
+      {showSemesterInstructorsModal && selectedSemesterForInstructors && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-semibold mb-4">
+              Instructors for {selectedSemesterForInstructors.semester_name}
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Primary instructors assigned to this semester can create and manage courses within it.
+            </p>
+
+            {/* Current instructors */}
+            <div className="mb-6">
+              <h4 className="text-sm font-medium text-gray-700 mb-2">Assigned Instructors</h4>
+              {(semesterInstructors.get(selectedSemesterForInstructors.id) || []).length === 0 ? (
+                <p className="text-sm text-gray-500 italic">No instructors assigned to this semester</p>
+              ) : (
+                <div className="space-y-2">
+                  {(semesterInstructors.get(selectedSemesterForInstructors.id) || []).map((instructor: any) => (
+                    <div key={instructor.id} className="flex items-center justify-between bg-gray-50 px-3 py-2 rounded-lg">
+                      <div>
+                        <span className="font-medium text-gray-900">{instructor.full_name}</span>
+                        <span className="ml-2 text-sm text-gray-500">{instructor.email}</span>
+                      </div>
+                      <button
+                        onClick={() => handleRemoveInstructorFromSemester(instructor.id, selectedSemesterForInstructors.id)}
+                        className="text-red-600 hover:text-red-700 text-sm"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Add instructor */}
+            <div className="mb-4">
+              <h4 className="text-sm font-medium text-gray-700 mb-2">Add Instructor</h4>
+              <select
+                id="semester-instructor-select"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                defaultValue=""
+                onChange={(e) => {
+                  if (e.target.value) {
+                    handleAssignInstructorToSemester(e.target.value, selectedSemesterForInstructors.id);
+                    e.target.value = '';
+                  }
+                }}
+              >
+                <option value="">Select an instructor to add...</option>
+                {allInstructors
+                  .filter((i: any) => i.active && !(semesterInstructors.get(selectedSemesterForInstructors.id) || []).some((si: any) => si.id === i.id))
+                  .map((instructor: any) => (
+                    <option key={instructor.id} value={instructor.id}>
+                      {instructor.full_name} ({instructor.email})
+                    </option>
+                  ))
+                }
+              </select>
+              {allInstructors.filter((i: any) => i.active).length === 0 && (
+                <p className="mt-2 text-sm text-gray-500">
+                  No instructors available. Add instructors in Admin &rarr; Instructors.
+                </p>
+              )}
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                onClick={() => {
+                  setShowSemesterInstructorsModal(false);
+                  setSelectedSemesterForInstructors(null);
+                }}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -6757,6 +6959,42 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           {/* Sub-navigation for Admin */}
           {primaryTab === 'admin' && (
             <div className="flex gap-1 mt-2 pb-2">
+              {hasAccess(user, 'instructors') && (
+                <button
+                  onClick={() => setAdminSubTab('instructors')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'instructors'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Instructors
+                </button>
+              )}
+              {hasAccess(user, 'settings') && (
+                <button
+                  onClick={() => setAdminSubTab('settings')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'settings'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Settings
+                </button>
+              )}
+              {hasAccess(user, 'models') && (
+                <button
+                  onClick={() => setAdminSubTab('models')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'models'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Models
+                </button>
+              )}
               {hasAccess(user, 'personas') && (
                 <button
                   onClick={() => {
@@ -6784,40 +7022,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   Prompts
                 </button>
               )}
-              {hasAccess(user, 'models') && (
-                <button
-                  onClick={() => setAdminSubTab('models')}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    adminSubTab === 'models'
-                      ? 'bg-purple-100 text-purple-700'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  Models
-                </button>
-              )}
-              {hasAccess(user, 'settings') && (
-                <button
-                  onClick={() => setAdminSubTab('settings')}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    adminSubTab === 'settings'
-                      ? 'bg-purple-100 text-purple-700'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  Settings
-                </button>
-              )}
               {hasAccess(user, 'instructors') && (
                 <button
-                  onClick={() => setAdminSubTab('instructors')}
+                  onClick={() => setAdminSubTab('admins')}
                   className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    adminSubTab === 'instructors'
+                    adminSubTab === 'admins'
                       ? 'bg-purple-100 text-purple-700'
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  Instructors
+                  Admins
                 </button>
               )}
             </div>
@@ -6862,7 +7076,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           ) : adminSubTab === 'settings' ? (
             <SettingsManager />
           ) : adminSubTab === 'instructors' ? (
-            <InstructorManager user={user} />
+            <InstructorManager user={user} mode="instructors" />
+          ) : adminSubTab === 'admins' ? (
+            <InstructorManager user={user} mode="admins" />
           ) : null
         ) : primaryTab === 'courses' ? (
           coursesSubTab === 'semesters' ? (
@@ -7112,6 +7328,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                             {!section.enabled && (
                                               <span className="px-1.5 py-0.5 text-xs bg-gray-200 text-gray-600 rounded">Disabled</span>
                                             )}
+                                            {section.primary_instructor_name && (
+                                              <span className="px-1.5 py-0.5 text-xs bg-purple-50 text-purple-600 rounded" title="Primary Instructor">
+                                                {section.primary_instructor_name}
+                                              </span>
+                                            )}
                                           </div>
                                           <div className="flex items-center gap-3 text-xs text-gray-500">
                                             <span>{(section as any).student_count || 0} students</span>
@@ -7182,8 +7403,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         <span className="inline-block px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
                           {section.year_term}
                         </span>
+                        {section.primary_instructor_name && (
+                          <span className="inline-block ml-1 px-2 py-0.5 text-xs font-medium bg-purple-50 text-purple-700 rounded-full" title="Primary Instructor">
+                            {section.primary_instructor_name}
+                          </span>
+                        )}
                       </div>
-                      
+
                       {/* Action Buttons */}
                       {section.section_id !== 'unassigned' && (
                         <div className="flex gap-1 ml-2">
@@ -7307,6 +7533,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
                             {section.year_term}
                           </span>
+                          {section.primary_instructor_name && (
+                            <span className="ml-1 text-xs text-purple-600" title="Primary Instructor">
+                              {section.primary_instructor_name}
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           {section.section_id !== 'unassigned' && section.section_id !== 'other_courses' ? (

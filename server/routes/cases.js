@@ -1,6 +1,12 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import {
+  requireAdminOrInstructor,
+  requireCaseAccess,
+  requireSuperuser,
+  canAccessCase
+} from '../middleware/instructorAccess.js';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
@@ -53,20 +59,36 @@ async function convertPdfToMarkdown(pdfPath) {
   return data.text;
 }
 
-// GET /api/cases - List all cases
-router.get('/', async (req, res) => {
+// GET /api/cases - List all cases (filtered by instructor access)
+router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { enabled, include_scenarios } = req.query;
     let query = `
       SELECT c.case_id, c.case_title, c.case_version, c.base_scenario_id,
-             c.created_at, c.enabled
+             c.created_at, c.enabled, c.is_shared, c.created_by, c.created_by_type,
+             CASE
+               WHEN c.created_by_type = 'admin' THEN (SELECT who FROM admins WHERE id = c.created_by)
+               WHEN c.created_by_type = 'instructor' THEN (SELECT full_name FROM instructors WHERE id = c.created_by)
+               ELSE NULL
+             END as creator_name
       FROM cases c
     `;
     const params = [];
+    const whereClauses = [];
+
+    // Filter by instructor access (owner or shared)
+    if (req.user.role === 'instructor') {
+      whereClauses.push('(c.is_shared = 1 OR c.created_by = ?)');
+      params.push(req.user.id);
+    }
 
     if (enabled !== undefined) {
-      query += ' WHERE c.enabled = ?';
+      whereClauses.push('c.enabled = ?');
       params.push(enabled === 'true' ? 1 : 0);
+    }
+
+    if (whereClauses.length > 0) {
+      query += ' WHERE ' + whereClauses.join(' AND ');
     }
 
     query += ' ORDER BY c.created_at DESC';
@@ -98,11 +120,11 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/cases/:id - Get single case with files
-router.get('/:id', async (req, res) => {
+router.get('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'), async (req, res) => {
   try {
     const [cases] = await pool.execute(
       `SELECT case_id, case_title, case_version, base_scenario_id,
-              created_at, enabled
+              created_at, enabled, is_shared, created_by, created_by_type
        FROM cases WHERE case_id = ?`,
       [req.params.id]
     );
@@ -130,8 +152,8 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// POST /api/cases - Create new case (admin only)
-router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
+// POST /api/cases - Create new case (admin or instructor)
+router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { case_id, case_title, case_version, enabled } = req.body;
 
@@ -150,14 +172,20 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
       return res.status(409).json({ data: null, error: { message: 'Case ID already exists' } });
     }
 
+    // Track ownership: is_shared defaults to false for new cases
+    const createdByType = req.user.role; // 'admin' or 'instructor'
+    const createdBy = req.user.id;
+
     await pool.execute(
-      `INSERT INTO cases (case_id, case_title, case_version, enabled)
-       VALUES (?, ?, ?, ?)`,
+      `INSERT INTO cases (case_id, case_title, case_version, enabled, created_by_type, created_by, is_shared)
+       VALUES (?, ?, ?, ?, ?, ?, 0)`,
       [
         case_id,
         case_title,
         case_version || null,
-        enabled !== false ? 1 : 0
+        enabled !== false ? 1 : 0,
+        createdByType,
+        createdBy
       ]
     );
 
@@ -168,7 +196,7 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
     // Return created case
     const [rows] = await pool.execute(
       `SELECT case_id, case_title, case_version, base_scenario_id,
-              created_at, enabled
+              created_at, enabled, is_shared, created_by, created_by_type
        FROM cases WHERE case_id = ?`,
       [case_id]
     );
@@ -180,8 +208,8 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
   }
 });
 
-// PATCH /api/cases/:id - Update case (admin only)
-router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+// PATCH /api/cases/:id - Update case (owner or admin)
+router.patch('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
@@ -231,8 +259,8 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   }
 });
 
-// DELETE /api/cases/:id - Delete case (admin only)
-router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+// DELETE /api/cases/:id - Delete case (owner or admin)
+router.delete('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'), async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -272,8 +300,8 @@ router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   }
 });
 
-// POST /api/cases/:id/upload - Upload case or teaching note file (admin only)
-router.post('/:id/upload', verifyToken, requireRole(['admin']), upload.single('file'), async (req, res) => {
+// POST /api/cases/:id/upload - Upload case or teaching note file (owner or admin)
+router.post('/:id/upload', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'), upload.single('file'), async (req, res) => {
   try {
     const { id } = req.params;
     const fileType = req.body.file_type || 'case'; // 'case' or 'teaching_note'
@@ -349,16 +377,16 @@ router.post('/:id/upload', verifyToken, requireRole(['admin']), upload.single('f
 });
 
 // GET /api/cases/:id/content/:fileType - Get markdown content for case or teaching_note
-router.get('/:id/content/:fileType', async (req, res) => {
+router.get('/:id/content/:fileType', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'), async (req, res) => {
   try {
     const { id, fileType } = req.params;
-    
+
     if (!['case', 'teaching_note'].includes(fileType)) {
       return res.status(400).json({ data: null, error: { message: 'fileType must be "case" or "teaching_note"' } });
     }
-    
+
     const mdPath = path.join(CASE_FILES_DIR, id, `${fileType}.md`);
-    
+
     try {
       const content = await fs.readFile(mdPath, 'utf-8');
       res.json({ data: { case_id: id, file_type: fileType, content }, error: null });
@@ -370,6 +398,61 @@ router.get('/:id/content/:fileType', async (req, res) => {
     }
   } catch (error) {
     console.error('Error reading case content:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/cases/:id/share - Share case with all instructors (owner or superuser)
+router.post('/:id/share', verifyToken, requireAdminOrInstructor, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get case to check ownership
+    const [caseRow] = await pool.execute(
+      'SELECT case_id, created_by, is_shared FROM cases WHERE case_id = ?',
+      [id]
+    );
+
+    if (caseRow.length === 0) {
+      return res.status(404).json({ error: 'Case not found' });
+    }
+
+    // Only owner or superuser can share
+    if (!req.user.superuser && caseRow[0].created_by !== req.user.id) {
+      return res.status(403).json({ error: 'Only the case owner or a superuser can share this case' });
+    }
+
+    await pool.execute(
+      'UPDATE cases SET is_shared = 1, shared_at = NOW(), shared_by = ? WHERE case_id = ?',
+      [req.user.id, id]
+    );
+
+    res.json({ data: { case_id: id, is_shared: true }, error: null });
+  } catch (error) {
+    console.error('Error sharing case:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/cases/:id/unshare - Unshare case (superuser only)
+router.post('/:id/unshare', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check case exists
+    const [caseRow] = await pool.execute('SELECT case_id FROM cases WHERE case_id = ?', [id]);
+    if (caseRow.length === 0) {
+      return res.status(404).json({ error: 'Case not found' });
+    }
+
+    await pool.execute(
+      'UPDATE cases SET is_shared = 0, shared_at = NULL, shared_by = NULL WHERE case_id = ?',
+      [id]
+    );
+
+    res.json({ data: { case_id: id, is_shared: false }, error: null });
+  } catch (error) {
+    console.error('Error unsharing case:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

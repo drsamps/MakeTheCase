@@ -436,7 +436,9 @@ router.get('/positions', verifyToken, requireRole(['admin']), async (req, res) =
        WHERE ${whereClause}
          AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL
               OR cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
-       GROUP BY COALESCE(cc.initial_position, sp_init.position_name, cc.final_position, sp_final.position_name)`,
+       GROUP BY
+         COALESCE(cc.initial_position, sp_init.position_name),
+         COALESCE(sp_init.position_id, sp_final.position_id)`,
       params
     );
 
@@ -583,7 +585,7 @@ router.get('/positions/correlation', verifyToken, requireRole(['admin']), async 
        WHERE ${whereClause}
          AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL
               OR cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
-       GROUP BY position_name
+       GROUP BY COALESCE(cc.final_position, sp.position_name, cc.initial_position)
        ORDER BY avg_score DESC`,
       params
     );

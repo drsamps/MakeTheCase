@@ -507,6 +507,37 @@ router.get('/:semesterId/courses', async (req, res) => {
   }
 });
 
+// GET /api/semesters/:id/instructors - Get instructors assigned to a semester
+router.get('/:id/instructors', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await pool.execute(`
+      SELECT
+        i.id,
+        i.email,
+        i.first_name,
+        i.last_name,
+        i.full_name,
+        i.active,
+        isem.assigned_at,
+        isem.assigned_by
+      FROM instructors i
+      JOIN instructor_semesters isem ON i.id = isem.instructor_id
+      WHERE isem.semester_id = ?
+      ORDER BY i.full_name ASC
+    `, [id]);
+
+    res.json({
+      data: rows.map(r => ({ ...r, active: Boolean(r.active) })),
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching semester instructors:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 // POST /api/semesters/:semesterId/courses - Create new course in semester
 router.post('/:semesterId/courses', verifyToken, requireRole(['admin']), async (req, res) => {
   try {

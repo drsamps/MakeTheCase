@@ -253,26 +253,28 @@ const App: React.FC = () => {
   
   useEffect(() => {
     const fetchSections = async () => {
-        const { data, error: fetchError } = await api
-            .from('sections')
-            .select('section_id, section_title, year_term, chat_model, super_model, accept_new_students')
-            .eq('enabled', true)
-            .order('year_term', { ascending: false })
-            .order('section_title', { ascending: true });
+        // Use public endpoint that doesn't require authentication
+        const { data, error: fetchError } = await api.get<Section[]>('/sections/public');
 
         if (fetchError) {
             console.error('Error fetching sections:', fetchError);
             // Check if backend server is down (connection refused/failed to fetch)
             const errorMsg = fetchError.message || '';
-            if (errorMsg.includes('Failed to fetch') || errorMsg.includes('ECONNREFUSED') || 
+            if (errorMsg.includes('Failed to fetch') || errorMsg.includes('ECONNREFUSED') ||
                 errorMsg.includes('NetworkError') || errorMsg.includes('fetch failed')) {
                 setError('Backend server paused - please try again later.');
             } else {
                 setError('Could not load course sections from the database.');
             }
         } else if (data) {
-            setSections(data as Section[]);
-            if (data.length === 0) {
+            // Sort by year_term descending, then section_title ascending
+            const sorted = [...data].sort((a, b) => {
+                const termCompare = (b.year_term || '').localeCompare(a.year_term || '');
+                if (termCompare !== 0) return termCompare;
+                return (a.section_title || '').localeCompare(b.section_title || '');
+            });
+            setSections(sorted);
+            if (sorted.length === 0) {
                 setSelectedSection('other');
             }
         }

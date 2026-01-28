@@ -36,6 +36,7 @@ import analyticsRoutes from './routes/analytics.js';
 import positionTemplatesRoutes from './routes/positionTemplates.js';
 import semestersRoutes from './routes/semesters.js';
 import coursesRoutes from './routes/courses.js';
+import instructorsRoutes from './routes/instructors.js';
 
 // Load environment variables
 // Use absolute path to ensure .env.local is found regardless of working directory
@@ -86,7 +87,8 @@ app.use('/api/position-templates', positionTemplatesRoutes); // Position templat
 console.log('✓ Position templates routes mounted at /api/position-templates');
 app.use('/api/semesters', semestersRoutes); // Semester management (includes /api/semesters/:id/courses)
 app.use('/api/courses', coursesRoutes); // Course management (/api/courses/:id)
-console.log('✓ Semesters and courses routes mounted');
+app.use('/api/instructors', instructorsRoutes); // Instructor management and assignments
+console.log('✓ Semesters, courses, and instructors routes mounted');
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
