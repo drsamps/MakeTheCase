@@ -63,6 +63,7 @@ interface ActiveSession {
 
 const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
   const [isLoading, setIsLoading] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(false);
   const [sections, setSections] = useState<SectionOverview[]>([]);
   const [activeSessions, setActiveSessions] = useState<ActiveSession[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -412,12 +413,18 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
     }
   }, []);
 
+  // Fetch initial data on mount
   useEffect(() => {
     fetchDashboardData();
-    // Auto-refresh every 60 seconds
-    const interval = setInterval(fetchDashboardData, 60000);
-    return () => clearInterval(interval);
   }, [fetchDashboardData]);
+
+  // Optional auto-refresh every 30 seconds when enabled
+  useEffect(() => {
+    if (autoRefresh) {
+      const interval = setInterval(fetchDashboardData, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [autoRefresh, fetchDashboardData]);
 
   const formatTimeAgo = (timestamp: string) => {
     const now = new Date();
@@ -478,15 +485,26 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
             {stats.casesOpenNow > 0 && ` • ${stats.casesOpenNow} case${stats.casesOpenNow > 1 ? 's' : ''} open now`}
           </p>
         </div>
-        <button
-          onClick={fetchDashboardData}
-          className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 110 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
-          </svg>
-          Refresh
-        </button>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            Auto-refresh (30s)
+          </label>
+          <button
+            onClick={fetchDashboardData}
+            className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 110 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+            </svg>
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Open Chat Assignments */}

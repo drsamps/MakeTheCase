@@ -385,6 +385,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [isLoadingLiveSession, setIsLoadingLiveSession] = useState(false);
   const [liveAutoRefresh, setLiveAutoRefresh] = useState(true);
   const [lastLiveRefresh, setLastLiveRefresh] = useState<Date | null>(null);
+  const [chatsAutoRefresh, setChatsAutoRefresh] = useState(false);
 
   // Chat options editing (Phase 2)
   const [expandedCaseOptions, setExpandedCaseOptions] = useState<string | null>(null);
@@ -3972,9 +3973,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               fetchSectionCases(selectedAssignmentSection);
             }
           }}
-          className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+          disabled={isLoadingAssignments}
+          className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg disabled:opacity-50 transition-colors"
+          aria-label="Refresh case assignments"
+          title="Refresh case assignments"
         >
-          Refresh
+          <svg xmlns="http://www.w3.org/2000/svg" className={`w-5 h-5 ${isLoadingAssignments ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 110 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+          </svg>
         </button>
       </div>
 
@@ -4850,9 +4856,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               fetchSectionCases(chatOptionsSection);
             }
           }}
-          className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+          disabled={isLoadingAssignments}
+          className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg disabled:opacity-50 transition-colors"
+          aria-label="Refresh chat options"
+          title="Refresh chat options"
         >
-          Refresh
+          <svg xmlns="http://www.w3.org/2000/svg" className={`w-5 h-5 ${isLoadingAssignments ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 110 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+          </svg>
         </button>
       </div>
 
@@ -5848,6 +5859,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   }, [liveSessionSection, liveSessionCase, fetchLiveSession]);
 
+  // Auto-refresh chat sessions every 30 seconds when enabled
+  useEffect(() => {
+    if (primaryTab === 'monitor' && monitorSubTab === 'chats' && chatsAutoRefresh) {
+      const interval = setInterval(fetchCaseChats, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [primaryTab, monitorSubTab, chatsAutoRefresh, fetchCaseChats]);
+
   // Kill a chat session
   const handleKillChat = async (chatId: string) => {
     if (!confirm('Are you sure you want to kill this chat session? The student will not be able to continue.')) return;
@@ -6134,13 +6153,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           <h2 className="text-2xl font-bold text-gray-900">Latest Chat Sessions</h2>
           <p className="text-sm text-gray-500">Monitor and manage the latest (most recent) chat sessions</p>
         </div>
-        <button
-          onClick={fetchCaseChats}
-          disabled={isLoadingCaseChats}
-          className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-        >
-          {isLoadingCaseChats ? 'Loading...' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={chatsAutoRefresh}
+              onChange={(e) => setChatsAutoRefresh(e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            Auto-refresh (30s)
+          </label>
+          <button
+            onClick={fetchCaseChats}
+            disabled={isLoadingCaseChats}
+            className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          >
+            {isLoadingCaseChats ? 'Refreshing...' : 'Refresh Now'}
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -6375,22 +6405,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           )}
         </div>
         <div className="flex items-center gap-4">
-          {/* Auto-refresh toggle */}
-          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
-              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
-            Auto-refresh (30s)
-            {autoRefresh && (
-              <span className="flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-green-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-              </span>
-            )}
-          </label>
           <a
             href="#"
             onClick={(e) => {
