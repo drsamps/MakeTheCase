@@ -91,6 +91,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
     // ============ SUMMARY STATISTICS ============
 
     // Get overall stats
+    // Note: Include students enrolled via student_sections OR legacy students.section_id
     const statsQuery = `
       SELECT
         COUNT(DISTINCT s.id) as total_students,
@@ -100,8 +101,8 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         AVG(cc.hints_used) as avg_hints,
         AVG(e.helpful) as avg_helpful
       FROM students s
-      JOIN student_sections ss ON s.id = ss.student_id
-      JOIN sections sec ON ss.section_id = sec.section_id
+      LEFT JOIN student_sections ss ON s.id = ss.student_id
+      JOIN sections sec ON (ss.section_id = sec.section_id OR s.section_id = sec.section_id)
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
       JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
@@ -129,8 +130,8 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
     const distributionQuery = `
       SELECT e.score, COUNT(*) as count
       FROM students s
-      JOIN student_sections ss ON s.id = ss.student_id
-      JOIN sections sec ON ss.section_id = sec.section_id
+      LEFT JOIN student_sections ss ON s.id = ss.student_id
+      JOIN sections sec ON (ss.section_id = sec.section_id OR s.section_id = sec.section_id)
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
       JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
@@ -165,8 +166,10 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
           COUNT(e.id) as completions,
           AVG(e.score) as avg_score
         FROM sections sec
-        JOIN student_sections ss ON sec.section_id = ss.section_id
-        JOIN students s ON ss.student_id = s.id
+        JOIN students s ON (
+          EXISTS (SELECT 1 FROM student_sections WHERE student_id = s.id AND section_id = sec.section_id)
+          OR s.section_id = sec.section_id
+        )
         JOIN section_cases sc ON sec.section_id = sc.section_id
         JOIN cases c ON sc.case_id = c.case_id
         JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
@@ -200,8 +203,10 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         FROM cases c
         JOIN section_cases sc ON c.case_id = sc.case_id
         JOIN sections sec ON sc.section_id = sec.section_id
-        JOIN student_sections ss ON sec.section_id = ss.section_id
-        JOIN students s ON ss.student_id = s.id
+        JOIN students s ON (
+          EXISTS (SELECT 1 FROM student_sections WHERE student_id = s.id AND section_id = sec.section_id)
+          OR s.section_id = sec.section_id
+        )
         JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
         LEFT JOIN evaluations e ON e.case_chat_id = cc.id
         ${whereClause}
@@ -221,11 +226,12 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
     // ============ STUDENT DETAILS ============
 
     // Get total count for pagination
+    // Note: Include students enrolled via student_sections OR legacy students.section_id
     const countQuery = `
       SELECT COUNT(*) as total
       FROM students s
-      JOIN student_sections ss ON s.id = ss.student_id
-      JOIN sections sec ON ss.section_id = sec.section_id
+      LEFT JOIN student_sections ss ON s.id = ss.student_id
+      JOIN sections sec ON (ss.section_id = sec.section_id OR s.section_id = sec.section_id)
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
       JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
@@ -237,6 +243,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
     const totalRecords = countRows[0].total;
 
     // Get student details with pagination
+    // Note: Include students enrolled via student_sections OR legacy students.section_id
     const studentsQuery = `
       SELECT
         s.id as student_id,
@@ -258,8 +265,8 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         cc.end_time as completion_time,
         e.allow_rechat
       FROM students s
-      JOIN student_sections ss ON s.id = ss.student_id
-      JOIN sections sec ON ss.section_id = sec.section_id
+      LEFT JOIN student_sections ss ON s.id = ss.student_id
+      JOIN sections sec ON (ss.section_id = sec.section_id OR s.section_id = sec.section_id)
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
       JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
