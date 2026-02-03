@@ -104,7 +104,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       JOIN sections sec ON ss.section_id = sec.section_id
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
-      JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
+      JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
       LEFT JOIN evaluations e ON e.case_chat_id = cc.id
       ${whereClause}
     `;
@@ -133,7 +133,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       JOIN sections sec ON ss.section_id = sec.section_id
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
-      JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
+      JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
       JOIN evaluations e ON e.case_chat_id = cc.id
       ${whereClause}
       GROUP BY e.score
@@ -169,7 +169,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         JOIN students s ON ss.student_id = s.id
         JOIN section_cases sc ON sec.section_id = sc.section_id
         JOIN cases c ON sc.case_id = c.case_id
-        JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
+        JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
         LEFT JOIN evaluations e ON e.case_chat_id = cc.id
         ${whereClause}
         GROUP BY sec.section_id, sec.section_title, sec.year_term
@@ -202,7 +202,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         JOIN sections sec ON sc.section_id = sec.section_id
         JOIN student_sections ss ON sec.section_id = ss.section_id
         JOIN students s ON ss.student_id = s.id
-        JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
+        JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
         LEFT JOIN evaluations e ON e.case_chat_id = cc.id
         ${whereClause}
         GROUP BY c.case_id, c.case_title
@@ -228,7 +228,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       JOIN sections sec ON ss.section_id = sec.section_id
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
-      JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
+      JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
       LEFT JOIN evaluations e ON e.case_chat_id = cc.id
       ${whereClause}
     `;
@@ -262,7 +262,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       JOIN sections sec ON ss.section_id = sec.section_id
       JOIN section_cases sc ON sec.section_id = sc.section_id
       JOIN cases c ON sc.case_id = c.case_id
-      JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND cc.section_id = sec.section_id
+      JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
       LEFT JOIN evaluations e ON e.case_chat_id = cc.id
       ${whereClause}
       ORDER BY ${sortColumn} ${sortDirection}
