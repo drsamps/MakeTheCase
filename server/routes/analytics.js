@@ -609,7 +609,7 @@ router.get('/positions/correlation', verifyToken, requireRole(['admin']), async 
 
     const positionScoreCorrelation = positionScoreRows.map(row => ({
       position_name: row.position_name,
-      avg_score: row.avg_score ? parseFloat(row.avg_score.toFixed(1)) : 0,
+      avg_score: row.avg_score != null ? parseFloat(Number(row.avg_score).toFixed(1)) : 0,
       count: row.count
     }));
 
@@ -650,10 +650,10 @@ router.get('/positions/correlation', verifyToken, requireRole(['admin']), async 
 
     for (const row of changeScoreRows) {
       if (row.change_status === 'changed') {
-        changeScoreCorrelation.changed_avg_score = row.avg_score ? parseFloat(row.avg_score.toFixed(1)) : null;
+        changeScoreCorrelation.changed_avg_score = row.avg_score != null ? parseFloat(Number(row.avg_score).toFixed(1)) : null;
         changeScoreCorrelation.changed_count = row.count;
       } else {
-        changeScoreCorrelation.unchanged_avg_score = row.avg_score ? parseFloat(row.avg_score.toFixed(1)) : null;
+        changeScoreCorrelation.unchanged_avg_score = row.avg_score != null ? parseFloat(Number(row.avg_score).toFixed(1)) : null;
         changeScoreCorrelation.unchanged_count = row.count;
       }
     }
