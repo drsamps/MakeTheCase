@@ -23,6 +23,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       section_ids = 'all',
       case_ids = 'all',
       statuses = 'all',
+      student_search = '',
       limit = 20,
       offset = 0,
       sort_by = 'completion_time',
@@ -84,6 +85,11 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
           params.push(status);
         }
       });
+    }
+
+    if (student_search && student_search.trim()) {
+      whereConditions.push('s.full_name LIKE ?');
+      params.push(`%${student_search.trim()}%`);
     }
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
@@ -263,7 +269,9 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         e.id as evaluation_id,
         cc.id as case_chat_id,
         cc.end_time as completion_time,
-        e.allow_rechat
+        e.allow_rechat,
+        e.liked,
+        e.improve
       FROM students s
       LEFT JOIN student_sections ss ON s.id = ss.student_id
       JOIN sections sec ON (ss.section_id = sec.section_id OR s.section_id = sec.section_id)
@@ -298,7 +306,9 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       evaluation_id: row.evaluation_id,
       case_chat_id: row.case_chat_id,
       completion_time: row.completion_time,
-      allow_rechat: !!row.allow_rechat
+      allow_rechat: !!row.allow_rechat,
+      liked: row.liked || null,
+      improve: row.improve || null
     }));
 
     // ============ RESPONSE ============

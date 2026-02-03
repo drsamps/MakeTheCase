@@ -55,6 +55,8 @@ interface StudentResult {
   case_chat_id: string | null;
   completion_time: string | null;
   allow_rechat: boolean;
+  liked: string | null;
+  improve: string | null;
 }
 
 interface FilterOption {
@@ -81,6 +83,8 @@ const COLUMN_OPTIONS = [
   { key: 'out_of', label: 'Out Of' },
   { key: 'hints', label: 'Hints' },
   { key: 'helpful', label: 'Helpful' },
+  { key: 'liked', label: 'Liked' },
+  { key: 'improve', label: 'Improve' },
   { key: 'completion_time', label: 'Time' },
 ];
 
@@ -105,9 +109,10 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
   const [selectedSections, setSelectedSections] = useState<string[]>(['all']);
   const [selectedCases, setSelectedCases] = useState<string[]>(['all']);
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>(['all']);
+  const [studentSearch, setStudentSearch] = useState<string>('');
 
   // Display toggles
-  const [showSummaryStats, setShowSummaryStats] = useState(true);
+  const [showSummaryStats, setShowSummaryStats] = useState(false);
   const [showStudentDetails, setShowStudentDetails] = useState(true);
 
   // Column visibility
@@ -179,6 +184,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
       params.set('section_ids', selectedSections.includes('all') ? 'all' : selectedSections.join(','));
       params.set('case_ids', selectedCases.includes('all') ? 'all' : selectedCases.join(','));
       params.set('statuses', selectedStatuses.includes('all') ? 'all' : selectedStatuses.join(','));
+      if (studentSearch.trim()) {
+        params.set('student_search', studentSearch.trim());
+      }
       params.set('limit', pageSize.toString());
       params.set('offset', ((currentPage - 1) * pageSize).toString());
       params.set('sort_by', sortKey);
@@ -195,7 +203,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
     } finally {
       setIsLoading(false);
     }
-  }, [selectedSections, selectedCases, selectedStatuses, pageSize, currentPage, sortKey, sortDirection]);
+  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, pageSize, currentPage, sortKey, sortDirection]);
 
   useEffect(() => {
     if (sectionOptions.length > 0 || caseOptions.length > 0) {
@@ -206,7 +214,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
   // Reset to page 1 when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [selectedSections, selectedCases, selectedStatuses, pageSize]);
+  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, pageSize]);
 
   // Handle sorting
   const handleSort = (key: SortKey) => {
@@ -365,6 +373,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
     if (visibleColumns.has('out_of')) headers.push('Out Of');
     if (visibleColumns.has('hints')) headers.push('Hints');
     if (visibleColumns.has('helpful')) headers.push('Helpful');
+    if (visibleColumns.has('liked')) headers.push('Liked');
+    if (visibleColumns.has('improve')) headers.push('Improve');
     if (visibleColumns.has('completion_time')) headers.push('Time');
 
     const rows = [headers.join(',')];
@@ -380,6 +390,16 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
       if (visibleColumns.has('out_of')) row.push('15');
       if (visibleColumns.has('hints')) row.push(s.hints?.toString() || '');
       if (visibleColumns.has('helpful')) row.push(s.helpful !== null ? s.helpful.toFixed(1) : '');
+      if (visibleColumns.has('liked')) {
+        // Replace line breaks with | and escape quotes
+        const liked = s.liked ? s.liked.replace(/\r?\n/g, '|').replace(/"/g, '""') : '';
+        row.push(`"${liked}"`);
+      }
+      if (visibleColumns.has('improve')) {
+        // Replace line breaks with | and escape quotes
+        const improve = s.improve ? s.improve.replace(/\r?\n/g, '|').replace(/"/g, '""') : '';
+        row.push(`"${improve}"`);
+      }
       if (visibleColumns.has('completion_time')) row.push(s.completion_time ? new Date(s.completion_time).toLocaleString() : '');
       rows.push(row.join(','));
     });
@@ -546,6 +566,16 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
               onChange={setSelectedStatuses}
               placeholder="Select statuses..."
               allLabel="All Statuses"
+            />
+          </div>
+          <div className="min-w-56">
+            <label className="block text-xs font-medium text-gray-700 mb-1">Student</label>
+            <input
+              type="text"
+              value={studentSearch}
+              onChange={(e) => setStudentSearch(e.target.value)}
+              placeholder="Enter search characters"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
         </div>
@@ -816,6 +846,12 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
                       onSort={handleSort}
                     />
                   )}
+                  {visibleColumns.has('liked') && (
+                    <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Liked</th>
+                  )}
+                  {visibleColumns.has('improve') && (
+                    <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Improve</th>
+                  )}
                   {visibleColumns.has('completion_time') && (
                     <SortableHeader
                       label="Time"
@@ -900,6 +936,20 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
                     {visibleColumns.has('helpful') && (
                       <td className="p-3 whitespace-nowrap text-sm text-gray-600">
                         {student.helpful !== null ? `${student.helpful.toFixed(1)}/5` : <span className="text-gray-400">-</span>}
+                      </td>
+                    )}
+                    {visibleColumns.has('liked') && (
+                      <td className="p-3 whitespace-nowrap text-sm text-gray-600" title={student.liked || ''}>
+                        {student.liked ? (
+                          <span className="text-xs">{student.liked.substring(0, 6)}...</span>
+                        ) : <span className="text-gray-400">-</span>}
+                      </td>
+                    )}
+                    {visibleColumns.has('improve') && (
+                      <td className="p-3 whitespace-nowrap text-sm text-gray-600" title={student.improve || ''}>
+                        {student.improve ? (
+                          <span className="text-xs">{student.improve.substring(0, 6)}...</span>
+                        ) : <span className="text-gray-400">-</span>}
                       </td>
                     )}
                     {visibleColumns.has('completion_time') && (
