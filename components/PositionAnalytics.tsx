@@ -1,11 +1,29 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../services/apiClient';
+import MultiSelect, { MultiSelectOption } from './ui/MultiSelect';
 
 interface PositionAnalyticsProps {
   sectionId?: string;
   caseId?: string;
   scenarioId?: number;
 }
+
+interface FilterOption {
+  section_id: string;
+  section_title: string;
+  year_term?: string;
+}
+
+interface CaseOption {
+  case_id: string;
+  case_title: string;
+}
+
+const STATUS_OPTIONS = [
+  { value: 'completed', label: 'Completed' },
+  { value: 'in_progress', label: 'In Progress' },
+  { value: 'not_started', label: 'Not Started' },
+];
 
 interface PositionSummary {
   total_chats: number;
@@ -70,14 +88,53 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
   const [correlationData, setCorrelationData] = useState<CorrelationData | null>(null);
   const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'correlation'>('overview');
 
+  // Filter options (populated from API)
+  const [sectionOptions, setSectionOptions] = useState<FilterOption[]>([]);
+  const [caseOptions, setCaseOptions] = useState<CaseOption[]>([]);
+
+  // Selected filters
+  const [selectedSections, setSelectedSections] = useState<string[]>(['all']);
+  const [selectedCases, setSelectedCases] = useState<string[]>(['all']);
+  const [selectedStatuses, setSelectedStatuses] = useState<string[]>(['completed']);
+
+  // Fetch filter options on mount
+  useEffect(() => {
+    const fetchFilters = async () => {
+      try {
+        const response = await api.get('/analytics/filters');
+        if (response.data) {
+          setSectionOptions(response.data.sections || []);
+          setCaseOptions(response.data.cases || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch filter options:', error);
+      }
+    };
+    fetchFilters();
+  }, []);
+
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     setError(null);
 
     try {
       const params = new URLSearchParams();
-      if (sectionId) params.append('section_id', sectionId);
-      if (caseId) params.append('case_id', caseId);
+      
+      // Use filter selections if available, otherwise use props
+      if (!selectedSections.includes('all') && selectedSections.length > 0) {
+        // For now, the API only supports single section_id
+        params.append('section_id', selectedSections[0]);
+      } else if (sectionId) {
+        params.append('section_id', sectionId);
+      }
+
+      if (!selectedCases.includes('all') && selectedCases.length > 0) {
+        // For now, the API only supports single case_id
+        params.append('case_id', selectedCases[0]);
+      } else if (caseId) {
+        params.append('case_id', caseId);
+      }
+
       if (scenarioId) params.append('scenario_id', String(scenarioId));
 
       const queryString = params.toString();
@@ -99,11 +156,13 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, [sectionId, caseId, scenarioId]);
+  }, [sectionId, caseId, scenarioId, selectedSections, selectedCases]);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (sectionOptions.length > 0 || caseOptions.length > 0) {
+      fetchData();
+    }
+  }, [fetchData, sectionOptions.length, caseOptions.length]);
 
   if (isLoading) {
     return (
@@ -128,13 +187,74 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
     );
   }
 
+  // Convert options for MultiSelect
+  const sectionSelectOptions: MultiSelectOption[] = useMemo(() =>
+    sectionOptions.map(s => ({
+      value: s.section_id,
+      label: s.section_title,
+      subtitle: s.year_term
+    })), [sectionOptions]
+  );
+
+  const caseSelectOptions: MultiSelectOption[] = useMemo(() =>
+    caseOptions.map(c => ({
+      value: c.case_id,
+      label: c.case_title
+    })), [caseOptions]
+  );
+
+  const statusSelectOptions: MultiSelectOption[] = useMemo(() =>
+    STATUS_OPTIONS.map(s => ({
+      value: s.value,
+      label: s.label
+    })), []
+  );
+
   if (!analyticsData || analyticsData.summary.total_chats_with_positions === 0) {
     return (
-      <div className="p-6 bg-gray-50 border border-gray-200 rounded-lg text-center">
-        <p className="text-gray-600">No position tracking data available.</p>
-        <p className="text-sm text-gray-500 mt-2">
-          Position tracking must be enabled for assignments and students must have selected positions.
-        </p>
+      <div className="space-y-6">
+        {/* Filters */}
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
+          <div className="flex flex-wrap gap-4">
+            <div className="min-w-56">
+              <label className="block text-xs font-medium text-gray-700 mb-1">Course Sections</label>
+              <MultiSelect
+                options={sectionSelectOptions}
+                selected={selectedSections}
+                onChange={setSelectedSections}
+                placeholder="Select sections..."
+                allLabel="ALL Sections"
+              />
+            </div>
+            <div className="min-w-56">
+              <label className="block text-xs font-medium text-gray-700 mb-1">Cases</label>
+              <MultiSelect
+                options={caseSelectOptions}
+                selected={selectedCases}
+                onChange={setSelectedCases}
+                placeholder="Select cases..."
+                allLabel="ALL Cases"
+              />
+            </div>
+            <div className="min-w-44">
+              <label className="block text-xs font-medium text-gray-700 mb-1">Status</label>
+              <MultiSelect
+                options={statusSelectOptions}
+                selected={selectedStatuses}
+                onChange={setSelectedStatuses}
+                placeholder="Select statuses..."
+                allLabel="All Statuses"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="p-6 bg-gray-50 border border-gray-200 rounded-lg text-center">
+          <p className="text-gray-600">No position tracking data available.</p>
+          <p className="text-sm text-gray-500 mt-2">
+            Position tracking must be enabled for assignments and students must have selected positions.
+          </p>
+        </div>
       </div>
     );
   }
@@ -143,6 +263,41 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Filters */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
+        <div className="flex flex-wrap gap-4">
+          <div className="min-w-56">
+            <label className="block text-xs font-medium text-gray-700 mb-1">Course Sections</label>
+            <MultiSelect
+              options={sectionSelectOptions}
+              selected={selectedSections}
+              onChange={setSelectedSections}
+              placeholder="Select sections..."
+              allLabel="ALL Sections"
+            />
+          </div>
+          <div className="min-w-56">
+            <label className="block text-xs font-medium text-gray-700 mb-1">Cases</label>
+            <MultiSelect
+              options={caseSelectOptions}
+              selected={selectedCases}
+              onChange={setSelectedCases}
+              placeholder="Select cases..."
+              allLabel="ALL Cases"
+            />
+          </div>
+          <div className="min-w-44">
+            <label className="block text-xs font-medium text-gray-700 mb-1">Status</label>
+            <MultiSelect
+              options={statusSelectOptions}
+              selected={selectedStatuses}
+              onChange={setSelectedStatuses}
+              placeholder="Select statuses..."
+              allLabel="All Statuses"
+            />
+          </div>
+        </div>
+      </div>
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
