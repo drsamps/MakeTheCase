@@ -454,8 +454,8 @@ router.get('/positions', verifyToken, requireRole(['admin']), async (req, res) =
          AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL
               OR cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
        GROUP BY
-         COALESCE(cc.initial_position, cc.final_position, sp_init.position_name, sp_final.position_name),
-         COALESCE(cc.initial_position_id, cc.final_position_id, sp_init.position_id, sp_final.position_id)`,
+         cc.initial_position, cc.final_position, sp_init.position_name, sp_final.position_name,
+         cc.initial_position_id, cc.final_position_id, sp_init.position_id, sp_final.position_id`,
       params
     );
 
@@ -486,7 +486,7 @@ router.get('/positions', verifyToken, requireRole(['admin']), async (req, res) =
        WHERE ${whereClause}
          AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
          AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
-       GROUP BY from_position, to_position`,
+       GROUP BY cc.initial_position, sp_init.position_name, cc.final_position, sp_final.position_name`,
       params
     );
 
