@@ -78,6 +78,7 @@ const COLUMN_OPTIONS = [
   { key: 'final_position', label: 'Final Position' },
   { key: 'persona', label: 'Persona' },
   { key: 'score', label: 'Score' },
+  { key: 'out_of', label: 'Out Of' },
   { key: 'hints', label: 'Hints' },
   { key: 'helpful', label: 'Helpful' },
   { key: 'completion_time', label: 'Time' },
@@ -361,6 +362,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
     if (visibleColumns.has('final_position')) headers.push('Final Position');
     if (visibleColumns.has('persona')) headers.push('Persona');
     if (visibleColumns.has('score')) headers.push('Score');
+    if (visibleColumns.has('out_of')) headers.push('Out Of');
     if (visibleColumns.has('hints')) headers.push('Hints');
     if (visibleColumns.has('helpful')) headers.push('Helpful');
     if (visibleColumns.has('completion_time')) headers.push('Time');
@@ -374,7 +376,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
       if (visibleColumns.has('initial_position')) row.push(s.initial_position || '');
       if (visibleColumns.has('final_position')) row.push(s.final_position || '');
       if (visibleColumns.has('persona')) row.push(s.persona || '');
-      if (visibleColumns.has('score')) row.push(s.score !== null ? `${s.score}/15` : '');
+      if (visibleColumns.has('score')) row.push(s.score !== null ? s.score.toString() : '');
+      if (visibleColumns.has('out_of')) row.push('15');
       if (visibleColumns.has('hints')) row.push(s.hints?.toString() || '');
       if (visibleColumns.has('helpful')) row.push(s.helpful !== null ? s.helpful.toFixed(1) : '');
       if (visibleColumns.has('completion_time')) row.push(s.completion_time ? new Date(s.completion_time).toLocaleString() : '');
@@ -792,6 +795,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
                       onSort={handleSort}
                     />
                   )}
+                  {visibleColumns.has('out_of') && (
+                    <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Out Of</th>
+                  )}
                   {visibleColumns.has('hints') && (
                     <SortableHeader
                       label="Hints"
@@ -876,9 +882,14 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
                       <td className="p-3 whitespace-nowrap text-sm">
                         {student.score !== null ? (
                           <span className={`font-medium ${getScoreColor(student.score)}`}>
-                            {student.score}/15
+                            {student.score}
                           </span>
                         ) : <span className="text-gray-400">-</span>}
+                      </td>
+                    )}
+                    {visibleColumns.has('out_of') && (
+                      <td className="p-3 whitespace-nowrap text-sm text-gray-600">
+                        15
                       </td>
                     )}
                     {visibleColumns.has('hints') && (
