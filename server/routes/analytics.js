@@ -602,7 +602,7 @@ router.get('/positions/correlation', verifyToken, requireRole(['admin']), async 
        WHERE ${whereClause}
          AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL
               OR cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
-       GROUP BY COALESCE(cc.final_position, sp.position_name, cc.initial_position)
+       GROUP BY cc.final_position, sp.position_name, cc.initial_position
        ORDER BY avg_score DESC`,
       params
     );
@@ -630,7 +630,14 @@ router.get('/positions/correlation', verifyToken, requireRole(['admin']), async 
        WHERE ${whereClause}
          AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL
               OR cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
-       GROUP BY change_status`,
+       GROUP BY 
+        CASE
+          WHEN (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
+           AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+           AND (cc.initial_position != cc.final_position OR cc.initial_position_id != cc.final_position_id)
+          THEN 'changed'
+          ELSE 'unchanged'
+        END`,
       params
     );
 

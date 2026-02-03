@@ -164,6 +164,29 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
     }
   }, [fetchData, sectionOptions.length, caseOptions.length]);
 
+  // Convert options for MultiSelect - MUST be before any conditional returns (Rules of Hooks)
+  const sectionSelectOptions: MultiSelectOption[] = useMemo(() =>
+    sectionOptions.map(s => ({
+      value: s.section_id,
+      label: s.section_title,
+      subtitle: s.year_term
+    })), [sectionOptions]
+  );
+
+  const caseSelectOptions: MultiSelectOption[] = useMemo(() =>
+    caseOptions.map(c => ({
+      value: c.case_id,
+      label: c.case_title
+    })), [caseOptions]
+  );
+
+  const statusSelectOptions: MultiSelectOption[] = useMemo(() =>
+    STATUS_OPTIONS.map(s => ({
+      value: s.value,
+      label: s.label
+    })), []
+  );
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center p-8">
@@ -186,29 +209,6 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
       </div>
     );
   }
-
-  // Convert options for MultiSelect
-  const sectionSelectOptions: MultiSelectOption[] = useMemo(() =>
-    sectionOptions.map(s => ({
-      value: s.section_id,
-      label: s.section_title,
-      subtitle: s.year_term
-    })), [sectionOptions]
-  );
-
-  const caseSelectOptions: MultiSelectOption[] = useMemo(() =>
-    caseOptions.map(c => ({
-      value: c.case_id,
-      label: c.case_title
-    })), [caseOptions]
-  );
-
-  const statusSelectOptions: MultiSelectOption[] = useMemo(() =>
-    STATUS_OPTIONS.map(s => ({
-      value: s.value,
-      label: s.label
-    })), []
-  );
 
   if (!analyticsData || analyticsData.summary.total_chats_with_positions === 0) {
     return (
