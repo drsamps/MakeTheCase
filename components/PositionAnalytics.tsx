@@ -595,13 +595,15 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
       {activeTab === 'scoreByPosition' && (
         <div className="space-y-6">
           {scoreDistributionData && (
-            <div className="space-y-6">
-              {Object.keys(scoreDistributionData.by_position).length === 0 ? (
-                <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
+            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+              {Object.keys(scoreDistributionData.by_position).filter(name => name && name.toLowerCase() !== 'null').length === 0 ? (
+                <div className="bg-white p-4 rounded-lg shadow border border-gray-200 col-span-full">
                   <p className="text-gray-500 text-sm">No score distribution data available</p>
                 </div>
               ) : (
-                Object.entries(scoreDistributionData.by_position).map(([positionName, data]) => {
+                Object.entries(scoreDistributionData.by_position)
+                  .filter(([positionName]) => positionName && positionName.toLowerCase() !== 'null')
+                  .map(([positionName, data]) => {
                   // Calculate statistics
                   const allScores = data.scores.flatMap((score: number, idx: number) =>
                     Array(data.counts[idx]).fill(score)
@@ -744,75 +746,75 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
           )}
 
           {/* Transition Matrix */}
-          {analyticsData?.change_matrix && Object.keys(analyticsData.change_matrix).length > 0 && (
-                <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
-                  <h3 className="font-semibold text-lg mb-3">Position Transition Matrix</h3>
-                  <p className="text-sm text-gray-600 mb-3">
-                    Shows how students moved from initial to final positions
-                  </p>
+          {change_matrix && Object.keys(change_matrix).length > 0 && (
+            <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
+              <h3 className="font-semibold text-lg mb-3">Position Transition Matrix</h3>
+              <p className="text-sm text-gray-600 mb-3">
+                Shows how students moved from initial to final positions
+              </p>
 
-                  <div className="overflow-x-auto">
-                    <table className="table-auto border-collapse w-full text-sm">
-                      <thead>
-                        <tr>
-                          <th className="border p-2 bg-gray-50"></th>
-                          <th colSpan={Object.keys(analyticsData.change_matrix).length} className="border p-2 bg-gray-100 font-semibold">
-                            Final Position
+              <div className="overflow-x-auto">
+                <table className="table-auto border-collapse w-full text-sm">
+                  <thead>
+                    <tr>
+                      <th className="border p-2 bg-gray-50"></th>
+                      <th colSpan={Object.keys(change_matrix).length} className="border p-2 bg-gray-100 font-semibold">
+                        Final Position
+                      </th>
+                    </tr>
+                    <tr>
+                      <th className="border p-2 bg-gray-100 font-semibold">Initial Position</th>
+                      {Object.keys(change_matrix).map(name => {
+                        // Calculate final position counts
+                        const finalCount = Object.values(change_matrix).reduce(
+                          (sum, finalPositions) => sum + ((finalPositions as Record<string, number>)[name] || 0),
+                          0
+                        );
+                        return (
+                          <th key={name} className="border p-2 bg-gray-100 text-center capitalize">
+                            {name}<br />
+                            <span className="text-xs font-normal text-gray-600">
+                              ({finalCount} std)
+                            </span>
                           </th>
-                        </tr>
-                        <tr>
-                          <th className="border p-2 bg-gray-100 font-semibold">Initial Position</th>
-                          {Object.keys(analyticsData.change_matrix).map(name => {
-                            // Calculate final position counts
-                            const finalCount = Object.values(analyticsData.change_matrix).reduce(
-                              (sum, finalPositions) => sum + (finalPositions[name] || 0),
-                              0
-                            );
+                        );
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(change_matrix).map(([initialPos, toPositions]) => {
+                      const initialCount = Object.values(toPositions).reduce((sum, count) => sum + count, 0);
+                      return (
+                        <tr key={initialPos}>
+                          <th className="border p-2 bg-gray-50 text-left capitalize">
+                            {initialPos}
+                            <span className="ml-2 text-xs font-normal text-gray-600">
+                              ({initialCount} students)
+                            </span>
+                          </th>
+                          {Object.keys(change_matrix).map(finalPos => {
+                            const count = toPositions[finalPos] || 0;
+                            const isUnchanged = initialPos === finalPos;
+
                             return (
-                              <th key={name} className="border p-2 bg-gray-100 text-center capitalize">
-                                {name}<br />
-                                <span className="text-xs font-normal text-gray-600">
-                                  ({finalCount} std)
-                                </span>
-                              </th>
+                              <td
+                                key={finalPos}
+                                className={`border p-2 text-center ${
+                                  isUnchanged ? 'bg-gray-100 font-semibold' : ''
+                                }`}
+                              >
+                                {count}
+                              </td>
                             );
                           })}
                         </tr>
-                      </thead>
-                      <tbody>
-                        {Object.entries(analyticsData.change_matrix).map(([initialPos, toPositions]) => {
-                          const initialCount = Object.values(toPositions).reduce((sum, count) => sum + count, 0);
-                          return (
-                            <tr key={initialPos}>
-                              <th className="border p-2 bg-gray-50 text-left capitalize">
-                                {initialPos}
-                                <span className="ml-2 text-xs font-normal text-gray-600">
-                                  ({initialCount} students)
-                                </span>
-                              </th>
-                              {Object.keys(analyticsData.change_matrix).map(finalPos => {
-                                const count = toPositions[finalPos] || 0;
-                                const isUnchanged = initialPos === finalPos;
-
-                                return (
-                                  <td
-                                    key={finalPos}
-                                    className={`border p-2 text-center ${
-                                      isUnchanged ? 'bg-gray-100 font-semibold' : ''
-                                    }`}
-                                  >
-                                    {count}
-                                  </td>
-                                );
-                              })}
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
