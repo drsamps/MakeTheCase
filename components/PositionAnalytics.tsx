@@ -96,10 +96,10 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
   const [correlationData, setCorrelationData] = useState<CorrelationData | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'correlation'>('overview');
-  const [correlationSubTab, setCorrelationSubTab] = useState<'scores' | 'changes'>('scores');
+  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'scoreByPosition' | 'positionChanges'>('overview');
   const [scoreDistributionData, setScoreDistributionData] = useState<ScoreDistributionData | null>(null);
   const [maxScore, setMaxScore] = useState<number>(15);
+  const [summaryExpanded, setSummaryExpanded] = useState<boolean>(true);
 
   // Filter options (populated from API)
   const [sectionOptions, setSectionOptions] = useState<FilterOption[]>([]);
@@ -223,10 +223,10 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
   }, [fetchData, sectionOptions.length, caseOptions.length]);
 
   useEffect(() => {
-    if (activeTab === 'correlation' && correlationSubTab === 'scores') {
+    if (activeTab === 'scoreByPosition') {
       fetchScoreDistribution();
     }
-  }, [activeTab, correlationSubTab, fetchScoreDistribution]);
+  }, [activeTab, fetchScoreDistribution]);
 
   // Convert options for MultiSelect - MUST be before any conditional returns (Rules of Hooks)
   const sectionSelectOptions: MultiSelectOption[] = useMemo(() =>
@@ -362,24 +362,44 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
           </div>
         </div>
       </div>
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
-          <p className="text-sm text-gray-500">Total Chats</p>
-          <p className="text-2xl font-bold text-gray-900">{summary.total_chats}</p>
-        </div>
-        <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
-          <p className="text-sm text-gray-500">With Positions</p>
-          <p className="text-2xl font-bold text-blue-600">{summary.total_chats_with_positions}</p>
-        </div>
-        <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
-          <p className="text-sm text-gray-500">Position Changes</p>
-          <p className="text-2xl font-bold text-green-600">{summary.total_position_changes}</p>
-        </div>
-        <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
-          <p className="text-sm text-gray-500">Change Rate</p>
-          <p className="text-2xl font-bold text-purple-600">{summary.change_rate}%</p>
-        </div>
+      {/* Summary Cards - Collapsible */}
+      <div className="bg-white rounded-lg shadow border border-gray-200">
+        <button
+          onClick={() => setSummaryExpanded(!summaryExpanded)}
+          className="w-full px-5 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+        >
+          <h3 className="font-semibold text-gray-900">Summary Statistics</h3>
+          <svg
+            className={`w-5 h-5 text-gray-500 transition-transform ${summaryExpanded ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        {summaryExpanded && (
+          <div className="px-5 pb-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <p className="text-sm text-gray-500">Total Chats</p>
+                <p className="text-2xl font-bold text-gray-900">{summary.total_chats}</p>
+              </div>
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <p className="text-sm text-gray-500">With Positions</p>
+                <p className="text-2xl font-bold text-blue-600">{summary.total_chats_with_positions}</p>
+              </div>
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <p className="text-sm text-gray-500">Position Changes</p>
+                <p className="text-2xl font-bold text-green-600">{summary.total_position_changes}</p>
+              </div>
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <p className="text-sm text-gray-500">Change Rate</p>
+                <p className="text-2xl font-bold text-purple-600">{summary.change_rate}%</p>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Tabs */}
@@ -388,7 +408,8 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
           {[
             { id: 'overview', label: 'Overview' },
             { id: 'students', label: 'Students' },
-            { id: 'correlation', label: 'Score Correlation' }
+            { id: 'scoreByPosition', label: 'Score by Position' },
+            { id: 'positionChanges', label: 'Position Changes' }
           ].map(tab => (
             <button
               key={tab.id}
@@ -571,36 +592,9 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
         </div>
       )}
 
-      {activeTab === 'correlation' && (
+      {activeTab === 'scoreByPosition' && (
         <div className="space-y-6">
-          {/* Sub-tab Navigation */}
-          <div className="mt-2 pb-2 border-b border-gray-200">
-            <div className="flex space-x-2">
-              <button
-                onClick={() => setCorrelationSubTab('scores')}
-                className={`px-3 py-1.5 text-xs rounded ${
-                  correlationSubTab === 'scores'
-                    ? 'bg-blue-100 text-blue-700'
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                Score by Position
-              </button>
-              <button
-                onClick={() => setCorrelationSubTab('changes')}
-                className={`px-3 py-1.5 text-xs rounded ${
-                  correlationSubTab === 'changes'
-                    ? 'bg-blue-100 text-blue-700'
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                Position Changes
-              </button>
-            </div>
-          </div>
-
-          {/* Score by Position Sub-tab */}
-          {correlationSubTab === 'scores' && scoreDistributionData && (
+          {scoreDistributionData && (
             <div className="space-y-6">
               {Object.keys(scoreDistributionData.by_position).length === 0 ? (
                 <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
@@ -665,10 +659,12 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
             </div>
           )}
 
-          {/* Position Changes Sub-tab */}
-          {correlationSubTab === 'changes' && correlationData && (
-            <div className="space-y-6">
-              {/* Keep existing: Score Changed vs Unchanged cards */}
+        </div>
+      )}
+
+      {activeTab === 'positionChanges' && correlationData && (
+        <div className="space-y-6">
+          {/* Score Changed vs Unchanged cards and Transition Matrix */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
                   <h3 className="font-semibold text-gray-900 mb-4">Score: Changed vs Unchanged Position</h3>
@@ -815,8 +811,6 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
                   </div>
                 </div>
               )}
-            </div>
-          )}
         </div>
       )}
     </div>

@@ -741,7 +741,7 @@ router.get('/positions/score-distribution', verifyToken, requireRole(['admin']),
        LEFT JOIN scenario_positions sp ON cc.final_position_id = sp.position_id
        WHERE ${whereClause}
          AND e.score IS NOT NULL
-       GROUP BY position_name, e.score
+       GROUP BY cc.final_position, sp.position_name, e.score
        ORDER BY position_name, e.score`,
       params
     );
