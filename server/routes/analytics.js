@@ -478,14 +478,13 @@ router.get('/positions', verifyToken, requireRole(['admin']), async (req, res) =
     const [changeRows] = await pool.execute(
       `SELECT
         COALESCE(cc.initial_position, sp_init.position_name) as from_position,
-        COALESCE(cc.final_position, sp_final.position_name) as to_position,
+        COALESCE(cc.final_position, sp_final.position_name, 'Unspecified') as to_position,
         COUNT(*) as count
        FROM case_chats cc
        LEFT JOIN scenario_positions sp_init ON cc.initial_position_id = sp_init.position_id
        LEFT JOIN scenario_positions sp_final ON cc.final_position_id = sp_final.position_id
        WHERE ${whereClause}
          AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
-         AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
        GROUP BY cc.initial_position, sp_init.position_name, cc.final_position, sp_final.position_name`,
       params
     );
@@ -628,6 +627,8 @@ router.get('/positions/correlation', verifyToken, requireRole(['admin']), async 
     const [changeScoreRows] = await pool.execute(
       `SELECT
         CASE
+          WHEN (cc.final_position IS NULL AND cc.final_position_id IS NULL)
+          THEN 'unspecified'
           WHEN (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
            AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
            AND (cc.initial_position != cc.final_position OR cc.initial_position_id != cc.final_position_id)
@@ -641,8 +642,10 @@ router.get('/positions/correlation', verifyToken, requireRole(['admin']), async 
        WHERE ${whereClause}
          AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL
               OR cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
-       GROUP BY 
+       GROUP BY
         CASE
+          WHEN (cc.final_position IS NULL AND cc.final_position_id IS NULL)
+          THEN 'unspecified'
           WHEN (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
            AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
            AND (cc.initial_position != cc.final_position OR cc.initial_position_id != cc.final_position_id)
@@ -656,13 +659,18 @@ router.get('/positions/correlation', verifyToken, requireRole(['admin']), async 
       changed_avg_score: null,
       changed_count: 0,
       unchanged_avg_score: null,
-      unchanged_count: 0
+      unchanged_count: 0,
+      unspecified_avg_score: null,
+      unspecified_count: 0
     };
 
     for (const row of changeScoreRows) {
       if (row.change_status === 'changed') {
         changeScoreCorrelation.changed_avg_score = row.avg_score != null ? parseFloat(Number(row.avg_score).toFixed(1)) : null;
         changeScoreCorrelation.changed_count = row.count;
+      } else if (row.change_status === 'unspecified') {
+        changeScoreCorrelation.unspecified_avg_score = row.avg_score != null ? parseFloat(Number(row.avg_score).toFixed(1)) : null;
+        changeScoreCorrelation.unspecified_count = row.count;
       } else {
         changeScoreCorrelation.unchanged_avg_score = row.avg_score != null ? parseFloat(Number(row.avg_score).toFixed(1)) : null;
         changeScoreCorrelation.unchanged_count = row.count;

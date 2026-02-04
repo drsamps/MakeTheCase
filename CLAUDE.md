@@ -18,6 +18,29 @@ npm run create-admin   # Create admin: node server/scripts/create-admin.js email
 npm run seed-malawis   # Seed sample case data
 ```
 
+### Windows Shell Commands - NUL Device Note
+
+**IMPORTANT:** On Windows, when using commands like `timeout /t 5 >nul`, the `>nul` redirects output to the NUL device (equivalent to `/dev/null` on Unix). This should NOT create an actual file.
+
+**However**, if a command fails or syntax is incorrect, it may create an actual `nul` file in the current directory that needs manual deletion.
+
+**Correct Windows timeout syntax:**
+```powershell
+timeout /t 5 >nul 2>&1      # Windows CMD/PowerShell
+```
+
+**For Bash/Git Bash/WSL:**
+```bash
+sleep 5                      # Use sleep instead
+```
+
+**To avoid creating a `nul` file:**
+- Use correct command syntax (e.g., `timeout /t 5` not `timeout -t 5`)
+- If using Bash shells within Windows, use `sleep` instead of `timeout`
+- If a `nul` file appears, delete it manually: `del nul` in CMD or `rm nul` in Bash
+
+The `>nul` redirection itself is safe and correct; file creation only happens when commands have syntax errors or fail to parse properly.
+
 ## Architecture
 
 ### Full-Stack Structure

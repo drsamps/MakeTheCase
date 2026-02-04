@@ -64,6 +64,8 @@ interface ChangeScoreCorrelation {
   changed_count: number;
   unchanged_avg_score: number | null;
   unchanged_count: number;
+  unspecified_avg_score: number | null;
+  unspecified_count: number;
 }
 
 interface AnalyticsData {
@@ -99,7 +101,8 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
   const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'scoreByPosition' | 'positionChanges'>('overview');
   const [scoreDistributionData, setScoreDistributionData] = useState<ScoreDistributionData | null>(null);
   const [maxScore, setMaxScore] = useState<number>(15);
-  const [summaryExpanded, setSummaryExpanded] = useState<boolean>(true);
+  const [summaryExpanded, setSummaryExpanded] = useState<boolean>(false);
+  const [excludedScores, setExcludedScores] = useState<Record<string, Set<number>>>({});
 
   // Filter options (populated from API)
   const [sectionOptions, setSectionOptions] = useState<FilterOption[]>([]);
@@ -329,7 +332,7 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
     <div className="space-y-6">
       {/* Filters */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
-        <div className="flex flex-wrap gap-4">
+        <div className="flex flex-wrap gap-4 items-end">
           <div className="min-w-56">
             <label className="block text-xs font-medium text-gray-700 mb-1">Course Sections</label>
             <MultiSelect
@@ -360,47 +363,44 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
               allLabel="All Statuses"
             />
           </div>
+          <div className="flex items-center gap-2 pb-2">
+            <input
+              type="checkbox"
+              id="showSummary"
+              checked={summaryExpanded}
+              onChange={(e) => setSummaryExpanded(e.target.checked)}
+              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="showSummary" className="text-sm text-gray-700 cursor-pointer">
+              Show Summary Statistics
+            </label>
+          </div>
         </div>
       </div>
-      {/* Summary Cards - Collapsible */}
-      <div className="bg-white rounded-lg shadow border border-gray-200">
-        <button
-          onClick={() => setSummaryExpanded(!summaryExpanded)}
-          className="w-full px-5 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
-        >
-          <h3 className="font-semibold text-gray-900">Summary Statistics</h3>
-          <svg
-            className={`w-5 h-5 text-gray-500 transition-transform ${summaryExpanded ? 'rotate-180' : ''}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
-        {summaryExpanded && (
-          <div className="px-5 pb-4">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="bg-gray-50 p-4 rounded-lg">
-                <p className="text-sm text-gray-500">Total Chats</p>
-                <p className="text-2xl font-bold text-gray-900">{summary.total_chats}</p>
-              </div>
-              <div className="bg-gray-50 p-4 rounded-lg">
-                <p className="text-sm text-gray-500">With Positions</p>
-                <p className="text-2xl font-bold text-blue-600">{summary.total_chats_with_positions}</p>
-              </div>
-              <div className="bg-gray-50 p-4 rounded-lg">
-                <p className="text-sm text-gray-500">Position Changes</p>
-                <p className="text-2xl font-bold text-green-600">{summary.total_position_changes}</p>
-              </div>
-              <div className="bg-gray-50 p-4 rounded-lg">
-                <p className="text-sm text-gray-500">Change Rate</p>
-                <p className="text-2xl font-bold text-purple-600">{summary.change_rate}%</p>
-              </div>
+
+      {/* Summary Cards */}
+      {summaryExpanded && (
+        <div className="bg-white rounded-lg shadow border border-gray-200 p-5">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <p className="text-sm text-gray-500">Total Chats</p>
+              <p className="text-2xl font-bold text-gray-900">{summary.total_chats}</p>
+            </div>
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <p className="text-sm text-gray-500">With Positions</p>
+              <p className="text-2xl font-bold text-blue-600">{summary.total_chats_with_positions}</p>
+            </div>
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <p className="text-sm text-gray-500">Position Changes</p>
+              <p className="text-2xl font-bold text-green-600">{summary.total_position_changes}</p>
+            </div>
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <p className="text-sm text-gray-500">Change Rate</p>
+              <p className="text-2xl font-bold text-purple-600">{summary.change_rate}%</p>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="border-b border-gray-200">
@@ -604,17 +604,44 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
                 Object.entries(scoreDistributionData.by_position)
                   .filter(([positionName]) => positionName && positionName.toLowerCase() !== 'null')
                   .map(([positionName, data]) => {
-                  // Calculate statistics
+                  // Get excluded scores for this position
+                  const positionExcluded = excludedScores[positionName] || new Set<number>();
+
+                  // Toggle function
+                  const toggleScore = (score: number) => {
+                    setExcludedScores(prev => {
+                      const newExcluded = { ...prev };
+                      if (!newExcluded[positionName]) {
+                        newExcluded[positionName] = new Set<number>();
+                      } else {
+                        newExcluded[positionName] = new Set(newExcluded[positionName]);
+                      }
+
+                      if (newExcluded[positionName].has(score)) {
+                        newExcluded[positionName].delete(score);
+                      } else {
+                        newExcluded[positionName].add(score);
+                      }
+
+                      return newExcluded;
+                    });
+                  };
+
+                  // Calculate statistics excluding toggled scores
                   const allScores = data.scores.flatMap((score: number, idx: number) =>
                     Array(data.counts[idx]).fill(score)
                   );
+                  const includedScores = allScores.filter(s => !positionExcluded.has(s));
                   const totalCount = allScores.length;
-                  const avgScore = allScores.reduce((sum: number, s: number) => sum + s, 0) / totalCount;
+                  const includedCount = includedScores.length;
+                  const avgScore = includedCount > 0
+                    ? includedScores.reduce((sum: number, s: number) => sum + s, 0) / includedCount
+                    : 0;
 
-                  // Calculate standard deviation (if 3+ students)
+                  // Calculate standard deviation (if 3+ included students)
                   let stdDev = 'N/A';
-                  if (totalCount >= 3) {
-                    const variance = allScores.reduce((sum: number, s: number) => sum + Math.pow(s - avgScore, 2), 0) / totalCount;
+                  if (includedCount >= 3) {
+                    const variance = includedScores.reduce((sum: number, s: number) => sum + Math.pow(s - avgScore, 2), 0) / includedCount;
                     stdDev = Math.sqrt(variance).toFixed(2);
                   }
 
@@ -630,35 +657,46 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
                     <div key={positionName} className="bg-white p-4 rounded-lg shadow border border-gray-200">
                       <h4 className="font-semibold text-lg mb-2 capitalize">{positionName}</h4>
                       <div className="text-sm text-gray-600 mb-3">
-                        <span className="mr-4">{totalCount} students</span>
-                        <span className="mr-4">Avg: {avgScore.toFixed(1)}</span>
-                        <span>StdDev: {stdDev}</span>
+                        <span className="mr-4"><span className="font-bold">{includedCount}</span> students{includedCount !== totalCount && ` (`}<span className="font-bold">{includedCount !== totalCount && (totalCount - includedCount)}</span>{includedCount !== totalCount && ` excluded)`}</span>
+                        <span className="mr-4">Avg: <span className="font-bold">{avgScore.toFixed(1)}</span></span>
+                        <span>StdDev: <span className="font-bold">{stdDev}</span></span>
                       </div>
 
                       <div className="space-y-1 font-mono text-xs">
-                        {histogram.map((count, score) => (
-                          <div key={score} className="flex items-center">
-                            <span className="w-8 text-right mr-2">{score}</span>
-                            <span className="mr-2">|</span>
-                            <div className="flex-1 flex items-center">
-                              {count > 0 && (
-                                <>
-                                  <div
-                                    className="bg-blue-600 h-4 mr-2"
-                                    style={{ width: `${(count / maxCount) * 100}%` }}
-                                  />
-                                  <span>{count}</span>
-                                </>
-                              )}
+                        {histogram.map((count, score) => {
+                          const isExcluded = positionExcluded.has(score);
+                          return (
+                            <div key={score} className="flex items-center">
+                              <span className="w-8 text-right mr-2">{score}</span>
+                              <span className="mr-2">|</span>
+                              <div className="flex-1 flex items-center">
+                                {count > 0 && (
+                                  <>
+                                    <div
+                                      onClick={() => toggleScore(score)}
+                                      className={`h-4 mr-2 cursor-pointer transition-opacity ${
+                                        isExcluded ? 'bg-blue-300 opacity-30' : 'bg-blue-600'
+                                      }`}
+                                      style={{ width: `${(count / maxCount) * 100}%` }}
+                                      title={isExcluded ? 'Click to include in statistics' : 'Click to exclude from statistics'}
+                                    />
+                                    <span className={isExcluded ? 'text-gray-400' : ''}>{count}</span>
+                                  </>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   );
                 })
               )}
             </div>
+          )}
+
+          {scoreDistributionData && Object.keys(scoreDistributionData.by_position).filter(name => name && name.toLowerCase() !== 'null').length > 0 && (
+            <p className="text-xs text-gray-500 italic">Click a bar to exclude from statistics</p>
           )}
 
         </div>
@@ -671,53 +709,38 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
                   <h3 className="font-semibold text-gray-900 mb-4">Score: Changed vs Unchanged Position</h3>
-                  <div className="space-y-4">
-                    <div className="p-4 bg-green-50 rounded-lg border border-green-200">
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <p className="font-medium text-green-800">Position Changed</p>
-                          <p className="text-sm text-green-600">
-                            {correlationData.change_score_correlation.changed_count} students
-                          </p>
-                        </div>
-                        <p className="text-3xl font-bold text-green-700">
-                          {correlationData.change_score_correlation.changed_avg_score ?? '-'}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <p className="font-medium text-gray-800">Position Unchanged</p>
-                          <p className="text-sm text-gray-600">
-                            {correlationData.change_score_correlation.unchanged_count} students
-                          </p>
-                        </div>
-                        <p className="text-3xl font-bold text-gray-700">
-                          {correlationData.change_score_correlation.unchanged_avg_score ?? '-'}
-                        </p>
-                      </div>
-                    </div>
-                    {correlationData.change_score_correlation.changed_avg_score !== null &&
-                     correlationData.change_score_correlation.unchanged_avg_score !== null && (
-                      <p className="text-sm text-gray-600 italic">
-                        Students who changed their position scored{' '}
-                        {correlationData.change_score_correlation.changed_avg_score >
-                         correlationData.change_score_correlation.unchanged_avg_score
-                          ? 'higher'
-                          : correlationData.change_score_correlation.changed_avg_score <
-                            correlationData.change_score_correlation.unchanged_avg_score
-                          ? 'lower'
-                          : 'the same'}{' '}
-                        on average.
-                      </p>
-                    )}
-                  </div>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left py-2"></th>
+                        <th className="text-center py-2">Students</th>
+                        <th className="text-center py-2">Average Score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr className="border-b">
+                        <td className="py-2 font-medium">Position Changed</td>
+                        <td className="py-2 text-center">{correlationData.change_score_correlation.changed_count}</td>
+                        <td className="py-2 text-center font-semibold">{correlationData.change_score_correlation.changed_avg_score ?? '-'}</td>
+                      </tr>
+                      <tr className="border-b">
+                        <td className="py-2 font-medium">Position Unchanged</td>
+                        <td className="py-2 text-center">{correlationData.change_score_correlation.unchanged_count}</td>
+                        <td className="py-2 text-center font-semibold">{correlationData.change_score_correlation.unchanged_avg_score ?? '-'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-2 font-medium">Final Position Unspecified</td>
+                        <td className="py-2 text-center">{correlationData.change_score_correlation.unspecified_count}</td>
+                        <td className="py-2 text-center font-semibold">{correlationData.change_score_correlation.unspecified_avg_score ?? '-'}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
 
                 {/* Average Score by Final Position (kept for reference) */}
                 <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
-                  <h3 className="font-semibold text-gray-900 mb-4">Average Score by Final Position</h3>
+                  <h3 className="font-semibold text-gray-900 mb-1">Average Score by Final Position</h3>
+                  <p className="text-xs text-gray-500 mb-4">(or by Initial Position if Final Position unspecified)</p>
                   {correlationData.position_score_correlation.length === 0 ? (
                     <p className="text-gray-500 text-sm">No score data available</p>
                   ) : (
@@ -746,7 +769,7 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
           )}
 
           {/* Transition Matrix */}
-          {change_matrix && Object.keys(change_matrix).length > 0 && (
+          {change_matrix && Object.keys(change_matrix).length > 0 ? (
             <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
               <h3 className="font-semibold text-lg mb-3">Position Transition Matrix</h3>
               <p className="text-sm text-gray-600 mb-3">
@@ -754,45 +777,60 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
               </p>
 
               <div className="overflow-x-auto">
-                <table className="table-auto border-collapse w-full text-sm">
+                <table className="table-auto border-collapse text-sm">
                   <thead>
                     <tr>
                       <th className="border p-2 bg-gray-50"></th>
-                      <th colSpan={Object.keys(change_matrix).length} className="border p-2 bg-gray-100 font-semibold">
+                      <th colSpan={(() => {
+                        // Get all position names from by_position and add "Unspecified"
+                        const allPositions = by_position.map(p => p.position_name);
+                        allPositions.push('Unspecified');
+                        return allPositions.length;
+                      })()} className="border p-2 bg-gray-100 font-semibold underline">
                         Final Position
                       </th>
                     </tr>
                     <tr>
-                      <th className="border p-2 bg-gray-100 font-semibold">Initial Position</th>
-                      {Object.keys(change_matrix).map(name => {
-                        // Calculate final position counts
-                        const finalCount = Object.values(change_matrix).reduce(
-                          (sum, finalPositions) => sum + ((finalPositions as Record<string, number>)[name] || 0),
-                          0
-                        );
-                        return (
-                          <th key={name} className="border p-2 bg-gray-100 text-center capitalize">
-                            {name}<br />
-                            <span className="text-xs font-normal text-gray-600">
-                              ({finalCount} std)
-                            </span>
-                          </th>
-                        );
-                      })}
+                      <th className="border p-2 bg-gray-100 font-semibold underline">Initial Position</th>
+                      {(() => {
+                        // Get all position names from by_position and add "Unspecified"
+                        const allPositions = by_position.map(p => p.position_name);
+                        allPositions.push('Unspecified');
+
+                        return allPositions.map(name => {
+                          // Calculate final position counts
+                          const finalCount = Object.values(change_matrix).reduce(
+                            (sum, finalPositions) => sum + ((finalPositions as Record<string, number>)[name] || 0),
+                            0
+                          );
+                          return (
+                            <th key={name} className="border p-2 bg-gray-100 text-center capitalize">
+                              {name}<br />
+                              <span className="text-xs font-normal text-gray-600">
+                                ({finalCount} students)
+                              </span>
+                            </th>
+                          );
+                        });
+                      })()}
                     </tr>
                   </thead>
                   <tbody>
                     {Object.entries(change_matrix).map(([initialPos, toPositions]) => {
                       const initialCount = Object.values(toPositions).reduce((sum, count) => sum + count, 0);
+                      // Get all position names from by_position and add "Unspecified"
+                      const allPositions = by_position.map(p => p.position_name);
+                      allPositions.push('Unspecified');
+
                       return (
                         <tr key={initialPos}>
                           <th className="border p-2 bg-gray-50 text-left capitalize">
                             {initialPos}
                             <span className="ml-2 text-xs font-normal text-gray-600">
-                              ({initialCount} students)
+                              ({initialCount} std)
                             </span>
                           </th>
-                          {Object.keys(change_matrix).map(finalPos => {
+                          {allPositions.map(finalPos => {
                             const count = toPositions[finalPos] || 0;
                             const isUnchanged = initialPos === finalPos;
 
@@ -813,6 +851,13 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
                   </tbody>
                 </table>
               </div>
+            </div>
+          ) : (
+            <div className="bg-yellow-50 p-4 rounded-lg border border-yellow-200">
+              <p className="text-yellow-700 text-sm">
+                Debug: change_matrix exists: {change_matrix ? 'yes' : 'no'},
+                keys: {change_matrix ? Object.keys(change_matrix).length : 0}
+              </p>
             </div>
           )}
         </div>
