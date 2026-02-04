@@ -76,6 +76,44 @@ Example migration sequence:
 # ... continue with numbered migrations in order
 ```
 
+### MySQL Configuration - ONLY_FULL_GROUP_BY Mode
+
+**CRITICAL:** This MySQL instance has `ONLY_FULL_GROUP_BY` enabled in `sql_mode`. When writing queries, follow these rules:
+
+1. **GROUP BY with COALESCE/aliases:**
+   - ❌ WRONG: `GROUP BY position_name` (using alias)
+   - ✅ CORRECT: `GROUP BY cc.final_position, sp.position_name, cc.initial_position` (all columns in COALESCE)
+
+2. **Example:**
+```sql
+-- WRONG - Will fail with ER_WRONG_FIELD_WITH_GROUP error
+SELECT COALESCE(cc.final_position, sp.position_name) as position_name, COUNT(*)
+FROM case_chats cc
+LEFT JOIN scenario_positions sp ON cc.final_position_id = sp.position_id
+GROUP BY position_name;  -- ❌ Can't group by alias
+
+-- CORRECT - Groups by actual columns
+SELECT COALESCE(cc.final_position, sp.position_name) as position_name, COUNT(*)
+FROM case_chats cc
+LEFT JOIN scenario_positions sp ON cc.final_position_id = sp.position_id
+GROUP BY cc.final_position, sp.position_name;  -- ✅ Groups by all columns in COALESCE
+```
+
+3. **Why this matters:**
+   - MySQL's `ONLY_FULL_GROUP_BY` enforces strict SQL standard compliance
+   - All non-aggregated columns in SELECT must be in GROUP BY
+   - When using `COALESCE()` or functions, include all component columns in GROUP BY
+   - Cannot use column aliases in GROUP BY clause - must use actual column references
+
+4. **ORDER BY can still use aliases** (unlike GROUP BY):
+```sql
+-- This is OK
+SELECT COALESCE(cc.final_position, sp.position_name) as position_name
+FROM ...
+GROUP BY cc.final_position, sp.position_name
+ORDER BY position_name;  -- ✅ ORDER BY can use alias
+```
+
 ## Key Architectural Patterns
 
 ### Persona System

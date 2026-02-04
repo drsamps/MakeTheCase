@@ -733,7 +733,7 @@ router.get('/positions/score-distribution', verifyToken, requireRole(['admin']),
     // Get score distribution by position
     const [rows] = await pool.execute(
       `SELECT
-        COALESCE(cc.final_position, sp.position_name) as position_name,
+        COALESCE(cc.final_position, sp.position_name, cc.initial_position) as position_name,
         e.score,
         COUNT(*) as count
        FROM case_chats cc
@@ -741,7 +741,7 @@ router.get('/positions/score-distribution', verifyToken, requireRole(['admin']),
        LEFT JOIN scenario_positions sp ON cc.final_position_id = sp.position_id
        WHERE ${whereClause}
          AND e.score IS NOT NULL
-       GROUP BY cc.final_position, sp.position_name, e.score
+       GROUP BY cc.final_position, sp.position_name, cc.initial_position, e.score
        ORDER BY position_name, e.score`,
       params
     );

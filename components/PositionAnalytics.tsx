@@ -662,9 +662,10 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
         </div>
       )}
 
-      {activeTab === 'positionChanges' && correlationData && (
+      {activeTab === 'positionChanges' && (
         <div className="space-y-6">
           {/* Score Changed vs Unchanged cards and Transition Matrix */}
+          {correlationData && (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
                   <h3 className="font-semibold text-gray-900 mb-4">Score: Changed vs Unchanged Position</h3>
@@ -740,9 +741,10 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
                   )}
                 </div>
               </div>
+          )}
 
-              {/* Add: Transition Matrix */}
-              {analyticsData?.change_matrix && Object.keys(analyticsData.change_matrix).length > 0 && (
+          {/* Transition Matrix */}
+          {analyticsData?.change_matrix && Object.keys(analyticsData.change_matrix).length > 0 && (
                 <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
                   <h3 className="font-semibold text-lg mb-3">Position Transition Matrix</h3>
                   <p className="text-sm text-gray-600 mb-3">
