@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../services/apiClient';
 import MultiSelect, { MultiSelectOption } from './ui/MultiSelect';
+import { getApiBaseUrl } from '../services/apiClient';
 
 interface PositionAnalyticsProps {
   sectionId?: string;
@@ -75,6 +76,15 @@ interface AnalyticsData {
 interface CorrelationData {
   position_score_correlation: PositionScoreCorrelation[];
   change_score_correlation: ChangeScoreCorrelation;
+  max_score?: number;
+}
+
+interface ScoreDistributionData {
+  by_position: Record<string, {
+    scores: number[];
+    counts: number[];
+  }>;
+  max_score: number;
 }
 
 const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
@@ -87,6 +97,9 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
   const [correlationData, setCorrelationData] = useState<CorrelationData | null>(null);
   const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'correlation'>('overview');
+  const [correlationSubTab, setCorrelationSubTab] = useState<'scores' | 'changes'>('scores');
+  const [scoreDistributionData, setScoreDistributionData] = useState<ScoreDistributionData | null>(null);
+  const [maxScore, setMaxScore] = useState<number>(15);
 
   // Filter options (populated from API)
   const [sectionOptions, setSectionOptions] = useState<FilterOption[]>([]);
@@ -149,6 +162,10 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
       }
       if (correlationRes.data) {
         setCorrelationData(correlationRes.data);
+        // Update max score from correlation data if available
+        if (correlationRes.data.max_score) {
+          setMaxScore(correlationRes.data.max_score);
+        }
       }
     } catch (err) {
       console.error('Error fetching position analytics:', err);
@@ -158,11 +175,58 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
     }
   }, [sectionId, caseId, scenarioId, selectedSections, selectedCases]);
 
+  const fetchScoreDistribution = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+
+      // Use filter selections if available, otherwise use props
+      if (!selectedSections.includes('all') && selectedSections.length > 0) {
+        params.append('section_id', selectedSections[0]);
+      } else if (sectionId) {
+        params.append('section_id', sectionId);
+      }
+
+      if (!selectedCases.includes('all') && selectedCases.length > 0) {
+        params.append('case_id', selectedCases[0]);
+      } else if (caseId) {
+        params.append('case_id', caseId);
+      }
+
+      if (scenarioId) params.append('scenario_id', String(scenarioId));
+
+      const queryString = params.toString();
+      const token = localStorage.getItem('admin_auth_token');
+
+      const response = await fetch(
+        `${getApiBaseUrl()}/analytics/positions/score-distribution${queryString ? `?${queryString}` : ''}`,
+        {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }
+      );
+
+      const result = await response.json();
+      if (result.data) {
+        setScoreDistributionData(result.data);
+        if (result.data.max_score) {
+          setMaxScore(result.data.max_score);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching score distribution:', error);
+    }
+  }, [sectionId, caseId, scenarioId, selectedSections, selectedCases]);
+
   useEffect(() => {
     if (sectionOptions.length > 0 || caseOptions.length > 0) {
       fetchData();
     }
   }, [fetchData, sectionOptions.length, caseOptions.length]);
+
+  useEffect(() => {
+    if (activeTab === 'correlation' && correlationSubTab === 'scores') {
+      fetchScoreDistribution();
+    }
+  }, [activeTab, correlationSubTab, fetchScoreDistribution]);
 
   // Convert options for MultiSelect - MUST be before any conditional returns (Rules of Hooks)
   const sectionSelectOptions: MultiSelectOption[] = useMemo(() =>
@@ -507,82 +571,252 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
         </div>
       )}
 
-      {activeTab === 'correlation' && correlationData && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Score by Position */}
-          <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
-            <h3 className="font-semibold text-gray-900 mb-4">Average Score by Final Position</h3>
-            {correlationData.position_score_correlation.length === 0 ? (
-              <p className="text-gray-500 text-sm">No score data available</p>
-            ) : (
-              <div className="space-y-3">
-                {correlationData.position_score_correlation.map((item, idx) => (
-                  <div key={idx} className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium capitalize">{item.position_name}</span>
-                      <span className="text-xs text-gray-500">({item.count} students)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-32 bg-gray-200 rounded-full h-2.5">
-                        <div
-                          className="bg-blue-600 h-2.5 rounded-full"
-                          style={{ width: `${(item.avg_score / 15) * 100}%` }}
-                        />
-                      </div>
-                      <span className="font-semibold text-sm w-10 text-right">{item.avg_score}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Changed vs Unchanged */}
-          <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
-            <h3 className="font-semibold text-gray-900 mb-4">Score: Changed vs Unchanged Position</h3>
-            <div className="space-y-4">
-              <div className="p-4 bg-green-50 rounded-lg border border-green-200">
-                <div className="flex justify-between items-center">
-                  <div>
-                    <p className="font-medium text-green-800">Position Changed</p>
-                    <p className="text-sm text-green-600">
-                      {correlationData.change_score_correlation.changed_count} students
-                    </p>
-                  </div>
-                  <p className="text-3xl font-bold text-green-700">
-                    {correlationData.change_score_correlation.changed_avg_score ?? '-'}
-                  </p>
-                </div>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                <div className="flex justify-between items-center">
-                  <div>
-                    <p className="font-medium text-gray-800">Position Unchanged</p>
-                    <p className="text-sm text-gray-600">
-                      {correlationData.change_score_correlation.unchanged_count} students
-                    </p>
-                  </div>
-                  <p className="text-3xl font-bold text-gray-700">
-                    {correlationData.change_score_correlation.unchanged_avg_score ?? '-'}
-                  </p>
-                </div>
-              </div>
-              {correlationData.change_score_correlation.changed_avg_score !== null &&
-               correlationData.change_score_correlation.unchanged_avg_score !== null && (
-                <p className="text-sm text-gray-600 italic">
-                  Students who changed their position scored{' '}
-                  {correlationData.change_score_correlation.changed_avg_score >
-                   correlationData.change_score_correlation.unchanged_avg_score
-                    ? 'higher'
-                    : correlationData.change_score_correlation.changed_avg_score <
-                      correlationData.change_score_correlation.unchanged_avg_score
-                    ? 'lower'
-                    : 'the same'}{' '}
-                  on average.
-                </p>
-              )}
+      {activeTab === 'correlation' && (
+        <div className="space-y-6">
+          {/* Sub-tab Navigation */}
+          <div className="mt-2 pb-2 border-b border-gray-200">
+            <div className="flex space-x-2">
+              <button
+                onClick={() => setCorrelationSubTab('scores')}
+                className={`px-3 py-1.5 text-xs rounded ${
+                  correlationSubTab === 'scores'
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Score by Position
+              </button>
+              <button
+                onClick={() => setCorrelationSubTab('changes')}
+                className={`px-3 py-1.5 text-xs rounded ${
+                  correlationSubTab === 'changes'
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Position Changes
+              </button>
             </div>
           </div>
+
+          {/* Score by Position Sub-tab */}
+          {correlationSubTab === 'scores' && scoreDistributionData && (
+            <div className="space-y-6">
+              {Object.keys(scoreDistributionData.by_position).length === 0 ? (
+                <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
+                  <p className="text-gray-500 text-sm">No score distribution data available</p>
+                </div>
+              ) : (
+                Object.entries(scoreDistributionData.by_position).map(([positionName, data]) => {
+                  // Calculate statistics
+                  const allScores = data.scores.flatMap((score: number, idx: number) =>
+                    Array(data.counts[idx]).fill(score)
+                  );
+                  const totalCount = allScores.length;
+                  const avgScore = allScores.reduce((sum: number, s: number) => sum + s, 0) / totalCount;
+
+                  // Calculate standard deviation (if 3+ students)
+                  let stdDev = 'N/A';
+                  if (totalCount >= 3) {
+                    const variance = allScores.reduce((sum: number, s: number) => sum + Math.pow(s - avgScore, 2), 0) / totalCount;
+                    stdDev = Math.sqrt(variance).toFixed(2);
+                  }
+
+                  // Build histogram array (0 to maxScore)
+                  const histogram = Array(maxScore + 1).fill(0);
+                  data.scores.forEach((score: number, idx: number) => {
+                    histogram[score] = data.counts[idx];
+                  });
+
+                  const maxCount = Math.max(...histogram);
+
+                  return (
+                    <div key={positionName} className="bg-white p-4 rounded-lg shadow border border-gray-200">
+                      <h4 className="font-semibold text-lg mb-2 capitalize">{positionName}</h4>
+                      <div className="text-sm text-gray-600 mb-3">
+                        <span className="mr-4">{totalCount} students</span>
+                        <span className="mr-4">Avg: {avgScore.toFixed(1)}</span>
+                        <span>StdDev: {stdDev}</span>
+                      </div>
+
+                      <div className="space-y-1 font-mono text-xs">
+                        {histogram.map((count, score) => (
+                          <div key={score} className="flex items-center">
+                            <span className="w-8 text-right mr-2">{score}</span>
+                            <span className="mr-2">|</span>
+                            <div className="flex-1 flex items-center">
+                              {count > 0 && (
+                                <>
+                                  <div
+                                    className="bg-blue-600 h-4 mr-2"
+                                    style={{ width: `${(count / maxCount) * 100}%` }}
+                                  />
+                                  <span>{count}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {/* Position Changes Sub-tab */}
+          {correlationSubTab === 'changes' && correlationData && (
+            <div className="space-y-6">
+              {/* Keep existing: Score Changed vs Unchanged cards */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
+                  <h3 className="font-semibold text-gray-900 mb-4">Score: Changed vs Unchanged Position</h3>
+                  <div className="space-y-4">
+                    <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <p className="font-medium text-green-800">Position Changed</p>
+                          <p className="text-sm text-green-600">
+                            {correlationData.change_score_correlation.changed_count} students
+                          </p>
+                        </div>
+                        <p className="text-3xl font-bold text-green-700">
+                          {correlationData.change_score_correlation.changed_avg_score ?? '-'}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <p className="font-medium text-gray-800">Position Unchanged</p>
+                          <p className="text-sm text-gray-600">
+                            {correlationData.change_score_correlation.unchanged_count} students
+                          </p>
+                        </div>
+                        <p className="text-3xl font-bold text-gray-700">
+                          {correlationData.change_score_correlation.unchanged_avg_score ?? '-'}
+                        </p>
+                      </div>
+                    </div>
+                    {correlationData.change_score_correlation.changed_avg_score !== null &&
+                     correlationData.change_score_correlation.unchanged_avg_score !== null && (
+                      <p className="text-sm text-gray-600 italic">
+                        Students who changed their position scored{' '}
+                        {correlationData.change_score_correlation.changed_avg_score >
+                         correlationData.change_score_correlation.unchanged_avg_score
+                          ? 'higher'
+                          : correlationData.change_score_correlation.changed_avg_score <
+                            correlationData.change_score_correlation.unchanged_avg_score
+                          ? 'lower'
+                          : 'the same'}{' '}
+                        on average.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Average Score by Final Position (kept for reference) */}
+                <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
+                  <h3 className="font-semibold text-gray-900 mb-4">Average Score by Final Position</h3>
+                  {correlationData.position_score_correlation.length === 0 ? (
+                    <p className="text-gray-500 text-sm">No score data available</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {correlationData.position_score_correlation.map((item, idx) => (
+                        <div key={idx} className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium capitalize">{item.position_name}</span>
+                            <span className="text-xs text-gray-500">({item.count} students)</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="w-32 bg-gray-200 rounded-full h-2.5">
+                              <div
+                                className="bg-blue-600 h-2.5 rounded-full"
+                                style={{ width: `${(item.avg_score / maxScore) * 100}%` }}
+                              />
+                            </div>
+                            <span className="font-semibold text-sm w-10 text-right">{item.avg_score}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Add: Transition Matrix */}
+              {analyticsData?.change_matrix && Object.keys(analyticsData.change_matrix).length > 0 && (
+                <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
+                  <h3 className="font-semibold text-lg mb-3">Position Transition Matrix</h3>
+                  <p className="text-sm text-gray-600 mb-3">
+                    Shows how students moved from initial to final positions
+                  </p>
+
+                  <div className="overflow-x-auto">
+                    <table className="table-auto border-collapse w-full text-sm">
+                      <thead>
+                        <tr>
+                          <th className="border p-2 bg-gray-50"></th>
+                          <th colSpan={Object.keys(analyticsData.change_matrix).length} className="border p-2 bg-gray-100 font-semibold">
+                            Final Position
+                          </th>
+                        </tr>
+                        <tr>
+                          <th className="border p-2 bg-gray-100 font-semibold">Initial Position</th>
+                          {Object.keys(analyticsData.change_matrix).map(name => {
+                            // Calculate final position counts
+                            const finalCount = Object.values(analyticsData.change_matrix).reduce(
+                              (sum, finalPositions) => sum + (finalPositions[name] || 0),
+                              0
+                            );
+                            return (
+                              <th key={name} className="border p-2 bg-gray-100 text-center capitalize">
+                                {name}<br />
+                                <span className="text-xs font-normal text-gray-600">
+                                  ({finalCount} std)
+                                </span>
+                              </th>
+                            );
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(analyticsData.change_matrix).map(([initialPos, toPositions]) => {
+                          const initialCount = Object.values(toPositions).reduce((sum, count) => sum + count, 0);
+                          return (
+                            <tr key={initialPos}>
+                              <th className="border p-2 bg-gray-50 text-left capitalize">
+                                {initialPos}
+                                <span className="ml-2 text-xs font-normal text-gray-600">
+                                  ({initialCount} students)
+                                </span>
+                              </th>
+                              {Object.keys(analyticsData.change_matrix).map(finalPos => {
+                                const count = toPositions[finalPos] || 0;
+                                const isUnchanged = initialPos === finalPos;
+
+                                return (
+                                  <td
+                                    key={finalPos}
+                                    className={`border p-2 text-center ${
+                                      isUnchanged ? 'bg-gray-100 font-semibold' : ''
+                                    }`}
+                                  >
+                                    {count}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

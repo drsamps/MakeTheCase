@@ -590,6 +590,17 @@ router.get('/positions/correlation', verifyToken, requireRole(['admin']), async 
 
     const whereClause = whereConditions.join(' AND ');
 
+    // Get max score from actual data (for dynamic rubric support)
+    const [maxScoreRows] = await pool.execute(
+      `SELECT MAX(e.score) as max_score
+       FROM case_chats cc
+       JOIN evaluations e ON e.case_chat_id = cc.id AND e.score IS NOT NULL
+       WHERE ${whereClause}`,
+      params
+    );
+
+    const maxScore = maxScoreRows[0]?.max_score || 15; // Default to 15 if no scores yet
+
     // Get average score by final position
     const [positionScoreRows] = await pool.execute(
       `SELECT
@@ -661,13 +672,102 @@ router.get('/positions/correlation', verifyToken, requireRole(['admin']), async 
     res.json({
       data: {
         position_score_correlation: positionScoreCorrelation,
-        change_score_correlation: changeScoreCorrelation
+        change_score_correlation: changeScoreCorrelation,
+        max_score: maxScore
       },
       error: null
     });
 
   } catch (error) {
     console.error('Error fetching position correlations:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+/**
+ * GET /api/analytics/positions/score-distribution
+ * Get score distribution by position for histogram visualization
+ *
+ * Query Parameters:
+ * - section_id: filter by section (optional)
+ * - case_id: filter by case (optional)
+ * - scenario_id: filter by scenario (optional)
+ */
+router.get('/positions/score-distribution', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { section_id, case_id, scenario_id } = req.query;
+
+    // Build WHERE clause
+    let whereConditions = ["cc.status = 'completed'"];
+    let params = [];
+
+    if (section_id) {
+      whereConditions.push('cc.section_id = ?');
+      params.push(section_id);
+    }
+
+    if (case_id) {
+      whereConditions.push('cc.case_id = ?');
+      params.push(case_id);
+    }
+
+    if (scenario_id) {
+      whereConditions.push('cc.scenario_id = ?');
+      params.push(scenario_id);
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    // Get max score for this dataset
+    const [maxScoreResult] = await pool.execute(
+      `SELECT MAX(e.score) as max_score
+       FROM case_chats cc
+       JOIN evaluations e ON e.case_chat_id = cc.id
+       WHERE ${whereClause}
+         AND e.score IS NOT NULL`,
+      params
+    );
+
+    const maxScore = maxScoreResult[0]?.max_score || 15;
+
+    // Get score distribution by position
+    const [rows] = await pool.execute(
+      `SELECT
+        COALESCE(cc.final_position, sp.position_name) as position_name,
+        e.score,
+        COUNT(*) as count
+       FROM case_chats cc
+       JOIN evaluations e ON e.case_chat_id = cc.id
+       LEFT JOIN scenario_positions sp ON cc.final_position_id = sp.position_id
+       WHERE ${whereClause}
+         AND e.score IS NOT NULL
+       GROUP BY position_name, e.score
+       ORDER BY position_name, e.score`,
+      params
+    );
+
+    // Group by position
+    const byPosition = {};
+    rows.forEach(row => {
+      if (!byPosition[row.position_name]) {
+        byPosition[row.position_name] = {
+          scores: [],
+          counts: []
+        };
+      }
+      byPosition[row.position_name].scores.push(row.score);
+      byPosition[row.position_name].counts.push(parseInt(row.count));
+    });
+
+    res.json({
+      data: {
+        by_position: byPosition,
+        max_score: maxScore
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching score distribution:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
