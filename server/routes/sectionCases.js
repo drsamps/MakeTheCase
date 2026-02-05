@@ -15,6 +15,7 @@ router.get('/:sectionId/cases', async (req, res) => {
               sc.open_date, sc.close_date, sc.manual_status,
               sc.selection_mode, sc.require_order, sc.use_scenarios,
               sc.position_tracking_enabled, sc.position_capture_method, sc.track_position_change,
+              sc.rubric_id,
               c.case_title, c.enabled as case_enabled
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
@@ -165,6 +166,7 @@ router.get('/:sectionId/active-case', async (req, res) => {
               sc.open_date, sc.close_date, sc.manual_status,
               sc.selection_mode, sc.require_order, sc.use_scenarios,
               sc.position_tracking_enabled, sc.position_capture_method, sc.track_position_change,
+              sc.rubric_id,
               c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
@@ -327,7 +329,7 @@ router.post('/:sectionId/cases', verifyToken, requireRole(['admin']), async (req
     // Return the created assignment with case details
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
-              sc.open_date, sc.close_date, sc.manual_status,
+              sc.open_date, sc.close_date, sc.manual_status, sc.rubric_id,
               c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
@@ -393,7 +395,7 @@ router.patch('/:sectionId/cases/:caseId/activate', verifyToken, requireRole(['ad
     // Return updated assignment
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
-              sc.open_date, sc.close_date, sc.manual_status,
+              sc.open_date, sc.close_date, sc.manual_status, sc.rubric_id,
               c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
@@ -420,7 +422,7 @@ router.patch('/:sectionId/cases/:caseId/deactivate', verifyToken, requireRole(['
     
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
-              sc.open_date, sc.close_date, sc.manual_status,
+              sc.open_date, sc.close_date, sc.manual_status, sc.rubric_id,
               c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
@@ -459,7 +461,7 @@ router.patch('/:sectionId/cases/:caseId/options', verifyToken, requireRole(['adm
 
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
-              sc.open_date, sc.close_date, sc.manual_status,
+              sc.open_date, sc.close_date, sc.manual_status, sc.rubric_id,
               c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
@@ -474,6 +476,54 @@ router.patch('/:sectionId/cases/:caseId/options', verifyToken, requireRole(['adm
     res.json({ data: rows[0], error: null });
   } catch (error) {
     console.error('Error updating chat options:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/sections/:sectionId/cases/:caseId/rubric - Update rubric assignment (admin only)
+router.patch('/:sectionId/cases/:caseId/rubric', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { sectionId, caseId } = req.params;
+    const { rubric_id } = req.body;
+
+    // Validate rubric_id - must be null or a valid number
+    if (rubric_id !== null && rubric_id !== undefined && !Number.isInteger(rubric_id)) {
+      return res.status(400).json({ data: null, error: { message: 'rubric_id must be an integer or null' } });
+    }
+
+    // If rubric_id provided, verify it exists
+    if (rubric_id) {
+      const [rubricRows] = await pool.execute(
+        'SELECT rubric_id FROM rubrics WHERE rubric_id = ? AND enabled = 1',
+        [rubric_id]
+      );
+      if (rubricRows.length === 0) {
+        return res.status(400).json({ data: null, error: { message: 'Rubric not found or disabled' } });
+      }
+    }
+
+    await pool.execute(
+      'UPDATE section_cases SET rubric_id = ? WHERE section_id = ? AND case_id = ?',
+      [rubric_id || null, sectionId, caseId]
+    );
+
+    const [rows] = await pool.execute(
+      `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
+              sc.open_date, sc.close_date, sc.manual_status, sc.rubric_id,
+              c.case_title
+       FROM section_cases sc
+       JOIN cases c ON sc.case_id = c.case_id
+       WHERE sc.section_id = ? AND sc.case_id = ?`,
+      [sectionId, caseId]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    res.json({ data: rows[0], error: null });
+  } catch (error) {
+    console.error('Error updating rubric assignment:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
@@ -533,7 +583,7 @@ router.patch('/:sectionId/cases/:caseId/scheduling', verifyToken, requireRole(['
     // Return updated assignment
     const [rows] = await pool.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
-              sc.open_date, sc.close_date, sc.manual_status,
+              sc.open_date, sc.close_date, sc.manual_status, sc.rubric_id,
               c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
@@ -1161,7 +1211,8 @@ router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, r
     // Get all cases from source section with their settings
     const [sourceCases] = await pool.execute(
       `SELECT sc.case_id, sc.chat_options, sc.open_date, sc.close_date, sc.manual_status,
-              sc.selection_mode, sc.require_order, sc.use_scenarios, sc.id as source_section_case_id,
+              sc.selection_mode, sc.require_order, sc.use_scenarios, sc.rubric_id,
+              sc.id as source_section_case_id,
               c.case_title
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
@@ -1210,12 +1261,13 @@ router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, r
       const selectionMode = copy_scenarios ? sourceCase.selection_mode : 'student_choice';
       const requireOrder = copy_scenarios ? sourceCase.require_order : false;
       const useScenarios = copy_scenarios ? sourceCase.use_scenarios : false;
+      const rubricId = copy_options ? sourceCase.rubric_id : null;
 
       // Insert the new section-case assignment
       const [insertResult] = await pool.execute(
-        `INSERT INTO section_cases (section_id, case_id, active, chat_options, open_date, close_date, manual_status, selection_mode, require_order, use_scenarios)
-         VALUES (?, ?, FALSE, ?, ?, ?, ?, ?, ?, ?)`,
-        [targetSectionId, sourceCase.case_id, chatOptions ? JSON.stringify(chatOptions) : null, openDate, closeDate, manualStatus, selectionMode, requireOrder, useScenarios]
+        `INSERT INTO section_cases (section_id, case_id, active, chat_options, open_date, close_date, manual_status, selection_mode, require_order, use_scenarios, rubric_id)
+         VALUES (?, ?, FALSE, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [targetSectionId, sourceCase.case_id, chatOptions ? JSON.stringify(chatOptions) : null, openDate, closeDate, manualStatus, selectionMode, requireOrder, useScenarios, rubricId]
       );
 
       const newSectionCaseId = insertResult.insertId;

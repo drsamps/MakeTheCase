@@ -167,16 +167,53 @@ export interface ChatOptions {
 }
 
 export interface EvaluationCriterion {
+  criteria_id?: string;          // Link to rubric_criteria (optional for backward compat)
   question: string;
   score: number;
+  max_score?: number;            // Variable max points (optional for backward compat)
   feedback: string;
 }
 
 export interface EvaluationResult {
   criteria: EvaluationCriterion[];
   totalScore: number;
+  maxScore?: number;             // Variable total from rubric
   summary: string;
   hints: number;
+  rubric_id?: number;            // Track which rubric was used
+}
+
+// Rubric system types
+export interface RubricCriterion {
+  id: number;
+  criteria_id: string;           // User-specified identifier (e.g., "study_material")
+  name: string;
+  question_text: string;
+  max_points: number;
+  scoring_guide: Record<string, string> | null;
+  prompt_text: string | null;
+  created_by: string | null;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface Rubric {
+  rubric_id: number;
+  rubric_name: string;
+  description: string | null;
+  criteria_ids: string[];        // Ordered array of criteria_id
+  total_points: number;
+  criteria_prompt: string | null; // Cached LLM prompt
+  additional_prompt: string | null;
+  prompt_stale: boolean;         // True when criteria edited, needs regeneration
+  is_system_default: boolean;
+  created_by: string | null;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+  // Resolved criteria (when loaded with JOIN)
+  criteria?: RubricCriterion[];
 }
 
 export interface Section {

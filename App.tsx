@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Message, MessageRole, ConversationPhase, EvaluationResult, CEOPersona, Section, CaseChat, ChatStatus } from './types';
 import { createChatSession, getEvaluation } from './services/llmService';
 import type { LLMChatSession } from './services/llmService';
-import { CaseData, DEFAULT_CASE_DATA } from './constants';
+import { CaseData, DEFAULT_CASE_DATA, RubricForPrompt } from './constants';
 import { api, getApiBaseUrl } from './services/apiClient';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
@@ -113,6 +113,9 @@ const App: React.FC = () => {
   
   // Chat options from section-case assignment (Phase 2)
   const [chatOptions, setChatOptions] = useState<any>(null);
+
+  // Active rubric for evaluation
+  const [activeRubric, setActiveRubric] = useState<RubricForPrompt | null>(null);
 
   // Position tracking state (using position IDs from scenario_positions table)
   const [selectedInitialPositionId, setSelectedInitialPositionId] = useState<number | null>(null);
@@ -522,6 +525,7 @@ const App: React.FC = () => {
       if (!selectedCaseId) {
         setActiveCaseData(null);
         setChatOptions(defaultChatOptions);
+        setActiveRubric(null);
         setAvailableScenarios([]);
         setSelectedScenarioId(null);
         setUseScenarios(false);
@@ -534,6 +538,31 @@ const App: React.FC = () => {
         // Extract and set chat options
         const options = selectedCase.chat_options || defaultChatOptions;
         setChatOptions(options);
+
+        // Fetch rubric for evaluation (use assigned rubric_id or default)
+        try {
+          const rubricUrl = selectedCase.rubric_id
+            ? `${getApiBaseUrl()}/rubrics/${selectedCase.rubric_id}`
+            : `${getApiBaseUrl()}/rubrics/default`;
+          const rubricResponse = await fetch(rubricUrl);
+          if (rubricResponse.ok) {
+            const rubricResult = await rubricResponse.json();
+            if (rubricResult.data) {
+              setActiveRubric({
+                criteria_prompt: rubricResult.data.criteria_prompt,
+                additional_prompt: rubricResult.data.additional_prompt,
+                total_points: rubricResult.data.total_points,
+                rubric_id: rubricResult.data.rubric_id
+              });
+            }
+          } else {
+            console.warn('Could not fetch rubric, using default evaluation criteria');
+            setActiveRubric(null);
+          }
+        } catch (rubricErr) {
+          console.warn('Error fetching rubric:', rubricErr);
+          setActiveRubric(null);
+        }
 
         // Set default persona from chat options
         if (options.default_persona) {
@@ -1045,9 +1074,9 @@ const App: React.FC = () => {
     try {
     const fullName = sessionUser?.full_name || `${studentFirstName}`;
     const lastName = sessionUser?.last_name || '';
-    // Pass case data and chat options for cache-optimized evaluation prompt
+    // Pass case data, chat options, and rubric for cache-optimized evaluation prompt
     const caseData = activeCaseData || DEFAULT_CASE_DATA;
-    const result = await getEvaluation(messages, studentFirstName, fullName, selectedSuperModel, caseData, chatOptions);
+    const result = await getEvaluation(messages, studentFirstName, fullName, selectedSuperModel, caseData, chatOptions, activeRubric || undefined);
       setEvaluationResult(result);
       
       if (studentDBId) {
@@ -1080,6 +1109,7 @@ const App: React.FC = () => {
             liked: sanitizedLiked,
             improve: sanitizedImprove,
             super_model: selectedSuperModel,
+            rubric_id: result.rubric_id || null,
           });
 
         if (evaluationError) {

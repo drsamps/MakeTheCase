@@ -1,5 +1,5 @@
-import { getSystemPrompt, getCoachPrompt, buildSystemPrompt, buildCoachPrompt, CaseData, DEFAULT_CASE_DATA } from "../constants";
-import { Message, EvaluationResult, CEOPersona } from "../types";
+import { getSystemPrompt, getCoachPrompt, buildSystemPrompt, buildCoachPrompt, CaseData, DEFAULT_CASE_DATA, RubricForPrompt } from "../constants";
+import { Message, EvaluationResult, CEOPersona, Rubric } from "../types";
 import { getApiBaseUrl } from "./apiClient";
 
 const parseOrThrow = async (response: Response) => {
@@ -61,19 +61,23 @@ const buildCriteriaFromAltSchema = (raw: any) => {
   return null;
 };
 
-const normalizeEvaluationResult = (raw: any): EvaluationResult => {
+const normalizeEvaluationResult = (raw: any, rubric?: RubricForPrompt): EvaluationResult => {
   const criteriaFromSchema = Array.isArray(raw?.criteria)
     ? raw.criteria.map((c: any) => ({
+        criteria_id: c?.criteria_id,
         question: String(c?.question || 'Question'),
         score: Number.isFinite(Number(c?.score)) ? Number(c.score) : 0,
+        max_score: Number.isFinite(Number(c?.max_score)) ? Number(c.max_score) : undefined,
         feedback: String(c?.feedback || ''),
       }))
     : null;
 
   const criteriaFromEvalArray = Array.isArray(raw?.evaluation_criteria)
     ? raw.evaluation_criteria.map((c: any) => ({
+        criteria_id: c?.criteria_id,
         question: String(c?.question || c?.criterion || 'Question'),
         score: Number.isFinite(Number(c?.score)) ? Number(c.score) : 0,
+        max_score: Number.isFinite(Number(c?.max_score)) ? Number(c.max_score) : undefined,
         feedback: String(c?.feedback || ''),
       }))
     : null;
@@ -89,8 +93,10 @@ const normalizeEvaluationResult = (raw: any): EvaluationResult => {
     criteria = list
       .filter(Boolean)
       .map((c: any) => ({
+        criteria_id: c?.criteria_id,
         question: String(c?.question || c?.criterion || 'Question'),
         score: Number.isFinite(Number(c?.score)) ? Number(c.score) : 0,
+        max_score: Number.isFinite(Number(c?.max_score)) ? Number(c.max_score) : undefined,
         feedback: String(c?.feedback || ''),
       }));
   }
@@ -116,11 +122,17 @@ const normalizeEvaluationResult = (raw: any): EvaluationResult => {
     raw?.hints ?? raw?.hint_count ?? raw?.total_hints ?? raw?.hints_used ?? null;
   const hints = Number.isFinite(Number(hintsCandidate)) ? Number(hintsCandidate) : 0;
 
+  // Include maxScore and rubric_id from rubric if provided
+  const maxScore = rubric?.total_points ?? 15;
+  const rubric_id = rubric?.rubric_id;
+
   return {
     criteria,
     totalScore,
+    maxScore,
     summary,
     hints,
+    rubric_id,
   };
 };
 
@@ -174,20 +186,22 @@ export const getEvaluation = async (
   studentFullName: string,
   modelId: string,
   caseData?: CaseData,  // Optional: if provided, uses dynamic case; otherwise uses default
-  chatOptions?: any  // Optional: chat options including free_hints
+  chatOptions?: any,  // Optional: chat options including free_hints
+  rubric?: RubricForPrompt  // Optional: custom rubric with cached criteria_prompt
 ): Promise<EvaluationResult> => {
   // Use protagonist name from case data if available
   const protagonistLabel = caseData?.protagonist || 'CEO';
   const chatHistory = messages
     .map((msg) => `${msg.role === "user" ? "Student" : protagonistLabel}: ${msg.content}`)
     .join("\n\n");
-  
+
   // Get free_hints from chat options (default 1)
   const freeHints = chatOptions?.free_hints ?? 1;
-  
+
   // Build prompt with case data at the TOP for LLM caching
-  const prompt = caseData 
-    ? buildCoachPrompt(chatHistory, studentFullName, caseData, freeHints)
+  // Pass rubric for custom evaluation criteria
+  const prompt = caseData
+    ? buildCoachPrompt(chatHistory, studentFullName, caseData, freeHints, rubric)
     : getCoachPrompt(chatHistory, studentFullName);
 
   const response = await fetch(`${getApiBaseUrl()}/llm/eval`, {
@@ -212,7 +226,7 @@ export const getEvaluation = async (
     throw new Error(`Invalid evaluation JSON: ${(err as Error).message}`);
   }
 
-  const normalized = normalizeEvaluationResult(parsed);
+  const normalized = normalizeEvaluationResult(parsed, rubric);
 
   if (!normalized.criteria.length || normalized.totalScore === 0 || !normalized.summary || normalized.summary === 'No summary provided.') {
     console.warn('[eval] Normalized evaluation appears empty', {

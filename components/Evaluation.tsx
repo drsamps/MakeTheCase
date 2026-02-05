@@ -78,7 +78,7 @@ const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart,
         
         <div className="text-center pt-4 border-t">
              <div className="text-2xl font-bold text-gray-800 mb-4">
-                Total Score: {result.totalScore} / 15
+                Total Score: {result.totalScore} / {result.maxScore ?? 15}
              </div>
             <button
               onClick={onLogout || onRestart}

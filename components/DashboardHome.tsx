@@ -512,7 +512,7 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
         <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center">
           <h3 className="text-lg font-semibold text-gray-900">Open Chat Assignments</h3>
           <button
-            onClick={() => onNavigate('courses', 'assignments')}
+            onClick={() => onNavigate('assignments')}
             className="text-sm font-medium text-blue-600 hover:text-blue-800"
           >
             View All
@@ -525,7 +525,7 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
               <div className="p-6 text-center text-gray-500">
                 <p>No open case assignments.</p>
                 <button
-                  onClick={() => onNavigate('courses', 'assignments')}
+                  onClick={() => onNavigate('assignments')}
                   className="mt-2 text-sm text-blue-600 hover:text-blue-800"
                 >
                   Assign a case to a section
@@ -695,7 +695,7 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
         <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center">
           <h3 className="text-lg font-semibold text-gray-900">Case Assignments</h3>
           <button
-            onClick={() => onNavigate('courses', 'assignments')}
+            onClick={() => onNavigate('assignments')}
             className="text-sm font-medium text-blue-600 hover:text-blue-800"
           >
             View All
@@ -705,7 +705,7 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
           <div className="p-8 text-center text-gray-500">
             <p>No active case assignments.</p>
             <button
-              onClick={() => onNavigate('courses', 'assignments')}
+              onClick={() => onNavigate('assignments')}
               className="mt-2 text-sm text-blue-600 hover:text-blue-800"
             >
               Assign a case to a section

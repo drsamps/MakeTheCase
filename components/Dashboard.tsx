@@ -38,12 +38,14 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 // New workflow-centric navigation types
-type PrimaryTab = 'home' | 'courses' | 'content' | 'monitor' | 'results' | 'admin';
-type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students' | 'assignments' | 'chat-options';
+type PrimaryTab = 'home' | 'assignments' | 'monitor' | 'results' | 'courses' | 'content' | 'rubrics' | 'admin';
+type AssignmentsSubTab = 'assignments' | 'chat-options';
+type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live';
 type ResultsSubTab = 'responses' | 'positions';
 type AdminSubTab = 'instructors' | 'settings' | 'models' | 'personas' | 'prompts' | 'admins';
+type RubricsSubTab = 'criteria' | 'rubrics';
 
 interface DashboardProps {
   onLogout: () => void;
@@ -230,11 +232,46 @@ const SortablePositionItem: React.FC<SortablePositionItemProps> = ({ position, s
 const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // New workflow-centric navigation state
   const [primaryTab, setPrimaryTab] = useState<PrimaryTab>('home');
+  const [assignmentsSubTab, setAssignmentsSubTab] = useState<AssignmentsSubTab>('assignments');
   const [coursesSubTab, setCoursesSubTab] = useState<CoursesSubTab>('sections');
   const [contentSubTab, setContentSubTab] = useState<ContentSubTab>('cases');
   const [monitorSubTab, setMonitorSubTab] = useState<MonitorSubTab>('chats');
   const [resultsSubTab, setResultsSubTab] = useState<ResultsSubTab>('responses');
   const [adminSubTab, setAdminSubTab] = useState<AdminSubTab>('instructors');
+  const [rubricsSubTab, setRubricsSubTab] = useState<RubricsSubTab>('rubrics');
+
+  // Rubrics state
+  const [rubricsList, setRubricsList] = useState<any[]>([]);
+  const [criteriaList, setCriteriaList] = useState<any[]>([]);
+  const [isLoadingRubrics, setIsLoadingRubrics] = useState(false);
+
+  // Criteria modal state
+  const [showCriterionModal, setShowCriterionModal] = useState(false);
+  const [editingCriterion, setEditingCriterion] = useState<any>(null);
+  const [criterionForm, setCriterionForm] = useState({
+    criteria_id: '',
+    name: '',
+    question_text: '',
+    max_points: 5,
+    scoring_guide: {} as Record<string, string>,
+  });
+  const [isSavingCriterion, setIsSavingCriterion] = useState(false);
+
+  // Rubric modal state
+  const [showRubricModal, setShowRubricModal] = useState(false);
+  const [editingRubric, setEditingRubric] = useState<any>(null);
+  const [rubricForm, setRubricForm] = useState({
+    rubric_name: '',
+    description: '',
+    criteria_ids: [] as string[],
+    additional_prompt: '',
+  });
+  const [isSavingRubric, setIsSavingRubric] = useState(false);
+
+  // Rubric usage modal state
+  const [showRubricUsageModal, setShowRubricUsageModal] = useState(false);
+  const [rubricUsageData, setRubricUsageData] = useState<{ rubric: any; assignments: any[] } | null>(null);
+  const [isLoadingRubricUsage, setIsLoadingRubricUsage] = useState(false);
 
   // Check if user has access to any admin functions
   const hasAdminAccess = useCallback(() => {
@@ -551,7 +588,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             super_model: '',
             enabled: true
           });
-        } else if (subTab && ['sections', 'students', 'assignments'].includes(subTab)) {
+        } else if (subTab && ['sections', 'students', 'semesters', 'course-setup'].includes(subTab)) {
           setCoursesSubTab(subTab as CoursesSubTab);
         } else if (subTab) {
           // If subTab is a section_id, select that section
@@ -617,6 +654,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           setAdminSubTab(subTab as AdminSubTab);
         }
         break;
+      case 'assignments':
+        setPrimaryTab('assignments');
+        if (subTab && ['assignments', 'chat-options'].includes(subTab)) {
+          setAssignmentsSubTab(subTab as AssignmentsSubTab);
+        } else {
+          setAssignmentsSubTab('assignments');
+        }
+        fetchAssignmentsSections();
+        break;
       default:
         setPrimaryTab('home');
     }
@@ -636,7 +682,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         setEditingChatOptions(sc.chat_options ? { ...sc.chat_options } : { ...defaultChatOptions });
       }
     }
-    setCoursesSubTab('chat-options');
+    setPrimaryTab('assignments');
+    setAssignmentsSubTab('chat-options');
   }, [defaultChatOptions]);
 
   const fetchModels = useCallback(async () => {
@@ -1180,6 +1227,343 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     // Navigate to Results tab with this section pre-filtered
     setResultsInitialSectionId(section.section_id);
     setPrimaryTab('results');
+  };
+
+  // Rubrics management functions
+  const fetchRubrics = async () => {
+    setIsLoadingRubrics(true);
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      // enabled=false fetches all rubrics including disabled ones for admin management
+      const response = await fetch(`${getApiBaseUrl()}/rubrics?include_criteria=true&enabled=false`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const result = await response.json();
+      if (result.error) {
+        console.error('Error fetching rubrics:', result.error);
+      } else {
+        setRubricsList(result.data || []);
+      }
+    } catch (err) {
+      console.error('Error fetching rubrics:', err);
+    } finally {
+      setIsLoadingRubrics(false);
+    }
+  };
+
+  const fetchCriteria = async () => {
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      // enabled=false fetches all criteria including disabled ones for admin management
+      const response = await fetch(`${getApiBaseUrl()}/rubric-criteria?enabled=false`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const result = await response.json();
+      if (result.error) {
+        console.error('Error fetching criteria:', result.error);
+      } else {
+        setCriteriaList(result.data || []);
+      }
+    } catch (err) {
+      console.error('Error fetching criteria:', err);
+    }
+  };
+
+  // Criterion modal handlers
+  const handleOpenCriterionModal = (criterion?: any) => {
+    if (criterion) {
+      setEditingCriterion(criterion);
+      const guide = typeof criterion.scoring_guide === 'string'
+        ? JSON.parse(criterion.scoring_guide || '{}')
+        : (criterion.scoring_guide || {});
+      setCriterionForm({
+        criteria_id: criterion.criteria_id,
+        name: criterion.name,
+        question_text: criterion.question_text,
+        max_points: criterion.max_points,
+        scoring_guide: guide,
+      });
+    } else {
+      setEditingCriterion(null);
+      setCriterionForm({
+        criteria_id: '',
+        name: '',
+        question_text: '',
+        max_points: 5,
+        scoring_guide: {},
+      });
+    }
+    setShowCriterionModal(true);
+  };
+
+  const handleSaveCriterion = async () => {
+    if (!criterionForm.criteria_id || !criterionForm.name || !criterionForm.question_text) {
+      alert('Please fill in all required fields');
+      return;
+    }
+    setIsSavingCriterion(true);
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const url = editingCriterion
+        ? `${getApiBaseUrl()}/rubric-criteria/${editingCriterion.criteria_id}`
+        : `${getApiBaseUrl()}/rubric-criteria`;
+      const method = editingCriterion ? 'PATCH' : 'POST';
+
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(criterionForm),
+      });
+      const result = await response.json();
+      if (result.error) {
+        alert(`Error: ${result.error.message}`);
+      } else {
+        setShowCriterionModal(false);
+        fetchCriteria();
+        if (result.affectedRubrics > 0) {
+          alert(`Criterion saved. ${result.affectedRubrics} rubric(s) marked as needing regeneration.`);
+          fetchRubrics();
+        }
+      }
+    } catch (err) {
+      console.error('Error saving criterion:', err);
+      alert('Error saving criterion');
+    } finally {
+      setIsSavingCriterion(false);
+    }
+  };
+
+  const handleDeleteCriterion = async (criteriaId: string) => {
+    if (!confirm('Are you sure you want to delete this criterion?')) return;
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/rubric-criteria/${criteriaId}`, {
+        method: 'DELETE',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const result = await response.json();
+      if (result.error) {
+        alert(`Error: ${result.error.message}`);
+      } else {
+        fetchCriteria();
+      }
+    } catch (err) {
+      console.error('Error deleting criterion:', err);
+      alert('Error deleting criterion');
+    }
+  };
+
+  // Rubric modal handlers
+  const handleOpenRubricModal = (rubric?: any) => {
+    // Ensure criteria list is loaded for the selector
+    if (criteriaList.length === 0) fetchCriteria();
+
+    if (rubric) {
+      setEditingRubric(rubric);
+      setRubricForm({
+        rubric_name: rubric.rubric_name,
+        description: rubric.description || '',
+        criteria_ids: Array.isArray(rubric.criteria_ids) ? rubric.criteria_ids : [],
+        additional_prompt: rubric.additional_prompt || '',
+      });
+    } else {
+      setEditingRubric(null);
+      setRubricForm({
+        rubric_name: '',
+        description: '',
+        criteria_ids: [],
+        additional_prompt: '',
+      });
+    }
+    setShowRubricModal(true);
+  };
+
+  const handleSaveRubric = async () => {
+    if (!rubricForm.rubric_name || rubricForm.criteria_ids.length === 0) {
+      alert('Please provide a name and select at least one criterion');
+      return;
+    }
+    setIsSavingRubric(true);
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const url = editingRubric
+        ? `${getApiBaseUrl()}/rubrics/${editingRubric.rubric_id}`
+        : `${getApiBaseUrl()}/rubrics`;
+      const method = editingRubric ? 'PATCH' : 'POST';
+
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(rubricForm),
+      });
+      const result = await response.json();
+      if (result.error) {
+        alert(`Error: ${result.error.message}`);
+      } else {
+        setShowRubricModal(false);
+        fetchRubrics();
+      }
+    } catch (err) {
+      console.error('Error saving rubric:', err);
+      alert('Error saving rubric');
+    } finally {
+      setIsSavingRubric(false);
+    }
+  };
+
+  const handleDeleteRubric = async (rubricId: number) => {
+    if (!confirm('Are you sure you want to delete this rubric?')) return;
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/rubrics/${rubricId}`, {
+        method: 'DELETE',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const result = await response.json();
+      if (result.error) {
+        alert(`Error: ${result.error.message}`);
+      } else {
+        fetchRubrics();
+      }
+    } catch (err) {
+      console.error('Error deleting rubric:', err);
+      alert('Error deleting rubric');
+    }
+  };
+
+  const handleRegenerateRubric = async (rubricId: number) => {
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/rubrics/${rubricId}/regenerate`, {
+        method: 'PATCH',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const result = await response.json();
+      if (result.error) {
+        alert(`Error: ${result.error.message}`);
+      } else {
+        fetchRubrics();
+        alert('Rubric prompt regenerated successfully');
+      }
+    } catch (err) {
+      console.error('Error regenerating rubric:', err);
+      alert('Error regenerating rubric');
+    }
+  };
+
+  const handleToggleRubricEnabled = async (rubricId: number, currentEnabled: boolean) => {
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/rubrics/${rubricId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ enabled: !currentEnabled })
+      });
+      const result = await response.json();
+      if (result.error) {
+        alert(`Error: ${result.error.message}`);
+      } else {
+        fetchRubrics();
+      }
+    } catch (err) {
+      console.error('Error toggling rubric enabled:', err);
+      alert('Error toggling rubric');
+    }
+  };
+
+  const handleSetRubricDefault = async (rubricId: number) => {
+    if (!confirm('Set this rubric as the system default? This will replace the current default.')) return;
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/rubrics/${rubricId}/set-default`, {
+        method: 'PATCH',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const result = await response.json();
+      if (result.error) {
+        alert(`Error: ${result.error.message}`);
+      } else {
+        fetchRubrics();
+        alert('Default rubric updated');
+      }
+    } catch (err) {
+      console.error('Error setting default rubric:', err);
+      alert('Error setting default rubric');
+    }
+  };
+
+  const handleToggleCriterionEnabled = async (criteriaId: string, currentEnabled: boolean) => {
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/rubric-criteria/${criteriaId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ enabled: !currentEnabled })
+      });
+      const result = await response.json();
+      if (result.error) {
+        alert(`Error: ${result.error.message}`);
+      } else {
+        fetchCriteria();
+        if (result.affectedRubrics > 0) {
+          alert(`Criterion ${!currentEnabled ? 'enabled' : 'disabled'}. ${result.affectedRubrics} rubric(s) may need regeneration.`);
+          fetchRubrics();
+        }
+      }
+    } catch (err) {
+      console.error('Error toggling criterion enabled:', err);
+      alert('Error toggling criterion');
+    }
+  };
+
+  const handleShowRubricUsage = async (rubric: any) => {
+    setIsLoadingRubricUsage(true);
+    setRubricUsageData({ rubric, assignments: [] });
+    setShowRubricUsageModal(true);
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/rubrics/${rubric.rubric_id}/usage`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const result = await response.json();
+      if (result.error) {
+        console.error('Error fetching rubric usage:', result.error);
+      } else {
+        setRubricUsageData({ rubric, assignments: result.data || [] });
+      }
+    } catch (err) {
+      console.error('Error fetching rubric usage:', err);
+    } finally {
+      setIsLoadingRubricUsage(false);
+    }
+  };
+
+  const handleCriteriaOrderChange = (dragIndex: number, dropIndex: number) => {
+    const newOrder = [...rubricForm.criteria_ids];
+    const [removed] = newOrder.splice(dragIndex, 1);
+    newOrder.splice(dropIndex, 0, removed);
+    setRubricForm({ ...rubricForm, criteria_ids: newOrder });
+  };
+
+  const toggleCriterionInRubric = (criteriaId: string) => {
+    const current = rubricForm.criteria_ids;
+    if (current.includes(criteriaId)) {
+      setRubricForm({ ...rubricForm, criteria_ids: current.filter(id => id !== criteriaId) });
+    } else {
+      setRubricForm({ ...rubricForm, criteria_ids: [...current, criteriaId] });
+    }
   };
 
   // Personas management functions
@@ -3271,6 +3655,35 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       if (casesList.length === 0) {
         fetchCases();
       }
+      // Also ensure rubricsList is loaded for the rubric dropdown
+      if (rubricsList.length === 0) {
+        fetchRubrics();
+      }
+    }
+  };
+
+  // Handle rubric assignment change for a section-case
+  const handleUpdateAssignmentRubric = async (sectionId: string, caseId: string, rubricId: number | null) => {
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/rubric`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ rubric_id: rubricId })
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(result.error?.message || 'Failed to update rubric');
+      }
+      // Refresh the section cases list
+      fetchSectionCases(sectionId);
+      setSuccessMessage('Rubric updated successfully');
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (err: any) {
+      setError(err.message || 'Failed to update rubric');
     }
   };
 
@@ -4292,6 +4705,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                             <span className="text-sm text-gray-500">({sc.case_id})</span>
                           </div>
                           <div className="flex items-center gap-2">
+                            {/* Rubric Selector */}
+                            <select
+                              value={sc.rubric_id || ''}
+                              onChange={(e) => handleUpdateAssignmentRubric(
+                                selectedAssignmentSection!,
+                                sc.case_id,
+                                e.target.value ? parseInt(e.target.value) : null
+                              )}
+                              className="px-2 py-1.5 text-xs border border-gray-200 rounded-lg bg-white focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                              title="Select evaluation rubric"
+                            >
+                              <option value="">Default Rubric</option>
+                              {rubricsList.filter(r => r.enabled).map((rubric: any) => (
+                                <option key={rubric.rubric_id} value={rubric.rubric_id}>
+                                  {rubric.rubric_name} ({rubric.total_points}pts)
+                                </option>
+                              ))}
+                            </select>
                             <button
                               onClick={() => navigateToChatOptions(selectedAssignmentSection!, sc.case_id)}
                               className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-gray-50 text-gray-600 border-gray-200 hover:bg-purple-50 hover:text-purple-700 hover:border-purple-200"
@@ -6629,12 +7060,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       {/* Main Content - New Workflow-Centric Navigation */}
       <main className="flex-1 overflow-y-auto">
         {/* Primary Navigation */}
-        <div className="px-6 pt-4 border-b border-gray-200 bg-white">
+        <div className="px-6 pt-2 border-b border-gray-200 bg-white">
           <div className="flex gap-1">
             {/* Dashboard Home */}
             <button
               onClick={() => setPrimaryTab('home')}
-              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+              className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
                 primaryTab === 'home'
                   ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
                   : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
@@ -6648,15 +7079,79 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </span>
             </button>
 
+            {/* Assignments (new primary tab) */}
+            {hasAccess(user, 'assignments') && (
+              <button
+                onClick={() => {
+                  setPrimaryTab('assignments');
+                  if (casesList.length === 0) fetchCases();
+                  fetchAssignmentsSections();
+                }}
+                className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
+                  primaryTab === 'assignments'
+                    ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
+                    <path fillRule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" />
+                  </svg>
+                  Assignments
+                </span>
+              </button>
+            )}
+
+            {/* Chats (formerly Monitor) */}
+            {hasAccess(user, 'chats') && (
+              <button
+                onClick={() => setPrimaryTab('monitor')}
+                className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
+                  primaryTab === 'monitor'
+                    ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z" />
+                    <path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z" />
+                  </svg>
+                  Chats
+                  {stats.activeChats > 0 && (
+                    <span className="px-1.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                      {stats.activeChats}
+                    </span>
+                  )}
+                </span>
+              </button>
+            )}
+
+            {/* Results */}
+            <button
+              onClick={() => setPrimaryTab('results')}
+              className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
+                primaryTab === 'results'
+                  ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+                </svg>
+                Results
+              </span>
+            </button>
+
             {/* Courses */}
-            {(hasAccess(user, 'sections') || hasAccess(user, 'students') || hasAccess(user, 'assignments')) && (
+            {(hasAccess(user, 'sections') || hasAccess(user, 'students')) && (
               <button
                 onClick={() => {
                   setPrimaryTab('courses');
-                  if (casesList.length === 0) fetchCases();
-                  if (coursesSubTab === 'assignments') fetchAssignmentsSections();
                 }}
-                className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
                   primaryTab === 'courses'
                     ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
                     : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
@@ -6671,14 +7166,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </button>
             )}
 
-            {/* Case Library */}
+            {/* Cases (formerly Case Library/Content) */}
             {(hasAccess(user, 'cases') || hasAccess(user, 'caseprep')) && (
               <button
                 onClick={() => {
                   setPrimaryTab('content');
                   if (casesList.length === 0) fetchCases();
                 }}
-                className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
                   primaryTab === 'content'
                     ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
                     : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
@@ -6688,61 +7183,38 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
                     <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" />
                   </svg>
-                  Case Library
+                  Cases
                 </span>
               </button>
             )}
 
-            {/* Live Monitoring */}
-            {hasAccess(user, 'chats') && (
+            {/* Rubrics */}
+            {hasAccess(user, 'rubrics') && (
               <button
-                onClick={() => setPrimaryTab('monitor')}
-                className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
-                  primaryTab === 'monitor'
-                    ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
+                onClick={() => setPrimaryTab('rubrics')}
+                className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
+                  primaryTab === 'rubrics'
+                    ? 'bg-gray-50 text-green-600 border-b-2 border-green-600'
                     : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
                 }`}
               >
                 <span className="flex items-center gap-2">
                   <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z" />
-                    <path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z" />
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                   </svg>
-                  Monitor
-                  {stats.activeChats > 0 && (
-                    <span className="px-1.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
-                      {stats.activeChats}
-                    </span>
-                  )}
+                  Rubrics
                 </span>
               </button>
             )}
 
-            {/* Results (formerly Analytics) */}
-            <button
-              onClick={() => setPrimaryTab('results')}
-              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
-                primaryTab === 'results'
-                  ? 'bg-gray-50 text-blue-600 border-b-2 border-blue-600'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                  <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
-                </svg>
-                Results
-              </span>
-            </button>
-
-            {/* System Admin (for superusers and those with admin permissions) */}
+            {/* Admin */}
             {hasAdminAccess() && (
               <button
                 onClick={() => {
                   setPrimaryTab('admin');
                   if (personasList.length === 0 && hasAccess(user, 'personas')) fetchPersonas();
                 }}
-                className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
                   primaryTab === 'admin'
                     ? 'bg-gray-50 text-purple-600 border-b-2 border-purple-600'
                     : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
@@ -6757,6 +7229,38 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </button>
             )}
           </div>
+
+          {/* Sub-navigation for Assignments */}
+          {primaryTab === 'assignments' && (
+            <div className="flex gap-1 mt-2 pb-2">
+              <button
+                onClick={() => {
+                  setAssignmentsSubTab('assignments');
+                  fetchAssignmentsSections();
+                }}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  assignmentsSubTab === 'assignments'
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Assignments
+              </button>
+              <button
+                onClick={() => {
+                  setAssignmentsSubTab('chat-options');
+                  fetchAssignmentsSections();
+                }}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  assignmentsSubTab === 'chat-options'
+                    ? 'bg-purple-100 text-purple-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Chat Options
+              </button>
+            </div>
+          )}
 
           {/* Sub-navigation for Courses */}
           {primaryTab === 'courses' && (
@@ -6817,36 +7321,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   }`}
                 >
                   Students
-                </button>
-              )}
-              {hasAccess(user, 'assignments') && (
-                <button
-                  onClick={() => {
-                    setCoursesSubTab('assignments');
-                    fetchAssignmentsSections();
-                  }}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    coursesSubTab === 'assignments'
-                      ? 'bg-blue-100 text-blue-700'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  Assignments
-                </button>
-              )}
-              {hasAccess(user, 'assignments') && (
-                <button
-                  onClick={() => {
-                    setCoursesSubTab('chat-options');
-                    fetchAssignmentsSections();
-                  }}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    coursesSubTab === 'chat-options'
-                      ? 'bg-purple-100 text-purple-700'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  Chat Options
                 </button>
               )}
             </div>
@@ -7036,11 +7510,49 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               )}
             </div>
           )}
+
+          {/* Sub-navigation for Rubrics */}
+          {primaryTab === 'rubrics' && (
+            <div className="flex gap-1 mt-2 pb-2">
+              <button
+                onClick={() => {
+                  setRubricsSubTab('rubrics');
+                  if (rubricsList.length === 0) fetchRubrics();
+                }}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  rubricsSubTab === 'rubrics'
+                    ? 'bg-green-100 text-green-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Rubrics
+              </button>
+              <button
+                onClick={() => {
+                  setRubricsSubTab('criteria');
+                  if (criteriaList.length === 0) fetchCriteria();
+                }}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  rubricsSubTab === 'criteria'
+                    ? 'bg-green-100 text-green-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Criteria Library
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Content Rendering based on Primary Tab */}
         {primaryTab === 'home' ? (
           <DashboardHome user={user} onNavigate={handleNavigate} />
+        ) : primaryTab === 'assignments' ? (
+          assignmentsSubTab === 'chat-options' ? (
+            renderChatOptionsTab()
+          ) : (
+            renderAssignmentsTab()
+          )
         ) : primaryTab === 'results' ? (
           resultsSubTab === 'positions' ? (
             <div className="p-6 max-w-7xl mx-auto">
@@ -7080,6 +7592,536 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           ) : adminSubTab === 'admins' ? (
             <InstructorManager user={user} mode="admins" />
           ) : null
+        ) : primaryTab === 'rubrics' ? (
+          <div className="p-6 max-w-7xl mx-auto">
+            {rubricsSubTab === 'rubrics' ? (
+              <div>
+                <div className="mb-6 flex justify-between items-center">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Evaluation Rubrics</h2>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Manage rubrics used for evaluating student performance
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleOpenRubricModal()}
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                    >
+                      + New Rubric
+                    </button>
+                    <button
+                      onClick={fetchRubrics}
+                      disabled={isLoadingRubrics}
+                      className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50"
+                    >
+                      {isLoadingRubrics ? 'Loading...' : 'Refresh'}
+                    </button>
+                  </div>
+                </div>
+
+                {isLoadingRubrics ? (
+                  <div className="text-center py-8 text-gray-500">Loading rubrics...</div>
+                ) : rubricsList.length === 0 ? (
+                  <div className="text-center py-8 text-gray-500">No rubrics found. Run the database migration to create the default rubric.</div>
+                ) : (
+                  <div className="space-y-4">
+                    {rubricsList.map((rubric: any) => (
+                      <div
+                        key={rubric.rubric_id}
+                        className={`bg-white rounded-lg border p-4 ${
+                          rubric.enabled ? 'border-gray-200' : 'border-gray-300 bg-gray-50 opacity-60'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <h3 className={`text-lg font-medium ${rubric.enabled ? 'text-gray-900' : 'text-gray-500'}`}>
+                              {rubric.rubric_name}
+                              {!!rubric.is_system_default && (
+                                <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded">Default</span>
+                              )}
+                              {!rubric.enabled && (
+                                <span className="ml-2 px-2 py-0.5 text-xs bg-gray-200 text-gray-600 rounded">Disabled</span>
+                              )}
+                              {!!rubric.prompt_stale && (
+                                <span className="ml-2 px-2 py-0.5 text-xs bg-yellow-100 text-yellow-700 rounded">Needs Regeneration</span>
+                              )}
+                            </h3>
+                            <p className="text-sm text-gray-500 mt-1">{rubric.description}</p>
+                            <p className="text-sm text-gray-600 mt-2">
+                              <strong>Total Points:</strong> {rubric.total_points} |{' '}
+                              <strong>Criteria:</strong> {Array.isArray(rubric.criteria_ids) ? rubric.criteria_ids.join(', ') : 'None'}
+                            </p>
+                          </div>
+                          <div className="flex gap-2 ml-4 flex-wrap justify-end">
+                            {/* Enable/Disable Toggle */}
+                            <button
+                              onClick={() => handleToggleRubricEnabled(rubric.rubric_id, rubric.enabled)}
+                              className={`px-3 py-1.5 text-sm rounded ${
+                                rubric.enabled
+                                  ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                                  : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                              }`}
+                              title={rubric.enabled ? 'Click to disable' : 'Click to enable'}
+                            >
+                              {rubric.enabled ? 'Enabled' : 'Disabled'}
+                            </button>
+                            {/* Set as Default (only for enabled, non-default rubrics) */}
+                            {!!rubric.enabled && !rubric.is_system_default ? (
+                              <button
+                                onClick={() => handleSetRubricDefault(rubric.rubric_id)}
+                                className="px-3 py-1.5 text-sm bg-blue-50 text-blue-700 rounded hover:bg-blue-100"
+                                title="Set as system default rubric"
+                              >
+                                Set Default
+                              </button>
+                            ) : null}
+                            {!!rubric.prompt_stale && (
+                              <button
+                                onClick={() => handleRegenerateRubric(rubric.rubric_id)}
+                                className="px-3 py-1.5 text-sm bg-yellow-100 text-yellow-700 rounded hover:bg-yellow-200"
+                              >
+                                Regenerate
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleShowRubricUsage(rubric)}
+                              className="px-3 py-1.5 text-sm bg-purple-50 text-purple-700 rounded hover:bg-purple-100"
+                              title="Show assignments using this rubric"
+                            >
+                              Uses
+                            </button>
+                            <button
+                              onClick={() => handleOpenRubricModal(rubric)}
+                              className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+                            >
+                              Edit
+                            </button>
+                            {!rubric.is_system_default && (
+                              <button
+                                onClick={() => handleDeleteRubric(rubric.rubric_id)}
+                                className="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200"
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {rubric.additional_prompt && (
+                          <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+                            <p className="text-xs font-medium text-gray-600 mb-1">Additional Instructions:</p>
+                            <p className="text-sm text-gray-700">{rubric.additional_prompt}</p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                <div className="mb-6 flex justify-between items-center">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Criteria Library</h2>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Reusable evaluation criteria that can be included in multiple rubrics
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleOpenCriterionModal()}
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                    >
+                      + New Criterion
+                    </button>
+                    <button
+                      onClick={fetchCriteria}
+                      className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                </div>
+
+                {criteriaList.length === 0 ? (
+                  <div className="text-center py-8 text-gray-500">No criteria found. Run the database migration to create default criteria.</div>
+                ) : (
+                  <div className="space-y-4">
+                    {criteriaList.map((criterion: any) => {
+                      const guide = typeof criterion.scoring_guide === 'string'
+                        ? JSON.parse(criterion.scoring_guide || '{}')
+                        : (criterion.scoring_guide || {});
+                      return (
+                        <div
+                          key={criterion.id}
+                          className={`bg-white rounded-lg border p-4 ${
+                            criterion.enabled ? 'border-gray-200' : 'border-gray-300 bg-gray-50 opacity-60'
+                          }`}
+                        >
+                          <div className="flex justify-between items-start">
+                            <div className="flex-1">
+                              <h3 className={`text-lg font-medium ${criterion.enabled ? 'text-gray-900' : 'text-gray-500'}`}>
+                                {criterion.name}
+                                <span className="ml-2 text-sm font-mono text-gray-500">({criterion.criteria_id})</span>
+                                {!criterion.enabled && (
+                                  <span className="ml-2 px-2 py-0.5 text-xs bg-gray-200 text-gray-600 rounded">Disabled</span>
+                                )}
+                              </h3>
+                              <p className="text-sm text-gray-600 mt-1">{criterion.question_text}</p>
+                              <p className="text-sm text-gray-500 mt-2">
+                                <strong>Max Points:</strong> {criterion.max_points}
+                              </p>
+                              {Object.keys(guide).length > 0 && (
+                                <div className="mt-2 text-xs text-gray-500">
+                                  <strong>Scoring Guide:</strong>
+                                  <ul className="ml-4 mt-1">
+                                    {Object.entries(guide).map(([score, desc]) => (
+                                      <li key={score}>{score} pt: {desc as string}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex gap-2 ml-4">
+                              {/* Enable/Disable Toggle */}
+                              <button
+                                onClick={() => handleToggleCriterionEnabled(criterion.criteria_id, criterion.enabled)}
+                                className={`px-3 py-1.5 text-sm rounded ${
+                                  criterion.enabled
+                                    ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                                    : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                                }`}
+                                title={criterion.enabled ? 'Click to disable' : 'Click to enable'}
+                              >
+                                {criterion.enabled ? 'Enabled' : 'Disabled'}
+                              </button>
+                              <button
+                                onClick={() => handleOpenCriterionModal(criterion)}
+                                className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => handleDeleteCriterion(criterion.criteria_id)}
+                                className="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Criterion Modal */}
+            {showCriterionModal && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+                  <div className="p-6">
+                    <h3 className="text-xl font-bold text-gray-900 mb-4">
+                      {editingCriterion ? 'Edit Criterion' : 'New Criterion'}
+                    </h3>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Criterion ID *</label>
+                        <input
+                          type="text"
+                          value={criterionForm.criteria_id}
+                          onChange={(e) => setCriterionForm({ ...criterionForm, criteria_id: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_') })}
+                          disabled={!!editingCriterion}
+                          placeholder="e.g., critical_thinking"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 disabled:bg-gray-100"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">Lowercase letters, numbers, and underscores only</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Display Name *</label>
+                        <input
+                          type="text"
+                          value={criterionForm.name}
+                          onChange={(e) => setCriterionForm({ ...criterionForm, name: e.target.value })}
+                          placeholder="e.g., Critical Thinking"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Question Text *</label>
+                        <textarea
+                          value={criterionForm.question_text}
+                          onChange={(e) => setCriterionForm({ ...criterionForm, question_text: e.target.value })}
+                          placeholder="e.g., Did the student demonstrate critical thinking skills?"
+                          rows={2}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Max Points</label>
+                        <input
+                          type="number"
+                          value={criterionForm.max_points}
+                          onChange={(e) => setCriterionForm({ ...criterionForm, max_points: parseInt(e.target.value) || 5 })}
+                          min={1}
+                          max={100}
+                          className="w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Scoring Guide</label>
+                        <p className="text-xs text-gray-500 mb-2">Define what each score means (1 to max points)</p>
+                        <div className="space-y-2">
+                          {Array.from({ length: criterionForm.max_points }, (_, i) => i + 1).map((score) => (
+                            <div key={score} className="flex gap-2 items-center">
+                              <span className="w-8 text-sm font-medium text-gray-600">{score}:</span>
+                              <input
+                                type="text"
+                                value={criterionForm.scoring_guide[String(score)] || ''}
+                                onChange={(e) => setCriterionForm({
+                                  ...criterionForm,
+                                  scoring_guide: { ...criterionForm.scoring_guide, [String(score)]: e.target.value }
+                                })}
+                                placeholder={`Description for ${score} point${score > 1 ? 's' : ''}`}
+                                className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-6 flex justify-end gap-3">
+                      <button
+                        onClick={() => setShowCriterionModal(false)}
+                        className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleSaveCriterion}
+                        disabled={isSavingCriterion}
+                        className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+                      >
+                        {isSavingCriterion ? 'Saving...' : 'Save Criterion'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Rubric Modal */}
+            {showRubricModal && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+                  <div className="p-6">
+                    <h3 className="text-xl font-bold text-gray-900 mb-4">
+                      {editingRubric ? 'Edit Rubric' : 'New Rubric'}
+                    </h3>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Rubric Name *</label>
+                        <input
+                          type="text"
+                          value={rubricForm.rubric_name}
+                          onChange={(e) => setRubricForm({ ...rubricForm, rubric_name: e.target.value })}
+                          placeholder="e.g., Advanced Case Analysis Rubric"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                        <textarea
+                          value={rubricForm.description}
+                          onChange={(e) => setRubricForm({ ...rubricForm, description: e.target.value })}
+                          placeholder="Describe when to use this rubric..."
+                          rows={2}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Select Criteria * <span className="font-normal text-gray-500">(click to add/remove, drag to reorder)</span>
+                        </label>
+                        <div className="border border-gray-300 rounded-lg p-3 space-y-2 max-h-64 overflow-y-auto">
+                          {criteriaList.length === 0 ? (
+                            <p className="text-sm text-gray-500">Loading criteria...</p>
+                          ) : (
+                            <>
+                              {/* Selected criteria (in order) */}
+                              {rubricForm.criteria_ids.length > 0 && (
+                                <div className="mb-3 pb-3 border-b border-gray-200">
+                                  <p className="text-xs font-medium text-gray-500 mb-2">Selected (in order):</p>
+                                  {rubricForm.criteria_ids.map((id, index) => {
+                                    const criterion = criteriaList.find(c => c.criteria_id === id);
+                                    if (!criterion) return null;
+                                    return (
+                                      <div
+                                        key={id}
+                                        draggable
+                                        onDragStart={(e) => e.dataTransfer.setData('text/plain', String(index))}
+                                        onDragOver={(e) => e.preventDefault()}
+                                        onDrop={(e) => {
+                                          e.preventDefault();
+                                          const dragIndex = parseInt(e.dataTransfer.getData('text/plain'));
+                                          handleCriteriaOrderChange(dragIndex, index);
+                                        }}
+                                        className="flex items-center gap-2 p-2 bg-green-50 border border-green-200 rounded mb-1 cursor-move"
+                                      >
+                                        <span className="text-gray-400">☰</span>
+                                        <span className="flex-1 text-sm">
+                                          <strong>{criterion.name}</strong>
+                                          <span className="text-gray-500 ml-2">({criterion.max_points} pts)</span>
+                                        </span>
+                                        <button
+                                          onClick={() => toggleCriterionInRubric(id)}
+                                          className="text-red-500 hover:text-red-700 text-sm"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {/* Available criteria */}
+                              <p className="text-xs font-medium text-gray-500 mb-2">Available criteria:</p>
+                              {criteriaList.filter(c => !rubricForm.criteria_ids.includes(c.criteria_id)).map((criterion) => (
+                                <div
+                                  key={criterion.criteria_id}
+                                  onClick={() => toggleCriterionInRubric(criterion.criteria_id)}
+                                  className="flex items-center gap-2 p-2 bg-gray-50 border border-gray-200 rounded cursor-pointer hover:bg-gray-100"
+                                >
+                                  <span className="flex-1 text-sm">
+                                    <strong>{criterion.name}</strong>
+                                    <span className="text-gray-500 ml-2">({criterion.max_points} pts)</span>
+                                  </span>
+                                  <span className="text-green-600 text-sm">+ Add</span>
+                                </div>
+                              ))}
+                            </>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Total: {rubricForm.criteria_ids.reduce((sum, id) => {
+                            const c = criteriaList.find(c => c.criteria_id === id);
+                            return sum + (c?.max_points || 0);
+                          }, 0)} points
+                        </p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Additional Instructions (Optional)</label>
+                        <textarea
+                          value={rubricForm.additional_prompt}
+                          onChange={(e) => setRubricForm({ ...rubricForm, additional_prompt: e.target.value })}
+                          placeholder="e.g., Be strict on grammar and spelling. Focus on financial analysis depth."
+                          rows={3}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">These instructions will be included in the LLM evaluation prompt</p>
+                      </div>
+                    </div>
+                    <div className="mt-6 flex justify-end gap-3">
+                      <button
+                        onClick={() => setShowRubricModal(false)}
+                        className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleSaveRubric}
+                        disabled={isSavingRubric}
+                        className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+                      >
+                        {isSavingRubric ? 'Saving...' : 'Save Rubric'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Rubric Usage Modal */}
+            {showRubricUsageModal && rubricUsageData && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+                  <div className="p-6">
+                    <div className="flex justify-between items-start mb-4">
+                      <div>
+                        <h3 className="text-xl font-bold text-gray-900">Rubric Usage</h3>
+                        <p className="text-sm text-gray-500 mt-1">
+                          Assignments using "{rubricUsageData.rubric.rubric_name}"
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setShowRubricUsageModal(false)}
+                        className="text-gray-400 hover:text-gray-600"
+                      >
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+
+                    {isLoadingRubricUsage ? (
+                      <div className="text-center py-8">
+                        <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-purple-500 border-t-transparent"></div>
+                        <p className="mt-2 text-gray-500">Loading assignments...</p>
+                      </div>
+                    ) : rubricUsageData.assignments.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">
+                        <p>This rubric is not currently assigned to any section-cases.</p>
+                        <p className="text-sm mt-2">
+                          {!!rubricUsageData.rubric.is_system_default
+                            ? "As the system default, it will be used for assignments without a specific rubric."
+                            : "Assign it to a section-case in the Assignments tab."}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <p className="text-sm text-gray-600 mb-3">
+                          Found {rubricUsageData.assignments.length} assignment{rubricUsageData.assignments.length !== 1 ? 's' : ''}:
+                        </p>
+                        {rubricUsageData.assignments.map((assignment: any, index: number) => (
+                          <div
+                            key={`${assignment.section_id}-${assignment.case_id}`}
+                            className="p-3 bg-gray-50 rounded-lg border border-gray-200"
+                          >
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <p className="font-medium text-gray-900">{assignment.section_title}</p>
+                                <p className="text-sm text-gray-600">{assignment.case_title}</p>
+                              </div>
+                              <div className="text-right">
+                                <span className={`px-2 py-0.5 text-xs rounded ${
+                                  assignment.active
+                                    ? 'bg-emerald-100 text-emerald-700'
+                                    : 'bg-gray-200 text-gray-600'
+                                }`}>
+                                  {assignment.active ? 'Active' : 'Inactive'}
+                                </span>
+                                <p className="text-xs text-gray-500 mt-1">{assignment.year_term}</p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="flex justify-end mt-6 pt-4 border-t border-gray-200">
+                      <button
+                        onClick={() => setShowRubricUsageModal(false)}
+                        className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         ) : primaryTab === 'courses' ? (
           coursesSubTab === 'semesters' ? (
             renderSemestersTab()
@@ -7087,10 +8129,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             renderCourseSetupTab()
           ) : coursesSubTab === 'students' ? (
             <StudentManager />
-          ) : coursesSubTab === 'assignments' ? (
-            renderAssignmentsTab()
-          ) : coursesSubTab === 'chat-options' ? (
-            renderChatOptionsTab()
           ) : (
           /* ==================== SECTION LIST ==================== */
           <div className="p-6 max-w-7xl mx-auto">

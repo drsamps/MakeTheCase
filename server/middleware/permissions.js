@@ -6,7 +6,7 @@
 const BASE_FUNCTIONS = ['chats', 'assignments', 'sections', 'students', 'cases', 'casefiles'];
 
 // Superuser-only functions by default
-const SUPERUSER_FUNCTIONS = ['caseprep', 'personas', 'prompts', 'models', 'settings', 'instructors'];
+const SUPERUSER_FUNCTIONS = ['caseprep', 'personas', 'prompts', 'models', 'settings', 'instructors', 'rubrics'];
 
 /**
  * Middleware to check if admin has access to specific dashboard function

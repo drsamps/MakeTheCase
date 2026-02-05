@@ -182,29 +182,8 @@ ${personaInstructions}${additionalPersonality}
   return staticContent + dynamicContent;
 };
 
-/**
- * Build coach/evaluation prompt with CACHE-OPTIMIZED structure.
- * Static content (case, rubric) comes FIRST for LLM prompt caching.
- */
-export const buildCoachPrompt = (
-  chatHistory: string,
-  studentName: string,
-  caseData: CaseData = DEFAULT_CASE_DATA,
-  freeHints: number = 1
-): string => {
-  // STATIC CONTENT FIRST (for caching)
-  const staticContent = `
-=== BUSINESS CASE DOCUMENT ===
-${caseData.case_content}
-=== END BUSINESS CASE ===
-
-=== EVALUATION RUBRIC ===
-
-You are a professional business school Coach. Your task is to provide a performance review for a student based on a simulated conversation they had with ${caseData.protagonist}, the protagonist of the "${caseData.case_title}" case.
-
-Your evaluation MUST be based ONLY on the information within the transcript and the business case.
-
-**Evaluation Criteria:**
+// Default criteria prompt for backward compatibility (when no rubric is provided)
+const DEFAULT_CRITERIA_PROMPT = `**Evaluation Criteria:**
 
 *   **Q1. Did the student appear to have studied the reading material?**
     *   1 point = student answers were inconsistent with reading material.
@@ -223,14 +202,63 @@ Your evaluation MUST be based ONLY on the information within the transcript and 
     *   2 = answer mildly justified by the reading material.
     *   3 = okay justification that superficially references the reading material.
     *   4 = good justification based on the reading material.
-    *   5 = solid justification that draws on relevant points from the reading material.
+    *   5 = solid justification that draws on relevant points from the reading material.`;
 
+// Type for rubric data passed to buildCoachPrompt
+export interface RubricForPrompt {
+  criteria_prompt: string;
+  additional_prompt?: string | null;
+  total_points: number;
+  rubric_id?: number;
+}
+
+/**
+ * Build coach/evaluation prompt with CACHE-OPTIMIZED structure.
+ * Static content (case, rubric) comes FIRST for LLM prompt caching.
+ *
+ * @param chatHistory - The conversation transcript
+ * @param studentName - Name of the student being evaluated
+ * @param caseData - Case document data
+ * @param freeHints - Number of free hints before penalty (default 1)
+ * @param rubric - Optional rubric with cached criteria_prompt
+ */
+export const buildCoachPrompt = (
+  chatHistory: string,
+  studentName: string,
+  caseData: CaseData = DEFAULT_CASE_DATA,
+  freeHints: number = 1,
+  rubric?: RubricForPrompt
+): string => {
+  // Use rubric's cached prompt or fall back to default
+  const criteriaPrompt = rubric?.criteria_prompt || DEFAULT_CRITERIA_PROMPT;
+  const totalPoints = rubric?.total_points ?? 15;
+  const numCriteria = rubric ? (criteriaPrompt.match(/\*\*Q\d+\./g) || []).length || 3 : 3;
+
+  // Additional instructor-specified instructions
+  const additionalInstructions = rubric?.additional_prompt
+    ? `\n**Additional Evaluation Instructions:**\n${rubric.additional_prompt}\n`
+    : '';
+
+  // STATIC CONTENT FIRST (for caching)
+  const staticContent = `
+=== BUSINESS CASE DOCUMENT ===
+${caseData.case_content}
+=== END BUSINESS CASE ===
+
+=== EVALUATION RUBRIC ===
+
+You are a professional business school Coach. Your task is to provide a performance review for a student based on a simulated conversation they had with ${caseData.protagonist}, the protagonist of the "${caseData.case_title}" case.
+
+Your evaluation MUST be based ONLY on the information within the transcript and the business case.
+
+${criteriaPrompt}
+${additionalInstructions}
 **Your Task:**
 1.  Read the Business Case and the Conversation Transcript.
-2.  For each of the 3 criteria, provide a score (1 through 5) and brief, constructive feedback explaining your reasoning.
+2.  For each of the ${numCriteria} criteria, provide a score and brief, constructive feedback explaining your reasoning.
   * Be generous in scores, giving a higher score if it can be justified. But do not give a score that is undeserved.
   * Be kind in your feedback, providing compliments when justified, and presenting criticisms with dignity.
-3.  Calculate the total score.
+3.  Calculate the total score (maximum ${totalPoints} points before hint penalties).
 4.  Tally how many times the student asked for a hint. A "hint" is counted ONLY when a message from the student (e.g., "Student: ...") explicitly contains the word "hint". Do NOT count hints based on other words like "help" or "clue". Ignore any use of the word "help" or "helpful" from the protagonist. Every student gets ${freeHints} free hint${freeHints !== 1 ? 's' : ''}, and forfeits a point for every additional hint beyond that. Your calculated total score should reflect this penalty.
 5.  Write a concise overall summary of the student's performance.
 6.  You MUST respond in a valid JSON format that adheres to the provided schema. Do not include any text, markdown, or code fences before or after the JSON object.

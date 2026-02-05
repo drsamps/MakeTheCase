@@ -174,7 +174,7 @@ router.post('/', async (req, res) => {
   try {
     const {
       student_id, case_id, case_chat_id, score, summary, criteria,
-      helpful, liked, improve, super_model, transcript
+      helpful, liked, improve, super_model, transcript, rubric_id
     } = req.body;
 
     if (!student_id || score === undefined) {
@@ -189,10 +189,10 @@ router.post('/', async (req, res) => {
     const criteriaJson = criteria ? JSON.stringify(criteria) : null;
 
     await pool.execute(
-      `INSERT INTO evaluations (id, student_id, case_id, case_chat_id, score, summary, criteria, helpful, liked, improve, super_model, allow_rechat)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)`,
+      `INSERT INTO evaluations (id, student_id, case_id, case_chat_id, score, summary, criteria, helpful, liked, improve, super_model, allow_rechat, rubric_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?)`,
       [id, student_id, case_id || null, case_chat_id, score, summary || null, criteriaJson,
-       helpful || null, liked || null, improve || null, super_model || null]
+       helpful || null, liked || null, improve || null, super_model || null, rubric_id || null]
     );
 
     // Update the case_chat status to completed
