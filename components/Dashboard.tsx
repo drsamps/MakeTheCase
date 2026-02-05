@@ -7191,7 +7191,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             {/* Rubrics */}
             {hasAccess(user, 'rubrics') && (
               <button
-                onClick={() => setPrimaryTab('rubrics')}
+                onClick={() => {
+                  setPrimaryTab('rubrics');
+                  if (rubricsList.length === 0) fetchRubrics();
+                  if (criteriaList.length === 0) fetchCriteria();
+                }}
                 className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
                   primaryTab === 'rubrics'
                     ? 'bg-gray-50 text-green-600 border-b-2 border-green-600'
