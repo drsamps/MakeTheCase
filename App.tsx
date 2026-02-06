@@ -128,6 +128,7 @@ const App: React.FC = () => {
     free_hints: 1,
     ask_for_feedback: false,
     ask_save_transcript: false,
+    always_save_transcript: false,
     allowed_personas: 'moderate,strict,liberal,leading,sycophantic',
     default_persona: 'moderate',
     allow_repeat: false,
@@ -1083,8 +1084,12 @@ const App: React.FC = () => {
         const sanitizedLiked = sanitizeFeedback(likedFeedback);
         const sanitizedImprove = sanitizeFeedback(improveFeedback);
 
+        // Check if transcript should be saved (either by user permission or always_save_transcript setting)
+        const alwaysSave = chatOptions?.always_save_transcript ?? false;
+        const shouldSaveTranscript = shareTranscript || alwaysSave;
+
         let transcriptToSave: string | null = null;
-        if (shareTranscript) {
+        if (shouldSaveTranscript) {
           // Save the ORIGINAL transcript (NOT anonymized)
           // Anonymization happens at display time, not save time
           transcriptToSave = messages.map(msg => {
@@ -1124,7 +1129,7 @@ const App: React.FC = () => {
                 body: JSON.stringify({
                   case_chat_id: currentCaseChatId,
                   transcript: transcriptToSave,
-                  saved_with_permission: shareTranscript
+                  saved_with_permission: shouldSaveTranscript && shareTranscript
                 })
               });
               if (!transcriptResponse.ok) {

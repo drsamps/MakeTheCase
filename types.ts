@@ -144,6 +144,7 @@ export interface ChatOptions {
   free_hints: number;
   ask_for_feedback: boolean;
   ask_save_transcript: boolean;
+  always_save_transcript: boolean; // Always save transcript without asking and without anonymizing
   allowed_personas: string;
   default_persona: string;
   show_case: boolean;

@@ -12,6 +12,7 @@ When a section-case assignment has `chat_options` set to NULL in the database, t
 | `free_hints` | int | 1 | Number of hints that don't penalize the student's score. After using free hints, each additional hint costs 1 point. |
 | `ask_for_feedback` | boolean | false | Whether to ask the student for feedback at the end of the chat (helpfulness rating, what they liked, suggestions for improvement). |
 | `ask_save_transcript` | boolean | false | Whether to ask the student for permission to save an anonymized version of the chat transcript for research/improvement purposes. |
+| `always_save_transcript` | boolean | false | Always save the chat transcript without asking the student. Transcripts are saved in their original, non-anonymized form. |
 | `allowed_personas` | string | "moderate,strict,liberal,leading,sycophantic" | Comma-separated list of protagonist persona options available to students. Valid values: moderate, strict, liberal, leading, sycophantic. |
 | `default_persona` | string | "moderate" | The pre-selected persona when a student starts a new chat session. Must be one of the allowed_personas. |
 
@@ -25,6 +26,7 @@ When stored in the database `section_cases.chat_options` column:
   "free_hints": 1,
   "ask_for_feedback": true,
   "ask_save_transcript": true,
+  "always_save_transcript": false,
   "allowed_personas": "moderate,strict",
   "default_persona": "moderate"
 }

@@ -491,6 +491,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     free_hints: 1,
     ask_for_feedback: false,
     ask_save_transcript: false,
+    always_save_transcript: false,
     allowed_personas: 'moderate,strict,liberal,leading,sycophantic',
     default_persona: 'moderate',
     show_case: true,
@@ -5922,6 +5923,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, ask_save_transcript: applicableDefault?.ask_save_transcript ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
                     )}
                   </div>
+                  <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('always_save_transcript', editingChatOptions.always_save_transcript, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={editingChatOptions.always_save_transcript ?? false}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, always_save_transcript: e.target.checked})}
+                        disabled={!isEditingDefault && useDefaultOptions}
+                        className="rounded border-gray-300"
+                      />
+                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Always save transcript without asking</span>
+                    </label>
+                    {!useDefaultOptions && isOptionModified('always_save_transcript', editingChatOptions.always_save_transcript, applicableDefault) && (
+                      <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, always_save_transcript: applicableDefault?.always_save_transcript ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                    )}
+                  </div>
                   {useDefaultOptions && applicableDefault && (
                     <p className="text-xs text-gray-400 mt-2 italic">All settings inherited from {getInheritanceSource(isEditingDefault, chatOptionsSection, isDefaultSectionSpecific)}</p>
                   )}
@@ -9318,6 +9334,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                   className="rounded border-gray-300"
                                 />
                                 Ask to save anonymized transcript
+                              </label>
+                              <label className="flex items-center gap-2 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={editingChatOptions.always_save_transcript ?? false}
+                                  onChange={(e) => setEditingChatOptions({...editingChatOptions, always_save_transcript: e.target.checked})}
+                                  className="rounded border-gray-300"
+                                />
+                                Always save transcript without asking
                               </label>
                             </div>
                             <div>
