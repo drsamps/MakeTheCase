@@ -5314,8 +5314,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         if (hasCustomOptions) {
           setEditingChatOptions({ ...sc.chat_options });
         } else {
-          // Use the applicable default
-          setEditingChatOptions({ ...applicableDefault } || { ...defaultChatOptions });
+          // Refresh defaults from API to ensure we have the latest values
+          const { data: freshDefaults, section_specific } = await fetchChatOptionsDefaults(chatOptionsSection || undefined);
+          setApplicableDefault(freshDefaults);
+          setIsDefaultSectionSpecific(section_specific);
+          setEditingChatOptions({ ...freshDefaults });
         }
       }
     } else {
