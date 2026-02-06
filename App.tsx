@@ -1966,15 +1966,21 @@ const App: React.FC = () => {
                   const minExchanges = chatOptions?.require_minimum_exchanges ?? 0;
                   const userMessageCount = messages.filter(m => m.role === MessageRole.USER).length;
                   const meetsMinimum = minExchanges === 0 || userMessageCount >= minExchanges;
-                  return meetsMinimum ? (
+                  const isDisabled = !meetsMinimum || isLoading;
+                  const tooltipText = !meetsMinimum 
+                    ? `You need at least ${minExchanges} exchange${minExchanges !== 1 ? 's' : ''} before you can finish (currently ${userMessageCount})`
+                    : 'End the chat and get your evaluation';
+                  
+                  return (
                     <button
                       onClick={handleFinishChat}
-                      disabled={isLoading}
+                      disabled={isDisabled}
+                      title={tooltipText}
                       className="px-3 py-1.5 text-sm font-medium text-green-600 bg-green-50 border border-green-200 rounded-lg hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Finish Chat
                     </button>
-                  ) : null;
+                  );
                 })()}
                 {chatOptions?.restart_chat && (
                   <button
