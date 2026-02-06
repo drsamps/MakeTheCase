@@ -2,7 +2,7 @@ import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 
-const router = express.Router();
+const router = express.Router(); // Position analytics updated to show all defined positions
 
 /**
  * GET /api/analytics/results
@@ -440,6 +440,40 @@ router.get('/positions', verifyToken, requireRole(['admin']), async (req, res) =
       ? (summary.position_changes / totalWithPositions * 100).toFixed(1)
       : 0;
 
+    // Get all positions defined for the relevant scenario(s)
+    let allPositionsQuery = `
+      SELECT DISTINCT sp.position_id, sp.position_name
+      FROM scenario_positions sp
+      WHERE sp.position_enabled = TRUE
+    `;
+    let allPositionsParams = [];
+
+    if (scenario_id) {
+      allPositionsQuery += ' AND sp.scenario_id = ?';
+      allPositionsParams.push(scenario_id);
+    } else if (case_id) {
+      // Get all scenarios for this case
+      allPositionsQuery += `
+        AND sp.scenario_id IN (
+          SELECT id FROM case_scenarios WHERE case_id = ?
+        )
+      `;
+      allPositionsParams.push(case_id);
+    } else {
+      // Get all scenarios for all enabled cases
+      allPositionsQuery += `
+        AND sp.scenario_id IN (
+          SELECT cs.id FROM case_scenarios cs
+          JOIN cases c ON cs.case_id = c.case_id
+          WHERE c.enabled = TRUE
+        )
+      `;
+    }
+
+    allPositionsQuery += ' ORDER BY sp.position_name';
+
+    const [allPositions] = await pool.execute(allPositionsQuery, allPositionsParams);
+
     // Get position distribution (using position names for grouping)
     const [positionRows] = await pool.execute(
       `SELECT
@@ -459,22 +493,40 @@ router.get('/positions', verifyToken, requireRole(['admin']), async (req, res) =
       params
     );
 
-    // Calculate percentages
-    const byPosition = positionRows.map(row => ({
-      position_id: row.position_id,
-      position_name: row.position_name,
-      initial_count: row.initial_count,
-      initial_percentage: totalWithPositions > 0
-        ? (row.initial_count / totalWithPositions * 100).toFixed(1)
-        : 0,
-      final_count: row.final_count,
-      final_percentage: totalWithPositions > 0
-        ? (row.final_count / totalWithPositions * 100).toFixed(1)
-        : 0,
-      net_change: row.final_count - row.initial_count
-    }));
+    // Create a map of position counts from actual data
+    const positionCountMap = new Map();
+    positionRows.forEach(row => {
+      positionCountMap.set(row.position_name, {
+        position_id: row.position_id,
+        initial_count: row.initial_count,
+        final_count: row.final_count
+      });
+    });
 
-    // Get change matrix
+    // Build by_position array including ALL defined positions
+    const byPosition = allPositions.map(pos => {
+      const counts = positionCountMap.get(pos.position_name) || {
+        position_id: pos.position_id,
+        initial_count: 0,
+        final_count: 0
+      };
+
+      return {
+        position_id: counts.position_id,
+        position_name: pos.position_name,
+        initial_count: counts.initial_count,
+        initial_percentage: totalWithPositions > 0
+          ? (counts.initial_count / totalWithPositions * 100).toFixed(1)
+          : '0.0',
+        final_count: counts.final_count,
+        final_percentage: totalWithPositions > 0
+          ? (counts.final_count / totalWithPositions * 100).toFixed(1)
+          : '0.0',
+        net_change: counts.final_count - counts.initial_count
+      };
+    });
+
+    // Get change matrix data
     const [changeRows] = await pool.execute(
       `SELECT
         COALESCE(cc.initial_position, sp_init.position_name) as from_position,
@@ -489,8 +541,21 @@ router.get('/positions', verifyToken, requireRole(['admin']), async (req, res) =
       params
     );
 
-    // Build change matrix object
+    // Build complete change matrix with all positions (including 0s)
     const changeMatrix = {};
+    const allPositionNames = allPositions.map(p => p.position_name);
+    
+    // Initialize matrix with all positions and 0 counts
+    for (const fromPos of allPositionNames) {
+      changeMatrix[fromPos] = {};
+      for (const toPos of allPositionNames) {
+        changeMatrix[fromPos][toPos] = 0;
+      }
+      // Also include "Unspecified" column
+      changeMatrix[fromPos]['Unspecified'] = 0;
+    }
+
+    // Fill in actual counts from data
     for (const row of changeRows) {
       if (!changeMatrix[row.from_position]) {
         changeMatrix[row.from_position] = {};
