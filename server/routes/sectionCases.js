@@ -4,6 +4,40 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// Helper function to resolve chat options with defaults fallback
+async function resolveChatOptions(sectionId, chatOptions) {
+  // If chat_options is explicitly set, use it
+  if (chatOptions !== null && chatOptions !== undefined) {
+    return chatOptions;
+  }
+
+  // Otherwise, fetch defaults (section-specific or global)
+  try {
+    // Try section-specific default first
+    const [sectionDefaults] = await pool.execute(
+      'SELECT chat_options FROM chat_options_defaults WHERE section_id = ?',
+      [sectionId]
+    );
+    if (sectionDefaults.length > 0) {
+      return sectionDefaults[0].chat_options;
+    }
+
+    // Fall back to global default
+    const [globalDefaults] = await pool.execute(
+      'SELECT chat_options FROM chat_options_defaults WHERE section_id IS NULL'
+    );
+    if (globalDefaults.length > 0) {
+      return globalDefaults[0].chat_options;
+    }
+
+    // Final fallback: return null (frontend will use its hardcoded defaults)
+    return null;
+  } catch (error) {
+    console.error('Error fetching chat options defaults:', error);
+    return null;
+  }
+}
+
 // GET /api/sections/:sectionId/cases - List cases assigned to a section
 router.get('/:sectionId/cases', async (req, res) => {
   try {
@@ -27,11 +61,16 @@ router.get('/:sectionId/cases', async (req, res) => {
     // For cases that use scenarios, fetch the assigned scenarios (enabled only)
     const withScenarios = await Promise.all(
       rows.map(async (row) => {
-        const parsedChatOptions = typeof row.chat_options === 'string'
+        let parsedChatOptions = typeof row.chat_options === 'string'
           ? (() => {
               try { return JSON.parse(row.chat_options); } catch { return row.chat_options; }
             })()
           : row.chat_options;
+
+        // If chat_options is NULL, resolve from defaults
+        if (parsedChatOptions === null || parsedChatOptions === undefined) {
+          parsedChatOptions = await resolveChatOptions(row.section_id, parsedChatOptions);
+        }
 
         if (!row.use_scenarios) {
           return { ...row, chat_options: parsedChatOptions };
@@ -262,9 +301,16 @@ router.get('/:sectionId/active-case', async (req, res) => {
       }
     }
 
+    // Resolve chat_options with defaults if NULL
+    let resolvedChatOptions = caseData.chat_options;
+    if (resolvedChatOptions === null || resolvedChatOptions === undefined) {
+      resolvedChatOptions = await resolveChatOptions(caseData.section_id, resolvedChatOptions);
+    }
+
     res.json({
       data: {
         ...caseData,
+        chat_options: resolvedChatOptions,
         is_available: availability.available,
         availability_message: availability.reason,
         scenarios: scenarios
