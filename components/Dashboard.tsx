@@ -498,13 +498,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     do_evaluation: true,
     show_evaluation_details: true,
     chatbot_personality: '',
+    chat_repeats: 0,
+    save_dead_transcripts: false,
     allow_repeat: false,
     timeout_chat: false,
     allow_finish_button: false,
     restart_chat: false,
     allow_exit: false,
     require_minimum_exchanges: 0,
-    max_message_length: 0
+    max_message_length: 0,
+    disable_position_tracking: false
   };
 
   // Helper to check if a chat option value differs from the applicable default
@@ -517,11 +520,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   // Get inheritance source label
-  const getInheritanceSource = (isEditingDefault: 'global' | 'section' | null, chatOptionsSection: string | null): string => {
-    if (isEditingDefault === 'global') return 'System default';
+  const getInheritanceSource = (isEditingDefault: 'global' | 'section' | null, chatOptionsSection: string | null, isSectionSpecific: boolean): string => {
+    if (isEditingDefault === 'global') return 'Global default';
     if (isEditingDefault === 'section') return 'Section default';
-    // For assignment-level, show where defaults come from
-    return chatOptionsSection ? 'Section default' : 'Global default';
+    // For assignment-level, show where defaults actually come from
+    return isSectionSpecific ? 'Section default' : 'Global default';
   };
 
   // Chat options category collapse state (start collapsed)
@@ -558,6 +561,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [isEditingDefault, setIsEditingDefault] = useState<'global' | 'section' | null>(null);
   const [useDefaultOptions, setUseDefaultOptions] = useState(true);
   const [applicableDefault, setApplicableDefault] = useState<any>(null);
+  const [isDefaultSectionSpecific, setIsDefaultSectionSpecific] = useState<boolean>(false);
 
   // Copy assignments state
   const [copyFromSection, setCopyFromSection] = useState<string | null>(null);
@@ -5242,10 +5246,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         headers: { Authorization: `Bearer ${token}` }
       });
       const result = await response.json();
-      return result.data || defaultChatOptions;
+      // Merge with defaultChatOptions to ensure all fields are present
+      const mergedData = { ...defaultChatOptions, ...(result.data || {}) };
+      return {
+        data: mergedData,
+        section_specific: result.section_specific || false
+      };
     } catch (error) {
       console.error('Error fetching defaults:', error);
-      return defaultChatOptions;
+      return {
+        data: { ...defaultChatOptions },
+        section_specific: false
+      };
     }
   };
 
@@ -5258,20 +5270,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     if (sectionId === '__global_default__') {
       // Editing global default
       setIsEditingDefault('global');
-      const defaults = await fetchChatOptionsDefaults();
+      const { data: defaults, section_specific } = await fetchChatOptionsDefaults();
       setEditingChatOptions({ ...defaults });
       setApplicableDefault(null);
+      setIsDefaultSectionSpecific(false);
     } else if (sectionId) {
       // Regular section selected - reset default editing mode
       setIsEditingDefault(null);
       await fetchSectionCases(sectionId);
       // Fetch applicable default for this section
-      const defaults = await fetchChatOptionsDefaults(sectionId);
+      const { data: defaults, section_specific } = await fetchChatOptionsDefaults(sectionId);
       setApplicableDefault(defaults);
+      setIsDefaultSectionSpecific(section_specific);
     } else {
       // Nothing selected
       setIsEditingDefault(null);
       setApplicableDefault(null);
+      setIsDefaultSectionSpecific(false);
     }
   };
 
@@ -5284,8 +5299,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       setIsEditingDefault('section');
       setUseDefaultOptions(true);
       // Fetch section-specific default (will fall back to global if not set)
-      const defaults = await fetchChatOptionsDefaults(chatOptionsSection || undefined);
+      const { data: defaults, section_specific } = await fetchChatOptionsDefaults(chatOptionsSection || undefined);
       setEditingChatOptions({ ...defaults });
+      setIsDefaultSectionSpecific(section_specific);
     } else if (caseId) {
       // Regular case selected
       setIsEditingDefault(null);
@@ -5406,6 +5422,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleSaveDefault = async () => {
     if (!editingChatOptions) return;
 
+    setIsSavingChatOptions(true);
     try {
       const token = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/chat-options/defaults`, {
@@ -5427,14 +5444,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       }
 
       setSuccessMessage(result.message || 'Default saved successfully');
-      setTimeout(() => setSuccessMessage(null), 3000);
+      setTimeout(() => setSuccessMessage(null), 5000);
 
-      // Update applicable default if we just saved section default
+      // Update applicable default and section_specific flag after save
       if (isEditingDefault === 'section') {
         setApplicableDefault({ ...editingChatOptions });
+        setIsDefaultSectionSpecific(true);
+      } else if (isEditingDefault === 'global') {
+        // After saving global, keep the edited options visible
+        // No need to refetch since we just saved them
+        // If we're in a section context, update applicable default to reflect new global
+        if (chatOptionsSection && !isDefaultSectionSpecific) {
+          setApplicableDefault({ ...editingChatOptions });
+        }
       }
     } catch (err: any) {
       setError(err.message || 'Failed to save defaults');
+    } finally {
+      setIsSavingChatOptions(false);
     }
   };
 
@@ -5571,9 +5598,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 <h3 className="font-medium text-gray-900">
                   Default for Section: {assignmentsSectionsList.find((s: any) => s.section_id === chatOptionsSection)?.section_title}
                 </h3>
-                <p className="text-sm text-gray-600 mt-1">
-                  These settings apply to new case assignments in this section unless overridden at the assignment level.
-                </p>
+                {!isDefaultSectionSpecific ? (
+                  <div className="mt-2 p-2 bg-blue-100 border border-blue-300 rounded-lg">
+                    <p className="text-sm text-blue-900">
+                      <strong>No section-specific default exists.</strong> The form below shows global defaults. You can modify and save to create a section-specific default.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-600 mt-1">
+                    These settings apply to new case assignments in this section unless overridden at the assignment level.
+                  </p>
+                )}
               </>
             ) : (
               <h3 className="font-medium text-gray-900">
@@ -5617,7 +5652,50 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             </div>
           )}
 
-          <div className={`p-4 space-y-2 ${!isEditingDefault && useDefaultOptions ? 'opacity-60 pointer-events-none' : ''}`}>
+          {/* Info banner when viewing inherited defaults */}
+          {!isEditingDefault && useDefaultOptions && applicableDefault && (
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-600" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                </svg>
+                <span className="text-sm text-blue-800">
+                  Using defaults from {getInheritanceSource(isEditingDefault, chatOptionsSection, isDefaultSectionSpecific)}. Expand categories below to view settings.
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  // Determine if we should navigate to section or global defaults
+                  const result = (async () => {
+                    const token = localStorage.getItem('admin_auth_token');
+                    const url = chatOptionsSection
+                      ? `${getApiBaseUrl()}/chat-options/defaults?section_id=${chatOptionsSection}`
+                      : `${getApiBaseUrl()}/chat-options/defaults`;
+                    const response = await fetch(url, {
+                      headers: { Authorization: `Bearer ${token}` }
+                    });
+                    const data = await response.json();
+                    return data.section_specific;
+                  })();
+                  
+                  result.then((isSectionSpecific) => {
+                    if (isSectionSpecific) {
+                      // Navigate to section default
+                      setChatOptionsCase('__section_default__');
+                    } else {
+                      // Navigate to global default
+                      handleChatOptionsSectionChange('__global_default__');
+                    }
+                  });
+                }}
+                className="text-sm font-medium text-blue-700 hover:text-blue-900 hover:underline whitespace-nowrap"
+              >
+                View/Edit Defaults →
+              </button>
+            </div>
+          )}
+
+          <div className={`p-4 space-y-2 ${!isEditingDefault && useDefaultOptions ? 'opacity-60' : ''}`}>
             {/* Modified options summary */}
             {!useDefaultOptions && applicableDefault && editingChatOptions && (() => {
               const optionKeys = Object.keys(defaultChatOptions);
@@ -5627,7 +5705,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   <div className="mb-3 p-2 bg-purple-50 border border-purple-200 rounded-lg flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className="text-purple-600 text-sm font-medium">{modifiedCount} option{modifiedCount !== 1 ? 's' : ''} modified</span>
-                      <span className="text-xs text-purple-500">from {getInheritanceSource(isEditingDefault, chatOptionsSection)}</span>
+                      <span className="text-xs text-purple-500">from {getInheritanceSource(isEditingDefault, chatOptionsSection, isDefaultSectionSpecific)}</span>
                     </div>
                     <button
                       type="button"
@@ -5700,7 +5778,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         max="10"
                         value={editingChatOptions.hints_allowed ?? 3}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, hints_allowed: parseInt(e.target.value) || 0})}
-                        disabled={useDefaultOptions}
+                        disabled={!isEditingDefault && useDefaultOptions}
                         className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />
                       {useDefaultOptions && applicableDefault && (
@@ -5730,7 +5808,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         max="5"
                         value={editingChatOptions.free_hints ?? 1}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, free_hints: parseInt(e.target.value) || 0})}
-                        disabled={useDefaultOptions}
+                        disabled={!isEditingDefault && useDefaultOptions}
                         className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />
                       {useDefaultOptions && applicableDefault && (
@@ -5760,7 +5838,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         type="checkbox"
                         checked={editingChatOptions.show_case ?? true}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, show_case: e.target.checked})}
-                        disabled={useDefaultOptions}
+                        disabled={!isEditingDefault && useDefaultOptions}
                         className="rounded border-gray-300"
                       />
                       <span className={useDefaultOptions ? 'text-gray-500' : ''}>Show case content in left panel</span>
@@ -5775,7 +5853,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         type="checkbox"
                         checked={editingChatOptions.show_timer ?? true}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, show_timer: e.target.checked})}
-                        disabled={useDefaultOptions}
+                        disabled={!isEditingDefault && useDefaultOptions}
                         className="rounded border-gray-300"
                       />
                       <span className={useDefaultOptions ? 'text-gray-500' : ''}>Show countdown timer during chat</span>
@@ -5790,7 +5868,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         type="checkbox"
                         checked={editingChatOptions.do_evaluation ?? true}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, do_evaluation: e.target.checked})}
-                        disabled={useDefaultOptions}
+                        disabled={!isEditingDefault && useDefaultOptions}
                         className="rounded border-gray-300"
                       />
                       <span className={useDefaultOptions ? 'text-gray-500' : ''}>Run evaluation after chat</span>
@@ -5805,7 +5883,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         type="checkbox"
                         checked={editingChatOptions.show_evaluation_details ?? true}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, show_evaluation_details: e.target.checked})}
-                        disabled={useDefaultOptions}
+                        disabled={!isEditingDefault && useDefaultOptions}
                         className="rounded border-gray-300"
                       />
                       <span className={useDefaultOptions ? 'text-gray-500' : ''}>Show full evaluation criteria (vs just score)</span>
@@ -5820,7 +5898,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         type="checkbox"
                         checked={editingChatOptions.ask_for_feedback ?? false}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_for_feedback: e.target.checked})}
-                        disabled={useDefaultOptions}
+                        disabled={!isEditingDefault && useDefaultOptions}
                         className="rounded border-gray-300"
                       />
                       <span className={useDefaultOptions ? 'text-gray-500' : ''}>Ask for feedback at end of chat</span>
@@ -5835,7 +5913,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         type="checkbox"
                         checked={editingChatOptions.ask_save_transcript ?? false}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_save_transcript: e.target.checked})}
-                        disabled={useDefaultOptions}
+                        disabled={!isEditingDefault && useDefaultOptions}
                         className="rounded border-gray-300"
                       />
                       <span className={useDefaultOptions ? 'text-gray-500' : ''}>Ask to save anonymized transcript</span>
@@ -5845,7 +5923,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     )}
                   </div>
                   {useDefaultOptions && applicableDefault && (
-                    <p className="text-xs text-gray-400 mt-2 italic">All settings inherited from {getInheritanceSource(isEditingDefault, chatOptionsSection)}</p>
+                    <p className="text-xs text-gray-400 mt-2 italic">All settings inherited from {getInheritanceSource(isEditingDefault, chatOptionsSection, isDefaultSectionSpecific)}</p>
                   )}
                 </div>
               )}
@@ -5931,7 +6009,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           type="checkbox"
                           checked={editingChatOptions.allow_repeat ?? false}
                           onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_repeat: e.target.checked})}
-                          disabled={useDefaultOptions}
+                          disabled={!isEditingDefault && useDefaultOptions}
                           className="rounded border-gray-300"
                         />
                         <span className={useDefaultOptions ? 'text-gray-500' : ''}>Allow students to repeat the chat multiple times</span>
@@ -5946,7 +6024,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           type="checkbox"
                           checked={editingChatOptions.timeout_chat ?? false}
                           onChange={(e) => setEditingChatOptions({...editingChatOptions, timeout_chat: e.target.checked})}
-                          disabled={useDefaultOptions}
+                          disabled={!isEditingDefault && useDefaultOptions}
                           className="rounded border-gray-300"
                         />
                         <span className={useDefaultOptions ? 'text-gray-500' : ''}>Auto-end chat when time limit expires</span>
@@ -5961,7 +6039,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           type="checkbox"
                           checked={editingChatOptions.allow_finish_button ?? false}
                           onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_finish_button: e.target.checked})}
-                          disabled={useDefaultOptions}
+                          disabled={!isEditingDefault && useDefaultOptions}
                           className="rounded border-gray-300"
                         />
                         <span className={useDefaultOptions ? 'text-gray-500' : ''}>Provide students a "Finish Chat" button to conclude the chat when done</span>
@@ -5976,7 +6054,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           type="checkbox"
                           checked={editingChatOptions.restart_chat ?? false}
                           onChange={(e) => setEditingChatOptions({...editingChatOptions, restart_chat: e.target.checked})}
-                          disabled={useDefaultOptions}
+                          disabled={!isEditingDefault && useDefaultOptions}
                           className="rounded border-gray-300"
                         />
                         <span className={useDefaultOptions ? 'text-gray-500' : ''}>Provide students a "Restart Chat" button to restart the current case chat</span>
@@ -5991,7 +6069,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           type="checkbox"
                           checked={editingChatOptions.allow_exit ?? false}
                           onChange={(e) => setEditingChatOptions({...editingChatOptions, allow_exit: e.target.checked})}
-                          disabled={useDefaultOptions}
+                          disabled={!isEditingDefault && useDefaultOptions}
                           className="rounded border-gray-300"
                         />
                         <span className={useDefaultOptions ? 'text-gray-500' : ''}>Provide students a "Cancel Chat" button to cancel and perhaps start over</span>
@@ -6025,7 +6103,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         max="20"
                         value={editingChatOptions.require_minimum_exchanges ?? 0}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, require_minimum_exchanges: parseInt(e.target.value) || 0})}
-                        disabled={useDefaultOptions}
+                        disabled={!isEditingDefault && useDefaultOptions}
                         className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />
                       <p className="text-xs text-gray-500 mt-1">Required before "time is up" (0 = none)</p>
@@ -6053,7 +6131,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         max="10000"
                         value={editingChatOptions.max_message_length ?? 0}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, max_message_length: parseInt(e.target.value) || 0})}
-                        disabled={useDefaultOptions}
+                        disabled={!isEditingDefault && useDefaultOptions}
                         className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />
                       <p className="text-xs text-gray-500 mt-1">Characters per message (0 = unlimited)</p>
@@ -6081,7 +6159,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         type="checkbox"
                         checked={editingChatOptions.disable_position_tracking ?? false}
                         onChange={(e) => setEditingChatOptions({...editingChatOptions, disable_position_tracking: e.target.checked})}
-                        disabled={useDefaultOptions}
+                        disabled={!isEditingDefault && useDefaultOptions}
                         className="rounded border-gray-300"
                       />
                       <span className={useDefaultOptions ? 'text-gray-500' : ''}>Disable position tracking for this assignment</span>
@@ -6098,14 +6176,64 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             {/* Save Actions - different based on what we're editing */}
             {isEditingDefault ? (
               /* Editing default: show save default button */
-              <div className="flex justify-end pt-4 border-t">
-                <button
-                  onClick={handleSaveDefault}
-                  disabled={isSavingChatOptions}
-                  className="px-4 py-2 text-sm font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50"
-                >
-                  {isSavingChatOptions ? 'Saving...' : isEditingDefault === 'global' ? 'Save Global Default' : 'Save Section Default'}
-                </button>
+              <div className="pt-4 border-t space-y-3">
+                {/* Success/Error messages for save actions */}
+                {successMessage && isEditingDefault && (
+                  <div className="bg-green-100 border border-green-200 text-green-700 p-3 rounded-lg flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    {successMessage}
+                  </div>
+                )}
+                {error && isEditingDefault && (
+                  <div className="bg-red-100 border border-red-200 text-red-700 p-3 rounded-lg">
+                    {error}
+                  </div>
+                )}
+                <div className="flex justify-between">
+                  {isEditingDefault === 'section' && (
+                    <button
+                      onClick={async () => {
+                        if (!confirm('Delete this section default? The section will revert to using global defaults.')) {
+                          return;
+                        }
+                        try {
+                          const token = localStorage.getItem('admin_auth_token');
+                          const response = await fetch(`${getApiBaseUrl()}/chat-options/defaults?section_id=${chatOptionsSection}`, {
+                            method: 'DELETE',
+                            headers: { Authorization: `Bearer ${token}` }
+                          });
+                          const result = await response.json();
+                          if (!response.ok || result.error) {
+                            throw new Error(result.error?.message || 'Failed to delete section default');
+                          }
+                          setSuccessMessage('Section default deleted. Now using global defaults.');
+                          setTimeout(() => setSuccessMessage(null), 5000);
+                          // Reload the section defaults to show global fallback
+                          const { data: defaults, section_specific } = await fetchChatOptionsDefaults(chatOptionsSection || undefined);
+                          setEditingChatOptions({ ...defaults });
+                          setIsDefaultSectionSpecific(section_specific);
+                        } catch (err: any) {
+                          setError(err.message || 'Failed to delete section default');
+                          setTimeout(() => setError(null), 5000);
+                        }
+                      }}
+                      disabled={isSavingChatOptions}
+                      className="px-4 py-2 text-sm font-medium text-red-600 border border-red-300 rounded-lg hover:bg-red-50 disabled:opacity-50"
+                    >
+                      Delete Section Default
+                    </button>
+                  )}
+                  {isEditingDefault === 'global' && <div />}
+                  <button
+                    onClick={handleSaveDefault}
+                    disabled={isSavingChatOptions}
+                    className="px-4 py-2 text-sm font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50"
+                  >
+                    {isSavingChatOptions ? 'Saving...' : isEditingDefault === 'global' ? 'Save Global Default' : 'Save Section Default'}
+                  </button>
+                </div>
               </div>
             ) : useDefaultOptions ? (
               /* Using defaults: show info message */

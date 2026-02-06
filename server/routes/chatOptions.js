@@ -1,5 +1,6 @@
 import express from 'express';
 import { pool } from '../db.js';
+import { verifyToken, requireRole } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -297,7 +298,7 @@ router.get('/defaults', async (req, res) => {
 
 // POST /api/chat-options/defaults - Create or update defaults
 // Body: { section_id: string|null, chat_options: object }
-router.post('/defaults', async (req, res) => {
+router.post('/defaults', verifyToken, requireRole(['admin']), async (req, res) => {
   const { section_id, chat_options } = req.body;
 
   if (!chat_options) {
@@ -307,13 +308,21 @@ router.post('/defaults', async (req, res) => {
   try {
     const chatOptionsJson = JSON.stringify(chat_options);
 
-    // Use REPLACE to insert or update (handles unique constraint on section_id)
-    await pool.execute(
-      `INSERT INTO chat_options_defaults (section_id, chat_options)
-       VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE chat_options = ?, updated_at = CURRENT_TIMESTAMP`,
-      [section_id || null, chatOptionsJson, chatOptionsJson]
-    );
+    // First, try to update existing record (LIMIT 1 to prevent multiple updates)
+    const updateQuery = section_id
+      ? 'UPDATE chat_options_defaults SET chat_options = ?, updated_at = CURRENT_TIMESTAMP WHERE section_id = ? LIMIT 1'
+      : 'UPDATE chat_options_defaults SET chat_options = ?, updated_at = CURRENT_TIMESTAMP WHERE section_id IS NULL LIMIT 1';
+    
+    const updateParams = section_id ? [chatOptionsJson, section_id] : [chatOptionsJson];
+    const [updateResult] = await pool.execute(updateQuery, updateParams);
+
+    // If no rows were updated, insert new record
+    if (updateResult.affectedRows === 0) {
+      await pool.execute(
+        'INSERT INTO chat_options_defaults (section_id, chat_options) VALUES (?, ?)',
+        [section_id || null, chatOptionsJson]
+      );
+    }
 
     res.json({
       data: { section_id: section_id || null, chat_options },
@@ -322,6 +331,42 @@ router.post('/defaults', async (req, res) => {
     });
   } catch (error) {
     console.error('Error saving defaults:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// DELETE /api/chat-options/defaults - Delete section-specific defaults
+// Query params: ?section_id=X (required - cannot delete global default)
+router.delete('/defaults', verifyToken, requireRole(['admin']), async (req, res) => {
+  const { section_id } = req.query;
+
+  if (!section_id) {
+    return res.status(400).json({
+      data: null,
+      error: { message: 'section_id is required. Cannot delete global default.' }
+    });
+  }
+
+  try {
+    const [result] = await pool.execute(
+      'DELETE FROM chat_options_defaults WHERE section_id = ?',
+      [section_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        data: null,
+        error: { message: 'Section-specific default not found' }
+      });
+    }
+
+    res.json({
+      data: { deleted: true },
+      message: `Section default deleted. Section will now use global defaults.`,
+      error: null
+    });
+  } catch (error) {
+    console.error('Error deleting section default:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
