@@ -105,7 +105,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                     <button
                       key={pos.position_id}
                       onClick={() => onPositionSelect?.(pos)}
-                      className="w-full px-4 py-3 text-left text-sm bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors"
+                      className="w-full px-4 py-3 text-left text-sm font-medium text-blue-900 bg-white border-2 border-blue-300 rounded-lg shadow-sm cursor-pointer transition-all duration-150 hover:bg-blue-50 hover:border-blue-500 hover:shadow-md active:translate-y-px active:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+                      aria-label={`Select position: ${pos.position}`}
                     >
                       {pos.position}
                     </button>

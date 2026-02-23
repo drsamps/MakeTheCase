@@ -47,6 +47,12 @@ type ResultsSubTab = 'responses' | 'positions';
 type AdminSubTab = 'instructors' | 'settings' | 'models' | 'personas' | 'prompts' | 'admins';
 type RubricsSubTab = 'criteria' | 'rubrics';
 
+const isEnabledFlag = (value: unknown): boolean =>
+  value === true || value === 1 || value === '1' || value === 'true';
+
+const isDisabledFlag = (value: unknown): boolean =>
+  value === false || value === 0 || value === '0' || value === 'false';
+
 interface DashboardProps {
   onLogout: () => void;
   user?: AdminUser | null;
@@ -2105,9 +2111,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const settingsResult = await settingsResponse.json();
       if (settingsResult.data) {
         setPositionSettings({
-          position_tracking_enabled: settingsResult.data.position_tracking_enabled ?? false,
+          position_tracking_enabled: isEnabledFlag(settingsResult.data.position_tracking_enabled),
           position_capture_method: settingsResult.data.position_capture_method || 'explicit',
-          track_position_change: settingsResult.data.track_position_change ?? true
+          track_position_change: !isDisabledFlag(settingsResult.data.track_position_change)
         });
       }
 
@@ -2292,16 +2298,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       });
       const settingsResult = await settingsResponse.json();
       if (settingsResult.data) {
-        // Default position_tracking_enabled to true if positions exist
-        const dbTrackingEnabled = settingsResult.data.position_tracking_enabled === true ||
-                                  settingsResult.data.position_tracking_enabled === 1;
-        const hasPositions = loadedPositions.length > 0;
-
         setPositionSettings({
-          position_tracking_enabled: hasPositions ? (dbTrackingEnabled || hasPositions) : dbTrackingEnabled,
+          // Reflect persisted DB value; do not auto-enable when positions exist.
+          position_tracking_enabled: isEnabledFlag(settingsResult.data.position_tracking_enabled),
           position_capture_method: settingsResult.data.position_capture_method || 'explicit',
-          track_position_change: settingsResult.data.track_position_change !== false &&
-                                 settingsResult.data.track_position_change !== 0
+          track_position_change: !isDisabledFlag(settingsResult.data.track_position_change)
         });
       }
     } catch (err) {

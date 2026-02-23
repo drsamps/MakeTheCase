@@ -28,6 +28,12 @@ interface Model {
 const FONT_SIZES = ['text-xs', 'text-sm', 'text-base', 'text-lg', 'text-xl'];
 const DEFAULT_FONT_SIZE = 'text-base';
 
+const isEnabledFlag = (value: unknown): boolean =>
+  value === true || value === 1 || value === '1' || value === 'true';
+
+const isDisabledFlag = (value: unknown): boolean =>
+  value === false || value === 0 || value === '0' || value === 'false';
+
 // Play a subtle double-beep sound to alert instructor of API errors
 const playErrorSound = () => {
   const ctx = new AudioContext();
@@ -740,8 +746,7 @@ const App: React.FC = () => {
 
       // Check if we need position selection in chat (for 'explicit' capture method)
       const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-      const isPosTrackingEnabled = activeCaseInfo?.position_tracking_enabled === true ||
-                                   activeCaseInfo?.position_tracking_enabled === 1;
+      const isPosTrackingEnabled = isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
       const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
       const selectedScenario = selectedScenarioId
         ? availableScenarios.find(s => s.scenario_id === selectedScenarioId)
@@ -1233,8 +1238,7 @@ const App: React.FC = () => {
         // Include position_id if explicit capture method is enabled (from assignment-level settings)
         // Check assignment's position tracking settings (from active-case endpoint)
         const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-        const isPosTrackingEnabled = activeCaseInfo?.position_tracking_enabled === true ||
-                                     activeCaseInfo?.position_tracking_enabled === 1;
+        const isPosTrackingEnabled = isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
         const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
 
         if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && selectedInitialPositionId) {
@@ -1531,11 +1535,9 @@ const App: React.FC = () => {
     // Position tracking settings from assignment level (section_cases table)
     // These come from the active-case endpoint response
     const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-    const isPositionTrackingEnabled = activeCaseInfo?.position_tracking_enabled === true ||
-                                      activeCaseInfo?.position_tracking_enabled === 1;
+    const isPositionTrackingEnabled = isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
     const positionCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
-    const trackPositionChange = activeCaseInfo?.track_position_change !== false &&
-                                activeCaseInfo?.track_position_change !== 0;
+    const trackPositionChange = !isDisabledFlag(activeCaseInfo?.track_position_change);
 
     // Available positions come from the selected scenario's positions array
     const availablePositions = selectedScenario?.positions || [];
@@ -1882,10 +1884,8 @@ const App: React.FC = () => {
           (() => {
             // Get position tracking settings for final position selection
             const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-            const isPosTrackingEnabled = activeCaseInfo?.position_tracking_enabled === true ||
-                                         activeCaseInfo?.position_tracking_enabled === 1;
-            const trackPosChange = activeCaseInfo?.track_position_change !== false &&
-                                   activeCaseInfo?.track_position_change !== 0;
+            const isPosTrackingEnabled = isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+            const trackPosChange = !isDisabledFlag(activeCaseInfo?.track_position_change);
             const selectedScenario = selectedScenarioId
               ? availableScenarios.find((s: any) => s.scenario_id === selectedScenarioId)
               : null;
