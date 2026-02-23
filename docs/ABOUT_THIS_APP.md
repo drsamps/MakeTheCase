@@ -158,6 +158,15 @@ When the AI model is temporarily unavailable (e.g., due to rate limiting during 
 - **File Storage**: Local filesystem for case documents
 - **Authentication**: JWT + BYU CAS integration
 
+## UI Style Guide Notes
+
+- **Header action button order**: In dashboard list screens (e.g., Students, Course Sections, Installed Cases), place the primary create button to the left of the refresh icon button.
+- **Examples**:
+  - `Add Student` then refresh icon
+  - `New Section` then refresh icon
+  - `+ New Case` then refresh icon
+- **Button styling**: Keep the create action as a labeled rounded button and refresh as an icon-only rounded button for consistent scanability.
+
 ## Chat Options Configuration
 
 Chat options are stored as JSON in the `section_cases.chat_options` column. The schema is documented in `config/chat_options.md`:

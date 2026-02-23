@@ -2248,6 +2248,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
     setExpandedScenarios(caseId);
     setIsLoadingScenarioAssignment(true);
+    setAssignmentPositions([]);
+    setAssignedScenarios([]);
 
     try {
       const token = localStorage.getItem('admin_auth_token');
@@ -3511,12 +3513,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           <h2 className="text-2xl font-bold text-gray-900">Installed Cases</h2>
           <p className="text-sm text-gray-500">{casesList.length} case{casesList.length !== 1 ? 's' : ''} available</p>
         </div>
-        <button
-          onClick={() => handleOpenCaseModal()}
-          className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          + New Case
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => handleOpenCaseModal()}
+            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            + New Case
+          </button>
+          <button
+            onClick={() => fetchCases()}
+            disabled={isLoadingCases}
+            title="Refresh cases list"
+            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ${isLoadingCases ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       {isLoadingCases ? (
@@ -3636,9 +3650,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           onClose={() => {
             setShowScenarioManager(false);
             setManagingScenarioCase(null);
+            fetchCases();
           }}
           onScenariosChanged={() => {
-            // Optionally refresh something if needed
+            fetchCases();
           }}
         />
       )}
@@ -4914,24 +4929,32 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                     <span>Enable position tracking for this assignment</span>
                                   </label>
 
-                                  {/* Case 1: Position tracking enabled but NO positions defined - show message */}
+                                  {/* Case 1: Position tracking enabled but NO positions available */}
                                   {positionSettings.position_tracking_enabled && assignmentPositions.length === 0 && (
                                     <div className="ml-6 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
-                                      No positions have been defined for this case's scenarios yet. To use position tracking, you need to define positions.{' '}
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setPrimaryTab('content');
-                                          setContentSubTab('cases');
-                                          setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title } as Case);
-                                          setShowScenarioManager(true);
-                                          setExpandedScenarios(null);
-                                        }}
-                                        className="text-purple-600 hover:text-purple-800 underline font-medium"
-                                      >
-                                        Go to Case Library &gt; Scenarios
-                                      </button>{' '}
-                                      to define positions for each scenario.
+                                      {assignedScenarios.length === 0 ? (
+                                        <>
+                                          No scenarios are assigned to this course section yet. Assign scenarios above first, then save — positions defined for those scenarios will appear here.
+                                        </>
+                                      ) : (
+                                        <>
+                                          No positions have been defined for the assigned scenarios yet. To use position tracking, you need to define positions.{' '}
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setPrimaryTab('content');
+                                              setContentSubTab('cases');
+                                              setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title } as Case);
+                                              setShowScenarioManager(true);
+                                              setExpandedScenarios(null);
+                                            }}
+                                            className="text-purple-600 hover:text-purple-800 underline font-medium"
+                                          >
+                                            Go to Case Library &gt; Scenarios
+                                          </button>{' '}
+                                          to define positions for each scenario.
+                                        </>
+                                      )}
                                     </div>
                                   )}
 

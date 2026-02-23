@@ -494,6 +494,12 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     setPositionFormData(prev => ({ ...prev, [field]: value }));
   };
 
+  const previewProtagonist = formData.protagonist.trim();
+  const previewRole = formData.protagonist_role.trim();
+  const previewTopic = formData.chat_topic.trim();
+  const previewRoleText = previewRole ? ` (${previewRole})` : '';
+  const studentFacingScenarioText = `Chat with ${previewProtagonist || '{protagonist}'}${previewRoleText} about ${previewTopic || '{chat_topic}'}`;
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
@@ -782,6 +788,11 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   className="w-full border rounded-lg px-3 py-2"
                   placeholder="e.g., Business expansion strategy"
                 />
+              </div>
+
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                <p className="text-sm text-blue-900">Students will be told that this is a...</p>
+                <p className="mt-1 text-sm text-blue-900 italic">"{studentFacingScenarioText}"</p>
               </div>
 
               <div>

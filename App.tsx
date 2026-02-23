@@ -1759,7 +1759,7 @@ const App: React.FC = () => {
                                   )}
                                 </div>
                                 <span className="block text-sm text-gray-600 mt-0.5">
-                                  Chat with {scenario.protagonist}{protagonistRole} about {scenario.scenario_name}.
+                                  Chat with {scenario.protagonist}{protagonistRole} about {scenario.chat_topic}.
                                 </span>
                                 {!availability.available && availability.message && (
                                   <span className="block text-xs text-amber-600 mt-1">
