@@ -524,12 +524,25 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
             <p className="text-sm text-gray-600">
               Admins have access to the instructor dashboard. Superusers have full access.
             </p>
-            <button
-              onClick={handleCreateAdmin}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
-            >
-              Add Admin
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleCreateAdmin}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+              >
+                + Add Admin
+              </button>
+              <button
+                onClick={fetchAdmins}
+                disabled={isLoadingAdmins}
+                aria-label="Refresh admins list"
+                title="Refresh admins list"
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ${isLoadingAdmins ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+            </div>
           </div>
 
           <div className="bg-white rounded-lg shadow overflow-hidden">
@@ -607,12 +620,25 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
               Primary instructors are assigned to semesters and can manage courses within them.
               TAs are assigned to specific sections.
             </p>
-            <button
-              onClick={handleCreateInstructor}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
-            >
-              Add Instructor
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleCreateInstructor}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+              >
+                + Add Instructor
+              </button>
+              <button
+                onClick={fetchInstructors}
+                disabled={isLoadingInstructors}
+                aria-label="Refresh instructors list"
+                title="Refresh instructors list"
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ${isLoadingInstructors ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+            </div>
           </div>
 
           <div className="bg-white rounded-lg shadow overflow-hidden">

@@ -4,12 +4,13 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/permissions.js';
 
 const router = express.Router();
+const MAX_TEST_RESULTS_LENGTH = 200;
 
 const MODEL_FIELDS =
-  'model_id, model_name, enabled, default_model as `default`, input_cost, output_cost, temperature, reasoning_effort';
+  'model_id, model_name, enabled, default_model as `default`, input_cost, output_cost, temperature, reasoning_effort, test_date, test_result';
 
 const LEGACY_MODEL_FIELDS =
-  'model_id, model_name, enabled, default_model as `default`, input_cost, output_cost';
+  'model_id, model_name, enabled, default_model as `default`, input_cost, output_cost, NULL as temperature, NULL as reasoning_effort, NULL as test_date, NULL as test_result';
 
 async function selectModels(queryBase, params = []) {
   // Try with extended fields; if the DB hasn't been migrated yet, fall back to legacy fields.
@@ -95,7 +96,7 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('models'
     }
 
     await pool.execute(
-      'INSERT INTO models (model_id, model_name, enabled, default_model, input_cost, output_cost, temperature, reasoning_effort) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO models (model_id, model_name, enabled, default_model, input_cost, output_cost, temperature, reasoning_effort, test_date, test_result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         model_id,
         model_name,
@@ -105,6 +106,8 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('models'
         output_cost ?? null,
         temperature ?? null,
         reasoning_effort ?? null,
+        null,
+        null,
       ]
     );
 
@@ -127,7 +130,7 @@ router.patch('/:id', verifyToken, requireRole(['admin']), requirePermission('mod
       return res.status(404).json({ data: null, error: { message: 'Model not found' } });
     }
 
-    const allowedFields = ['model_name', 'enabled', 'default', 'input_cost', 'output_cost', 'temperature', 'reasoning_effort'];
+    const allowedFields = ['model_name', 'enabled', 'default', 'input_cost', 'output_cost', 'temperature', 'reasoning_effort', 'test_date', 'test_result'];
     const setClauses = [];
     const params = [];
 
@@ -140,6 +143,10 @@ router.patch('/:id', verifyToken, requireRole(['admin']), requirePermission('mod
       } else if (key === 'enabled') {
         setClauses.push('enabled = ?');
         params.push(value ? 1 : 0);
+      } else if (key === 'test_result') {
+        const val = value == null ? null : String(value);
+        setClauses.push('test_result = ?');
+        params.push(val ? val.slice(0, MAX_TEST_RESULTS_LENGTH) : null);
       } else {
         setClauses.push(`${key} = ?`);
         params.push(value ?? null);

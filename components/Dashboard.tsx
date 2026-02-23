@@ -130,6 +130,8 @@ interface Model {
   output_cost?: number | null;
   temperature?: number | null;
   reasoning_effort?: string | null;
+  test_date?: string | null;
+  test_result?: string | null;
 }
 
 interface Case {
@@ -701,7 +703,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     setIsLoadingModels(true);
     const { data, error } = await api
       .from('models')
-      .select('model_id, model_name, enabled, default, input_cost, output_cost, temperature, reasoning_effort');
+      .select('model_id, model_name, enabled, default, input_cost, output_cost, temperature, reasoning_effort, test_date, test_result');
     
     if (error) {
       console.error('Failed to fetch models', error);
@@ -711,6 +713,40 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
     setIsLoadingModels(false);
   }, []);
+
+  const formatSqlDateTime = () => {
+    const dt = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+  };
+  const MAX_TEST_RESULTS_LENGTH = 200;
+  const sanitizeTextForDisplay = (value: string) => value.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+
+  const persistModelTestResult = async (modelId: string, testResult: string) => {
+    const authToken = localStorage.getItem('admin_auth_token');
+    if (!authToken) return;
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/models/${modelId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          test_date: formatSqlDateTime(),
+          test_result: testResult ? String(testResult).slice(0, MAX_TEST_RESULTS_LENGTH) : null,
+        }),
+      });
+      const result = await parseApiResponse(response);
+      if (!response.ok || result.error) {
+        const message = result?.error?.message || `Server returned ${response.status}`;
+        throw new Error(message);
+      }
+      await fetchModels();
+    } catch (err) {
+      console.error('Failed to persist model test result:', err);
+    }
+  };
 
   useEffect(() => {
     fetchModels();
@@ -3225,6 +3261,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         const msg = result?.error?.message || `Server returned ${response.status}`;
         throw new Error(msg);
       }
+      await persistModelTestResult(model.model_id, 'success');
       const text = result?.data?.text || '';
       const meta = result?.data?.meta || {};
       const parts = [];
@@ -3235,6 +3272,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       alert(`Success: ${model.model_name} reports that the capital of France is: ${text || 'Received empty response.'}${metaText}`);
     } catch (err: any) {
       console.error('Failed to test model:', err);
+      await persistModelTestResult(model.model_id, `failed: ${err.message}`);
       alert(`Failed to test model: ${err.message}`);
     } finally {
       setTestingModelId(null);
@@ -3376,16 +3414,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={fetchModels}
-            className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-          >
-            Refresh
-          </button>
-          <button
             onClick={openCreateModelModal}
             className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
           >
-            Add Model
+            + Add Model
+          </button>
+          <button
+            onClick={fetchModels}
+            disabled={isLoadingModels}
+            aria-label="Refresh models list"
+            title="Refresh models list"
+            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ${isLoadingModels ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
           </button>
         </div>
       </div>
@@ -3410,89 +3453,123 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {sortedModels.map(model => (
-                  <tr key={model.model_id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3">
-                      <div className="text-sm font-semibold text-gray-900">{model.model_name}</div>
-                      <div className="text-xs text-gray-500">{model.model_id}</div>
-                      {(model.temperature !== null && model.temperature !== undefined) || model.reasoning_effort ? (
-                        <div className="text-[11px] text-gray-500 mt-1 space-x-2">
-                          {model.temperature !== null && model.temperature !== undefined && (
-                            <span>temp: {model.temperature}</span>
+                {sortedModels.map(model => {
+                  const hasFailedTest = !!model.test_result && model.test_result !== 'success';
+                  const hasPassedTest = model.test_result === 'success';
+                  const testedAt = model.test_date ? new Date(model.test_date).toLocaleString() : 'unknown date';
+                  const safeResult = sanitizeTextForDisplay(String(model.test_result || ''));
+                  return (
+                    <React.Fragment key={model.model_id}>
+                      <tr className={`hover:bg-gray-50 ${model.default ? 'bg-yellow-50' : ''}`}>
+                        <td className="px-4 py-3">
+                          <div className="text-sm font-semibold text-gray-900">{model.model_name}</div>
+                          <div className="text-xs text-gray-500">{model.model_id}</div>
+                          {(model.temperature !== null && model.temperature !== undefined) || model.reasoning_effort ? (
+                            <div className="text-[11px] text-gray-500 mt-1 space-x-2">
+                              {model.temperature !== null && model.temperature !== undefined && (
+                                <span>temp: {model.temperature}</span>
+                              )}
+                              {model.reasoning_effort && (
+                                <span>effort: {model.reasoning_effort}</span>
+                              )}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="inline-flex items-center px-2 py-1 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
+                            {providerLabel(model.model_id)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {model.default ? (
+                            <span className="px-2 py-1 text-xs font-semibold text-green-700 bg-green-100 rounded-full border border-green-200">
+                              Default
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => handleMakeDefault(model)}
+                              disabled={!model.enabled}
+                              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                                model.enabled
+                                  ? 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                  : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                              }`}
+                            >
+                              Make default
+                            </button>
                           )}
-                          {model.reasoning_effort && (
-                            <span>effort: {model.reasoning_effort}</span>
-                          )}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="inline-flex items-center px-2 py-1 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
-                        {providerLabel(model.model_id)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      {model.default ? (
-                        <span className="px-2 py-1 text-xs font-semibold text-green-700 bg-green-100 rounded-full border border-green-200">
-                          Default
-                        </span>
-                      ) : (
-                        <button
-                          onClick={() => handleMakeDefault(model)}
-                          disabled={!model.enabled}
-                          className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
-                            model.enabled
-                              ? 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                              : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                          }`}
-                        >
-                          Make default
-                        </button>
+                        </td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => handleToggleModel(model)}
+                            className={`px-3 py-1.5 text-xs font-medium rounded-full border ${
+                              model.enabled
+                                ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'
+                                : 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'
+                            }`}
+                          >
+                            {model.enabled ? 'Enabled' : 'Disabled'}
+                          </button>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-700">{formatCost(model.input_cost)}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700">{formatCost(model.output_cost)}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-nowrap items-center gap-2 whitespace-nowrap">
+                            <button
+                              onClick={() => handleTestModel(model)}
+                              disabled={testingModelId === model.model_id}
+                              title={
+                                hasFailedTest
+                                  ? 'failed last test, check API key'
+                                  : hasPassedTest
+                                    ? 'passed test'
+                                    : undefined
+                              }
+                              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                                testingModelId === model.model_id
+                                  ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                                  : hasFailedTest
+                                    ? 'bg-pink-100 text-pink-800 border-pink-300 hover:bg-pink-200'
+                                    : hasPassedTest
+                                      ? 'bg-green-100 text-green-800 border-green-300 hover:bg-green-200'
+                                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                              }`}
+                            >
+                              {testingModelId === model.model_id
+                                ? 'Testing...'
+                                : hasFailedTest
+                                  ? 'Restest'
+                                  : hasPassedTest
+                                    ? 'Tested'
+                                    : 'Test'}
+                            </button>
+                            <button
+                              onClick={() => openEditModelModal(model)}
+                              className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDeleteModel(model)}
+                              className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {hasFailedTest && (
+                        <tr className="bg-pink-50">
+                          <td colSpan={7} className="px-4 pt-1 pb-1 text-[11px] text-gray-600 italic">
+                            <span className="block truncate" title={`↳ Tested ${testedAt} and ${safeResult}`}>
+                              {`↳ Tested ${testedAt} and ${safeResult}`}
+                            </span>
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <button
-                        onClick={() => handleToggleModel(model)}
-                        className={`px-3 py-1.5 text-xs font-medium rounded-full border ${
-                          model.enabled
-                            ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'
-                            : 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'
-                        }`}
-                      >
-                        {model.enabled ? 'Enabled' : 'Disabled'}
-                      </button>
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-700">{formatCost(model.input_cost)}</td>
-                    <td className="px-4 py-3 text-sm text-gray-700">{formatCost(model.output_cost)}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          onClick={() => handleTestModel(model)}
-                          disabled={testingModelId === model.model_id}
-                          className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
-                            testingModelId === model.model_id
-                              ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                          }`}
-                        >
-                          {testingModelId === model.model_id ? 'Testing...' : 'Test'}
-                        </button>
-                        <button
-                          onClick={() => openEditModelModal(model)}
-                          className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => handleDeleteModel(model)}
-                          className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -6413,16 +6490,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={fetchPersonas}
-            className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-          >
-            Refresh
-          </button>
-          <button
             onClick={() => handleOpenPersonaModal()}
             className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
           >
-            + New Persona
+            + Add Persona
+          </button>
+          <button
+            onClick={fetchPersonas}
+            disabled={isLoadingPersonas}
+            aria-label="Refresh personas list"
+            title="Refresh personas list"
+            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ${isLoadingPersonas ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
           </button>
         </div>
       </div>
@@ -7189,8 +7271,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   const sortedModels = useMemo(() => {
     return [...modelsList].sort((a, b) => {
-      const defaultDiff = Number(!!b.default) - Number(!!a.default);
-      if (defaultDiff !== 0) return defaultDiff;
       return a.model_name.localeCompare(b.model_name);
     });
   }, [modelsList]);
