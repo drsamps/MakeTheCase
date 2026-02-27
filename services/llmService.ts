@@ -180,30 +180,11 @@ export const createChatSession = (
   };
 };
 
-export const getEvaluation = async (
-  messages: Message[],
-  studentFirstName: string,
-  studentFullName: string,
+const callEvalLLM = async (
   modelId: string,
-  caseData?: CaseData,  // Optional: if provided, uses dynamic case; otherwise uses default
-  chatOptions?: any,  // Optional: chat options including free_hints
-  rubric?: RubricForPrompt  // Optional: custom rubric with cached criteria_prompt
+  prompt: string,
+  rubric?: RubricForPrompt
 ): Promise<EvaluationResult> => {
-  // Use protagonist name from case data if available
-  const protagonistLabel = caseData?.protagonist || 'CEO';
-  const chatHistory = messages
-    .map((msg) => `${msg.role === "user" ? "Student" : protagonistLabel}: ${msg.content}`)
-    .join("\n\n");
-
-  // Get free_hints from chat options (default 1)
-  const freeHints = chatOptions?.free_hints ?? 1;
-
-  // Build prompt with case data at the TOP for LLM caching
-  // Pass rubric for custom evaluation criteria
-  const prompt = caseData
-    ? buildCoachPrompt(chatHistory, studentFullName, caseData, freeHints, rubric)
-    : getCoachPrompt(chatHistory, studentFullName);
-
   const response = await fetch(`${getApiBaseUrl()}/llm/eval`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -226,17 +207,81 @@ export const getEvaluation = async (
     throw new Error(`Invalid evaluation JSON: ${(err as Error).message}`);
   }
 
-  const normalized = normalizeEvaluationResult(parsed, rubric);
+  return normalizeEvaluationResult(parsed, rubric);
+};
 
-  if (!normalized.criteria.length || normalized.totalScore === 0 || !normalized.summary || normalized.summary === 'No summary provided.') {
+const hasSubstantiveSummary = (result: EvaluationResult): boolean => {
+  return (
+    !!result.summary &&
+    result.summary !== 'No summary provided.' &&
+    result.summary.length > 50
+  );
+};
+
+const buildRetryPrompt = (originalPrompt: string, firstResult: EvaluationResult): string => {
+  const maxScore = firstResult.maxScore ?? 15;
+  return `${originalPrompt}
+
+=== SCORING CORRECTION — RETRY ===
+A previous evaluation of this same transcript produced the following summary, but returned a total score of 0/${maxScore}. The summary clearly indicates the student engaged meaningfully, so a score of 0 is incorrect.
+
+Previous summary:
+"${firstResult.summary}"
+
+Please re-evaluate the transcript carefully. For each criterion, assign an integer score reflecting the student's actual performance as described in your summary above. The "totalScore" field must equal the sum of all criteria scores (minus any hint penalties). Do NOT return 0 for scores unless the student truly demonstrated no competence.
+
+Return ONLY valid JSON using the exact schema specified above.
+=== END SCORING CORRECTION ===`;
+};
+
+export const getEvaluation = async (
+  messages: Message[],
+  studentFirstName: string,
+  studentFullName: string,
+  modelId: string,
+  caseData?: CaseData,
+  chatOptions?: any,
+  rubric?: RubricForPrompt
+): Promise<EvaluationResult> => {
+  const protagonistLabel = caseData?.protagonist || 'CEO';
+  const chatHistory = messages
+    .map((msg) => `${msg.role === "user" ? "Student" : protagonistLabel}: ${msg.content}`)
+    .join("\n\n");
+
+  const freeHints = chatOptions?.free_hints ?? 1;
+
+  const prompt = caseData
+    ? buildCoachPrompt(chatHistory, studentFullName, caseData, freeHints, rubric)
+    : getCoachPrompt(chatHistory, studentFullName);
+
+  const firstResult = await callEvalLLM(modelId, prompt, rubric);
+
+  if (!firstResult.criteria.length || firstResult.totalScore === 0 || !firstResult.summary || firstResult.summary === 'No summary provided.') {
     console.warn('[eval] Normalized evaluation appears empty', {
-      criteriaCount: normalized.criteria.length,
-      totalScore: normalized.totalScore,
-      summaryPreview: normalized.summary?.slice(0, 120) || '',
-      rawPreview: cleaned.slice(0, 200),
+      criteriaCount: firstResult.criteria.length,
+      totalScore: firstResult.totalScore,
+      summaryPreview: firstResult.summary?.slice(0, 120) || '',
     });
   }
 
-  return normalized;
+  // Retry once if the score is 0 but the summary indicates meaningful engagement
+  if (firstResult.totalScore === 0 && hasSubstantiveSummary(firstResult)) {
+    console.warn('[eval] Score is 0 with substantive summary — retrying evaluation with scoring correction prompt');
+    try {
+      const retryPrompt = buildRetryPrompt(prompt, firstResult);
+      const retryResult = await callEvalLLM(modelId, retryPrompt, rubric);
+
+      if (retryResult.totalScore > 0) {
+        console.log('[eval] Retry succeeded with score', retryResult.totalScore);
+        return retryResult;
+      }
+
+      console.warn('[eval] Retry still returned score 0 — using first result with summary');
+    } catch (retryErr) {
+      console.warn('[eval] Retry failed, using first result:', (retryErr as Error).message);
+    }
+  }
+
+  return firstResult;
 };
 

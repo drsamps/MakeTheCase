@@ -1,7 +1,7 @@
 // LLM Router - Updated with increased token limits for complete outlines (8K-16K)
 // Preview now supports styled headings and print functionality
 // Now includes prompt caching support for Anthropic and cache metrics tracking
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import { pool } from '../db.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
@@ -291,6 +291,28 @@ export async function evaluateWithLLM({ modelId, prompt, config = {} }) {
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          criteria: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                question: { type: Type.STRING },
+                score: { type: Type.NUMBER },
+                max_score: { type: Type.NUMBER },
+                feedback: { type: Type.STRING },
+              },
+              required: ['question', 'score', 'feedback'],
+            },
+          },
+          totalScore: { type: Type.NUMBER },
+          summary: { type: Type.STRING },
+          hints: { type: Type.NUMBER },
+        },
+        required: ['criteria', 'totalScore', 'summary', 'hints'],
+      },
       ...(temperature !== null && temperature !== undefined ? { temperature: Number(temperature) } : {}),
     },
   });

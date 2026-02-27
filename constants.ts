@@ -261,8 +261,20 @@ ${additionalInstructions}
 3.  Calculate the total score (maximum ${totalPoints} points before hint penalties).
 4.  Tally how many times the student asked for a hint. A "hint" is counted ONLY when a message from the student (e.g., "Student: ...") explicitly contains the word "hint". Do NOT count hints based on other words like "help" or "clue". Ignore any use of the word "help" or "helpful" from the protagonist. Every student gets ${freeHints} free hint${freeHints !== 1 ? 's' : ''}, and forfeits a point for every additional hint beyond that. Your calculated total score should reflect this penalty.
 5.  Write a concise overall summary of the student's performance.
-6.  You MUST respond in a valid JSON format that adheres to the provided schema. Do not include any text, markdown, or code fences before or after the JSON object.
+6.  You MUST respond in a valid JSON format. Do not include any text, markdown, or code fences before or after the JSON object.
 7.  Your JSON response must include a 'hints' field with the total number of hints the student requested.
+8.  Your JSON response MUST use this EXACT schema (use these exact field names and types):
+\`\`\`
+{
+  "criteria": [
+    { "question": "<criterion text>", "score": <integer>, "max_score": <integer>, "feedback": "<feedback text>" }
+  ],
+  "totalScore": <integer, sum of criteria scores after hint penalties>,
+  "summary": "<overall performance summary>",
+  "hints": <integer, number of hints requested>
+}
+\`\`\`
+IMPORTANT: "score" and "totalScore" MUST be integers (not strings, not "4/5", not null). Each criterion in the "criteria" array MUST have numeric "score" and "max_score" fields.
 
 === END EVALUATION RUBRIC ===
 `;
