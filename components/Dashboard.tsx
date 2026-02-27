@@ -3154,7 +3154,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
     setIsSavingModel(true);
     try {
-      const response = await fetch(editingModel ? `/api/models/${editingModel.model_id}` : '/api/models', {
+      const response = await fetch(editingModel ? `${getApiBaseUrl()}/models/${editingModel.model_id}` : `${getApiBaseUrl()}/models`, {
         method: editingModel ? 'PATCH' : 'POST',
         headers: {
           'Content-Type': 'application/json',
