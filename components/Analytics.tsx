@@ -138,8 +138,27 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
   const [transcriptContent, setTranscriptContent] = useState<string>('');
   const [transcriptData, setTranscriptData] = useState<any>(null); // Full transcript object
   const [evaluationData, setEvaluationData] = useState<any>(null);
+  const [evalEditMode, setEvalEditMode] = useState(false);
+  const [evalSaving, setEvalSaving] = useState(false);
   const [isAnonymizing, setIsAnonymizing] = useState(false);
   const [autoAnonymize, setAutoAnonymize] = useState(false); // Setting for auto-anonymize
+
+  // Re-evaluation modal state
+  const [showReEvaluateModal, setShowReEvaluateModal] = useState(false);
+  const [reEvalStudent, setReEvalStudent] = useState<StudentResult | null>(null);
+  const [reEvalRubricId, setReEvalRubricId] = useState<number | null>(null);
+  const [reEvalModelId, setReEvalModelId] = useState<string>('');
+  const [reEvalShowPrompt, setReEvalShowPrompt] = useState(false);
+  const [reEvalPrompt, setReEvalPrompt] = useState<string>('');
+  const [reEvalLoading, setReEvalLoading] = useState(false);
+  const [reEvalResult, setReEvalResult] = useState<any>(null);
+  const [rubricsList, setRubricsList] = useState<any[]>([]);
+  const [modelsList, setModelsList] = useState<any[]>([]);
+  const [transcriptExists, setTranscriptExists] = useState(true);
+  const [originalEvaluation, setOriginalEvaluation] = useState<any>(null);
+  const [selectedRubricDetails, setSelectedRubricDetails] = useState<any>(null);
+  const [reEvalError, setReEvalError] = useState<string | null>(null);
+  const [reEvalEditMode, setReEvalEditMode] = useState(false);
 
   // Fetch filter options and settings on mount
   useEffect(() => {
@@ -167,6 +186,28 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
     };
     fetchFilters();
     fetchSettings();
+  }, []);
+
+  // Fetch rubrics and models for re-evaluation
+  useEffect(() => {
+    const fetchRubrics = async () => {
+      try {
+        const response = await api.get('/rubrics');
+        setRubricsList(response.data?.data || response.data || []);
+      } catch (error) {
+        console.error('Failed to fetch rubrics:', error);
+      }
+    };
+    const fetchModels = async () => {
+      try {
+        const response = await api.get('/models?enabled=true');
+        setModelsList(response.data || []);
+      } catch (error) {
+        console.error('Failed to fetch models:', error);
+      }
+    };
+    fetchRubrics();
+    fetchModels();
   }, []);
 
   // Handle initial section selection from navigation
@@ -336,6 +377,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
   const handleViewEvaluation = async (student: StudentResult) => {
     if (!student.evaluation_id) return;
     setSelectedStudent(student);
+    setEvalEditMode(false);
     try {
       const response = await api.get(`/evaluations?student_ids=${student.student_id}&case_id=${student.case_id}`);
       if (response.data && response.data.length > 0) {
@@ -347,16 +389,166 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
     }
   };
 
+  // Save evaluation edits
+  const handleSaveEvaluationEdits = async () => {
+    if (!selectedStudent?.evaluation_id || !evaluationData) return;
+    setEvalSaving(true);
+    try {
+      await api.patch(`/evaluations/${selectedStudent.evaluation_id}`, {
+        score: evaluationData.score,
+        summary: evaluationData.summary,
+        criteria: evaluationData.criteria
+      });
+      setEvalEditMode(false);
+      setShowEvaluationModal(false);
+      fetchResults(); // Refresh the table
+    } catch (error) {
+      console.error('Failed to save evaluation edits:', error);
+    } finally {
+      setEvalSaving(false);
+    }
+  };
+
   // Toggle re-chat
   const handleToggleRechat = async (student: StudentResult) => {
     if (!student.evaluation_id) return;
     try {
-      await api.patch(`/evaluations/${student.evaluation_id}`, {
+      await api.patch(`/evaluations/${student.evaluation_id}/allow-rechat`, {
         allow_rechat: !student.allow_rechat
       });
       fetchResults();
     } catch (error) {
       console.error('Failed to toggle rechat:', error);
+    }
+  };
+
+  // Re-evaluation handlers
+  const handleOpenReEvaluate = async (student: StudentResult) => {
+    setReEvalStudent(student);
+    setReEvalResult(null);
+    setReEvalPrompt('');
+    setReEvalShowPrompt(false);
+    setOriginalEvaluation(null);
+    setSelectedRubricDetails(null);
+    setReEvalError(null);
+    setTranscriptExists(true);
+    setReEvalEditMode(false);
+
+    // Check if transcript exists
+    if (student.case_chat_id) {
+      try {
+        const response = await api.get(`/transcripts/chat/${student.case_chat_id}`);
+        setTranscriptExists(!!response.data?.transcript);
+      } catch {
+        setTranscriptExists(false);
+      }
+    } else {
+      setTranscriptExists(false);
+    }
+
+    // Fetch original evaluation for side-by-side comparison
+    if (student.evaluation_id) {
+      try {
+        const evalResponse = await api.get(`/evaluations/${student.evaluation_id}`);
+        setOriginalEvaluation(evalResponse.data?.data || evalResponse.data);
+      } catch (e) {
+        console.error('Failed to fetch original evaluation:', e);
+      }
+    }
+
+    // Set defaults: use current rubric/model or system default
+    const defaultRubric = rubricsList.find((r: any) => r.is_system_default);
+    const initialRubricId = defaultRubric?.rubric_id || rubricsList[0]?.rubric_id || null;
+    setReEvalRubricId(initialRubricId);
+
+    // Fetch rubric details for preview
+    if (initialRubricId) {
+      fetchRubricDetails(initialRubricId);
+    }
+
+    const defaultModel = modelsList.find((m: any) => m.default_model);
+    setReEvalModelId(defaultModel?.model_id || modelsList[0]?.model_id || '');
+
+    setShowReEvaluateModal(true);
+  };
+
+  // Fetch rubric details when selection changes
+  const fetchRubricDetails = async (rubricId: number) => {
+    try {
+      const response = await api.get(`/rubrics/${rubricId}`);
+      setSelectedRubricDetails(response.data?.data || response.data);
+    } catch (e) {
+      console.error('Failed to fetch rubric details:', e);
+    }
+  };
+
+  // Update rubric details when selection changes
+  useEffect(() => {
+    if (reEvalRubricId && showReEvaluateModal) {
+      fetchRubricDetails(reEvalRubricId);
+    }
+  }, [reEvalRubricId, showReEvaluateModal]);
+
+  // Fetch prompt preview
+  const handleFetchPromptPreview = async () => {
+    if (!reEvalStudent?.case_chat_id) return;
+    try {
+      const params = new URLSearchParams();
+      params.set('case_chat_id', reEvalStudent.case_chat_id);
+      if (reEvalRubricId) params.set('rubric_id', reEvalRubricId.toString());
+      const response = await api.get(`/evaluations/preview-prompt?${params.toString()}`);
+      setReEvalPrompt(response.data?.data?.prompt || response.data?.prompt || '');
+    } catch (error) {
+      console.error('Failed to fetch prompt preview:', error);
+    }
+  };
+
+  // Fetch prompt when checkbox is toggled on or rubric changes
+  useEffect(() => {
+    if (reEvalShowPrompt && reEvalStudent?.case_chat_id) {
+      handleFetchPromptPreview();
+    }
+  }, [reEvalShowPrompt, reEvalRubricId]);
+
+  // Execute re-evaluation
+  const handleReEvaluate = async () => {
+    if (!reEvalStudent?.case_chat_id || !transcriptExists) return;
+
+    setReEvalLoading(true);
+    setReEvalError(null);
+    try {
+      const response = await api.post('/evaluations/re-evaluate', {
+        case_chat_id: reEvalStudent.case_chat_id,
+        rubric_id: reEvalRubricId,
+        model_id: reEvalModelId,
+        include_prompt: reEvalShowPrompt
+      });
+      setReEvalResult(response.data?.data || response.data);
+    } catch (error: any) {
+      console.error('Re-evaluation failed:', error);
+      setReEvalError(error.response?.data?.error?.message || error.message || 'Re-evaluation failed');
+    } finally {
+      setReEvalLoading(false);
+    }
+  };
+
+  // Save re-evaluation
+  const handleSaveReEvaluation = async () => {
+    if (!reEvalStudent?.evaluation_id || !reEvalResult) return;
+
+    try {
+      await api.patch(`/evaluations/${reEvalStudent.evaluation_id}`, {
+        score: reEvalResult.score,
+        summary: reEvalResult.summary,
+        criteria: reEvalResult.criteria,
+        rubric_id: reEvalRubricId,
+        super_model: reEvalModelId
+      });
+
+      setShowReEvaluateModal(false);
+      fetchResults(); // Refresh the table
+    } catch (error) {
+      console.error('Failed to save re-evaluation:', error);
     }
   };
 
@@ -981,6 +1173,20 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
                             </svg>
                           </button>
                         )}
+                        {student.case_chat_id && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenReEvaluate(student);
+                            }}
+                            className="p-1.5 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded"
+                            title="Re-evaluate transcript"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                              <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 110 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+                            </svg>
+                          </button>
+                        )}
                         {student.status === 'completed' && student.evaluation_id && (
                           <button
                             onClick={() => handleToggleRechat(student)}
@@ -990,7 +1196,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
                             title={student.allow_rechat ? 'Disable re-chat' : 'Allow re-chat'}
                           >
                             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                              <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 110 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+                              <path fillRule="evenodd" d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z" clipRule="evenodd" />
                             </svg>
                           </button>
                         )}
@@ -1114,18 +1320,113 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              <div className="flex items-center gap-4">
-                <div className={`text-3xl font-bold ${getScoreColor(evaluationData.score)}`}>
-                  {evaluationData.score}/15
+              {/* Score and Edit Button */}
+              <div className={`p-4 rounded-lg ${evalEditMode ? 'bg-purple-50 border-2 border-purple-200' : 'bg-gray-50'}`}>
+                <div className="flex justify-between items-start mb-2">
+                  <div className="flex items-center gap-4">
+                    {evalEditMode ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          value={evaluationData.score}
+                          onChange={(e) => setEvaluationData({ ...evaluationData, score: parseInt(e.target.value) || 0 })}
+                          className="w-16 text-3xl font-bold border border-purple-300 rounded px-2 py-1 text-center"
+                          min="0"
+                          max={evaluationData.criteria?.reduce((sum: number, c: any) => sum + (c.max_score || 5), 0) || 15}
+                        />
+                        <span className="text-3xl font-bold text-gray-400">/{evaluationData.criteria?.reduce((sum: number, c: any) => sum + (c.max_score || 5), 0) || 15}</span>
+                      </div>
+                    ) : (
+                      <div className={`text-3xl font-bold ${getScoreColor(evaluationData.score)}`}>
+                        {evaluationData.score}/{evaluationData.criteria?.reduce((sum: number, c: any) => sum + (c.max_score || 5), 0) || 15}
+                      </div>
+                    )}
+                    <div className="text-sm text-gray-500">
+                      Hints: {evaluationData.hints ?? '—'} | Helpful: {evaluationData.helpful?.toFixed(1) ?? '—'}/5
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setEvalEditMode(!evalEditMode)}
+                    className={`px-2 py-1 text-xs rounded flex items-center gap-1 ${
+                      evalEditMode
+                        ? 'bg-purple-200 text-purple-700'
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
+                      <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                    </svg>
+                    {evalEditMode ? 'Editing' : 'Edit'}
+                  </button>
                 </div>
-                <div className="text-sm text-gray-500">
-                  Hints: {evaluationData.hints} | Helpful: {evaluationData.helpful?.toFixed(1)}/5
+                <div className="text-xs text-gray-500">
+                  <span>Rubric: {rubricsList.find((r: any) => r.rubric_id === evaluationData.rubric_id)?.rubric_name || 'Default'}</span>
+                  <span className="mx-2">|</span>
+                  <span>Model: {modelsList.find((m: any) => m.model_id === evaluationData.super_model)?.model_name || evaluationData.super_model || 'Unknown'}</span>
                 </div>
               </div>
-              <div className="bg-gray-50 rounded-lg p-4">
+
+              {/* Summary */}
+              <div className={`rounded-lg p-4 ${evalEditMode ? 'bg-purple-50 border border-purple-200' : 'bg-gray-50'}`}>
                 <h4 className="text-sm font-semibold text-gray-700 mb-2">Summary</h4>
-                <p className="text-sm text-gray-600">{evaluationData.summary}</p>
+                {evalEditMode ? (
+                  <textarea
+                    value={evaluationData.summary || ''}
+                    onChange={(e) => setEvaluationData({ ...evaluationData, summary: e.target.value })}
+                    className="w-full border border-purple-300 rounded px-3 py-2 text-sm min-h-[80px]"
+                  />
+                ) : (
+                  <p className="text-sm text-gray-600">{evaluationData.summary}</p>
+                )}
               </div>
+
+              {/* Criteria */}
+              {evaluationData.criteria && evaluationData.criteria.length > 0 && (
+                <div className={`rounded-lg p-4 ${evalEditMode ? 'bg-purple-50 border border-purple-200' : 'bg-gray-50'}`}>
+                  <h4 className="text-sm font-semibold text-gray-700 mb-2">Criteria Scores</h4>
+                  {evaluationData.criteria.map((c: any, i: number) => (
+                    <div key={i} className="text-sm border-b border-gray-200 py-3 last:border-0">
+                      <div className="flex justify-between items-center">
+                        <span className="text-gray-700 flex-1">{c.question}</span>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {evalEditMode ? (
+                            <input
+                              type="number"
+                              value={c.score}
+                              onChange={(e) => {
+                                const newCriteria = [...evaluationData.criteria];
+                                newCriteria[i] = { ...newCriteria[i], score: parseInt(e.target.value) || 0 };
+                                const newTotal = newCriteria.reduce((sum, cr) => sum + (cr.score || 0), 0);
+                                setEvaluationData({ ...evaluationData, criteria: newCriteria, score: newTotal });
+                              }}
+                              className="w-12 border border-purple-300 rounded px-1 py-0.5 text-center font-medium"
+                              min="0"
+                              max={c.max_score || 5}
+                            />
+                          ) : (
+                            <span className="font-medium text-gray-800">{c.score}/{c.max_score || 5}</span>
+                          )}
+                        </div>
+                      </div>
+                      {evalEditMode ? (
+                        <textarea
+                          value={c.feedback || ''}
+                          onChange={(e) => {
+                            const newCriteria = [...evaluationData.criteria];
+                            newCriteria[i] = { ...newCriteria[i], feedback: e.target.value };
+                            setEvaluationData({ ...evaluationData, criteria: newCriteria });
+                          }}
+                          className="w-full mt-1 border border-purple-300 rounded px-2 py-1 text-xs min-h-[40px]"
+                        />
+                      ) : (
+                        <p className="text-gray-500 text-xs mt-1">{c.feedback}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Student Feedback */}
               {evaluationData.liked && (
                 <div className="bg-green-50 rounded-lg p-4">
                   <h4 className="text-sm font-semibold text-green-700 mb-2">Student Feedback - Liked</h4>
@@ -1137,6 +1438,359 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
                   <h4 className="text-sm font-semibold text-amber-700 mb-2">Student Feedback - Improve</h4>
                   <p className="text-sm text-gray-600">{evaluationData.improve}</p>
                 </div>
+              )}
+            </div>
+
+            {/* Footer Buttons */}
+            {evalEditMode && (
+              <div className="p-4 border-t flex justify-end gap-2">
+                <button
+                  onClick={() => {
+                    setEvalEditMode(false);
+                    // Refetch to discard changes
+                    handleViewEvaluation(selectedStudent);
+                  }}
+                  className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700"
+                >
+                  Do Not Save
+                </button>
+                <button
+                  onClick={handleSaveEvaluationEdits}
+                  disabled={evalSaving}
+                  className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {evalSaving && (
+                    <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  )}
+                  Save Edits
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Re-Evaluate Modal */}
+      {showReEvaluateModal && reEvalStudent && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] flex flex-col">
+            <div className="flex justify-between items-center p-4 border-b">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">Re-evaluate Transcript</h3>
+                <p className="text-sm text-gray-500">{reEvalStudent.student_name} - {reEvalStudent.case_title}</p>
+              </div>
+              <button
+                onClick={() => setShowReEvaluateModal(false)}
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              {!reEvalResult ? (
+                /* Configuration Form */
+                <div className="space-y-4">
+                  {!transcriptExists && (
+                    <div className="bg-red-50 text-red-700 p-3 rounded-lg">
+                      Sorry, no transcript recorded for this student chat.
+                    </div>
+                  )}
+
+                  {reEvalError && (
+                    <div className="bg-red-50 text-red-700 p-3 rounded-lg">
+                      {reEvalError}
+                    </div>
+                  )}
+
+                  {/* Rubric Selection */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Rubric</label>
+                    <select
+                      value={reEvalRubricId || ''}
+                      onChange={(e) => setReEvalRubricId(Number(e.target.value) || null)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                      disabled={!transcriptExists}
+                    >
+                      {rubricsList.map((r: any) => (
+                        <option key={r.rubric_id} value={r.rubric_id}>
+                          {r.rubric_name} {r.is_system_default ? '(Default)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Model Selection */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">AI Model</label>
+                    <select
+                      value={reEvalModelId}
+                      onChange={(e) => setReEvalModelId(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                      disabled={!transcriptExists}
+                    >
+                      {modelsList.map((m: any) => (
+                        <option key={m.model_id} value={m.model_id}>
+                          {m.model_name} {m.default_model ? '(Default)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Rubric Details Preview */}
+                  {selectedRubricDetails && selectedRubricDetails.criteria && (
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <h4 className="font-medium text-sm text-gray-700 mb-2">Rubric Criteria Preview</h4>
+                      <div className="space-y-2 text-sm">
+                        {selectedRubricDetails.criteria.map((c: any, i: number) => (
+                          <div key={i} className="border-b border-gray-200 pb-2 last:border-0">
+                            <div className="flex justify-between">
+                              <span className="font-medium text-gray-800">Q{i + 1}. {c.name || c.criteria_id}</span>
+                              <span className="text-gray-500">{c.max_points} pts</span>
+                            </div>
+                            <p className="text-xs text-gray-600 mt-1">{c.question_text}</p>
+                          </div>
+                        ))}
+                        <div className="text-right text-gray-600 font-medium pt-2 border-t">
+                          Total: {selectedRubricDetails.total_points} points
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Show Prompt Checkbox */}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="showReEvalPrompt"
+                      checked={reEvalShowPrompt}
+                      onChange={(e) => setReEvalShowPrompt(e.target.checked)}
+                      disabled={!transcriptExists}
+                      className="h-4 w-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+                    />
+                    <label htmlFor="showReEvalPrompt" className="text-sm text-gray-700">
+                      Display evaluation AI prompt
+                    </label>
+                  </div>
+
+                  {/* Prompt Preview */}
+                  {reEvalShowPrompt && reEvalPrompt && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Evaluation Prompt Preview
+                      </label>
+                      <textarea
+                        value={reEvalPrompt}
+                        readOnly
+                        className="w-full h-48 border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono bg-gray-50"
+                      />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Results Display with Side-by-Side Comparison */
+                <div className="space-y-4">
+                  {/* Side-by-Side Score Comparison */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <div className="text-xs text-gray-500 uppercase mb-1">Original</div>
+                      <span className={`text-2xl font-bold ${getScoreColor(originalEvaluation?.score)}`}>
+                        {originalEvaluation?.score ?? '—'}/{originalEvaluation?.criteria?.reduce((sum: number, c: any) => sum + (c.max_score || 0), 0) || 15}
+                      </span>
+                      <div className="text-xs text-gray-500 mt-2">
+                        <div>Rubric: {rubricsList.find((r: any) => r.rubric_id === originalEvaluation?.rubric_id)?.rubric_name || 'Default'}</div>
+                        <div>Model: {modelsList.find((m: any) => m.model_id === originalEvaluation?.super_model)?.model_name || originalEvaluation?.super_model || 'Unknown'}</div>
+                      </div>
+                    </div>
+                    <div className={`p-4 rounded-lg border-2 ${reEvalEditMode ? 'bg-purple-50 border-purple-200' : 'bg-green-50 border-green-200'}`}>
+                      <div className="flex justify-between items-center mb-1">
+                        <div className={`text-xs uppercase ${reEvalEditMode ? 'text-purple-600' : 'text-green-600'}`}>New</div>
+                        <button
+                          onClick={() => setReEvalEditMode(!reEvalEditMode)}
+                          className={`px-2 py-0.5 text-xs rounded flex items-center gap-1 ${
+                            reEvalEditMode
+                              ? 'bg-purple-200 text-purple-700'
+                              : 'bg-green-200 text-green-700 hover:bg-green-300'
+                          }`}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                          </svg>
+                          {reEvalEditMode ? 'Editing' : 'Edit'}
+                        </button>
+                      </div>
+                      {reEvalEditMode ? (
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            value={reEvalResult.score}
+                            onChange={(e) => setReEvalResult({ ...reEvalResult, score: parseInt(e.target.value) || 0 })}
+                            className="w-16 text-2xl font-bold border border-purple-300 rounded px-2 py-1 text-center"
+                            min="0"
+                            max={selectedRubricDetails?.total_points || 15}
+                          />
+                          <span className="text-2xl font-bold text-gray-400">/{selectedRubricDetails?.total_points || 15}</span>
+                        </div>
+                      ) : (
+                        <>
+                          <span className={`text-2xl font-bold ${getScoreColor(reEvalResult.score)}`}>
+                            {reEvalResult.score}/{selectedRubricDetails?.total_points || 15}
+                          </span>
+                          {reEvalResult.score !== originalEvaluation?.score && (
+                            <span className={`ml-2 text-sm ${reEvalResult.score > (originalEvaluation?.score || 0) ? 'text-green-600' : 'text-red-600'}`}>
+                              ({reEvalResult.score > (originalEvaluation?.score || 0) ? '+' : ''}{reEvalResult.score - (originalEvaluation?.score || 0)})
+                            </span>
+                          )}
+                        </>
+                      )}
+                      <div className={`text-xs mt-2 ${reEvalEditMode ? 'text-purple-700' : 'text-green-700'}`}>
+                        <div>Rubric: {rubricsList.find((r: any) => r.rubric_id === reEvalRubricId)?.rubric_name || 'Default'}</div>
+                        <div>Model: {modelsList.find((m: any) => m.model_id === reEvalModelId)?.model_name || reEvalModelId}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Summary Comparison */}
+                  <div>
+                    <h4 className="font-medium text-gray-700 mb-2">Summary</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-gray-50 p-3 rounded-lg text-sm">
+                        <div className="text-xs text-gray-500 mb-1">Original</div>
+                        <p className="text-gray-600">{originalEvaluation?.summary || '—'}</p>
+                      </div>
+                      <div className={`p-3 rounded-lg text-sm border ${reEvalEditMode ? 'bg-purple-50 border-purple-200' : 'bg-green-50 border-green-200'}`}>
+                        <div className={`text-xs mb-1 ${reEvalEditMode ? 'text-purple-600' : 'text-green-600'}`}>New</div>
+                        {reEvalEditMode ? (
+                          <textarea
+                            value={reEvalResult.summary}
+                            onChange={(e) => setReEvalResult({ ...reEvalResult, summary: e.target.value })}
+                            className="w-full border border-purple-300 rounded px-2 py-1 text-sm min-h-[80px]"
+                          />
+                        ) : (
+                          <p className="text-gray-800">{reEvalResult.summary}</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Criteria Scores Comparison */}
+                  <div>
+                    <h4 className="font-medium text-gray-700 mb-2">Criteria Scores</h4>
+                    {reEvalResult.criteria?.map((c: any, i: number) => {
+                      const origCriteria = originalEvaluation?.criteria?.[i];
+                      const scoreDiff = c.score - (origCriteria?.score || 0);
+                      return (
+                        <div key={i} className={`text-sm border-b border-gray-200 py-3 last:border-0 ${reEvalEditMode ? 'bg-purple-50 -mx-2 px-2 rounded' : ''}`}>
+                          <div className="flex justify-between items-center">
+                            <span className="text-gray-700 flex-1">{c.question}</span>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <span className="text-gray-400 w-8 text-right">{origCriteria?.score ?? '—'}</span>
+                              <span className="text-gray-400">→</span>
+                              {reEvalEditMode ? (
+                                <input
+                                  type="number"
+                                  value={c.score}
+                                  onChange={(e) => {
+                                    const newCriteria = [...reEvalResult.criteria];
+                                    newCriteria[i] = { ...newCriteria[i], score: parseInt(e.target.value) || 0 };
+                                    const newTotal = newCriteria.reduce((sum, cr) => sum + (cr.score || 0), 0);
+                                    setReEvalResult({ ...reEvalResult, criteria: newCriteria, score: newTotal });
+                                  }}
+                                  className="w-12 border border-purple-300 rounded px-1 py-0.5 text-center font-medium"
+                                  min="0"
+                                  max={c.max_score}
+                                />
+                              ) : (
+                                <span className="font-medium text-gray-800 w-12">{c.score}/{c.max_score}</span>
+                              )}
+                              {!reEvalEditMode && scoreDiff !== 0 && (
+                                <span className={`text-xs w-8 ${scoreDiff > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                  ({scoreDiff > 0 ? '+' : ''}{scoreDiff})
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {reEvalEditMode ? (
+                            <textarea
+                              value={c.feedback}
+                              onChange={(e) => {
+                                const newCriteria = [...reEvalResult.criteria];
+                                newCriteria[i] = { ...newCriteria[i], feedback: e.target.value };
+                                setReEvalResult({ ...reEvalResult, criteria: newCriteria });
+                              }}
+                              className="w-full mt-1 border border-purple-300 rounded px-2 py-1 text-xs min-h-[40px]"
+                            />
+                          ) : (
+                            <p className="text-gray-500 text-xs mt-1">{c.feedback}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Prompt Used (if requested) */}
+                  {reEvalShowPrompt && reEvalResult.prompt && (
+                    <div>
+                      <h4 className="font-medium text-gray-700 mb-1">Prompt Used</h4>
+                      <textarea
+                        value={reEvalResult.prompt}
+                        readOnly
+                        className="w-full h-32 border border-gray-300 rounded-lg px-3 py-2 text-xs font-mono bg-gray-50"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="p-4 border-t flex justify-end gap-2">
+              {!reEvalResult ? (
+                <>
+                  <button
+                    onClick={() => setShowReEvaluateModal(false)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleReEvaluate}
+                    disabled={!transcriptExists || reEvalLoading}
+                    className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    {reEvalLoading ? (
+                      <>
+                        <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span>Evaluating with {modelsList.find((m: any) => m.model_id === reEvalModelId)?.model_name || reEvalModelId}...</span>
+                      </>
+                    ) : (
+                      <span>Re-evaluate</span>
+                    )}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setShowReEvaluateModal(false)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700"
+                  >
+                    Do Not Save
+                  </button>
+                  <button
+                    onClick={handleSaveReEvaluation}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                  >
+                    Save This Re-evaluation
+                  </button>
+                </>
               )}
             </div>
           </div>

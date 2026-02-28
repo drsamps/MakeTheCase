@@ -2,14 +2,18 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
 import { inferPositionFromTranscript } from '../services/positionInference.js';
+import { buildCoachPrompt } from '../services/promptBuilder.js';
+import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
+import { evaluateWithLLM } from '../services/llmRouter.js';
 
 const router = express.Router();
 
 // Field list for SELECT queries (keeps things DRY)
 // NOTE: transcript, persona, hints, chat_model removed - now in case_chats and transcripts tables
 const EVAL_FIELDS = `id, created_at, student_id, case_id, case_chat_id, score, summary, criteria,
-                     helpful, liked, improve, super_model, allow_rechat`;
+                     helpful, liked, improve, super_model, allow_rechat, rubric_id`;
 
 // GET /api/evaluations - Get all evaluations (optionally filter by student_id and/or case_id)
 router.get('/', async (req, res) => {
@@ -106,6 +110,176 @@ router.get('/check-completion/:studentId/:caseId', async (req, res) => {
   }
 });
 
+// POST /api/evaluations/re-evaluate - Re-evaluate a transcript without saving
+// Admin only for now
+// MUST be placed before /:id routes
+router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res) => {
+  const { case_chat_id, rubric_id, model_id, include_prompt } = req.body;
+
+  if (!case_chat_id || !model_id) {
+    return res.status(400).json({ data: null, error: { message: 'case_chat_id and model_id are required' } });
+  }
+
+  try {
+    console.log('[Re-evaluate] Starting with case_chat_id:', case_chat_id, 'rubric_id:', rubric_id, 'model_id:', model_id);
+
+    // 1. Get transcript
+    const [transcriptRows] = await pool.execute(
+      'SELECT transcript FROM transcripts WHERE case_chat_id = ?',
+      [case_chat_id]
+    );
+    if (!transcriptRows.length || !transcriptRows[0].transcript) {
+      return res.status(404).json({ data: null, error: { message: 'No transcript found for this chat' } });
+    }
+    const transcript = transcriptRows[0].transcript;
+    console.log('[Re-evaluate] Step 1: Got transcript, length:', transcript.length);
+
+    // 2. Get case_chat details
+    const [chatRows] = await pool.execute(
+      `SELECT cc.case_id, cc.student_id, cc.section_id, s.full_name, c.case_title
+       FROM case_chats cc
+       JOIN students s ON cc.student_id = s.id
+       JOIN cases c ON cc.case_id = c.case_id
+       WHERE cc.id = ?`,
+      [case_chat_id]
+    );
+    if (!chatRows.length) {
+      return res.status(404).json({ data: null, error: { message: 'Case chat not found' } });
+    }
+    const { case_id, full_name } = chatRows[0];
+    console.log('[Re-evaluate] Step 2: Got case_id:', case_id, 'full_name:', full_name);
+
+    // 3. Get rubric
+    console.log('[Re-evaluate] Step 3: Getting rubric...');
+    const rubric = rubric_id
+      ? await getRubricById(rubric_id)
+      : await getDefaultRubric();
+    console.log('[Re-evaluate] Step 3: Got rubric:', rubric?.rubric_id);
+
+    // 4. Load case data
+    console.log('[Re-evaluate] Step 4: Loading case data...');
+    const { loadCaseData } = await import('./llm.js');
+    const caseData = await loadCaseData(case_id);
+    if (!caseData) {
+      return res.status(404).json({ data: null, error: { message: 'Case not found' } });
+    }
+    console.log('[Re-evaluate] Step 4: Got case data');
+
+    // 5. Build evaluation prompt
+    console.log('[Re-evaluate] Step 5: Building prompt...');
+    const prompt = buildCoachPrompt(transcript, full_name, caseData, 0, rubric);
+    console.log('[Re-evaluate] Step 5: Built prompt, length:', prompt.length);
+
+    // 6. Call LLM for evaluation
+    console.log('[Re-evaluate] Step 6: Calling LLM with model:', model_id);
+    const evalResult = await evaluateWithLLM({ modelId: model_id, prompt });
+    console.log('[Re-evaluate] Step 6: Got LLM result');
+
+    // 7. Parse and return result
+    let parsed;
+    try {
+      let jsonStr = evalResult;
+      if (typeof jsonStr === 'string') {
+        // Strip markdown code fences if present
+        jsonStr = jsonStr.trim();
+        if (jsonStr.startsWith('```')) {
+          jsonStr = jsonStr.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+        }
+        parsed = JSON.parse(jsonStr);
+      } else {
+        parsed = evalResult;
+      }
+    } catch (parseError) {
+      console.error('Failed to parse evaluation result:', parseError);
+      console.error('Raw result:', typeof evalResult === 'string' ? evalResult.substring(0, 200) : evalResult);
+      return res.status(500).json({ data: null, error: { message: 'Failed to parse evaluation result' } });
+    }
+
+    res.json({
+      data: {
+        score: parsed.totalScore ?? parsed.score ?? 0,
+        summary: parsed.summary || '',
+        criteria: parsed.criteria || [],
+        hints: parsed.hints || 0,
+        rubric_id: rubric?.rubric_id,
+        model_id: model_id,
+        prompt: include_prompt ? prompt : undefined
+      },
+      error: null
+    });
+
+  } catch (error) {
+    console.error('Re-evaluation error:', error.message);
+    console.error('Re-evaluation stack:', error.stack);
+    res.status(500).json({ data: null, error: { message: error.message || 'Re-evaluation failed' } });
+  }
+});
+
+// GET /api/evaluations/preview-prompt - Get the evaluation prompt preview
+// Admin only for now
+router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, res) => {
+  const { case_chat_id, rubric_id } = req.query;
+  console.log('[Preview-prompt] Starting with case_chat_id:', case_chat_id, 'rubric_id:', rubric_id);
+
+  if (!case_chat_id) {
+    return res.status(400).json({ data: null, error: { message: 'case_chat_id is required' } });
+  }
+
+  try {
+    // Get transcript
+    console.log('[Preview-prompt] Step 1: Getting transcript...');
+    const [transcriptRows] = await pool.execute(
+      'SELECT transcript FROM transcripts WHERE case_chat_id = ?',
+      [case_chat_id]
+    );
+    if (!transcriptRows.length || !transcriptRows[0].transcript) {
+      return res.status(404).json({ data: null, error: { message: 'No transcript found' } });
+    }
+    console.log('[Preview-prompt] Step 1: Got transcript');
+
+    // Get case_chat details
+    console.log('[Preview-prompt] Step 2: Getting case_chat details...');
+    const [chatRows] = await pool.execute(
+      `SELECT cc.case_id, s.full_name
+       FROM case_chats cc
+       JOIN students s ON cc.student_id = s.id
+       WHERE cc.id = ?`,
+      [case_chat_id]
+    );
+    if (!chatRows.length) {
+      return res.status(404).json({ data: null, error: { message: 'Case chat not found' } });
+    }
+    const { case_id, full_name } = chatRows[0];
+    console.log('[Preview-prompt] Step 2: Got case_id:', case_id, 'full_name:', full_name);
+
+    // Get rubric and case data, build prompt
+    console.log('[Preview-prompt] Step 3: Getting rubric...');
+    const rubric = rubric_id ? await getRubricById(rubric_id) : await getDefaultRubric();
+    console.log('[Preview-prompt] Step 3: Got rubric:', rubric?.rubric_id);
+
+    console.log('[Preview-prompt] Step 4: Loading case data...');
+    const { loadCaseData } = await import('./llm.js');
+    const caseData = await loadCaseData(case_id);
+    console.log('[Preview-prompt] Step 4: Got case data:', !!caseData);
+
+    console.log('[Preview-prompt] Step 5: Building prompt...');
+    const prompt = buildCoachPrompt(
+      transcriptRows[0].transcript,
+      full_name,
+      caseData || {},  // Handle null case data
+      0,
+      rubric
+    );
+    console.log('[Preview-prompt] Step 5: Built prompt, length:', prompt.length);
+
+    res.json({ data: { prompt }, error: null });
+  } catch (error) {
+    console.error('Preview prompt error:', error.message);
+    console.error('Preview prompt stack:', error.stack);
+    res.status(500).json({ data: null, error: { message: error.message || 'Failed to generate prompt preview' } });
+  }
+});
+
 // PATCH /api/evaluations/:id/allow-rechat - Toggle allow_rechat status (admin only)
 // IMPORTANT: This route must be defined BEFORE /:id to ensure proper route matching
 router.patch('/:id/allow-rechat', verifyToken, requireRole(['admin']), async (req, res) => {
@@ -165,6 +339,59 @@ router.get('/:id', async (req, res) => {
     res.json({ data, error: null });
   } catch (error) {
     console.error('Error fetching evaluation:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/evaluations/:id - Update evaluation fields (for re-evaluation)
+// Admin only for now
+router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { score, summary, criteria, rubric_id, super_model } = req.body;
+
+    const updates = [];
+    const values = [];
+
+    if (score !== undefined) { updates.push('score = ?'); values.push(score); }
+    if (summary !== undefined) { updates.push('summary = ?'); values.push(summary); }
+    if (criteria !== undefined) {
+      updates.push('criteria = ?');
+      values.push(JSON.stringify(criteria));
+    }
+    if (rubric_id !== undefined) { updates.push('rubric_id = ?'); values.push(rubric_id); }
+    if (super_model !== undefined) { updates.push('super_model = ?'); values.push(super_model); }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ data: null, error: { message: 'No fields to update' } });
+    }
+
+    values.push(id);
+    await pool.execute(
+      `UPDATE evaluations SET ${updates.join(', ')} WHERE id = ?`,
+      values
+    );
+
+    // Return updated evaluation
+    const [rows] = await pool.execute(
+      `SELECT ${EVAL_FIELDS} FROM evaluations WHERE id = ?`,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Evaluation not found' } });
+    }
+
+    const row = rows[0];
+    res.json({
+      data: {
+        ...row,
+        criteria: row.criteria ? (typeof row.criteria === 'string' ? JSON.parse(row.criteria) : row.criteria) : null
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error updating evaluation:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

@@ -306,5 +306,8 @@ router.post('/eval', async (req, res) => {
   }
 });
 
+// Export loadCaseData for use in other modules (e.g., re-evaluation)
+export { loadCaseData };
+
 export default router;
 
