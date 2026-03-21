@@ -42,6 +42,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
     const validSortColumns = {
       'student_name': 's.full_name',
       'section_title': 'sec.section_title',
+      'case_id': 'c.case_id',
       'case_title': 'c.case_title',
       'status': 'COALESCE(cc.status, "not_started")',
       'initial_position': 'cc.initial_position',
@@ -50,7 +51,8 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       'score': 'e.score',
       'hints': 'cc.hints_used',
       'helpful': 'e.helpful',
-      'completion_time': 'cc.end_time'
+      'completion_time': 'cc.end_time',
+      'time_minutes': 'TIMESTAMPDIFF(MINUTE, cc.start_time, cc.end_time)'
     };
     const sortColumn = validSortColumns[sort_by] || 'cc.end_time';
 
@@ -271,7 +273,8 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         cc.end_time as completion_time,
         e.allow_rechat,
         e.liked,
-        e.improve
+        e.improve,
+        COALESCE(r.total_points, 15) as out_of
       FROM students s
       LEFT JOIN student_sections ss ON s.id = ss.student_id
       JOIN sections sec ON (ss.section_id = sec.section_id OR s.section_id = sec.section_id)
@@ -279,6 +282,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       JOIN cases c ON sc.case_id = c.case_id
       JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
       LEFT JOIN evaluations e ON e.case_chat_id = cc.id
+      LEFT JOIN rubrics r ON e.rubric_id = r.rubric_id
       ${whereClause}
       ORDER BY ${sortColumn} ${sortDirection}
       LIMIT ? OFFSET ?
@@ -300,6 +304,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       final_position: row.final_position,
       persona: row.persona,
       score: row.score !== null ? parseInt(row.score) : null,
+      out_of: row.out_of !== null ? parseInt(row.out_of) : 15,
       hints: row.hints !== null ? parseInt(row.hints) : null,
       helpful: row.helpful !== null ? parseFloat(row.helpful) : null,
       time_minutes: row.time_minutes !== null ? parseInt(row.time_minutes) : null,

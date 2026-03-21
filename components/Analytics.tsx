@@ -48,6 +48,7 @@ interface StudentResult {
   final_position: string | null;
   persona: string | null;
   score: number | null;
+  out_of: number;
   hints: number | null;
   helpful: number | null;
   time_minutes: number | null;
@@ -70,10 +71,11 @@ interface CaseOption {
   case_title: string;
 }
 
-type SortKey = 'student_name' | 'section_title' | 'case_title' | 'status' | 'initial_position' | 'final_position' | 'persona' | 'score' | 'hints' | 'helpful' | 'completion_time';
+type SortKey = 'student_name' | 'section_title' | 'case_id' | 'case_title' | 'status' | 'initial_position' | 'final_position' | 'persona' | 'score' | 'hints' | 'helpful' | 'completion_time' | 'time_minutes';
 
 const COLUMN_OPTIONS = [
   { key: 'section_title', label: 'Section' },
+  { key: 'case_id', label: 'Case ID' },
   { key: 'case_title', label: 'Case' },
   { key: 'status', label: 'Status' },
   { key: 'initial_position', label: 'Initial Position' },
@@ -86,9 +88,10 @@ const COLUMN_OPTIONS = [
   { key: 'liked', label: 'Liked' },
   { key: 'improve', label: 'Improve' },
   { key: 'completion_time', label: 'Time' },
+  { key: 'time_minutes', label: 'Duration' },
 ];
 
-const DEFAULT_COLUMNS = ['section_title', 'case_title', 'status', 'score'];
+const DEFAULT_COLUMNS = ['section_title', 'case_id', 'status', 'score'];
 const DEFAULT_VISIBLE_COLUMNS = new Set(DEFAULT_COLUMNS);
 
 const STATUS_OPTIONS = [
@@ -288,6 +291,16 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
     if (score >= 9) return 'text-blue-600';
     if (score >= 6) return 'text-amber-600';
     return 'text-red-600';
+  };
+
+  // Duration format helper
+  const formatDuration = (minutes: number | null) => {
+    if (minutes === null) return null;
+    if (minutes < 1) return '<1m';
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
   };
 
   // View transcript
@@ -556,6 +569,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
   const handleExportCSV = () => {
     const headers = ['Student'];
     if (visibleColumns.has('section_title')) headers.push('Section');
+    if (visibleColumns.has('case_id')) headers.push('Case ID');
     if (visibleColumns.has('case_title')) headers.push('Case');
     if (visibleColumns.has('status')) headers.push('Status');
     if (visibleColumns.has('initial_position')) headers.push('Initial Position');
@@ -568,18 +582,20 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
     if (visibleColumns.has('liked')) headers.push('Liked');
     if (visibleColumns.has('improve')) headers.push('Improve');
     if (visibleColumns.has('completion_time')) headers.push('Time');
+    if (visibleColumns.has('time_minutes')) headers.push('Duration');
 
     const rows = [headers.join(',')];
     students.forEach(s => {
       const row = [`"${s.student_name}"`];
       if (visibleColumns.has('section_title')) row.push(`"${s.section_title}"`);
+      if (visibleColumns.has('case_id')) row.push(`"${s.case_id}"`);
       if (visibleColumns.has('case_title')) row.push(`"${s.case_title}"`);
       if (visibleColumns.has('status')) row.push(s.status);
       if (visibleColumns.has('initial_position')) row.push(s.initial_position || '');
       if (visibleColumns.has('final_position')) row.push(s.final_position || '');
       if (visibleColumns.has('persona')) row.push(s.persona || '');
       if (visibleColumns.has('score')) row.push(s.score !== null ? s.score.toString() : '');
-      if (visibleColumns.has('out_of')) row.push('15');
+      if (visibleColumns.has('out_of')) row.push(s.out_of.toString());
       if (visibleColumns.has('hints')) row.push(s.hints?.toString() || '');
       if (visibleColumns.has('helpful')) row.push(s.helpful !== null ? s.helpful.toFixed(1) : '');
       if (visibleColumns.has('liked')) {
@@ -593,6 +609,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
         row.push(`"${improve}"`);
       }
       if (visibleColumns.has('completion_time')) row.push(s.completion_time ? new Date(s.completion_time).toLocaleString() : '');
+      if (visibleColumns.has('time_minutes')) row.push(s.time_minutes !== null ? s.time_minutes.toString() : '');
       rows.push(row.join(','));
     });
 
@@ -963,6 +980,15 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
                       onSort={handleSort}
                     />
                   )}
+                  {visibleColumns.has('case_id') && (
+                    <SortableHeader
+                      label="Case ID"
+                      sortKey="case_id"
+                      currentSortKey={sortKey}
+                      sortDirection={sortDirection}
+                      onSort={handleSort}
+                    />
+                  )}
                   {visibleColumns.has('case_title') && (
                     <SortableHeader
                       label="Case"
@@ -1053,6 +1079,15 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
                       onSort={handleSort}
                     />
                   )}
+                  {visibleColumns.has('time_minutes') && (
+                    <SortableHeader
+                      label="Duration"
+                      sortKey="time_minutes"
+                      currentSortKey={sortKey}
+                      sortDirection={sortDirection}
+                      onSort={handleSort}
+                    />
+                  )}
                   <th className="p-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
@@ -1067,6 +1102,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
                     </td>
                     {visibleColumns.has('section_title') && (
                       <td className="p-3 whitespace-nowrap text-sm text-gray-600">{student.section_title}</td>
+                    )}
+                    {visibleColumns.has('case_id') && (
+                      <td className="p-3 whitespace-nowrap text-sm text-gray-600 font-mono">{student.case_id}</td>
                     )}
                     {visibleColumns.has('case_title') && (
                       <td className="p-3 whitespace-nowrap text-sm text-gray-600">{student.case_title}</td>
@@ -1117,7 +1155,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
                     )}
                     {visibleColumns.has('out_of') && (
                       <td className="p-3 whitespace-nowrap text-sm text-gray-600">
-                        15
+                        {student.out_of}
                       </td>
                     )}
                     {visibleColumns.has('hints') && (
@@ -1147,6 +1185,11 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
                     {visibleColumns.has('completion_time') && (
                       <td className="p-3 whitespace-nowrap text-sm text-gray-600">
                         {student.completion_time ? new Date(student.completion_time).toLocaleString() : <span className="text-gray-400">-</span>}
+                      </td>
+                    )}
+                    {visibleColumns.has('time_minutes') && (
+                      <td className="p-3 whitespace-nowrap text-sm text-gray-600">
+                        {formatDuration(student.time_minutes) || <span className="text-gray-400">-</span>}
                       </td>
                     )}
                     <td className="p-3 whitespace-nowrap text-sm">
