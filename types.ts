@@ -145,6 +145,7 @@ export interface ChatOptions {
   ask_for_feedback: boolean;
   ask_save_transcript: boolean;
   always_save_transcript: boolean; // Always save transcript without asking and without anonymizing
+  auto_save_transcript: boolean;   // Auto-save transcript after each chat exchange
   allowed_personas: string;
   default_persona: string;
   show_case: boolean;

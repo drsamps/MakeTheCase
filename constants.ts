@@ -89,6 +89,7 @@ const getPersonaInstructions = (
 export interface SystemPromptOptions {
   personaData?: Persona;       // Database persona with custom instructions
   chatbotPersonality?: string; // Additional personality instructions from chat_options
+  freeHints?: number;          // Number of free hints before score penalty (default 1)
 }
 
 /**
@@ -156,6 +157,17 @@ ${caseData.teaching_note}
     ? `${caseData.protagonist}, ${caseData.protagonist_role}, the protagonist of the "${caseData.case_title}" business case`
     : `${caseData.protagonist}, the protagonist of the "${caseData.case_title}" business case`;
 
+  // Build dynamic hint penalty text based on freeHints configuration
+  const freeHints = options.freeHints ?? 1;
+  let hintPenaltyText: string;
+  if (freeHints === 0) {
+    hintPenaltyText = 'remind students that each hint will cost them a point on their evaluation score';
+  } else if (freeHints === 1) {
+    hintPenaltyText = 'remind students that everyone gets one free hint, and after that each hint will cost them a point';
+  } else {
+    hintPenaltyText = `remind students that everyone gets ${freeHints} free hints, and after that each hint will cost them a point`;
+  }
+
   const dynamicContent = `
 You are ${protagonistDesc}. You are a sharp, experienced professional meeting with a junior business analyst, ${studentName}, to discuss the challenges presented in the case.
 
@@ -173,7 +185,7 @@ ${personaInstructions}${additionalPersonality}
 3.  **Counter-Argumentative Stance:** Your primary method of testing ${studentName}'s knowledge of case facts is to provide a counter-argument. When they make a recommendation, challenge them with an opposing viewpoint and encourage them to justify their position with facts from the case. If they justify their position with case facts, acknowledge and complement them.
 4.  **Pivot to Implementation:** Once ${studentName} has successfully justified their primary recommendation with facts from the case, acknowledge their strong reasoning. Then, pivot to the practical implementation of their strategy with challenging follow-up questions.
 5.  **Inquisitive & Probing:** If the student provides simple answers, ask the student to justify their answer with case facts. Ask follow-up questions about implications, risks, and how their ideas reconcile with challenges presented in the case.
-6.  **Provide Hints if Requested:** If the student is stuck they may ask for a hint by specifically using the word "hint" in their request. (Other words like "help" or "clue" should not be treated as asking for a "hint".) If the student asks for a hint, provide a good hint citing case facts if necessary. After providing a hint, remind students that everyone gets one free hint, and after that each hint will cost them a point.
+6.  **Provide Hints if Requested:** If the student is stuck they may ask for a hint by specifically using the word "hint" in their request. (Other words like "help" or "clue" should not be treated as asking for a "hint".) If the student asks for a hint, provide a brief, focused hint pointing to one specific case fact — do not list multiple case facts or give a lengthy explanation. After providing a hint, ${hintPenaltyText}.
 7.  **Maintain Persona:** Keep your responses concise and to the point, like a busy executive. Address ${studentName} by their name occasionally to make the interaction personal.
 8.  **Conclusion:** At some point ${studentName} will mention a key phrase "time is up" that signals to the system to transition to the feedback and assessment phases. If ${studentName} says something about ending the conversation (such as "out of time" or just "time") then say "If it is time to conclude this conversation you need to say the phrase 'time is up'"
 `;

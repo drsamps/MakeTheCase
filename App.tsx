@@ -34,6 +34,34 @@ const isEnabledFlag = (value: unknown): boolean =>
 const isDisabledFlag = (value: unknown): boolean =>
   value === false || value === 0 || value === '0' || value === 'false';
 
+/** Yes/no for feedback/transcript permission replies. Avoids substring false positives (e.g. includes('y') matches "today"). */
+function isAffirmativeConsentReply(message: string): boolean {
+  const lower = message.toLowerCase().trim();
+  if (!lower) return false;
+
+  if (
+    /^\s*no\b/.test(lower) ||
+    /\b(nope|nah|no thanks|no thank you|thanks,? no|not today|not now|not really|not interested|i'?d rather not|rather not|maybe later|another time|don'?t think so)\b/.test(lower) ||
+    /\bi would(n'?t| not)\b/.test(lower) ||
+    /\bi won'?t\b/.test(lower)
+  ) {
+    return false;
+  }
+
+  if (
+    /\b(yes|yeah|yep|yup|sure|ok|okay|absolutely|definitely|certainly)\b/.test(lower) ||
+    /\bof course\b/.test(lower)
+  ) {
+    return true;
+  }
+
+  if (/\bi would\b/.test(lower)) {
+    return true;
+  }
+
+  return /^\s*y\s*[!.]?\s*$/i.test(lower);
+}
+
 // Play a subtle double-beep sound to alert instructor of API errors
 const playErrorSound = () => {
   const ctx = new AudioContext();
@@ -135,6 +163,7 @@ const App: React.FC = () => {
     ask_for_feedback: false,
     ask_save_transcript: false,
     always_save_transcript: false,
+    auto_save_transcript: true,
     allowed_personas: 'moderate,strict,liberal,leading,sycophantic',
     default_persona: 'moderate',
     allow_repeat: false,
@@ -739,7 +768,8 @@ const App: React.FC = () => {
       const initialHistory: Message[] = [{ role: MessageRole.MODEL, content: firstMessageContent }];
 
       // Create chat session with case data for cache-optimized prompts
-      const session = createChatSession(name, persona, modelId, initialHistory, caseData);
+      const freeHints = chatOptions?.free_hints ?? 1;
+      const session = createChatSession(name, persona, modelId, initialHistory, caseData, { freeHints });
       setChatSession(session);
       setMessages(initialHistory);
       setConversationPhase(ConversationPhase.CHATTING);
@@ -764,7 +794,7 @@ const App: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId]);
+  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId, chatOptions]);
   
   const handleSendMessage = async (userMessage: string) => {
     if (conversationPhase === ConversationPhase.CHATTING) {
@@ -865,6 +895,22 @@ const App: React.FC = () => {
             const response = await chatSession.sendMessage({ message: userMessage });
             const modelMessage: Message = { role: MessageRole.MODEL, content: response.text };
             setMessages((prev) => [...prev, modelMessage]);
+
+            // Auto-save transcript after each successful exchange
+            if ((chatOptions?.auto_save_transcript ?? true) && currentCaseChatId) {
+              const fullName = sessionUser?.full_name || studentFirstName || 'Student';
+              const protagonistLabel = activeCaseData?.protagonist || 'CEO';
+              const allMessages = [...messages, newUserMessage, modelMessage];
+              const transcript = allMessages.map(msg => {
+                const speaker = msg.role === MessageRole.USER ? fullName : protagonistLabel;
+                return `${speaker}: ${msg.content}`;
+              }).join('\n\n');
+              fetch(`${getApiBaseUrl()}/transcripts/chat/${currentCaseChatId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ transcript }),
+              }).catch(err => console.error('Auto-save transcript failed:', err));
+            }
         } catch (e) {
             console.error("Failed to send message:", e);
             playErrorSound();
@@ -903,8 +949,8 @@ const App: React.FC = () => {
         const userReply: Message = { role: MessageRole.USER, content: userMessage };
         setMessages(prev => [...prev, userReply]);
         
-        const affirmative = ['yes', 'y', 'sure', 'ok', 'yeah', 'yep', 'absolutely', 'i would', 'of course'].some(word => userMessage.toLowerCase().includes(word));
-        
+        const affirmative = isAffirmativeConsentReply(userMessage);
+
         if (affirmative) {
             const ceoScoreRequest: Message = {
                 role: MessageRole.MODEL,
@@ -988,7 +1034,7 @@ const App: React.FC = () => {
     } else if (conversationPhase === ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION) {
         const userTranscriptReply: Message = { role: MessageRole.USER, content: userMessage };
         
-        const affirmative = ['yes', 'y', 'sure', 'ok', 'yeah', 'yep', 'absolutely', 'i would', 'of course'].some(word => userMessage.toLowerCase().includes(word));
+        const affirmative = isAffirmativeConsentReply(userMessage);
         if (affirmative) {
             setShareTranscript(true);
         }
@@ -1125,14 +1171,13 @@ const App: React.FC = () => {
         if (evaluationError) {
           console.error("Error saving evaluation:", evaluationError);
         } else {
-          // Save transcript separately to transcripts table
+          // Save transcript separately to transcripts table (upsert — may already exist from auto-save)
           if (transcriptToSave && currentCaseChatId) {
             try {
-              const transcriptResponse = await fetch(`${getApiBaseUrl()}/transcripts`, {
-                method: 'POST',
+              const transcriptResponse = await fetch(`${getApiBaseUrl()}/transcripts/chat/${currentCaseChatId}`, {
+                method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  case_chat_id: currentCaseChatId,
                   transcript: transcriptToSave,
                   saved_with_permission: shouldSaveTranscript && shareTranscript
                 })

@@ -76,6 +76,83 @@ router.post('/', async (req, res) => {
 });
 
 /**
+ * PUT /api/transcripts/chat/:caseChatId
+ * Upsert transcript for a case_chat (used by auto-save during active chat).
+ * Creates the transcript row on first call; updates it on subsequent calls.
+ */
+router.put('/chat/:caseChatId', async (req, res) => {
+  try {
+    const { caseChatId } = req.params;
+    const { transcript, saved_with_permission } = req.body;
+
+    if (!transcript) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'transcript is required' }
+      });
+    }
+
+    // Verify case_chat exists
+    const [chatExists] = await pool.execute(
+      'SELECT id FROM case_chats WHERE id = ?',
+      [caseChatId]
+    );
+
+    if (chatExists.length === 0) {
+      return res.status(404).json({
+        data: null,
+        error: { message: 'Case chat not found' }
+      });
+    }
+
+    const wordCount = transcript.trim().split(/\s+/).length;
+
+    // Check if transcript already exists for this chat
+    const [existing] = await pool.execute(
+      'SELECT id FROM transcripts WHERE case_chat_id = ?',
+      [caseChatId]
+    );
+
+    let transcriptId;
+
+    if (existing.length > 0) {
+      // Update existing transcript
+      transcriptId = existing[0].id;
+      const updateFields = ['transcript = ?', 'word_count = ?'];
+      const updateParams = [transcript, wordCount];
+      if (saved_with_permission !== undefined) {
+        updateFields.push('saved_with_permission = ?');
+        updateParams.push(saved_with_permission);
+      }
+      updateParams.push(transcriptId);
+      await pool.execute(
+        `UPDATE transcripts SET ${updateFields.join(', ')} WHERE id = ?`,
+        updateParams
+      );
+    } else {
+      // Insert new transcript
+      transcriptId = uuidv4();
+      await pool.execute(
+        `INSERT INTO transcripts (id, case_chat_id, transcript, word_count, saved_with_permission)
+         VALUES (?, ?, ?, ?, ?)`,
+        [transcriptId, caseChatId, transcript, wordCount, saved_with_permission || false]
+      );
+
+      // Link to case_chats
+      await pool.execute(
+        'UPDATE case_chats SET transcript_id = ? WHERE id = ?',
+        [transcriptId, caseChatId]
+      );
+    }
+
+    res.json({ data: { id: transcriptId }, error: null });
+  } catch (error) {
+    console.error('Error upserting transcript:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+/**
  * GET /api/transcripts/:id
  * Get a transcript by ID
  */

@@ -12,6 +12,7 @@ const DEFAULT_CHAT_OPTIONS = {
   // Feedback options
   ask_for_feedback: false,
   ask_save_transcript: false,
+  auto_save_transcript: true,    // Auto-save transcript after each chat exchange
   // Persona options
   allowed_personas: 'moderate,strict,liberal,leading,sycophantic',
   default_persona: 'moderate',
@@ -74,6 +75,14 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     type: 'boolean',
     default: false,
     description: 'Ask permission to save anonymized transcript',
+    category: 'feedback'
+  },
+  {
+    key: 'auto_save_transcript',
+    label: 'Auto-Save Transcript',
+    type: 'boolean',
+    default: true,
+    description: 'Automatically save transcript after each chat exchange (ensures transcripts are available even for incomplete chats)',
     category: 'feedback'
   },
   {

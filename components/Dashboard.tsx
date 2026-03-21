@@ -500,6 +500,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     ask_for_feedback: false,
     ask_save_transcript: false,
     always_save_transcript: false,
+    auto_save_transcript: true,
     allowed_personas: 'moderate,strict,liberal,leading,sycophantic',
     default_persona: 'moderate',
     show_case: true,
@@ -6027,6 +6028,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, ask_save_transcript: applicableDefault?.ask_save_transcript ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
                     )}
                   </div>
+                  <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('auto_save_transcript', editingChatOptions.auto_save_transcript, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={editingChatOptions.auto_save_transcript ?? true}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, auto_save_transcript: e.target.checked})}
+                        disabled={!isEditingDefault && useDefaultOptions}
+                        className="rounded border-gray-300"
+                      />
+                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Auto-save transcript during chat</span>
+                    </label>
+                    {!useDefaultOptions && isOptionModified('auto_save_transcript', editingChatOptions.auto_save_transcript, applicableDefault) && (
+                      <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, auto_save_transcript: applicableDefault?.auto_save_transcript ?? true})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                    )}
+                  </div>
                   <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('always_save_transcript', editingChatOptions.always_save_transcript, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
                     <label className="flex items-center gap-2 text-sm">
                       <input
@@ -6036,7 +6052,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         disabled={!isEditingDefault && useDefaultOptions}
                         className="rounded border-gray-300"
                       />
-                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Always save transcript without asking</span>
+                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Always save transcript at the end without asking</span>
                     </label>
                     {!useDefaultOptions && isOptionModified('always_save_transcript', editingChatOptions.always_save_transcript, applicableDefault) && (
                       <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, always_save_transcript: applicableDefault?.always_save_transcript ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
@@ -9445,11 +9461,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                               <label className="flex items-center gap-2 text-sm">
                                 <input
                                   type="checkbox"
+                                  checked={editingChatOptions.auto_save_transcript ?? true}
+                                  onChange={(e) => setEditingChatOptions({...editingChatOptions, auto_save_transcript: e.target.checked})}
+                                  className="rounded border-gray-300"
+                                />
+                                Auto-save transcript during chat
+                              </label>
+                              <label className="flex items-center gap-2 text-sm">
+                                <input
+                                  type="checkbox"
                                   checked={editingChatOptions.always_save_transcript ?? false}
                                   onChange={(e) => setEditingChatOptions({...editingChatOptions, always_save_transcript: e.target.checked})}
                                   className="rounded border-gray-300"
                                 />
-                                Always save transcript without asking
+                                Always save transcript at the end without asking
                               </label>
                             </div>
                             <div>

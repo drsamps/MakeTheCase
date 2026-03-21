@@ -1,4 +1,4 @@
-import { getSystemPrompt, getCoachPrompt, buildSystemPrompt, buildCoachPrompt, CaseData, DEFAULT_CASE_DATA, RubricForPrompt } from "../constants";
+import { getSystemPrompt, getCoachPrompt, buildSystemPrompt, buildCoachPrompt, CaseData, DEFAULT_CASE_DATA, RubricForPrompt, SystemPromptOptions } from "../constants";
 import { Message, EvaluationResult, CEOPersona, Rubric } from "../types";
 import { getApiBaseUrl } from "./apiClient";
 
@@ -141,11 +141,12 @@ export const createChatSession = (
   persona: CEOPersona,
   modelId: string,
   history: Message[] = [],
-  caseData?: CaseData  // Optional: if provided, uses dynamic case; otherwise uses default
+  caseData?: CaseData,
+  promptOptions?: SystemPromptOptions
 ): LLMChatSession => {
   // Build prompt with case data at the TOP for LLM caching
   const systemPrompt = caseData 
-    ? buildSystemPrompt(studentName, persona, caseData)
+    ? buildSystemPrompt(studentName, persona, caseData, promptOptions)
     : getSystemPrompt(studentName, persona);
   let currentHistory = [...history];
 
