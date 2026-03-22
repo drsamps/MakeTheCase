@@ -7,6 +7,7 @@ import { inferPositionFromTranscript } from '../services/positionInference.js';
 import { buildCoachPrompt } from '../services/promptBuilder.js';
 import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
+import { logPromptIfEnabled } from '../services/promptLogger.js';
 
 const router = express.Router();
 
@@ -146,7 +147,7 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
     if (!chatRows.length) {
       return res.status(404).json({ data: null, error: { message: 'Case chat not found' } });
     }
-    const { case_id, full_name } = chatRows[0];
+    const { case_id, student_id, full_name } = chatRows[0];
     console.log('[Re-evaluate] Step 2: Got case_id:', case_id, 'full_name:', full_name);
 
     // 3. Get rubric
@@ -174,6 +175,16 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
     console.log('[Re-evaluate] Step 6: Calling LLM with model:', model_id);
     const evalResult = await evaluateWithLLM({ modelId: model_id, prompt });
     console.log('[Re-evaluate] Step 6: Got LLM result');
+
+    // Log prompt if enabled (async, non-blocking)
+    logPromptIfEnabled({
+      logType: 'eval',
+      studentId: student_id,
+      caseId: case_id,
+      modelId: model_id,
+      systemPrompt: prompt,
+      response: evalResult
+    }).catch(() => {}); // Fire and forget
 
     // 7. Parse and return result
     let parsed;

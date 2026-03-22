@@ -87,15 +87,19 @@ The `getApiBaseUrl()` function returns `/api` in development and `/makethecase/a
 ### Database Migrations
 Run migrations in order after initial schema. Use the dev credentials (user: `claudecode@localhost`, password: `fordevonly`).
 
+**Database naming:**
+- **Development:** `ceochat_prod_copy` (local dev server)
+- **Production:** `ceochat` (production server)
+
 **MySQL full path on this machine:**
 ```bash
-"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat < server/migrations/018_example.sql
+"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat_prod_copy < server/migrations/018_example.sql
 ```
 
-Example migration sequence:
+Example migration sequence (using dev database):
 ```bash
-"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat < docs/mysql-database-structure-Oct2025.sql
-"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat < server/migrations/add_admin_auth.sql
+"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat_prod_copy < docs/mysql-database-structure-Oct2025.sql
+"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat_prod_copy < server/migrations/add_admin_auth.sql
 # ... continue with numbered migrations in order
 ```
 
@@ -179,6 +183,26 @@ Copy `env.local.example` to `.env.local` and configure:
 - `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
 - `MYSQL_USER`, `MYSQL_PASSWORD`, `JWT_SECRET`
 - `CAS_ENABLED` (false for local dev)
+
+## Prompt Logging (Debug Feature)
+
+Debug feature for capturing AI prompts/responses to disk. Access via **Admin > Logging** tab.
+
+**Key files:**
+- `server/services/promptLogger.js` - Core logging service
+- `server/routes/logs.js` - Admin API endpoints
+- `components/LoggingManager.tsx` - Admin UI
+- `docs/prompt-logging.md` - Full documentation
+
+**Settings (in `settings` table):**
+- `log_case_chat_prompts` - Countdown of chat turns to log (0 = disabled)
+- `log_evaluation_prompts` - Countdown of evaluations to log
+- `max_log_files` - Maximum files before logging stops (default: 100)
+- `log_with_full_case_context` - Include case content or hide it (default: false)
+
+**Log location:** `logs/` directory in project root
+
+**Prompt tagging:** Case content in prompts is wrapped in `<context type="..." file="...">` tags for clean extraction when logging. These tags are inside the existing `=== MARKERS ===` for backward compatibility.
 
 ## UI Components
 

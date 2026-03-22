@@ -142,10 +142,11 @@ export const createChatSession = (
   modelId: string,
   history: Message[] = [],
   caseData?: CaseData,
-  promptOptions?: SystemPromptOptions
+  promptOptions?: SystemPromptOptions,
+  studentId?: string
 ): LLMChatSession => {
   // Build prompt with case data at the TOP for LLM caching
-  const systemPrompt = caseData 
+  const systemPrompt = caseData
     ? buildSystemPrompt(studentName, persona, caseData, promptOptions)
     : getSystemPrompt(studentName, persona);
   let currentHistory = [...history];
@@ -161,6 +162,7 @@ export const createChatSession = (
           history: currentHistory,
           message,
           caseId: caseData?.case_id,  // Pass caseId for metrics tracking
+          studentId,  // Pass studentId for logging
         }),
       });
 
@@ -184,12 +186,14 @@ export const createChatSession = (
 const callEvalLLM = async (
   modelId: string,
   prompt: string,
-  rubric?: RubricForPrompt
+  rubric?: RubricForPrompt,
+  studentId?: string,
+  caseId?: string
 ): Promise<EvaluationResult> => {
   const response = await fetch(`${getApiBaseUrl()}/llm/eval`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ modelId, prompt }),
+    body: JSON.stringify({ modelId, prompt, studentId, caseId }),
   });
 
   const result = await parseOrThrow(response);
@@ -242,7 +246,8 @@ export const getEvaluation = async (
   modelId: string,
   caseData?: CaseData,
   chatOptions?: any,
-  rubric?: RubricForPrompt
+  rubric?: RubricForPrompt,
+  studentId?: string
 ): Promise<EvaluationResult> => {
   const protagonistLabel = caseData?.protagonist || 'CEO';
   const chatHistory = messages
@@ -250,12 +255,13 @@ export const getEvaluation = async (
     .join("\n\n");
 
   const freeHints = chatOptions?.free_hints ?? 1;
+  const caseId = caseData?.case_id;
 
   const prompt = caseData
     ? buildCoachPrompt(chatHistory, studentFullName, caseData, freeHints, rubric)
     : getCoachPrompt(chatHistory, studentFullName);
 
-  const firstResult = await callEvalLLM(modelId, prompt, rubric);
+  const firstResult = await callEvalLLM(modelId, prompt, rubric, studentId, caseId);
 
   if (!firstResult.criteria.length || firstResult.totalScore === 0 || !firstResult.summary || firstResult.summary === 'No summary provided.') {
     console.warn('[eval] Normalized evaluation appears empty', {
@@ -270,7 +276,7 @@ export const getEvaluation = async (
     console.warn('[eval] Score is 0 with substantive summary — retrying evaluation with scoring correction prompt');
     try {
       const retryPrompt = buildRetryPrompt(prompt, firstResult);
-      const retryResult = await callEvalLLM(modelId, retryPrompt, rubric);
+      const retryResult = await callEvalLLM(modelId, retryPrompt, rubric, studentId, caseId);
 
       if (retryResult.totalScore > 0) {
         console.log('[eval] Retry succeeded with score', retryResult.totalScore);

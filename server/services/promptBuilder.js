@@ -56,7 +56,9 @@ export function buildCoachPrompt(chatHistory, studentName, caseData = {}, freeHi
   // STATIC CONTENT FIRST (for caching)
   const staticContent = `
 === BUSINESS CASE DOCUMENT ===
+<context type="case" file="case.md">
 ${caseContent}
+</context>
 === END BUSINESS CASE ===
 
 === EVALUATION RUBRIC ===

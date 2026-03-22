@@ -6,6 +6,7 @@ import { api, getApiBaseUrl } from '../services/apiClient'; // Dashboard with ti
 import { detectProvider } from '../services/llmService';
 import { PromptManager } from './PromptManager';
 import { SettingsManager } from './SettingsManager';
+import { LoggingManager } from './LoggingManager';
 import { CasePrepManager } from './CasePrepManager';
 import { CaseFilesManager } from './CaseFilesManager';
 import { CacheMetrics } from './CacheMetrics';
@@ -44,7 +45,7 @@ type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live';
 type ResultsSubTab = 'responses' | 'positions';
-type AdminSubTab = 'instructors' | 'settings' | 'models' | 'personas' | 'prompts' | 'admins';
+type AdminSubTab = 'instructors' | 'settings' | 'models' | 'personas' | 'prompts' | 'admins' | 'logging';
 type RubricsSubTab = 'criteria' | 'rubrics';
 
 const isEnabledFlag = (value: unknown): boolean =>
@@ -7779,6 +7780,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   Admins
                 </button>
               )}
+              {hasAccess(user, 'settings') && (
+                <button
+                  onClick={() => setAdminSubTab('logging')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'logging'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Logging
+                </button>
+              )}
             </div>
           )}
 
@@ -7862,6 +7875,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <InstructorManager user={user} mode="instructors" />
           ) : adminSubTab === 'admins' ? (
             <InstructorManager user={user} mode="admins" />
+          ) : adminSubTab === 'logging' ? (
+            <LoggingManager />
           ) : null
         ) : primaryTab === 'rubrics' ? (
           <div className="p-6 max-w-7xl mx-auto">

@@ -715,7 +715,7 @@ const App: React.FC = () => {
     }
   }, [currentCaseChatId, conversationPhase]);
 
-  const startConversation = useCallback(async (name: string, persona: CEOPersona, modelId: string) => {
+  const startConversation = useCallback(async (name: string, persona: CEOPersona, modelId: string, studentId?: string) => {
     setIsLoading(true);
     setError(null);
     setHintsUsed(0);  // Reset hint counter at start of conversation
@@ -769,7 +769,7 @@ const App: React.FC = () => {
 
       // Create chat session with case data for cache-optimized prompts
       const freeHints = chatOptions?.free_hints ?? 1;
-      const session = createChatSession(name, persona, modelId, initialHistory, caseData, { freeHints });
+      const session = createChatSession(name, persona, modelId, initialHistory, caseData, { freeHints }, studentId || studentDBId || undefined);
       setChatSession(session);
       setMessages(initialHistory);
       setConversationPhase(ConversationPhase.CHATTING);
@@ -1128,7 +1128,7 @@ const App: React.FC = () => {
     const lastName = sessionUser?.last_name || '';
     // Pass case data, chat options, and rubric for cache-optimized evaluation prompt
     const caseData = activeCaseData || DEFAULT_CASE_DATA;
-    const result = await getEvaluation(messages, studentFirstName, fullName, selectedSuperModel, caseData, chatOptions, activeRubric || undefined);
+    const result = await getEvaluation(messages, studentFirstName, fullName, selectedSuperModel, caseData, chatOptions, activeRubric || undefined, studentDBId || undefined);
       setEvaluationResult(result);
       
       if (studentDBId) {
@@ -1305,7 +1305,7 @@ const App: React.FC = () => {
         // Continue anyway - chat tracking is optional
       }
 
-      await startConversation(trimmedFirstName, ceoPersona, selectedChatModel);
+      await startConversation(trimmedFirstName, ceoPersona, selectedChatModel, studentId);
     } finally {
       setIsLoading(false);
     }
@@ -1460,7 +1460,7 @@ const App: React.FC = () => {
 
     // Immediately start a new conversation with the same settings
     if (studentFirstName && selectedChatModel) {
-      await startConversation(studentFirstName, ceoPersona, selectedChatModel);
+      await startConversation(studentFirstName, ceoPersona, selectedChatModel, studentDBId || undefined);
     }
   };
 

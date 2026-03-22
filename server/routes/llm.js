@@ -1,6 +1,7 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { chatWithLLM, evaluateWithLLM } from '../services/llmRouter.js';
+import { logPromptIfEnabled } from '../services/promptLogger.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -266,7 +267,7 @@ router.get('/case-data/:caseId', async (req, res) => {
 
 router.post('/chat', async (req, res) => {
   try {
-    const { modelId, systemPrompt, history, message, caseId } = req.body || {};
+    const { modelId, systemPrompt, history, message, caseId, studentId } = req.body || {};
     if (!modelId || !systemPrompt || !message) {
       return res.status(400).json({ data: null, error: { message: 'modelId, systemPrompt, and message are required' } });
     }
@@ -281,6 +282,21 @@ router.post('/chat', async (req, res) => {
       message,
       config: { ...modelConfig, caseId },  // Include caseId for metrics tracking
     });
+
+    // Log prompt if enabled (async, non-blocking)
+    if (studentId && caseId) {
+      logPromptIfEnabled({
+        logType: 'chat',
+        studentId,
+        caseId,
+        modelId,
+        systemPrompt,
+        history: Array.isArray(history) ? history : [],
+        currentMessage: message,
+        response: text
+      }).catch(() => {}); // Fire and forget - errors handled internally
+    }
+
     res.json({ data: { text, meta }, error: null });
   } catch (error) {
     console.error('LLM chat error:', error);
@@ -290,7 +306,7 @@ router.post('/chat', async (req, res) => {
 
 router.post('/eval', async (req, res) => {
   try {
-    const { modelId, prompt } = req.body || {};
+    const { modelId, prompt, studentId, caseId } = req.body || {};
     if (!modelId || !prompt) {
       return res.status(400).json({ data: null, error: { message: 'modelId and prompt are required' } });
     }
@@ -299,6 +315,19 @@ router.post('/eval', async (req, res) => {
       return res.status(404).json({ data: null, error: { message: 'Model not found' } });
     }
     const text = await evaluateWithLLM({ modelId, prompt, config: modelConfig });
+
+    // Log prompt if enabled (async, non-blocking)
+    if (studentId && caseId) {
+      logPromptIfEnabled({
+        logType: 'eval',
+        studentId,
+        caseId,
+        modelId,
+        systemPrompt: prompt,
+        response: text
+      }).catch(() => {}); // Fire and forget - errors handled internally
+    }
+
     res.json({ data: text, error: null });
   } catch (error) {
     console.error('LLM eval error:', error);

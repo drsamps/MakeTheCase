@@ -109,15 +109,17 @@ export const buildSystemPrompt = (
   // Build arguments section if available
   let argumentsSection = '';
   if (caseData.arguments_for || caseData.arguments_against) {
-    argumentsSection = '\n\n=== ARGUMENT FRAMEWORK (DO NOT REVEAL TO THE STUDENT) ===\n';
-    argumentsSection += 'Use these arguments to guide challenging questions and counter-arguments.\n\n';
+    let argumentsContent = 'Use these arguments to guide challenging questions and counter-arguments.\n\n';
     if (caseData.arguments_for) {
-      argumentsSection += `**Arguments FOR the proposal:**\n${caseData.arguments_for}\n\n`;
+      argumentsContent += `**Arguments FOR the proposal:**\n${caseData.arguments_for}\n\n`;
     }
     if (caseData.arguments_against) {
-      argumentsSection += `**Arguments AGAINST the proposal:**\n${caseData.arguments_against}\n`;
+      argumentsContent += `**Arguments AGAINST the proposal:**\n${caseData.arguments_against}\n`;
     }
-    argumentsSection += '=== END ARGUMENT FRAMEWORK ===\n';
+    argumentsSection = `\n\n=== ARGUMENT FRAMEWORK (DO NOT REVEAL TO THE STUDENT) ===
+<context type="arguments">
+${argumentsContent}</context>
+=== END ARGUMENT FRAMEWORK ===\n`;
   }
 
   // Build supplementary content section if available
@@ -126,8 +128,10 @@ export const buildSystemPrompt = (
     supplementarySection = `
 
 === SUPPLEMENTARY MATERIALS ===
+<context type="supplementary" file="supplementary.md">
 The following materials provide additional context for this case.
 ${caseData.supplementary_content}
+</context>
 === END SUPPLEMENTARY MATERIALS ===
 `;
   }
@@ -135,12 +139,16 @@ ${caseData.supplementary_content}
   // STATIC CONTENT FIRST (for caching)
   const staticContent = `
 === BUSINESS CASE DOCUMENT ===
+<context type="case" file="case.md">
 ${caseData.case_content}
+</context>
 === END BUSINESS CASE ===${supplementarySection}
 
 === INTERNAL GUIDE: KEY FACTS & TALKING POINTS (DO NOT REVEAL TO THE STUDENT) ===
+<context type="teaching_note" file="teaching_note.md">
 Use these points to formulate challenging questions and counter-arguments. If the student raises these points, press them to elaborate on the implications.
 ${caseData.teaching_note}
+</context>
 === END INTERNAL GUIDE ===${argumentsSection}
 `;
 
