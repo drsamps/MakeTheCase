@@ -36,6 +36,7 @@ export enum ChatStatus {
   CANCELED = 'canceled',
   KILLED = 'killed',
   COMPLETED = 'completed',
+  EVALUATION_FAILED = 'evaluation_failed',
 }
 
 export type PositionCaptureMethod = 'explicit' | 'ai_inferred' | 'instructor_manual' | 'none';
@@ -183,6 +184,14 @@ export interface EvaluationResult {
   summary: string;
   hints: number;
   rubric_id?: number;            // Track which rubric was used
+}
+
+// Subset of rubric fields used for evaluation prompt construction and state tracking
+export interface RubricForPrompt {
+  criteria_prompt: string;
+  additional_prompt?: string | null;
+  total_points: number;
+  rubric_id?: number;
 }
 
 // Rubric system types

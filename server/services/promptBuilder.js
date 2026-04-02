@@ -1,7 +1,7 @@
 /**
  * Prompt Builder Service
- * Backend version of buildCoachPrompt from constants.ts
- * Used for re-evaluation functionality
+ * Canonical source for evaluation prompt construction.
+ * Used by both student evaluations and admin re-evaluations.
  */
 
 // Default criteria prompt for backward compatibility (when no rubric is provided)
@@ -41,7 +41,7 @@ export function buildCoachPrompt(chatHistory, studentName, caseData = {}, freeHi
   // Use rubric's cached prompt or fall back to default
   const criteriaPrompt = rubric?.criteria_prompt || DEFAULT_CRITERIA_PROMPT;
   const totalPoints = rubric?.total_points ?? 15;
-  const numCriteria = rubric ? (criteriaPrompt.match(/\*\*Q\d+\./g) || []).length || 3 : 3;
+  const numCriteria = rubric ? (criteriaPrompt.match(/Q\d+\./g) || []).length || 3 : 3;
 
   // Additional instructor-specified instructions
   const additionalInstructions = rubric?.additional_prompt
@@ -71,7 +71,7 @@ ${criteriaPrompt}
 ${additionalInstructions}
 **Your Task:**
 1.  Read the Business Case and the Conversation Transcript.
-2.  For each of the ${numCriteria} criteria, provide a score and brief, constructive feedback explaining your reasoning.
+2.  For each of the ${numCriteria} criteria listed above, provide a score and brief, constructive feedback explaining your reasoning. You MUST return exactly ${numCriteria} criteria entries — no more, no fewer.
   * Be generous in scores, giving a higher score if it can be justified. But do not give a score that is undeserved.
   * Be kind in your feedback, providing compliments when justified, and presenting criticisms with dignity.
 3.  Calculate the total score (maximum ${totalPoints} points before hint penalties).

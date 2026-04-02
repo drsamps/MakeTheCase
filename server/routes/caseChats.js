@@ -7,7 +7,7 @@ import { inferPositionsFromChat, shouldInferPositions } from '../services/positi
 const router = express.Router();
 
 // Valid status values
-const VALID_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'killed', 'completed'];
+const VALID_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'killed', 'completed', 'evaluation_failed'];
 
 // POST /api/case-chats - Create a new chat session
 router.post('/', async (req, res) => {

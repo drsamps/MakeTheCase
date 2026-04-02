@@ -335,8 +335,8 @@ router.post('/eval', async (req, res) => {
   }
 });
 
-// Export loadCaseData for use in other modules (e.g., re-evaluation)
-export { loadCaseData };
+// Export loadCaseData and getModelConfig for use in other modules (e.g., evaluations)
+export { loadCaseData, getModelConfig };
 
 export default router;
 

@@ -8,6 +8,12 @@ import { buildCoachPrompt } from '../services/promptBuilder.js';
 import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
+import {
+  parseEvaluationResponse,
+  validateEvaluationResult,
+  buildCorrectionPrompt,
+  trimEvaluationResult,
+} from '../services/evaluationNormalizer.js';
 
 const router = express.Router();
 
@@ -108,6 +114,174 @@ router.get('/check-completion/:studentId/:caseId', async (req, res) => {
   } catch (error) {
     console.error('Error checking completion:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/evaluations/run - Run a student evaluation (prompt built server-side)
+// MUST be placed before /:id routes
+router.post('/run', async (req, res) => {
+  const { case_chat_id, chatHistory, modelId, rubricId } = req.body;
+
+  if (!case_chat_id || !chatHistory || !modelId) {
+    return res.status(400).json({ data: null, error: { message: 'case_chat_id, chatHistory, and modelId are required' } });
+  }
+
+  try {
+    // 1. Look up case_chat details
+    const [chatRows] = await pool.execute(
+      `SELECT cc.case_id, cc.student_id, cc.section_id, s.full_name
+       FROM case_chats cc
+       JOIN students s ON cc.student_id = s.id
+       WHERE cc.id = ?`,
+      [case_chat_id]
+    );
+    if (!chatRows.length) {
+      return res.status(404).json({ data: null, error: { message: 'Case chat not found' } });
+    }
+    const { case_id, student_id, section_id, full_name } = chatRows[0];
+
+    // 2. Look up chat_options from section_cases for free_hints
+    let freeHints = 1;
+    if (section_id && case_id) {
+      const [scRows] = await pool.execute(
+        'SELECT chat_options FROM section_cases WHERE section_id = ? AND case_id = ?',
+        [section_id, case_id]
+      );
+      if (scRows.length && scRows[0].chat_options) {
+        try {
+          const opts = typeof scRows[0].chat_options === 'string'
+            ? JSON.parse(scRows[0].chat_options)
+            : scRows[0].chat_options;
+          freeHints = opts.free_hints ?? 1;
+        } catch { /* keep default */ }
+      }
+    }
+
+    // 3. Get rubric
+    const rubric = rubricId ? await getRubricById(rubricId) : await getDefaultRubric();
+    const expectedCriteria = rubric?.criteria?.length || (rubric?.criteria_prompt?.match(/Q\d+\./g) || []).length || 3;
+
+    // 4. Load case data
+    const { loadCaseData, getModelConfig } = await import('./llm.js');
+    const caseData = await loadCaseData(case_id);
+    if (!caseData) {
+      return res.status(404).json({ data: null, error: { message: 'Case not found' } });
+    }
+
+    // 5. Look up model config (for temperature/reasoning_effort)
+    const modelConfig = await getModelConfig(modelId);
+    if (!modelConfig) {
+      return res.status(404).json({ data: null, error: { message: 'Model not found' } });
+    }
+
+    // 6. Build evaluation prompt
+    const prompt = buildCoachPrompt(chatHistory, full_name, caseData, freeHints, rubric);
+
+    // 7. Call LLM
+    const rawResult = await evaluateWithLLM({ modelId, prompt, config: modelConfig });
+
+    // Log prompt (async, non-blocking)
+    logPromptIfEnabled({
+      logType: 'eval',
+      studentId: student_id,
+      caseId: case_id,
+      modelId,
+      systemPrompt: prompt,
+      response: rawResult
+    }).catch(() => {});
+
+    // 8. Parse and normalize
+    let result;
+    try {
+      result = parseEvaluationResponse(rawResult, rubric);
+    } catch (parseErr) {
+      console.error('[Eval run] Failed to parse LLM result:', parseErr.message);
+      return res.status(500).json({ data: null, error: { message: 'Failed to parse evaluation result', code: 'EVAL_PARSE_FAILED' } });
+    }
+
+    // 9. Validate
+    let issues = validateEvaluationResult(result, expectedCriteria);
+
+    // --- Three-step failure cascade ---
+
+    // Step 1: Retry with correction prompt
+    if (issues.length > 0) {
+      console.warn('[Eval run] Validation issues on first attempt:', issues.map(i => i.code));
+      try {
+        const correctionPrompt = buildCorrectionPrompt(prompt, issues, expectedCriteria, result);
+        const retryRaw = await evaluateWithLLM({ modelId, prompt: correctionPrompt, config: modelConfig });
+
+        logPromptIfEnabled({
+          logType: 'eval',
+          studentId: student_id,
+          caseId: case_id,
+          modelId,
+          systemPrompt: correctionPrompt,
+          response: retryRaw
+        }).catch(() => {});
+
+        const retryResult = parseEvaluationResponse(retryRaw, rubric);
+        const retryIssues = validateEvaluationResult(retryResult, expectedCriteria);
+
+        if (retryIssues.length === 0) {
+          console.log('[Eval run] Retry succeeded — validation passed');
+          return res.json({ data: retryResult, error: null });
+        }
+
+        // Retry didn't fully fix it; use retry result for Step 2 if it's better
+        if (retryIssues.length < issues.length) {
+          result = retryResult;
+          issues = retryIssues;
+        }
+        console.warn('[Eval run] Retry still has issues:', retryIssues.map(i => i.code));
+      } catch (retryErr) {
+        console.warn('[Eval run] Retry failed:', retryErr.message);
+      }
+    }
+
+    // Step 2: Trim/fix the result to match rubric criteria
+    if (issues.some(i => i.code === 'WRONG_CRITERIA_COUNT') && rubric?.criteria?.length) {
+      console.log('[Eval run] Attempting to trim/fix criteria to match rubric');
+      const hintPenalty = Math.max(0, (result.hints || 0) - freeHints);
+      const trimmed = trimEvaluationResult(result, rubric.criteria, hintPenalty);
+      const trimIssues = validateEvaluationResult(trimmed, expectedCriteria);
+
+      // Accept if criteria count is now correct (ignore ZERO_SCORE_WITH_SUMMARY — we did our best)
+      const criticalIssues = trimIssues.filter(i => i.code !== 'ZERO_SCORE_WITH_SUMMARY');
+      if (criticalIssues.length === 0) {
+        console.log('[Eval run] Trim succeeded — returning fixed result');
+        return res.json({ data: trimmed, error: null });
+      }
+
+      // Use trimmed result even if not perfect, as long as we have criteria
+      if (trimmed.criteria.length === expectedCriteria) {
+        console.log('[Eval run] Trim partially succeeded — returning trimmed result with remaining issues');
+        return res.json({ data: trimmed, error: null });
+      }
+    }
+
+    // If only ZERO_SCORE_WITH_SUMMARY remains, still return the result
+    const criticalIssues = issues.filter(i => i.code !== 'ZERO_SCORE_WITH_SUMMARY');
+    if (criticalIssues.length === 0) {
+      return res.json({ data: result, error: null });
+    }
+
+    // Step 3: Give up gracefully
+    if (issues.length > 0 && result.criteria.length > 0 && result.summary && result.summary !== 'No summary provided.') {
+      console.warn('[Eval run] Returning imperfect result (has criteria + summary)');
+      return res.json({ data: result, error: null });
+    }
+
+    console.error('[Eval run] Evaluation failed after all recovery attempts:', issues.map(i => i.code));
+    return res.status(422).json({
+      data: null,
+      error: { message: 'Evaluation could not be completed automatically.', code: 'EVAL_VALIDATION_FAILED' }
+    });
+
+  } catch (error) {
+    console.error('[Eval run] Error:', error.message);
+    console.error('[Eval run] Stack:', error.stack);
+    res.status(500).json({ data: null, error: { message: error.message || 'Evaluation failed' } });
   }
 });
 

@@ -1,10 +1,10 @@
 
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Message, MessageRole, ConversationPhase, EvaluationResult, CEOPersona, Section, CaseChat, ChatStatus } from './types';
+import { Message, MessageRole, ConversationPhase, EvaluationResult, CEOPersona, Section, CaseChat, ChatStatus, RubricForPrompt } from './types';
 import { createChatSession, getEvaluation } from './services/llmService';
 import type { LLMChatSession } from './services/llmService';
-import { CaseData, DEFAULT_CASE_DATA, RubricForPrompt } from './constants';
+import { CaseData, DEFAULT_CASE_DATA } from './constants';
 import { api, getApiBaseUrl } from './services/apiClient';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
@@ -1125,10 +1125,8 @@ const App: React.FC = () => {
     setError(null);
     try {
     const fullName = sessionUser?.full_name || `${studentFirstName}`;
-    const lastName = sessionUser?.last_name || '';
-    // Pass case data, chat options, and rubric for cache-optimized evaluation prompt
-    const caseData = activeCaseData || DEFAULT_CASE_DATA;
-    const result = await getEvaluation(messages, studentFirstName, fullName, selectedSuperModel, caseData, chatOptions, activeRubric || undefined, studentDBId || undefined);
+    const protagonistLabel = activeCaseData?.protagonist || 'CEO';
+    const result = await getEvaluation(messages, currentCaseChatId!, selectedSuperModel, protagonistLabel, activeRubric?.rubric_id);
       setEvaluationResult(result);
       
       if (studentDBId) {
@@ -1199,9 +1197,24 @@ const App: React.FC = () => {
         }
       }
       setConversationPhase(ConversationPhase.EVALUATING);
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to get evaluation:", e);
-      setError("Sorry, there was an error generating your performance review. Please try again.");
+
+      if (e?.code === 'EVAL_VALIDATION_FAILED' && currentCaseChatId) {
+        // Mark the chat as needing instructor review
+        try {
+          await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'evaluation_failed' }),
+          });
+        } catch (statusErr) {
+          console.error("Failed to update case_chat status:", statusErr);
+        }
+        setError("We were unable to generate your evaluation automatically. Your instructor will review your conversation and provide an evaluation at a later time.");
+      } else {
+        setError("Sorry, there was an error generating your performance review. Please try again.");
+      }
       setConversationPhase(ConversationPhase.CHATTING);
     }
   };
