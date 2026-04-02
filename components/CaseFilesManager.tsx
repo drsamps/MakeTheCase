@@ -79,6 +79,15 @@ export const CaseFilesManager: React.FC = () => {
   const [syncReport, setSyncReport] = useState<any>(null);
   const [isSyncing, setIsSyncing] = useState(false);
 
+  // Converted text modal state
+  const [textModalFile, setTextModalFile] = useState<CaseFile | null>(null);
+  const [textModalContent, setTextModalContent] = useState<string>('');
+  const [textModalHasText, setTextModalHasText] = useState(false);
+  const [textModalLoading, setTextModalLoading] = useState(false);
+  const [textModalSaving, setTextModalSaving] = useState(false);
+  const [textModalDirty, setTextModalDirty] = useState(false);
+  const [textModalConvertedAt, setTextModalConvertedAt] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -283,6 +292,96 @@ export const CaseFilesManager: React.FC = () => {
     } catch (err: any) {
       setError(err.message || 'Delete failed');
     }
+  };
+
+  const handleReconvert = async (fileId: number) => {
+    try {
+      setError(null);
+      const response = await api.post(`/case-files/${fileId}/reconvert`);
+      if (response.error) {
+        throw new Error(response.error.message);
+      }
+      const chars = response.data?.converted_text_length ?? 0;
+      setSuccess(`Text re-extracted (${chars.toLocaleString()} chars)`);
+    } catch (err: any) {
+      setError(err.message || 'Reconvert failed');
+    }
+  };
+
+  const openTextModal = async (file: CaseFile) => {
+    setTextModalFile(file);
+    setTextModalLoading(true);
+    setTextModalDirty(false);
+    setTextModalContent('');
+    setTextModalHasText(false);
+    setTextModalConvertedAt(null);
+    try {
+      const response = await api.get(`/case-files/${file.id}/converted-text`);
+      if (response.error) {
+        throw new Error(response.error.message);
+      }
+      const d = response.data;
+      setTextModalContent(d.converted_text || '');
+      setTextModalHasText(d.has_converted_text);
+      setTextModalConvertedAt(d.converted_at || null);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load text');
+      setTextModalFile(null);
+    } finally {
+      setTextModalLoading(false);
+    }
+  };
+
+  const handleTextModalSave = async () => {
+    if (!textModalFile) return;
+    setTextModalSaving(true);
+    try {
+      const response = await api.put(`/case-files/${textModalFile.id}/converted-text`, {
+        converted_text: textModalContent,
+      });
+      if (response.error) {
+        throw new Error(response.error.message);
+      }
+      setTextModalDirty(false);
+      setTextModalHasText(true);
+      setTextModalConvertedAt(response.data?.converted_at || new Date().toISOString());
+      setSuccess('Text saved');
+    } catch (err: any) {
+      setError(err.message || 'Save failed');
+    } finally {
+      setTextModalSaving(false);
+    }
+  };
+
+  const handleTextModalConvert = async () => {
+    if (!textModalFile) return;
+    setTextModalLoading(true);
+    try {
+      const response = await api.post(`/case-files/${textModalFile.id}/reconvert`);
+      if (response.error) {
+        throw new Error(response.error.message);
+      }
+      // Reload the text after conversion
+      const textResponse = await api.get(`/case-files/${textModalFile.id}/converted-text`);
+      if (textResponse.data) {
+        setTextModalContent(textResponse.data.converted_text || '');
+        setTextModalHasText(textResponse.data.has_converted_text);
+        setTextModalConvertedAt(textResponse.data.converted_at || null);
+      }
+      setTextModalDirty(false);
+      setSuccess(`Text extracted (${response.data?.converted_text_length?.toLocaleString() ?? 0} chars)`);
+    } catch (err: any) {
+      setError(err.message || 'Conversion failed');
+    } finally {
+      setTextModalLoading(false);
+    }
+  };
+
+  const closeTextModal = () => {
+    if (textModalDirty) {
+      if (!confirm('You have unsaved changes. Discard them?')) return;
+    }
+    setTextModalFile(null);
   };
 
   const openEditModal = (file: CaseFile) => {
@@ -688,6 +787,30 @@ export const CaseFilesManager: React.FC = () => {
                             >
                               Edit
                             </button>
+                            {['pdf', 'docx', 'doc', 'md', 'txt'].includes(file.file_format || '') && (
+                              <>
+                                <span className="text-gray-300">|</span>
+                                <button
+                                  onClick={() => openTextModal(file)}
+                                  className="text-purple-600 hover:text-purple-800 text-xs"
+                                  title="View or edit extracted text"
+                                >
+                                  Text
+                                </button>
+                              </>
+                            )}
+                            {['pdf', 'docx', 'doc'].includes(file.file_format || '') && (
+                              <>
+                                <span className="text-gray-300">|</span>
+                                <button
+                                  onClick={() => handleReconvert(file.id)}
+                                  className="text-green-600 hover:text-green-800 text-xs"
+                                  title="Re-extract text from the original file"
+                                >
+                                  Reconvert
+                                </button>
+                              </>
+                            )}
                             <span className="text-gray-300">|</span>
                             <button
                               onClick={() => handleDelete(file.id)}
@@ -979,6 +1102,110 @@ export const CaseFilesManager: React.FC = () => {
                 I Confirm
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Converted Text Modal */}
+      {textModalFile && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
+            <div className="px-6 py-4 border-b flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-bold">Extracted Text</h3>
+                <p className="text-sm text-gray-600">
+                  {textModalFile.original_filename || textModalFile.filename}
+                  {textModalFile.file_format && (
+                    <span className="ml-2 text-xs bg-gray-100 px-2 py-0.5 rounded">
+                      {textModalFile.file_format.toUpperCase()}
+                    </span>
+                  )}
+                </p>
+              </div>
+              <button
+                onClick={closeTextModal}
+                className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+              >
+                &times;
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto p-6">
+              {textModalLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+                  <span className="ml-3 text-gray-600">Loading...</span>
+                </div>
+              ) : !textModalHasText ? (
+                <div className="text-center py-12">
+                  <div className="text-gray-400 text-5xl mb-4">📄</div>
+                  <p className="text-gray-600 mb-2">
+                    No extracted text available for this file.
+                  </p>
+                  <p className="text-sm text-gray-500 mb-6">
+                    The text has not been extracted from the original file yet.
+                    Click below to convert it now.
+                  </p>
+                  <button
+                    onClick={handleTextModalConvert}
+                    className="px-6 py-2 bg-purple-600 text-white rounded hover:bg-purple-700"
+                  >
+                    Convert to Text
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs text-gray-500">
+                      {textModalContent.length.toLocaleString()} characters
+                      {textModalConvertedAt && (
+                        <> &middot; converted {new Date(textModalConvertedAt).toLocaleString()}</>
+                      )}
+                    </span>
+                    {textModalDirty && (
+                      <span className="text-xs text-orange-600 font-medium">Unsaved changes</span>
+                    )}
+                  </div>
+                  <textarea
+                    value={textModalContent}
+                    onChange={(e) => {
+                      setTextModalContent(e.target.value);
+                      setTextModalDirty(true);
+                    }}
+                    className="w-full h-[50vh] border rounded p-3 font-mono text-sm resize-y focus:ring-2 focus:ring-purple-300 focus:border-purple-400"
+                    spellCheck={false}
+                  />
+                </>
+              )}
+            </div>
+
+            {textModalHasText && !textModalLoading && (
+              <div className="px-6 py-4 border-t flex items-center justify-between">
+                <button
+                  onClick={handleTextModalConvert}
+                  disabled={textModalLoading}
+                  className="text-sm text-green-600 hover:text-green-800"
+                  title="Re-extract text from the original file (discards edits)"
+                >
+                  Re-extract from file
+                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={closeTextModal}
+                    className="px-4 py-2 border rounded hover:bg-gray-50"
+                  >
+                    {textModalDirty ? 'Discard' : 'Close'}
+                  </button>
+                  <button
+                    onClick={handleTextModalSave}
+                    disabled={textModalSaving || !textModalDirty}
+                    className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400"
+                  >
+                    {textModalSaving ? 'Saving...' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

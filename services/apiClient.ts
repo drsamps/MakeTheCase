@@ -366,6 +366,13 @@ export const api = {
     });
   },
 
+  async put<T = any>(endpoint: string, body?: any): Promise<{ data: T | null; error: { message: string } | null }> {
+    return apiFetch<T>(endpoint, {
+      method: 'PUT',
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  },
+
   async delete<T = any>(endpoint: string): Promise<{ data: T | null; error: { message: string } | null }> {
     return apiFetch<T>(endpoint, { method: 'DELETE' });
   },

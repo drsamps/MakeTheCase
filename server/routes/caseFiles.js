@@ -198,13 +198,28 @@ router.post('/:caseId/upload', verifyToken, requireRole(['admin']), requirePermi
       const stats = await fs.stat(req.file.path);
       const fileFormat = detectFileFormat(req.file.originalname);
 
+      // Convert file to text at upload time so we never re-parse PDFs later
+      let convertedText = null;
+      const textFormats = ['pdf', 'docx', 'doc', 'md', 'txt'];
+      if (textFormats.includes(fileFormat)) {
+        try {
+          const ext = path.extname(req.file.originalname);
+          const { text } = await convertFile(req.file.path, ext);
+          convertedText = text || null;
+        } catch (convErr) {
+          console.warn('[CaseFiles] Text conversion at upload failed (will retry later):', convErr.message);
+        }
+      }
+
       // Insert file record with extended metadata
       const [result] = await pool.execute(
         `INSERT INTO case_files (
           case_id, filename, file_type, file_format, file_source,
           proprietary, include_in_chat_prompt, prompt_order, file_version,
-          original_filename, file_size, processing_status, created_at
-        ) VALUES (?, ?, ?, ?, 'uploaded', ?, ?, ?, ?, ?, ?, 'pending', NOW())`,
+          original_filename, file_size, processing_status,
+          converted_text, converted_at, created_at
+        ) VALUES (?, ?, ?, ?, 'uploaded', ?, ?, ?, ?, ?, ?, 'pending',
+                  ?, ${convertedText ? 'NOW()' : 'NULL'}, NOW())`,
         [
           caseId,
           req.file.filename,
@@ -215,7 +230,8 @@ router.post('/:caseId/upload', verifyToken, requireRole(['admin']), requirePermi
           parseInt(prompt_order, 10) || 0,
           file_version || null,
           req.file.originalname,
-          stats.size
+          stats.size,
+          convertedText
         ]
       );
 
@@ -343,13 +359,27 @@ router.post('/:caseId/download-url', verifyToken, requireRole(['admin']), requir
     const stats = await fs.stat(filePath);
     const fileFormat = detectFileFormat(filename);
 
+    // Convert file to text at download time so we never re-parse PDFs later
+    let convertedText = null;
+    const textFormats = ['pdf', 'docx', 'doc', 'md', 'txt'];
+    if (textFormats.includes(fileFormat)) {
+      try {
+        const { text } = await convertFile(filePath, ext);
+        convertedText = text || null;
+      } catch (convErr) {
+        console.warn('[CaseFiles] Text conversion at download failed (will retry later):', convErr.message);
+      }
+    }
+
     // Insert file record
     const [result] = await pool.execute(
       `INSERT INTO case_files (
         case_id, filename, file_type, file_format, file_source, source_url,
         proprietary, include_in_chat_prompt, prompt_order, file_version,
-        original_filename, file_size, processing_status, created_at
-      ) VALUES (?, ?, ?, ?, 'downloaded', ?, ?, ?, ?, ?, ?, ?, 'pending', NOW())`,
+        original_filename, file_size, processing_status,
+        converted_text, converted_at, created_at
+      ) VALUES (?, ?, ?, ?, 'downloaded', ?, ?, ?, ?, ?, ?, ?, 'pending',
+                ?, ${convertedText ? 'NOW()' : 'NULL'}, NOW())`,
       [
         caseId,
         storedFilename,
@@ -361,7 +391,8 @@ router.post('/:caseId/download-url', verifyToken, requireRole(['admin']), requir
         parseInt(prompt_order, 10) || 0,
         file_version || null,
         filename,
-        stats.size
+        stats.size,
+        convertedText
       ]
     );
 
@@ -634,7 +665,7 @@ router.get('/:caseId/prompt-context', verifyToken, async (req, res) => {
     // Get files that should be included in prompt, ordered by prompt_order
     const [files] = await pool.execute(
       `SELECT id, case_id, filename, file_type, file_format,
-              proprietary, proprietary_confirmed_by, prompt_order
+              proprietary, proprietary_confirmed_by, prompt_order, converted_text
        FROM case_files
        WHERE case_id = ? AND include_in_chat_prompt = 1
        ORDER BY prompt_order ASC, created_at ASC`,
@@ -656,24 +687,25 @@ router.get('/:caseId/prompt-context', verifyToken, async (req, res) => {
       }
     }
 
-    // Load content for included files
+    // Load content for included files (prefer cached converted_text)
     const filesWithContent = await Promise.all(
       includedFiles.map(async (file) => {
         try {
-          const filePath = path.join(CASE_FILES_DIR, caseId, 'uploads', file.filename);
+          // Use cached converted text if available
+          if (file.converted_text) {
+            return { ...file, content: file.converted_text };
+          }
 
-          // Check if it's a text-based file that can be included in prompt
           const textFormats = ['md', 'txt', 'pdf', 'docx', 'doc'];
           if (!textFormats.includes(file.file_format)) {
             return { ...file, content: null, content_error: 'Non-text file format' };
           }
 
-          // Try to convert/read file content
+          const filePath = path.join(CASE_FILES_DIR, caseId, 'uploads', file.filename);
           const ext = path.extname(file.filename);
           const { text } = await convertFile(filePath, ext);
           return { ...file, content: text };
         } catch (e) {
-          // Try reading from standard location (case.md, teaching_note.md)
           if (file.file_type === 'case' || file.file_type === 'teaching_note') {
             try {
               const standardPath = path.join(CASE_FILES_DIR, caseId, `${file.file_type}.md`);
@@ -712,9 +744,9 @@ router.get('/:fileId/content', verifyToken, requireRole(['admin']), requirePermi
   try {
     const { fileId } = req.params;
 
-    // Get file record
+    // Get file record including cached text
     const [files] = await pool.execute(
-      'SELECT id, case_id, filename, file_type, file_format FROM case_files WHERE id = ?',
+      'SELECT id, case_id, filename, file_type, file_format, converted_text FROM case_files WHERE id = ?',
       [fileId]
     );
 
@@ -726,9 +758,17 @@ router.get('/:fileId/content', verifyToken, requireRole(['admin']), requirePermi
     }
 
     const fileRecord = files[0];
-    const filePath = path.join(CASE_FILES_DIR, fileRecord.case_id, 'uploads', fileRecord.filename);
 
-    // Convert file to text
+    // Use cached converted text if available
+    if (fileRecord.converted_text) {
+      return res.json({
+        data: { text: fileRecord.converted_text, file_id: parseInt(fileId) },
+        error: null
+      });
+    }
+
+    // Fall back to on-the-fly conversion
+    const filePath = path.join(CASE_FILES_DIR, fileRecord.case_id, 'uploads', fileRecord.filename);
     try {
       const ext = path.extname(fileRecord.filename);
       const { text } = await convertFile(filePath, ext);
@@ -737,7 +777,6 @@ router.get('/:fileId/content', verifyToken, requireRole(['admin']), requirePermi
         error: null
       });
     } catch (e) {
-      // Try standard location as fallback
       if (fileRecord.file_type === 'case' || fileRecord.file_type === 'teaching_note') {
         const standardPath = path.join(CASE_FILES_DIR, fileRecord.case_id, `${fileRecord.file_type}.md`);
         try {
@@ -756,6 +795,141 @@ router.get('/:fileId/content', verifyToken, requireRole(['admin']), requirePermi
 
   } catch (error) {
     console.error('[CaseFiles] Error fetching file content:', error);
+    res.status(500).json({
+      data: null,
+      error: { message: error.message }
+    });
+  }
+});
+
+// GET /api/case-files/:fileId/converted-text - Get cached converted text and metadata
+router.get('/:fileId/converted-text', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+  try {
+    const { fileId } = req.params;
+
+    const [files] = await pool.execute(
+      `SELECT id, case_id, filename, original_filename, file_type, file_format,
+              converted_text, converted_at
+       FROM case_files WHERE id = ?`,
+      [fileId]
+    );
+
+    if (files.length === 0) {
+      return res.status(404).json({
+        data: null,
+        error: { message: 'File not found' }
+      });
+    }
+
+    const f = files[0];
+    res.json({
+      data: {
+        id: f.id,
+        filename: f.original_filename || f.filename,
+        file_format: f.file_format,
+        converted_text: f.converted_text,
+        converted_at: f.converted_at,
+        has_converted_text: f.converted_text != null
+      },
+      error: null
+    });
+
+  } catch (error) {
+    console.error('[CaseFiles] Error fetching converted text:', error);
+    res.status(500).json({
+      data: null,
+      error: { message: error.message }
+    });
+  }
+});
+
+// PUT /api/case-files/:fileId/converted-text - Save edited converted text
+router.put('/:fileId/converted-text', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+  try {
+    const { fileId } = req.params;
+    const { converted_text } = req.body;
+
+    if (converted_text === undefined) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'converted_text is required' }
+      });
+    }
+
+    const [files] = await pool.execute(
+      'SELECT id FROM case_files WHERE id = ?',
+      [fileId]
+    );
+
+    if (files.length === 0) {
+      return res.status(404).json({
+        data: null,
+        error: { message: 'File not found' }
+      });
+    }
+
+    await pool.execute(
+      'UPDATE case_files SET converted_text = ?, converted_at = NOW() WHERE id = ?',
+      [converted_text || null, fileId]
+    );
+
+    res.json({
+      data: {
+        id: parseInt(fileId),
+        converted_text_length: converted_text ? converted_text.length : 0,
+        converted_at: new Date().toISOString()
+      },
+      error: null
+    });
+
+  } catch (error) {
+    console.error('[CaseFiles] Error saving converted text:', error);
+    res.status(500).json({
+      data: null,
+      error: { message: error.message }
+    });
+  }
+});
+
+// POST /api/case-files/:fileId/reconvert - Re-extract text from the original file on disk
+router.post('/:fileId/reconvert', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+  try {
+    const { fileId } = req.params;
+
+    const [files] = await pool.execute(
+      'SELECT id, case_id, filename, file_type, file_format FROM case_files WHERE id = ?',
+      [fileId]
+    );
+
+    if (files.length === 0) {
+      return res.status(404).json({
+        data: null,
+        error: { message: 'File not found' }
+      });
+    }
+
+    const fileRecord = files[0];
+    const filePath = path.join(CASE_FILES_DIR, fileRecord.case_id, 'uploads', fileRecord.filename);
+
+    const ext = path.extname(fileRecord.filename);
+    const { text } = await convertFile(filePath, ext);
+
+    await pool.execute(
+      'UPDATE case_files SET converted_text = ?, converted_at = NOW() WHERE id = ?',
+      [text || null, fileId]
+    );
+
+    res.json({
+      data: {
+        id: parseInt(fileId),
+        converted_text_length: text ? text.length : 0,
+        converted_at: new Date().toISOString()
+      },
+      error: null
+    });
+
+  } catch (error) {
+    console.error('[CaseFiles] Error reconverting file:', error);
     res.status(500).json({
       data: null,
       error: { message: error.message }

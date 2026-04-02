@@ -19,36 +19,55 @@ async function getModelConfig(modelId) {
   return rows[0] || null;
 }
 
-// Helper: Load content from a file (handles different formats)
-async function loadFileContent(caseId, filename, fileType) {
+// Helper: Load content from a file (handles different formats).
+// If convertedText is provided (from DB cache), returns it directly to avoid re-parsing PDFs.
+// When fileId is provided and we fall back to disk conversion, the result is written back
+// to the DB so legacy files are automatically backfilled on first access.
+async function loadFileContent(caseId, filename, fileType, convertedText, fileId) {
+  if (convertedText) {
+    console.log(`[loadFileContent] Using cached converted_text for ${filename} (${convertedText.length} chars)`);
+    return convertedText;
+  }
+
+  let text = null;
+
   // First try the uploads directory (new files)
   const uploadsPath = path.join(CASE_FILES_DIR, caseId, 'uploads', filename);
   try {
     await fs.access(uploadsPath);
     console.log(`[loadFileContent] Found file at: ${uploadsPath}`);
     const ext = path.extname(filename);
-    const { text } = await convertFile(uploadsPath, ext);
+    const result = await convertFile(uploadsPath, ext);
+    text = result.text;
     console.log(`[loadFileContent] Converted ${filename}: ${text ? text.length + ' chars' : 'empty'}`);
-    return text;
   } catch (e) {
     console.log(`[loadFileContent] File not in uploads or conversion failed for ${filename}:`, e.message);
-    // Not in uploads, try standard location for legacy files
   }
 
   // Try standard location for case.md or teaching_note.md
-  if (fileType === 'case' || fileType === 'teaching_note') {
+  if (!text && (fileType === 'case' || fileType === 'teaching_note')) {
     const standardPath = path.join(CASE_FILES_DIR, caseId, `${fileType}.md`);
     try {
-      const content = await fs.readFile(standardPath, 'utf-8');
+      text = await fs.readFile(standardPath, 'utf-8');
       console.log(`[loadFileContent] Loaded from standard path: ${standardPath}`);
-      return content;
     } catch (e) {
       console.log(`[loadFileContent] Standard path not found: ${standardPath}`);
-      // File not found
     }
   }
 
-  return null;
+  // Lazy backfill: store the converted text so we don't repeat this work
+  if (text && fileId) {
+    pool.execute(
+      'UPDATE case_files SET converted_text = ?, converted_at = NOW() WHERE id = ? AND converted_text IS NULL',
+      [text, fileId]
+    ).then(() => {
+      console.log(`[loadFileContent] Backfilled converted_text for file ${fileId} (${text.length} chars)`);
+    }).catch(err => {
+      console.warn(`[loadFileContent] Failed to backfill converted_text for file ${fileId}:`, err.message);
+    });
+  }
+
+  return text;
 }
 
 // Load case data including markdown content for prompts
@@ -70,7 +89,7 @@ async function loadCaseData(caseId) {
   // Try to load files from database with ordering
   let [baseFiles] = await pool.execute(
     `SELECT id, filename, file_type, file_format, proprietary, proprietary_confirmed_by,
-            include_in_chat_prompt, prompt_order
+            include_in_chat_prompt, prompt_order, converted_text
      FROM case_files
      WHERE case_id = ? AND include_in_chat_prompt = 1 AND is_outline = 0
      ORDER BY prompt_order ASC, created_at ASC`,
@@ -78,11 +97,15 @@ async function loadCaseData(caseId) {
   );
 
   const [outlineFiles] = await pool.execute(
-    `SELECT id, parent_file_id, filename, file_type, file_format, include_in_chat_prompt,
-            prompt_order, is_latest_outline, outline_content
-     FROM case_files
-     WHERE case_id = ? AND include_in_chat_prompt = 1 AND is_outline = 1 AND is_latest_outline = 1
-     ORDER BY prompt_order ASC, created_at ASC`,
+    `SELECT cf.id, cf.parent_file_id, cf.filename, cf.file_type, cf.file_format,
+            cf.include_in_chat_prompt, cf.prompt_order, cf.is_latest_outline,
+            cf.outline_content, cf.converted_text,
+            parent.file_type AS parent_file_type
+     FROM case_files cf
+     LEFT JOIN case_files parent ON cf.parent_file_id = parent.id
+     WHERE cf.case_id = ? AND cf.include_in_chat_prompt = 1
+       AND cf.is_outline = 1 AND cf.is_latest_outline = 1
+     ORDER BY cf.prompt_order ASC, cf.created_at ASC`,
     [caseId]
   );
 
@@ -93,7 +116,7 @@ async function loadCaseData(caseId) {
     // First try file_type='case'
     let [fallbackCaseFiles] = await pool.execute(
       `SELECT id, filename, file_type, file_format, proprietary, proprietary_confirmed_by,
-              include_in_chat_prompt, prompt_order
+              include_in_chat_prompt, prompt_order, converted_text
        FROM case_files
        WHERE case_id = ? AND file_type = 'case' AND is_outline = 0
        ORDER BY prompt_order ASC, created_at ASC
@@ -106,7 +129,7 @@ async function loadCaseData(caseId) {
       console.log(`[loadCaseData] No file_type='case' found, trying any file for ${caseId}...`);
       [fallbackCaseFiles] = await pool.execute(
         `SELECT id, filename, file_type, file_format, proprietary, proprietary_confirmed_by,
-                include_in_chat_prompt, prompt_order
+                include_in_chat_prompt, prompt_order, converted_text
          FROM case_files
          WHERE case_id = ? AND is_outline = 0
          ORDER BY prompt_order ASC, created_at ASC`,
@@ -136,14 +159,13 @@ async function loadCaseData(caseId) {
       }
 
       try {
-        const content = await loadFileContent(caseId, file.filename, file.file_type);
+        const content = await loadFileContent(caseId, file.filename, file.file_type, file.converted_text, file.id);
         if (content) {
           if (file.file_type === 'case') {
             caseData.case_content += (caseData.case_content ? '\n\n' : '') + content;
           } else if (file.file_type === 'teaching_note') {
             caseData.teaching_note += (caseData.teaching_note ? '\n\n' : '') + content;
           } else {
-            // Supplementary content (chapters, readings, articles, etc.)
             const typeLabel = file.file_type.startsWith('other:')
               ? file.file_type.substring(6)
               : file.file_type.replace('_', ' ').toUpperCase();
@@ -160,7 +182,7 @@ async function loadCaseData(caseId) {
       for (const outline of outlines) {
         try {
           const outlineContent =
-            (await loadFileContent(caseId, outline.filename, outline.file_type)) ||
+            (await loadFileContent(caseId, outline.filename, outline.file_type, outline.converted_text, outline.id)) ||
             outline.outline_content ||
             '';
           if (!outlineContent) continue;
@@ -181,6 +203,36 @@ async function loadCaseData(caseId) {
         } catch (e) {
           console.error(`[loadCaseData] Failed to load outline ${outline.filename}:`, e.message);
         }
+      }
+    }
+
+    // Include outlines whose parent has include_in_chat_prompt=0
+    // (parent absent from baseFiles, so outline was not processed above)
+    const processedParentIds = new Set(baseFiles.map(f => f.id));
+    for (const outline of outlineFiles) {
+      if (processedParentIds.has(outline.parent_file_id)) continue;
+      try {
+        const outlineContent =
+          (await loadFileContent(caseId, outline.filename, outline.file_type, outline.converted_text, outline.id)) ||
+          outline.outline_content ||
+          '';
+        if (!outlineContent) continue;
+
+        const parentType = outline.parent_file_type || 'case';
+        if (parentType === 'case') {
+          caseData.case_content += (caseData.case_content ? '\n\n' : '') + outlineContent;
+        } else if (parentType === 'teaching_note') {
+          caseData.teaching_note += (caseData.teaching_note ? '\n\n' : '') + outlineContent;
+        } else {
+          const typeLabel = parentType.startsWith('other:')
+            ? parentType.substring(6)
+            : parentType.replace('_', ' ').toUpperCase();
+          caseData.supplementary_content +=
+            `\n\n=== ${typeLabel} OUTLINE ===\n${outlineContent}`;
+        }
+        console.log(`[loadCaseData] Included standalone outline ${outline.filename} (parent excluded from prompt)`);
+      } catch (e) {
+        console.error(`[loadCaseData] Failed to load standalone outline ${outline.filename}:`, e.message);
       }
     }
   } else {
