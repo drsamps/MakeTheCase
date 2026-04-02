@@ -159,6 +159,133 @@ function formatHistory(history) {
 }
 
 /**
+ * Format duration in milliseconds to m:ss format
+ * @param {number} ms - Duration in milliseconds
+ * @returns {string}
+ */
+function formatDuration(ms) {
+  if (!ms || ms < 0) return 'N/A';
+  const totalSeconds = Math.round(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Format a number with thousands separators
+ * @param {number} num
+ * @returns {string}
+ */
+function formatNumber(num) {
+  if (num == null || isNaN(num)) return 'N/A';
+  return num.toLocaleString('en-US');
+}
+
+/**
+ * Get model pricing from database
+ * @param {string} modelId
+ * @returns {Promise<{input_cost: number|null, output_cost: number|null}>}
+ */
+async function getModelPricing(modelId) {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT input_cost, output_cost FROM models WHERE model_id = ?',
+      [modelId]
+    );
+    return rows[0] || { input_cost: null, output_cost: null };
+  } catch (error) {
+    console.warn(`Failed to get pricing for model ${modelId}:`, error.message);
+    return { input_cost: null, output_cost: null };
+  }
+}
+
+/**
+ * Calculate estimated cost based on token usage and model pricing
+ * @param {Object} meta - Meta object with cacheMetrics and provider
+ * @param {Object} pricing - { input_cost, output_cost } per million tokens
+ * @returns {number|null}
+ */
+function calculateCost(meta, pricing) {
+  if (!pricing?.input_cost || !pricing?.output_cost) return null;
+  if (!meta?.cacheMetrics) return null;
+
+  const inputCostPerToken = pricing.input_cost / 1_000_000;
+  const outputCostPerToken = pricing.output_cost / 1_000_000;
+
+  // Apply cache discount based on provider
+  // Anthropic: ~90% discount on cached tokens
+  // OpenAI: ~50% discount on cached tokens
+  // Google: No caching discount by default
+  const cacheDiscount = meta.provider === 'anthropic' ? 0.10
+                      : meta.provider === 'openai' ? 0.50
+                      : 1.0;
+  const cachedCostPerToken = inputCostPerToken * cacheDiscount;
+
+  const totalInputTokens = meta.cacheMetrics.input_tokens || 0;
+  const cachedTokens = meta.cacheMetrics.cached_tokens || 0;
+  const uncachedInputTokens = Math.max(0, totalInputTokens - cachedTokens);
+  const outputTokens = meta.cacheMetrics.output_tokens || 0;
+
+  return (uncachedInputTokens * inputCostPerToken)
+       + (cachedTokens * cachedCostPerToken)
+       + (outputTokens * outputCostPerToken);
+}
+
+/**
+ * Format the token usage section for logs
+ * @param {Object} meta - Meta object with cacheMetrics and provider
+ * @param {number} durationMs - Duration in milliseconds
+ * @param {Object} pricing - Model pricing from database
+ * @returns {string}
+ */
+function formatTokenUsage(meta, durationMs, pricing) {
+  const divider = '-'.repeat(80);
+  const lines = [divider, 'TOKEN USAGE', divider];
+
+  if (!meta?.cacheMetrics) {
+    lines.push('Token usage data not available');
+    return lines.join('\n');
+  }
+
+  const cm = meta.cacheMetrics;
+  const inputTokens = cm.input_tokens || 0;
+  const cachedTokens = cm.cached_tokens || 0;
+  const outputTokens = cm.output_tokens || 0;
+
+  // Input tokens line with cache hits
+  const cacheHitText = cachedTokens > 0 ? ` (Cache hits: ${formatNumber(cachedTokens)})` : '';
+  lines.push(`Input tokens:     ${formatNumber(inputTokens).padStart(10)}${cacheHitText}`);
+
+  // Output tokens
+  lines.push(`Output tokens:    ${formatNumber(outputTokens).padStart(10)}`);
+
+  // Reasoning tokens (N/A for most models - could be extended for OpenAI o1 models)
+  lines.push(`Reasoning tokens: ${'N/A'.padStart(10)}`);
+
+  // Duration
+  lines.push(`Duration:         ${formatDuration(durationMs).padStart(10)}`);
+
+  // Estimated cost
+  const cost = calculateCost(meta, pricing);
+  const costText = cost != null ? `$${cost.toFixed(4)}` : 'N/A';
+  lines.push(`Estimated Cost:   ${costText.padStart(10)}`);
+
+  return lines.join('\n');
+}
+
+/**
+ * Format the AI response section header
+ * @param {string} modelId
+ * @param {Object} meta - Meta object with provider info
+ * @returns {string}
+ */
+function formatResponseHeader(modelId, meta) {
+  const divider = '-'.repeat(80);
+  const provider = meta?.provider || 'unknown';
+  return `${divider}\nAI MODEL RESPONSE (${modelId} - ${provider})\n${divider}`;
+}
+
+/**
  * Format log file content with headers
  * @param {'chat' | 'eval'} logType
  * @param {Object} metadata
@@ -166,11 +293,18 @@ function formatHistory(history) {
  * @param {Array<{role: string, content: string}>} history - Conversation history (for chat logs)
  * @param {string} currentMessage - Current student message (for chat logs)
  * @param {string} response
+ * @param {Object} [meta] - Meta object with cacheMetrics and provider
+ * @param {number} [durationMs] - Duration in milliseconds
+ * @param {Object} [pricing] - Model pricing from database
  * @returns {string}
  */
-function formatLogContent(logType, metadata, systemPrompt, history, currentMessage, response) {
+function formatLogContent(logType, metadata, systemPrompt, history, currentMessage, response, meta, durationMs, pricing) {
   const headerType = logType === 'chat' ? 'CASE CHAT LOG' : 'TRANSCRIPT EVALUATION LOG';
   const separator = '='.repeat(60);
+
+  // Build the AI response section with new format
+  const responseHeader = formatResponseHeader(metadata.modelId, meta);
+  const tokenUsageSection = meta ? `\n\n${formatTokenUsage(meta, durationMs, pricing)}` : '';
 
   if (logType === 'eval') {
     // Evaluation logs don't have history/message structure
@@ -187,9 +321,10 @@ ${separator}
 
 ${systemPrompt}
 
-=== AI RESPONSE ===
+${responseHeader}
 
 ${response}
+${tokenUsageSection}
 `;
   }
 
@@ -215,9 +350,10 @@ ${formatHistory(history)}
 
 ${currentMessage || '(No message)'}
 
-=== AI RESPONSE ===
+${responseHeader}
 
 ${response}
+${tokenUsageSection}
 `;
 }
 
@@ -291,8 +427,10 @@ async function logError(error, context = {}) {
  * @param {Array<{role: string, content: string}>} [params.history] - Conversation history (chat only)
  * @param {string} [params.currentMessage] - Current student message (chat only)
  * @param {string} params.response
+ * @param {Object} [params.meta] - Meta object with cacheMetrics and provider
+ * @param {number} [params.durationMs] - Request duration in milliseconds
  */
-export async function logPromptIfEnabled({ logType, studentId, caseId, modelId, systemPrompt, history, currentMessage, response }) {
+export async function logPromptIfEnabled({ logType, studentId, caseId, modelId, systemPrompt, history, currentMessage, response, meta, durationMs }) {
   try {
     // Check if logging is enabled
     const enabled = await isLoggingEnabled(logType);
@@ -315,6 +453,9 @@ export async function logPromptIfEnabled({ logType, studentId, caseId, modelId, 
     // Strip case content if needed
     const processedSystemPrompt = await stripCaseContentIfNeeded(systemPrompt);
 
+    // Fetch model pricing for cost estimation
+    const pricing = meta ? await getModelPricing(modelId) : null;
+
     // Generate filename and content
     const filename = generateFilename(logType, studentId, caseId);
     const metadata = {
@@ -323,7 +464,7 @@ export async function logPromptIfEnabled({ logType, studentId, caseId, modelId, 
       modelId,
       timestamp: new Date().toISOString()
     };
-    const content = formatLogContent(logType, metadata, processedSystemPrompt, history, currentMessage, response);
+    const content = formatLogContent(logType, metadata, processedSystemPrompt, history, currentMessage, response, meta, durationMs, pricing);
 
     // Write log file
     const filePath = path.join(LOG_DIR, filename);

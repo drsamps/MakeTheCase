@@ -252,11 +252,29 @@ export async function evaluateWithLLM({ modelId, prompt, config = {} }) {
       body: JSON.stringify(payload),
     });
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`OpenAI error: ${text}`);
+      const errorText = await response.text();
+      throw new Error(`OpenAI error: ${errorText}`);
     }
     const data = await response.json();
-    return data?.choices?.[0]?.message?.content || '{}';
+    const text = data?.choices?.[0]?.message?.content || '{}';
+
+    // Extract token usage
+    const cacheMetrics = {
+      cache_hit: (data.usage?.cached_tokens || 0) > 0,
+      input_tokens: data.usage?.prompt_tokens || 0,
+      cached_tokens: data.usage?.cached_tokens || 0,
+      output_tokens: data.usage?.completion_tokens || 0,
+    };
+
+    return {
+      text,
+      meta: {
+        provider,
+        temperature: payload.temperature ?? null,
+        reasoning_effort: payload.reasoning_effort ?? null,
+        cacheMetrics
+      }
+    };
   }
 
   if (provider === 'anthropic') {
@@ -277,11 +295,29 @@ export async function evaluateWithLLM({ modelId, prompt, config = {} }) {
       }),
     });
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Anthropic error: ${text}`);
+      const errorText = await response.text();
+      throw new Error(`Anthropic error: ${errorText}`);
     }
     const data = await response.json();
-    return data?.content?.[0]?.text || '{}';
+    const text = data?.content?.[0]?.text || '{}';
+
+    // Extract token usage
+    const cacheMetrics = {
+      cache_hit: (data.usage?.cache_read_input_tokens || 0) > 0,
+      input_tokens: data.usage?.input_tokens || 0,
+      cached_tokens: (data.usage?.cache_creation_input_tokens || 0) + (data.usage?.cache_read_input_tokens || 0),
+      output_tokens: data.usage?.output_tokens || 0,
+    };
+
+    return {
+      text,
+      meta: {
+        provider,
+        temperature: temperature ?? null,
+        reasoning_effort: null,
+        cacheMetrics
+      }
+    };
   }
 
   if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set on the server');
@@ -331,8 +367,27 @@ export async function evaluateWithLLM({ modelId, prompt, config = {} }) {
     throw new Error('Gemini returned an empty evaluation response');
   }
 
+  // Extract token usage from Gemini response
+  const usageMetadata = generation.usageMetadata || generation.response?.usageMetadata || {};
+  const cacheMetrics = {
+    cache_hit: false,
+    input_tokens: usageMetadata.promptTokenCount || 0,
+    cached_tokens: usageMetadata.cachedContentTokenCount || 0,
+    output_tokens: usageMetadata.candidatesTokenCount || 0,
+  };
+
   // Ensure we always return a string (text() may already be a string).
-  return typeof candidate === 'string' ? candidate : String(candidate);
+  const text = typeof candidate === 'string' ? candidate : String(candidate);
+
+  return {
+    text,
+    meta: {
+      provider,
+      temperature: temperature ?? null,
+      reasoning_effort: null,
+      cacheMetrics
+    }
+  };
 }
 
 /**

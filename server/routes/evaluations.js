@@ -178,7 +178,9 @@ router.post('/run', async (req, res) => {
     const prompt = buildCoachPrompt(chatHistory, full_name, caseData, freeHints, rubric);
 
     // 7. Call LLM
-    const rawResult = await evaluateWithLLM({ modelId, prompt, config: modelConfig });
+    const startTime = Date.now();
+    const { text: rawResult, meta } = await evaluateWithLLM({ modelId, prompt, config: modelConfig });
+    const durationMs = Date.now() - startTime;
 
     // Log prompt (async, non-blocking)
     logPromptIfEnabled({
@@ -187,7 +189,9 @@ router.post('/run', async (req, res) => {
       caseId: case_id,
       modelId,
       systemPrompt: prompt,
-      response: rawResult
+      response: rawResult,
+      meta,
+      durationMs
     }).catch(() => {});
 
     // 8. Parse and normalize
@@ -209,7 +213,9 @@ router.post('/run', async (req, res) => {
       console.warn('[Eval run] Validation issues on first attempt:', issues.map(i => i.code));
       try {
         const correctionPrompt = buildCorrectionPrompt(prompt, issues, expectedCriteria, result);
-        const retryRaw = await evaluateWithLLM({ modelId, prompt: correctionPrompt, config: modelConfig });
+        const retryStartTime = Date.now();
+        const { text: retryRaw, meta: retryMeta } = await evaluateWithLLM({ modelId, prompt: correctionPrompt, config: modelConfig });
+        const retryDurationMs = Date.now() - retryStartTime;
 
         logPromptIfEnabled({
           logType: 'eval',
@@ -217,7 +223,9 @@ router.post('/run', async (req, res) => {
           caseId: case_id,
           modelId,
           systemPrompt: correctionPrompt,
-          response: retryRaw
+          response: retryRaw,
+          meta: retryMeta,
+          durationMs: retryDurationMs
         }).catch(() => {});
 
         const retryResult = parseEvaluationResponse(retryRaw, rubric);
@@ -347,7 +355,9 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
 
     // 6. Call LLM for evaluation
     console.log('[Re-evaluate] Step 6: Calling LLM with model:', model_id);
-    const evalResult = await evaluateWithLLM({ modelId: model_id, prompt });
+    const reEvalStartTime = Date.now();
+    const { text: evalResult, meta: evalMeta } = await evaluateWithLLM({ modelId: model_id, prompt });
+    const reEvalDurationMs = Date.now() - reEvalStartTime;
     console.log('[Re-evaluate] Step 6: Got LLM result');
 
     // Log prompt if enabled (async, non-blocking)
@@ -357,7 +367,9 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
       caseId: case_id,
       modelId: model_id,
       systemPrompt: prompt,
-      response: evalResult
+      response: evalResult,
+      meta: evalMeta,
+      durationMs: reEvalDurationMs
     }).catch(() => {}); // Fire and forget
 
     // 7. Parse and return result

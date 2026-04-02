@@ -275,6 +275,8 @@ router.post('/chat', async (req, res) => {
     if (!modelConfig) {
       return res.status(404).json({ data: null, error: { message: 'Model not found' } });
     }
+
+    const startTime = Date.now();
     const { text, meta } = await chatWithLLM({
       modelId,
       systemPrompt,
@@ -282,6 +284,7 @@ router.post('/chat', async (req, res) => {
       message,
       config: { ...modelConfig, caseId },  // Include caseId for metrics tracking
     });
+    const durationMs = Date.now() - startTime;
 
     // Log prompt if enabled (async, non-blocking)
     if (studentId && caseId) {
@@ -293,7 +296,9 @@ router.post('/chat', async (req, res) => {
         systemPrompt,
         history: Array.isArray(history) ? history : [],
         currentMessage: message,
-        response: text
+        response: text,
+        meta,
+        durationMs
       }).catch(() => {}); // Fire and forget - errors handled internally
     }
 
@@ -314,7 +319,10 @@ router.post('/eval', async (req, res) => {
     if (!modelConfig) {
       return res.status(404).json({ data: null, error: { message: 'Model not found' } });
     }
-    const text = await evaluateWithLLM({ modelId, prompt, config: modelConfig });
+
+    const startTime = Date.now();
+    const { text, meta } = await evaluateWithLLM({ modelId, prompt, config: modelConfig });
+    const durationMs = Date.now() - startTime;
 
     // Log prompt if enabled (async, non-blocking)
     if (studentId && caseId) {
@@ -324,7 +332,9 @@ router.post('/eval', async (req, res) => {
         caseId,
         modelId,
         systemPrompt: prompt,
-        response: text
+        response: text,
+        meta,
+        durationMs
       }).catch(() => {}); // Fire and forget - errors handled internally
     }
 
