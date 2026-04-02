@@ -154,6 +154,9 @@ Cases stored in `case_files/{case_id}/` with:
 - `case.md` - Student-facing case document
 - `teaching_note.md` - AI-only content for evaluation and counter-arguments
 
+### Case File Text Caching
+PDF/DOCX files are converted to text once at upload time and cached in the `case_files.converted_text` column. `loadCaseData()` in `server/routes/llm.js` reads the cached text directly instead of re-parsing files on every LLM call. Legacy files without cached text are backfilled automatically on first access. Admins can view/edit the extracted text and force re-extraction from the Case Files screen. See `docs/case-file-text-caching.md` for full details.
+
 ### LLM Provider Routing
 Provider auto-detected from model_id prefix in `server/services/llmRouter.js`:
 - `gemini-*` → Google Gemini
