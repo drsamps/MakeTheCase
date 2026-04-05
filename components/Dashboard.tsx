@@ -467,6 +467,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [isSavingScenarioAssignment, setIsSavingScenarioAssignment] = useState(false);
   const [isSavingScheduling, setIsSavingScheduling] = useState(false);
 
+  // View scenario details modal state
+  const [viewingScenario, setViewingScenario] = useState<any | null>(null);
+  const [viewingScenarioPositions, setViewingScenarioPositions] = useState<any[]>([]);
+  const [isLoadingViewScenarioPositions, setIsLoadingViewScenarioPositions] = useState(false);
+
   // Position settings state (for section-case assignments)
   const [expandedPositionSettings, setExpandedPositionSettings] = useState<string | null>(null);
   const [positionSettings, setPositionSettings] = useState<{
@@ -2387,6 +2392,26 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
+  // View scenario details in modal
+  const handleViewScenario = async (scenario: any, caseId: string, caseTitle: string) => {
+    setViewingScenario({ ...scenario, case_id: caseId, case_title: caseTitle });
+    setViewingScenarioPositions([]);
+    setIsLoadingViewScenarioPositions(true);
+
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/cases/${caseId}/scenarios/${scenario.id}/positions`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const result = await response.json();
+      setViewingScenarioPositions(result.data || []);
+    } catch (err) {
+      console.error('Failed to fetch scenario positions:', err);
+    } finally {
+      setIsLoadingViewScenarioPositions(false);
+    }
+  };
+
   // Save scenario selection mode settings
   const handleSaveScenarioSettings = async (sectionId: string, caseId: string) => {
     setIsSavingScenarioAssignment(true);
@@ -3721,20 +3746,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       )}
 
-      {showScenarioManager && managingScenarioCase && (
-        <ScenarioManager
-          caseId={managingScenarioCase.case_id}
-          caseTitle={managingScenarioCase.case_title}
-          onClose={() => {
-            setShowScenarioManager(false);
-            setManagingScenarioCase(null);
-            fetchCases();
-          }}
-          onScenariosChanged={() => {
-            fetchCases();
-          }}
-        />
-      )}
     </div>
   );
 
@@ -4914,21 +4925,33 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                           const isAssigned = Array.isArray(assignedScenarios) && assignedScenarios.some(a => a.scenario_id === scenario.id);
                                           return (
                                             <div key={scenario.id} className="bg-white rounded border border-gray-200 border-l-4 border-l-green-400">
-                                              <label className="flex items-start gap-2 text-sm p-2 hover:bg-gray-50 cursor-pointer">
+                                              <div className="flex items-start gap-2 text-sm p-2">
                                                 <input
                                                   type="checkbox"
+                                                  id={`scenario-${scenario.id}`}
                                                   checked={isAssigned}
                                                   onChange={() => handleToggleScenarioAssignment(selectedAssignmentSection!, sc.case_id, scenario.id, isAssigned)}
-                                                  className="mt-0.5 rounded border-gray-300"
+                                                  className="mt-0.5 rounded border-gray-300 cursor-pointer"
                                                 />
                                                 <div className="flex-1">
-                                                  <div className="font-medium text-gray-900">{scenario.scenario_name}</div>
-                                                  <div className="text-xs text-gray-500">
+                                                  <div className="flex items-center gap-2">
+                                                    <label htmlFor={`scenario-${scenario.id}`} className="font-medium text-gray-900 cursor-pointer hover:text-gray-700">
+                                                      {scenario.scenario_name}
+                                                    </label>
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => handleViewScenario(scenario, sc.case_id, sc.case_title)}
+                                                      className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
+                                                    >
+                                                      (view details)
+                                                    </button>
+                                                  </div>
+                                                  <label htmlFor={`scenario-${scenario.id}`} className="block text-xs text-gray-500 cursor-pointer">
                                                     {scenario.protagonist}
                                                     {scenario.chat_time_limit > 0 && ` • ${scenario.chat_time_limit}min limit`}
-                                                  </div>
+                                                  </label>
                                                 </div>
-                                              </label>
+                                              </div>
                                             </div>
                                           );
                                         })}
@@ -9794,6 +9817,157 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
               >
                 {isSavingPersona ? 'Saving...' : editingPersona ? 'Save Changes' : 'Create Persona'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Scenario Manager Modal */}
+      {showScenarioManager && managingScenarioCase && (
+        <ScenarioManager
+          caseId={managingScenarioCase.case_id}
+          caseTitle={managingScenarioCase.case_title}
+          onClose={() => {
+            setShowScenarioManager(false);
+            setManagingScenarioCase(null);
+            fetchCases();
+          }}
+          onScenariosChanged={() => {
+            fetchCases();
+          }}
+        />
+      )}
+
+      {/* View Scenario Details Modal */}
+      {viewingScenario && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setViewingScenario(null)}>
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            {/* Modal Header */}
+            <div className="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-gray-800">Scenario Details</h2>
+              <button
+                onClick={() => setViewingScenario(null)}
+                className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+              >
+                <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-6 space-y-5">
+              {/* Scenario Name */}
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">{viewingScenario.scenario_name}</h3>
+                {!viewingScenario.enabled && (
+                  <span className="inline-block mt-1 px-2 py-0.5 bg-yellow-100 text-yellow-800 text-xs rounded">Disabled</span>
+                )}
+              </div>
+
+              {/* Protagonist Info */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Protagonist Name</label>
+                  <p className="text-gray-900">{viewingScenario.protagonist}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Initials</label>
+                  <p className="text-gray-900">{viewingScenario.protagonist_initials}</p>
+                </div>
+              </div>
+
+              {viewingScenario.protagonist_role && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Protagonist Role</label>
+                  <p className="text-gray-900">{viewingScenario.protagonist_role}</p>
+                </div>
+              )}
+
+              {/* Chat Topic */}
+              {viewingScenario.chat_topic && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Chat Topic</label>
+                  <p className="text-gray-900">{viewingScenario.chat_topic}</p>
+                </div>
+              )}
+
+              {/* Chat Question */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Chat Question</label>
+                <p className="text-gray-900 bg-gray-50 p-3 rounded-lg border">{viewingScenario.chat_question}</p>
+              </div>
+
+              {/* Additional Prompt Instructions */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Additional Prompt Instructions</label>
+                {viewingScenario.prompt_instructions ? (
+                  <pre className="text-gray-900 bg-amber-50 p-3 rounded-lg border border-amber-200 whitespace-pre-wrap text-sm font-mono">{viewingScenario.prompt_instructions}</pre>
+                ) : (
+                  <p className="text-gray-400 italic">None specified</p>
+                )}
+              </div>
+
+              {/* Time Settings */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Time Limit</label>
+                  <p className="text-gray-900">
+                    {viewingScenario.chat_time_limit > 0 ? `${viewingScenario.chat_time_limit} minutes` : 'No limit'}
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Warning Time</label>
+                  <p className="text-gray-900">
+                    {viewingScenario.chat_time_limit > 0 ? `${viewingScenario.chat_time_warning} minutes before` : 'N/A'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Defined Positions */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Defined Positions</label>
+                {isLoadingViewScenarioPositions ? (
+                  <div className="flex items-center gap-2 text-gray-500">
+                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-gray-400 border-t-transparent"></div>
+                    <span className="text-sm">Loading positions...</span>
+                  </div>
+                ) : viewingScenarioPositions.length > 0 ? (
+                  <div className="space-y-1">
+                    {viewingScenarioPositions.map((pos: any) => (
+                      <div key={pos.position_id} className="flex items-center gap-2 text-sm">
+                        <span className={`w-2 h-2 rounded-full ${pos.position_enabled ? 'bg-green-500' : 'bg-gray-300'}`}></span>
+                        <span className={pos.position_enabled ? 'text-gray-900' : 'text-gray-400'}>{pos.position_name}</span>
+                        {!pos.position_enabled && <span className="text-xs text-gray-400">(disabled)</span>}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-gray-400 italic">No positions defined</p>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="sticky bottom-0 bg-gray-50 border-t px-6 py-4 flex justify-between items-center">
+              <button
+                onClick={() => {
+                  // Open ScenarioManager for this scenario's case
+                  const caseInfo = { case_id: viewingScenario.case_id, case_title: viewingScenario.case_title };
+                  setViewingScenario(null);
+                  setManagingScenarioCase(caseInfo);
+                  setShowScenarioManager(true);
+                }}
+                className="px-4 py-2 text-sm font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg border border-amber-200 transition-colors"
+              >
+                Edit Scenario
+              </button>
+              <button
+                onClick={() => setViewingScenario(null)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 rounded-lg border border-gray-300 transition-colors"
+              >
+                Close
               </button>
             </div>
           </div>

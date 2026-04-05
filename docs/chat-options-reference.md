@@ -74,6 +74,8 @@ Chat options are stored in the `section_cases.chat_options` JSON column and conf
 - "Use simpler language appropriate for undergraduate students"
 - "Ask at least two follow-up questions before moving to new topics"
 
+**Per-scenario instructions:** For text that should apply only to one scenario (and is configured on the scenario editor, not the assignment), use **Additional Prompt Instructions** on the scenario. See [scenario-prompt-instructions-2026-04.md](./scenario-prompt-instructions-2026-04.md).
+
 ---
 
 ## API Endpoints
