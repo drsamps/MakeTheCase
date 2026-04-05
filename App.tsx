@@ -754,6 +754,7 @@ const App: React.FC = () => {
             protagonist_role: selectedScenario.protagonist_role || undefined,
             chat_topic: selectedScenario.chat_topic || undefined,
             chat_question: selectedScenario.chat_question,
+            prompt_instructions: selectedScenario.prompt_instructions || undefined,
             arguments_for: argumentsFor,
             arguments_against: argumentsAgainst,
           };
@@ -769,7 +770,8 @@ const App: React.FC = () => {
 
       // Create chat session with case data for cache-optimized prompts
       const freeHints = chatOptions?.free_hints ?? 1;
-      const session = createChatSession(name, persona, modelId, initialHistory, caseData, { freeHints }, studentId || studentDBId || undefined);
+      const chatbotPersonality = chatOptions?.chatbot_personality || undefined;
+      const session = createChatSession(name, persona, modelId, initialHistory, caseData, { freeHints, chatbotPersonality }, studentId || studentDBId || undefined);
       setChatSession(session);
       setMessages(initialHistory);
       setConversationPhase(ConversationPhase.CHATTING);

@@ -98,6 +98,7 @@ export interface CaseScenario {
   protagonist_role: string | null;
   chat_topic: string | null;
   chat_question: string;
+  prompt_instructions: string | null;
   chat_time_limit: number;
   chat_time_warning: number;
   arguments_for: string | null;

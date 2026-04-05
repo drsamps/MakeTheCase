@@ -52,6 +52,7 @@ interface FormData {
   protagonist_role: string;
   chat_topic: string;
   chat_question: string;
+  prompt_instructions: string;
   chat_time_limit: number;
   chat_time_warning: number;
   enabled: boolean;
@@ -72,6 +73,7 @@ const defaultFormData: FormData = {
   protagonist_role: '',
   chat_topic: '',
   chat_question: '',
+  prompt_instructions: '',
   chat_time_limit: 0,
   chat_time_warning: 5,
   enabled: true
@@ -280,6 +282,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       protagonist_role: scenario.protagonist_role || '',
       chat_topic: scenario.chat_topic || '',
       chat_question: scenario.chat_question,
+      prompt_instructions: scenario.prompt_instructions || '',
       chat_time_limit: scenario.chat_time_limit || 0,
       chat_time_warning: scenario.chat_time_warning || 5,
       enabled: scenario.enabled
@@ -301,6 +304,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       protagonist_role: formData.protagonist_role,
       chat_topic: formData.chat_topic,
       chat_question: formData.chat_question,
+      prompt_instructions: formData.prompt_instructions,
       chat_time_limit: formData.chat_time_limit,
       chat_time_warning: formData.chat_time_warning,
       enabled: formData.enabled
@@ -803,6 +807,20 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   className="w-full border rounded-lg px-3 py-2"
                   rows={3}
                   placeholder="The main question for students to discuss..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Additional Prompt Instructions
+                  <span className="text-gray-400 font-normal ml-1">(not shown to student)</span>
+                </label>
+                <textarea
+                  value={formData.prompt_instructions}
+                  onChange={(e) => handleInputChange('prompt_instructions', e.target.value)}
+                  className="w-full border rounded-lg px-3 py-2"
+                  rows={3}
+                  placeholder="Optional instructions included in the AI prompt for this scenario..."
                 />
               </div>
 

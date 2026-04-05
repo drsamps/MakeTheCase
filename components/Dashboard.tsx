@@ -2029,12 +2029,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       if (!response.ok || result.error) {
         throw new Error(result.error?.message || 'Failed to save options');
       }
-      fetchSectionCases(sectionId);
-      setExpandedCaseOptions(null);
-      setEditingChatOptions(null);
-      // Show success message and auto-dismiss after 3 seconds
+      await fetchSectionCases(sectionId);
+      setUseDefaultOptions(false);
       setSuccessMessage('Chat options saved successfully');
-      setTimeout(() => setSuccessMessage(null), 3000);
+      setTimeout(() => setSuccessMessage(null), 8000);
     } catch (err: any) {
       setError(err.message || 'Failed to save chat options');
     } finally {
@@ -5411,8 +5409,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       setIsEditingDefault(null);
       const sc = sectionCasesList.find((s: any) => s.case_id === caseId);
       if (sc) {
-        // If chat_options is null, use defaults and set useDefaultOptions to true
-        const hasCustomOptions = sc.chat_options !== null;
+        const hasCustomOptions = sc.chat_options_is_custom === true;
         setUseDefaultOptions(!hasCustomOptions);
         if (hasCustomOptions) {
           setEditingChatOptions({ ...sc.chat_options });
@@ -5639,11 +5636,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         <div className="mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</div>
       )}
       {successMessage && (
-        <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg flex items-center gap-2">
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-          </svg>
-          {successMessage}
+        <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+            </svg>
+            {successMessage}
+          </div>
+          <button onClick={() => setSuccessMessage(null)} className="text-green-600 hover:text-green-800 p-1 rounded hover:bg-green-200" title="Dismiss">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            </svg>
+          </button>
         </div>
       )}
 
@@ -6115,7 +6119,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               {expandedCategories.has('instructions') && (
                 <div className="pb-4 pt-2">
                   <label className="block text-xs font-medium text-gray-700 mb-1">
-                    Chatbot Personality (additional instructions)
+                    Additional instructions for the chatbot, such as personality or response guidance
                   </label>
                   <textarea
                     value={editingChatOptions.chatbot_personality ?? ''}

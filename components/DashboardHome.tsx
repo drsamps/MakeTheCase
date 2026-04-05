@@ -38,6 +38,28 @@ interface RecentActivity {
   case_title: string;
   timestamp: string;
   score?: number;
+  /** Rubric total (or sum of criterion max_score); omit when not a scored completion */
+  score_max?: number;
+}
+
+/** Max points for display: rubric total_points, else sum of stored criterion max_score, else legacy 15 */
+function getEvaluationMaxPoints(
+  evalRecord: { rubric_id?: number | null; criteria?: unknown },
+  rubricTotalById: Map<number, number>
+): number {
+  const rid = evalRecord.rubric_id;
+  if (rid != null && rubricTotalById.has(Number(rid))) {
+    return rubricTotalById.get(Number(rid))!;
+  }
+  const criteria = evalRecord.criteria;
+  if (Array.isArray(criteria) && criteria.length > 0) {
+    const sum = criteria.reduce((acc, c: { max_score?: unknown }) => {
+      const m = Number(c?.max_score);
+      return acc + (Number.isFinite(m) ? m : 0);
+    }, 0);
+    if (sum > 0) return sum;
+  }
+  return 15;
 }
 
 interface ActiveSession {
@@ -112,6 +134,14 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
       });
       const sectionCasesArrays = await Promise.all(sectionCasesPromises);
       const sectionCasesData = sectionCasesArrays.flat();
+
+      const { data: rubricsList } = await api.get<any[]>('/rubrics?enabled=false');
+      const rubricTotalById = new Map<number, number>();
+      for (const r of rubricsList || []) {
+        if (r?.rubric_id != null && typeof r.total_points === 'number') {
+          rubricTotalById.set(Number(r.rubric_id), r.total_points);
+        }
+      }
 
       // Process sections with stats
       const completedStudentIds = new Set((evaluationsData as any[] || []).map(e => e.student_id));
@@ -373,7 +403,8 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
             section_title: section?.section_title || 'Unknown Section',
             case_title: sectionCase?.case_title || section?.active_case_title || 'Unknown Case',
             timestamp: evalRecord.created_at,
-            score: evalRecord.score
+            score: evalRecord.score,
+            score_max: getEvaluationMaxPoints(evalRecord, rubricTotalById)
           });
         }
       }
@@ -878,7 +909,9 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
                       {activity.type === 'abandoned' && "'s chat was abandoned for "}
                       <span className="text-gray-600">{activity.case_title}</span>
                       {activity.type === 'completion' && activity.score !== undefined && (
-                        <span className="text-green-600 ml-1">({activity.score}/15)</span>
+                        <span className="text-green-600 ml-1">
+                          ({activity.score}/{activity.score_max ?? 15})
+                        </span>
                       )}
                     </p>
                     <p className="text-xs text-gray-500">

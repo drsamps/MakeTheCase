@@ -17,7 +17,7 @@ router.get('/:caseId/scenarios', async (req, res) => {
 
     let query = `
       SELECT id, case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
-             chat_topic, chat_question, chat_time_limit, chat_time_warning,
+             chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
              arguments_for, arguments_against, chat_options_override,
              sort_order, enabled, created_at, updated_at
       FROM case_scenarios
@@ -47,7 +47,7 @@ router.get('/:caseId/scenarios/:id', async (req, res) => {
 
     const [rows] = await pool.execute(
       `SELECT id, case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
-              chat_topic, chat_question, chat_time_limit, chat_time_warning,
+              chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
               arguments_for, arguments_against, chat_options_override,
               sort_order, enabled, created_at, updated_at
        FROM case_scenarios
@@ -72,7 +72,7 @@ router.post('/:caseId/scenarios', verifyToken, requireRole(['admin']), async (re
     const { caseId } = req.params;
     const {
       scenario_name, protagonist, protagonist_initials, protagonist_role,
-      chat_topic, chat_question, chat_time_limit, chat_time_warning,
+      chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
       arguments_for, arguments_against, chat_options_override,
       sort_order, enabled
     } = req.body;
@@ -104,9 +104,9 @@ router.post('/:caseId/scenarios', verifyToken, requireRole(['admin']), async (re
     const [result] = await pool.execute(
       `INSERT INTO case_scenarios
        (case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
-        chat_topic, chat_question, chat_time_limit, chat_time_warning,
+        chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
         arguments_for, arguments_against, chat_options_override, sort_order, enabled)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         caseId,
         scenario_name,
@@ -115,6 +115,7 @@ router.post('/:caseId/scenarios', verifyToken, requireRole(['admin']), async (re
         protagonist_role || null,
         chat_topic || null,
         chat_question,
+        prompt_instructions || null,
         chat_time_limit || 0,
         chat_time_warning || 5,
         arguments_for || null,
@@ -128,7 +129,7 @@ router.post('/:caseId/scenarios', verifyToken, requireRole(['admin']), async (re
     // Return created scenario
     const [rows] = await pool.execute(
       `SELECT id, case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
-              chat_topic, chat_question, chat_time_limit, chat_time_warning,
+              chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
               arguments_for, arguments_against, chat_options_override,
               sort_order, enabled, created_at, updated_at
        FROM case_scenarios WHERE id = ?`,
@@ -159,7 +160,7 @@ router.patch('/:caseId/scenarios/:id', verifyToken, requireRole(['admin']), asyn
 
     const allowedFields = [
       'scenario_name', 'protagonist', 'protagonist_initials', 'protagonist_role',
-      'chat_topic', 'chat_question', 'chat_time_limit', 'chat_time_warning',
+      'chat_topic', 'chat_question', 'prompt_instructions', 'chat_time_limit', 'chat_time_warning',
       'arguments_for', 'arguments_against', 'chat_options_override',
       'sort_order', 'enabled'
     ];
@@ -193,7 +194,7 @@ router.patch('/:caseId/scenarios/:id', verifyToken, requireRole(['admin']), asyn
     // Return updated scenario
     const [rows] = await pool.execute(
       `SELECT id, case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
-              chat_topic, chat_question, chat_time_limit, chat_time_warning,
+              chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
               arguments_for, arguments_against, chat_options_override,
               sort_order, enabled, created_at, updated_at
        FROM case_scenarios WHERE id = ?`,
@@ -294,7 +295,7 @@ router.patch('/:caseId/scenarios/reorder', verifyToken, requireRole(['admin']), 
     // Return updated scenarios
     const [rows] = await pool.execute(
       `SELECT id, case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
-              chat_topic, chat_question, chat_time_limit, chat_time_warning,
+              chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
               arguments_for, arguments_against, chat_options_override,
               sort_order, enabled, created_at, updated_at
        FROM case_scenarios
@@ -334,7 +335,7 @@ router.patch('/:caseId/scenarios/:id/toggle', verifyToken, requireRole(['admin']
     // Return updated scenario
     const [rows] = await pool.execute(
       `SELECT id, case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
-              chat_topic, chat_question, chat_time_limit, chat_time_warning,
+              chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
               arguments_for, arguments_against, chat_options_override,
               sort_order, enabled, created_at, updated_at
        FROM case_scenarios WHERE id = ?`,

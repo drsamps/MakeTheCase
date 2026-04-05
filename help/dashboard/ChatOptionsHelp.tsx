@@ -81,7 +81,7 @@ const ChatOptionsHelp: React.FC = () => (
 
     <h4>Custom Instructions</h4>
     <ul>
-      <li><strong>Chatbot Personality</strong> - Additional AI instructions appended to persona</li>
+      <li><strong>Custom Instructions</strong> - Additional instructions for the chatbot, such as personality or response guidance</li>
     </ul>
 
     <h4>Chat Controls</h4>

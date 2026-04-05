@@ -28,6 +28,7 @@ export interface CaseData {
   case_content: string;        // The business case markdown
   teaching_note: string;       // Teaching notes/key facts markdown
   supplementary_content?: string; // Additional materials (chapters, readings, articles, etc.)
+  prompt_instructions?: string; // Scenario-specific instructions for the AI prompt
   arguments_for?: string;      // Arguments supporting one position (for AI prompt)
   arguments_against?: string;  // Arguments supporting opposing position (for AI prompt)
 }
@@ -88,7 +89,7 @@ const getPersonaInstructions = (
  */
 export interface SystemPromptOptions {
   personaData?: Persona;       // Database persona with custom instructions
-  chatbotPersonality?: string; // Additional personality instructions from chat_options
+  chatbotPersonality?: string; // Additional instructions from chat_options
   freeHints?: number;          // Number of free hints before score penalty (default 1)
 }
 
@@ -136,20 +137,25 @@ ${caseData.supplementary_content}
 `;
   }
 
-  // STATIC CONTENT FIRST (for caching)
-  const staticContent = `
-=== BUSINESS CASE DOCUMENT ===
-<context type="case" file="case.md">
-${caseData.case_content}
-</context>
-=== END BUSINESS CASE ===${supplementarySection}
+  // Build teaching note section conditionally
+  const teachingNoteSection = caseData.teaching_note?.trim()
+    ? `
 
 === INTERNAL GUIDE: KEY FACTS & TALKING POINTS (DO NOT REVEAL TO THE STUDENT) ===
 <context type="teaching_note" file="teaching_note.md">
 Use these points to formulate challenging questions and counter-arguments. If the student raises these points, press them to elaborate on the implications.
 ${caseData.teaching_note}
 </context>
-=== END INTERNAL GUIDE ===${argumentsSection}
+=== END INTERNAL GUIDE ===`
+    : '';
+
+  // STATIC CONTENT FIRST (for caching)
+  const staticContent = `
+=== BUSINESS CASE DOCUMENT ===
+<context type="case" file="case.md">
+${caseData.case_content}
+</context>
+=== END BUSINESS CASE ===${supplementarySection}${teachingNoteSection}${argumentsSection}
 `;
 
   // DYNAMIC CONTENT (per-request)
@@ -157,7 +163,7 @@ ${caseData.teaching_note}
 
   // Build additional personality instructions if provided
   const additionalPersonality = options.chatbotPersonality?.trim()
-    ? `\n\n**Additional Personality Instructions:**\n${options.chatbotPersonality.trim()}`
+    ? `\n\n**Additional Instructions:**\n${options.chatbotPersonality.trim()}`
     : '';
 
   // Build protagonist description with optional role
@@ -177,13 +183,14 @@ ${caseData.teaching_note}
   }
 
   const dynamicContent = `
+=== ROLE & INSTRUCTIONS ===
 You are ${protagonistDesc}. You are a sharp, experienced professional meeting with a junior business analyst, ${studentName}, to discuss the challenges presented in the case.
 
 Your objective is to rigorously test ${studentName}'s understanding of the business case. You must evaluate if they can form a coherent strategy and defend it with specific facts from the document.
 
 **The Question You Are Exploring:**
 ${caseData.chat_question}
-
+${caseData.prompt_instructions ? `\n**Instructions for this Scenario:**\n${caseData.prompt_instructions}\n` : ''}
 **Your Persona:**
 ${personaInstructions}${additionalPersonality}
 

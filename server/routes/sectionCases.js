@@ -67,19 +67,21 @@ router.get('/:sectionId/cases', async (req, res) => {
             })()
           : row.chat_options;
 
+        const chatOptionsIsCustom = parsedChatOptions !== null && parsedChatOptions !== undefined;
+
         // If chat_options is NULL, resolve from defaults
-        if (parsedChatOptions === null || parsedChatOptions === undefined) {
+        if (!chatOptionsIsCustom) {
           parsedChatOptions = await resolveChatOptions(row.section_id, parsedChatOptions);
         }
 
         if (!row.use_scenarios) {
-          return { ...row, chat_options: parsedChatOptions };
+          return { ...row, chat_options: parsedChatOptions, chat_options_is_custom: chatOptionsIsCustom };
         }
 
         const [scenarios] = await pool.execute(
           `SELECT scs.id as assignment_id, scs.scenario_id, scs.enabled, scs.sort_order,
                   cs.scenario_name, cs.protagonist, cs.protagonist_initials, cs.protagonist_role,
-                  cs.chat_topic, cs.chat_question, cs.chat_time_limit, cs.chat_time_warning,
+                  cs.chat_topic, cs.chat_question, cs.prompt_instructions, cs.chat_time_limit, cs.chat_time_warning,
                   cs.chat_options_override
            FROM section_case_scenarios scs
            JOIN case_scenarios cs ON scs.scenario_id = cs.id
@@ -153,6 +155,7 @@ router.get('/:sectionId/cases', async (req, res) => {
         return {
           ...row,
           chat_options: parsedChatOptions,
+          chat_options_is_custom: chatOptionsIsCustom,
           scenarios: scenariosWithPositions
         };
       })
@@ -228,7 +231,7 @@ router.get('/:sectionId/active-case', async (req, res) => {
       const [scenarioRows] = await pool.execute(
         `SELECT scs.id as assignment_id, scs.scenario_id, scs.enabled, scs.sort_order,
                 cs.scenario_name, cs.protagonist, cs.protagonist_initials, cs.protagonist_role,
-                cs.chat_topic, cs.chat_question, cs.chat_time_limit, cs.chat_time_warning,
+                cs.chat_topic, cs.chat_question, cs.prompt_instructions, cs.chat_time_limit, cs.chat_time_warning,
                 cs.chat_options_override
          FROM section_case_scenarios scs
          JOIN case_scenarios cs ON scs.scenario_id = cs.id
@@ -669,7 +672,7 @@ router.get('/:sectionId/cases/:caseId/scenarios', async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT scs.id, scs.section_case_id, scs.scenario_id, scs.enabled, scs.sort_order, scs.created_at,
               cs.scenario_name, cs.protagonist, cs.protagonist_initials, cs.protagonist_role,
-              cs.chat_topic, cs.chat_question, cs.chat_time_limit, cs.chat_time_warning,
+              cs.chat_topic, cs.chat_question, cs.prompt_instructions, cs.chat_time_limit, cs.chat_time_warning,
               cs.arguments_for, cs.arguments_against, cs.chat_options_override,
               cs.enabled as scenario_enabled
        FROM section_case_scenarios scs
