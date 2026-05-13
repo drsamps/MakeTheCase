@@ -206,6 +206,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
         SELECT
           c.case_id,
           c.case_title,
+          COUNT(DISTINCT s.id) as started_students,
           COUNT(e.id) as completions,
           AVG(e.score) as avg_score
         FROM cases c
@@ -226,6 +227,7 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
       caseBreakdown = caseRows.map(row => ({
         case_id: row.case_id,
         case_title: row.case_title,
+        started_students: parseInt(row.started_students) || 0,
         completions: parseInt(row.completions) || 0,
         avg_score: row.avg_score ? parseFloat(row.avg_score) : null
       }));

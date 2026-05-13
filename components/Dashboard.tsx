@@ -16,6 +16,7 @@ import StudentManager from './StudentManager';
 import DashboardHome from './DashboardHome';
 import Analytics from './Analytics';
 import PositionAnalytics from './PositionAnalytics';
+import SectionResultsSummary from './SectionResultsSummary';
 import HelpTooltip from './ui/HelpTooltip';
 import { ChatOptionsHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
@@ -44,7 +45,7 @@ type AssignmentsSubTab = 'assignments' | 'chat-options';
 type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live';
-type ResultsSubTab = 'responses' | 'positions';
+type ResultsSubTab = 'responses' | 'positions' | 'section-results';
 type AdminSubTab = 'instructors' | 'settings' | 'models' | 'personas' | 'prompts' | 'admins' | 'logging';
 type RubricsSubTab = 'criteria' | 'rubrics';
 
@@ -75,9 +76,12 @@ interface SectionStat {
   primary_instructor_id?: string | null;
   primary_instructor_name?: string | null;
   course_id?: number | null;
+  course_id_num?: number | null;
   course_name?: string | null;
   semester_id?: number | null;
   semester_name?: string | null;
+  semester_is_current?: boolean;
+  student_count?: number;
 }
 
 interface StudentDetail {
@@ -314,6 +318,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [sectionStats, setSectionStats] = useState<SectionStat[]>([]);
   const [selectedSection, setSelectedSection] = useState<SectionStat | null>(null);
   const [resultsInitialSectionId, setResultsInitialSectionId] = useState<string | undefined>(undefined);
+  const [resultsInitialCaseId, setResultsInitialCaseId] = useState<string | undefined>(undefined);
+  const [studentsInitialSectionId, setStudentsInitialSectionId] = useState<string | undefined>(undefined);
   const [studentDetails, setStudentDetails] = useState<StudentDetail[]>([]);
 
   // Stats for navigation badges
@@ -377,14 +383,26 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   
   // Section management
   const [editingSection, setEditingSection] = useState<SectionStat | null>(null);
-  const [sectionForm, setSectionForm] = useState({
+  const [sectionForm, setSectionForm] = useState<{
+    section_id: string;
+    section_title: string;
+    year_term: string;
+    chat_model: string;
+    super_model: string;
+    enabled: boolean;
+    accept_new_students: boolean;
+    semester_id: number | null;
+    course_id: number | null;
+  }>({
     section_id: '',
     section_title: '',
     year_term: '',
     chat_model: '',
     super_model: '',
     enabled: true,
-    accept_new_students: false
+    accept_new_students: false,
+    semester_id: null,
+    course_id: null
   });
 
   // Toggle for showing models column in section list
@@ -606,10 +624,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             year_term: '',
             chat_model: '',
             super_model: '',
-            enabled: true
+            enabled: true,
+            accept_new_students: false,
+            semester_id: null,
+            course_id: null
           });
         } else if (subTab && ['sections', 'students', 'semesters', 'course-setup'].includes(subTab)) {
           setCoursesSubTab(subTab as CoursesSubTab);
+          if (subTab === 'students') {
+            setStudentsInitialSectionId(options?.section_id);
+          }
         } else if (subTab) {
           // If subTab is a section_id, select that section
           setCoursesSubTab('sections');
@@ -661,11 +685,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         break;
       case 'results':
         setPrimaryTab('results');
-        if (subTab) {
-          // subTab is a section_id to pre-filter results
+        // Recognized sub-tab names switch the active sub-tab; section_id / case_id
+        // pre-filter the destination view. Anything else is treated as a legacy
+        // section_id (DashboardHome uses this form).
+        if (subTab && ['responses', 'positions', 'section-results'].includes(subTab)) {
+          setResultsSubTab(subTab as ResultsSubTab);
+          setResultsInitialSectionId(options?.section_id);
+          setResultsInitialCaseId(options?.case_id);
+        } else if (subTab) {
           setResultsInitialSectionId(subTab);
+          setResultsInitialCaseId(undefined);
         } else {
-          setResultsInitialSectionId(undefined);
+          setResultsInitialSectionId(options?.section_id);
+          setResultsInitialCaseId(options?.case_id);
         }
         break;
       case 'admin':
@@ -2507,6 +2539,26 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     return sectionStats.filter(s => s.enabled || s.section_id === 'unassigned' || s.section_id === 'other_courses');
   }, [sectionStats, showAllSections]);
 
+  // Unique semesters derived from allCourses, sorted current first then by name desc.
+  // Used by the Edit/Create Section modal.
+  const allSemesters = useMemo(() => {
+    const map = new Map<number, { id: number; name: string; is_current: boolean }>();
+    for (const c of allCourses) {
+      if (c.semester_id != null && !map.has(c.semester_id)) {
+        map.set(c.semester_id, {
+          id: c.semester_id,
+          name: c.semester_name || 'Unknown',
+          is_current: !!c.is_current
+        });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.is_current && !b.is_current) return -1;
+      if (!a.is_current && b.is_current) return 1;
+      return b.name.localeCompare(a.name);
+    });
+  }, [allCourses]);
+
   // Group sections by semester and course for hierarchical view
   const groupedSections = useMemo(() => {
     const groups: {
@@ -2595,6 +2647,181 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       else next.add(key);
       return next;
     });
+  };
+
+  // Shared table header for List and Grouped section views
+  const renderSectionTableHeader = (opts: { hideTermColumn?: boolean } = {}) => (
+    <thead className="bg-gray-50">
+      <tr>
+        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Section</th>
+        {!opts.hideTermColumn && (
+          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Term</th>
+        )}
+        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Active Cases</th>
+        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Students</th>
+        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">New Students</th>
+        {showModelsColumn && (
+          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chat Model</th>
+        )}
+        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+          <label className="text-xs text-gray-500 flex items-center gap-1 cursor-pointer justify-end">
+            <input
+              type="checkbox"
+              checked={showModelsColumn}
+              onChange={(e) => setShowModelsColumn(e.target.checked)}
+              className="h-3 w-3 rounded border-gray-300"
+            />
+            Models
+          </label>
+        </th>
+      </tr>
+    </thead>
+  );
+
+  // Shared row renderer for List and Grouped section views
+  const renderSectionRow = (section: SectionStat, opts: { hideTermColumn?: boolean } = {}) => {
+    const isSynthetic = section.section_id === 'unassigned' || section.section_id === 'other_courses';
+    const enrollmentCount = section.student_count ?? 0;
+    return (
+      <tr
+        key={section.section_id}
+        className={`hover:bg-gray-50 cursor-pointer transition-colors ${
+          !section.enabled ? 'opacity-70' : ''
+        }`}
+        onClick={() => handleSectionClick(section)}
+      >
+        <td className="px-4 py-3 whitespace-nowrap">
+          <div className="flex items-center gap-2">
+            <span className={`font-medium ${!section.enabled ? 'text-gray-500' : 'text-gray-900'}`}>
+              {section.section_title}
+            </span>
+          </div>
+        </td>
+        {!opts.hideTermColumn && (
+          <td className="px-4 py-3 whitespace-nowrap">
+            <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
+              {section.year_term}
+            </span>
+            {section.primary_instructor_name && (
+              <span className="ml-1 text-xs text-purple-600" title="Primary Instructor">
+                {section.primary_instructor_name}
+              </span>
+            )}
+          </td>
+        )}
+        <td className="px-4 py-3 whitespace-nowrap">
+          {!isSynthetic ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); handleOpenSectionCasesModal(section); }}
+              className={`px-2 py-1 text-xs font-medium rounded-lg border transition-colors ${
+                section.active_case_count && section.active_case_count > 0
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                  : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
+              }`}
+              title={section.active_case_titles || 'Manage case assignments'}
+            >
+              {section.active_case_count && section.active_case_count > 0
+                ? `${section.active_case_count} active`
+                : 'No case'}
+            </button>
+          ) : (
+            <span className="text-xs text-gray-400">-</span>
+          )}
+        </td>
+        <td className="px-4 py-3 whitespace-nowrap">
+          {!isSynthetic ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleNavigate('courses', 'students', { section_id: section.section_id });
+              }}
+              className="px-2 py-1 text-xs font-medium rounded-lg border bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 transition-colors"
+              title="View students enrolled in this section"
+            >
+              {enrollmentCount} {enrollmentCount === 1 ? 'student' : 'students'}
+            </button>
+          ) : (
+            <span className="text-sm text-gray-600">{enrollmentCount}</span>
+          )}
+        </td>
+        <td className="px-4 py-3 whitespace-nowrap">
+          {!isSynthetic ? (
+            <button
+              onClick={(e) => handleToggleStatus(section, e)}
+              className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
+                section.enabled
+                  ? 'bg-green-100 text-green-800 hover:bg-green-200 border border-green-200'
+                  : 'bg-pink-100 text-pink-800 hover:bg-pink-200 border border-pink-200'
+              }`}
+              title={`Click to ${section.enabled ? 'disable' : 'enable'}`}
+            >
+              {section.enabled ? 'Enabled' : 'Disabled'}
+            </button>
+          ) : (
+            <span className="text-sm text-gray-400">-</span>
+          )}
+        </td>
+        <td className="px-4 py-3 whitespace-nowrap">
+          {!isSynthetic ? (
+            <button
+              onClick={(e) => handleToggleAcceptNewStudents(section, e)}
+              className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
+                section.accept_new_students
+                  ? 'bg-pink-500 text-white hover:bg-pink-600'
+                  : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+              }`}
+              title={section.accept_new_students ? 'Accepting new students - click to lock' : 'Locked - click to accept new students'}
+            >
+              {section.accept_new_students ? 'Accept' : 'Locked'}
+            </button>
+          ) : (
+            <span className="text-sm text-gray-400">-</span>
+          )}
+        </td>
+        {showModelsColumn && (
+          <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">
+            {formatModelDisplay(section.chat_model)}
+          </td>
+        )}
+        <td className="px-4 py-3 whitespace-nowrap text-right">
+          <div className="flex justify-end gap-1">
+            {section.section_id !== 'unassigned' && (
+              <>
+                <button
+                  onClick={(e) => handleEditSection(section, e)}
+                  className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                  title="Edit section"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                  </svg>
+                </button>
+                <button
+                  onClick={(e) => handleDuplicateSection(section, e)}
+                  className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors"
+                  title="Duplicate section"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z" />
+                    <path d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z" />
+                  </svg>
+                </button>
+              </>
+            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); handleSectionClick(section); }}
+              className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
+              title="View results"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+              </svg>
+            </button>
+          </div>
+        </td>
+      </tr>
+    );
   };
 
   // Calculate section statistics
@@ -2931,7 +3158,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       year_term: '',
       chat_model: '',
       super_model: '',
-      enabled: true
+      enabled: true,
+      accept_new_students: false,
+      semester_id: null,
+      course_id: null
     });
     setShowSectionModal(true);
   };
@@ -2947,7 +3177,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       chat_model: section.chat_model || '',
       super_model: section.super_model || '',
       enabled: !!section.enabled,
-      accept_new_students: !!section.accept_new_students
+      accept_new_students: !!section.accept_new_students,
+      semester_id: section.semester_id ?? null,
+      course_id: section.course_id_num ?? section.course_id ?? null
     });
     setShowSectionModal(true);
   };
@@ -2957,35 +3189,53 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       alert('Section ID and Title are required.');
       return;
     }
+    if (sectionForm.semester_id == null) {
+      alert('Please select a Semester.');
+      return;
+    }
+
+    // Verify the chosen course (if any) belongs to the chosen semester.
+    if (sectionForm.course_id != null) {
+      const chosenCourse = allCourses.find(c => c.id === sectionForm.course_id);
+      if (!chosenCourse || chosenCourse.semester_id !== sectionForm.semester_id) {
+        alert('The selected course does not belong to the selected semester.');
+        return;
+      }
+    }
+
+    // Derive year_term from the selected semester's name so existing UI that
+    // still reads year_term keeps working without a data migration.
+    const semesterCourse = allCourses.find(c => c.semester_id === sectionForm.semester_id);
+    const derivedYearTerm = semesterCourse?.semester_name || sectionForm.year_term || '';
 
     try {
       if (editingSection) {
-        // Update existing section
         const { error } = await api
           .from('sections')
           .update({
             section_title: sectionForm.section_title,
-            year_term: sectionForm.year_term,
+            year_term: derivedYearTerm,
             chat_model: sectionForm.chat_model || null,
             super_model: sectionForm.super_model || null,
             enabled: sectionForm.enabled,
-            accept_new_students: sectionForm.accept_new_students
+            accept_new_students: sectionForm.accept_new_students,
+            course_id: sectionForm.course_id
           })
           .eq('section_id', sectionForm.section_id);
 
         if (error) throw error;
       } else {
-        // Create new section (default accept_new_students to false/locked)
         const { error } = await api
           .from('sections')
           .insert({
             section_id: sectionForm.section_id,
             section_title: sectionForm.section_title,
-            year_term: sectionForm.year_term,
+            year_term: derivedYearTerm,
             chat_model: sectionForm.chat_model || null,
             super_model: sectionForm.super_model || null,
             enabled: sectionForm.enabled,
-            accept_new_students: sectionForm.accept_new_students
+            accept_new_students: sectionForm.accept_new_students,
+            course_id: sectionForm.course_id
           });
 
         if (error) throw error;
@@ -7567,37 +7817,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               {hasAccess(user, 'sections') && (
                 <button
                   onClick={() => {
-                    setCoursesSubTab('semesters');
-                    fetchSemesters();
-                  }}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    coursesSubTab === 'semesters'
-                      ? 'bg-indigo-100 text-indigo-700'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  Semesters
-                </button>
-              )}
-              {hasAccess(user, 'sections') && (
-                <button
-                  onClick={() => {
-                    setCoursesSubTab('course-setup');
-                    fetchSemesters();
-                    fetchOrphanedSections();
-                  }}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    coursesSubTab === 'course-setup'
-                      ? 'bg-indigo-100 text-indigo-700'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  Course Setup
-                </button>
-              )}
-              {hasAccess(user, 'sections') && (
-                <button
-                  onClick={() => {
                     setCoursesSubTab('sections');
                     fetchAllCourses();
                   }}
@@ -7620,6 +7839,37 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   }`}
                 >
                   Students
+                </button>
+              )}
+              {hasAccess(user, 'sections') && (
+                <button
+                  onClick={() => {
+                    setCoursesSubTab('course-setup');
+                    fetchSemesters();
+                    fetchOrphanedSections();
+                  }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    coursesSubTab === 'course-setup'
+                      ? 'bg-indigo-100 text-indigo-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Courses
+                </button>
+              )}
+              {hasAccess(user, 'sections') && (
+                <button
+                  onClick={() => {
+                    setCoursesSubTab('semesters');
+                    fetchSemesters();
+                  }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    coursesSubTab === 'semesters'
+                      ? 'bg-indigo-100 text-indigo-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Semesters
                 </button>
               )}
             </div>
@@ -7707,6 +7957,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           {primaryTab === 'results' && (
             <div className="flex gap-1 mt-2 pb-2">
               <button
+                onClick={() => setResultsSubTab('section-results')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  resultsSubTab === 'section-results'
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Section Results
+              </button>
+              <button
                 onClick={() => setResultsSubTab('responses')}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   resultsSubTab === 'responses'
@@ -7714,7 +7974,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                Student Responses
+                Student Results
               </button>
               <button
                 onClick={() => setResultsSubTab('positions')}
@@ -7870,8 +8130,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               <h2 className="text-xl font-semibold text-gray-900 mb-4">Position Analytics</h2>
               <PositionAnalytics />
             </div>
+          ) : resultsSubTab === 'section-results' ? (
+            <SectionResultsSummary initialSectionId={resultsInitialSectionId} onNavigate={handleNavigate} />
           ) : (
-            <Analytics onNavigate={handleNavigate} initialSectionId={resultsInitialSectionId} />
+            <Analytics onNavigate={handleNavigate} initialSectionId={resultsInitialSectionId} initialCaseId={resultsInitialCaseId} />
           )
         ) : primaryTab === 'monitor' ? (
           monitorSubTab === 'live' ? (
@@ -8441,7 +8703,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           ) : coursesSubTab === 'course-setup' ? (
             renderCourseSetupTab()
           ) : coursesSubTab === 'students' ? (
-            <StudentManager />
+            <StudentManager initialSectionFilter={studentsInitialSectionId} />
           ) : (
           /* ==================== SECTION LIST ==================== */
           <div className="p-6 max-w-7xl mx-auto">
@@ -8657,68 +8919,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
                                 {/* Course Sections */}
                                 {!isCourseCollapsed && (
-                                  <div className="p-3 bg-white space-y-2">
-                                    {courseGroup.sections.map((section) => (
-                                      <div
-                                        key={section.section_id}
-                                        className={`p-3 rounded-lg border transition-all hover:shadow-sm ${
-                                          section.enabled
-                                            ? 'border-gray-200 bg-white hover:border-blue-300'
-                                            : 'border-gray-100 bg-gray-50 opacity-60'
-                                        }`}
-                                      >
-                                        <div className="flex items-center justify-between">
-                                          <div
-                                            className="flex items-center gap-2 cursor-pointer flex-1"
-                                            onClick={() => handleSectionClick(section)}
-                                          >
-                                            <span className={`font-medium ${section.enabled ? 'text-gray-900' : 'text-gray-500'}`}>
-                                              {section.section_title}
-                                            </span>
-                                            <span className="text-xs text-gray-400">({section.section_id})</span>
-                                            {!section.enabled && (
-                                              <span className="px-1.5 py-0.5 text-xs bg-gray-200 text-gray-600 rounded">Disabled</span>
-                                            )}
-                                            {section.primary_instructor_name && (
-                                              <span className="px-1.5 py-0.5 text-xs bg-purple-50 text-purple-600 rounded" title="Primary Instructor">
-                                                {section.primary_instructor_name}
-                                              </span>
-                                            )}
-                                          </div>
-                                          <div className="flex items-center gap-3 text-xs text-gray-500">
-                                            <span>{(section as any).student_count || 0} students</span>
-                                            <span>{(section as any).case_count || 0} cases</span>
-                                            <select
-                                              className="px-2 py-1 text-xs border border-gray-200 rounded bg-white hover:border-gray-300 max-w-[180px]"
-                                              value={(section as any).course_id_num || ''}
-                                              onClick={(e) => e.stopPropagation()}
-                                              onChange={(e) => {
-                                                e.stopPropagation();
-                                                const newCourseId = e.target.value ? Number(e.target.value) : null;
-                                                handleChangeSectionCourse(section.section_id, newCourseId);
-                                              }}
-                                              title="Assign to course"
-                                            >
-                                              <option value="">Unassigned</option>
-                                              {allCourses.map((course) => (
-                                                <option key={course.id} value={course.id}>
-                                                  {course.semester_name}: {course.course_name}
-                                                </option>
-                                              ))}
-                                            </select>
-                                            <button
-                                              onClick={(e) => handleEditSection(section, e)}
-                                              className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded"
-                                              title="Edit section"
-                                            >
-                                              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                                                <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
-                                              </svg>
-                                            </button>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    ))}
+                                  <div className="bg-white overflow-x-auto">
+                                    <table className="min-w-full divide-y divide-gray-200">
+                                      {renderSectionTableHeader({ hideTermColumn: true })}
+                                      <tbody className="bg-white divide-y divide-gray-200">
+                                        {courseGroup.sections.map((section) =>
+                                          renderSectionRow(section, { hideTermColumn: true })
+                                        )}
+                                      </tbody>
+                                    </table>
                                   </div>
                                 )}
                               </div>
@@ -8840,155 +9049,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               /* ========== LIST VIEW ========== */
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Section</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Term</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Active Cases</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Students</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">New Students</th>
-                      {showModelsColumn && (
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chat Model</th>
-                      )}
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        <label className="text-xs text-gray-500 flex items-center gap-1 cursor-pointer justify-end">
-                          <input
-                            type="checkbox"
-                            checked={showModelsColumn}
-                            onChange={(e) => setShowModelsColumn(e.target.checked)}
-                            className="h-3 w-3 rounded border-gray-300"
-                          />
-                          Models
-                        </label>
-                      </th>
-                    </tr>
-                  </thead>
+                  {renderSectionTableHeader()}
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {filteredSections.map(section => (
-                      <tr 
-                        key={section.section_id}
-                        className={`hover:bg-gray-50 cursor-pointer transition-colors ${
-                          !section.enabled ? 'opacity-70' : ''
-                        }`}
-                        onClick={() => handleSectionClick(section)}
-                      >
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="flex items-center gap-2">
-                            <span className={`font-medium ${!section.enabled ? 'text-gray-500' : 'text-gray-900'}`}>
-                              {section.section_title}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
-                            {section.year_term}
-                          </span>
-                          {section.primary_instructor_name && (
-                            <span className="ml-1 text-xs text-purple-600" title="Primary Instructor">
-                              {section.primary_instructor_name}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          {section.section_id !== 'unassigned' && section.section_id !== 'other_courses' ? (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); handleOpenSectionCasesModal(section); }}
-                              className={`px-2 py-1 text-xs font-medium rounded-lg border transition-colors ${
-                                section.active_case_count && section.active_case_count > 0
-                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                                  : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100'
-                              }`}
-                              title={section.active_case_titles || 'Manage case assignments'}
-                            >
-                              {section.active_case_count && section.active_case_count > 0
-                                ? `${section.active_case_count} active`
-                                : 'No case'}
-                            </button>
-                          ) : (
-                            <span className="text-xs text-gray-400">-</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600" title="completed/started">
-                          <span className="font-semibold text-gray-900">{section.completions}</span>/{section.starts}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          {section.section_id !== 'unassigned' && section.section_id !== 'other_courses' ? (
-                            <button
-                              onClick={(e) => handleToggleStatus(section, e)}
-                              className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
-                                section.enabled
-                                  ? 'bg-green-100 text-green-800 hover:bg-green-200 border border-green-200'
-                                  : 'bg-pink-100 text-pink-800 hover:bg-pink-200 border border-pink-200'
-                              }`}
-                              title={`Click to ${section.enabled ? 'disable' : 'enable'}`}
-                            >
-                              {section.enabled ? 'Enabled' : 'Disabled'}
-                            </button>
-                          ) : (
-                            <span className="text-sm text-gray-400">-</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          {section.section_id !== 'unassigned' && section.section_id !== 'other_courses' ? (
-                            <button
-                              onClick={(e) => handleToggleAcceptNewStudents(section, e)}
-                              className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
-                                section.accept_new_students
-                                  ? 'bg-pink-500 text-white hover:bg-pink-600'
-                                  : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-                              }`}
-                              title={section.accept_new_students ? 'Accepting new students - click to lock' : 'Locked - click to accept new students'}
-                            >
-                              {section.accept_new_students ? 'Accept' : 'Locked'}
-                            </button>
-                          ) : (
-                            <span className="text-sm text-gray-400">-</span>
-                          )}
-                        </td>
-                        {showModelsColumn && (
-                          <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">
-                            {formatModelDisplay(section.chat_model)}
-                          </td>
-                        )}
-                        <td className="px-4 py-3 whitespace-nowrap text-right">
-                          <div className="flex justify-end gap-1">
-                            {section.section_id !== 'unassigned' && (
-                              <>
-                                <button
-                                  onClick={(e) => handleEditSection(section, e)}
-                                  className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
-                                  title="Edit section"
-                                >
-                                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                                    <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
-                                  </svg>
-                                </button>
-                                <button
-                                  onClick={(e) => handleDuplicateSection(section, e)}
-                                  className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors"
-                                  title="Duplicate section"
-                                >
-                                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                                    <path d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z" />
-                                    <path d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z" />
-                                  </svg>
-                                </button>
-                              </>
-                            )}
-                            <button
-                              onClick={(e) => { e.stopPropagation(); handleSectionClick(section); }}
-                              className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
-                              title="View results"
-                            >
-                              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                                <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
-                              </svg>
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredSections.map(section => renderSectionRow(section))}
                   </tbody>
                 </table>
               </div>
@@ -9265,14 +9328,48 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Term</label>
-                <input
-                  type="text"
-                  value={sectionForm.year_term}
-                  onChange={(e) => setSectionForm({ ...sectionForm, year_term: e.target.value })}
-                  placeholder="e.g., Winter 2025"
+                <label className="block text-sm font-medium text-gray-700 mb-1">Semester <span className="text-red-500">*</span></label>
+                <select
+                  value={sectionForm.semester_id ?? ''}
+                  onChange={(e) => {
+                    const newSemId = e.target.value ? Number(e.target.value) : null;
+                    // Clear course if it doesn't belong to the new semester.
+                    const currentCourse = allCourses.find(c => c.id === sectionForm.course_id);
+                    const keepCourse = currentCourse && currentCourse.semester_id === newSemId;
+                    setSectionForm({
+                      ...sectionForm,
+                      semester_id: newSemId,
+                      course_id: keepCourse ? sectionForm.course_id : null
+                    });
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
+                >
+                  <option value="">— Select semester —</option>
+                  {allSemesters.map(s => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}{s.is_current ? ' (Current)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Course</label>
+                <select
+                  value={sectionForm.course_id ?? ''}
+                  disabled={sectionForm.semester_id == null}
+                  onChange={(e) => setSectionForm({
+                    ...sectionForm,
+                    course_id: e.target.value ? Number(e.target.value) : null
+                  })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
+                >
+                  <option value="">Unassigned</option>
+                  {allCourses
+                    .filter(c => c.semester_id === sectionForm.semester_id)
+                    .map(c => (
+                      <option key={c.id} value={c.id}>{c.course_name}</option>
+                    ))}
+                </select>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Chat Model</label>

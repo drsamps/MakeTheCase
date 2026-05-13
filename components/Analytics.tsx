@@ -9,6 +9,7 @@ import ScoreChart from './ui/ScoreChart';
 interface AnalyticsProps {
   onNavigate?: (section: string, subTab?: string) => void;
   initialSectionId?: string;
+  initialCaseId?: string;
 }
 
 interface SummaryData {
@@ -100,7 +101,7 @@ const STATUS_OPTIONS = [
   { value: 'not_started', label: 'Not Started' },
 ];
 
-const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) => {
+const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, initialCaseId }) => {
   // Loading state
   const [isLoading, setIsLoading] = useState(true);
 
@@ -219,6 +220,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId }) =
       setSelectedSections([initialSectionId]);
     }
   }, [initialSectionId, sectionOptions]);
+
+  // Handle initial case selection from navigation
+  useEffect(() => {
+    if (initialCaseId && caseOptions.length > 0) {
+      setSelectedCases([initialCaseId]);
+    }
+  }, [initialCaseId, caseOptions]);
 
   // Fetch results data
   const fetchResults = useCallback(async () => {

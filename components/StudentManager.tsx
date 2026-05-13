@@ -29,7 +29,11 @@ interface StudentSection {
 type SortField = 'id' | 'full_name' | 'email' | 'section_id';
 type SortDirection = 'asc' | 'desc';
 
-const StudentManager: React.FC = () => {
+interface StudentManagerProps {
+  initialSectionFilter?: string;
+}
+
+const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter }) => {
   const [students, setStudents] = useState<Student[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -52,7 +56,7 @@ const StudentManager: React.FC = () => {
 
   // Search, filter, and sort state
   const [searchQuery, setSearchQuery] = useState('');
-  const [sectionFilter, setSectionFilter] = useState<string>('all');
+  const [sectionFilter, setSectionFilter] = useState<string>(initialSectionFilter || 'all');
   const [sortField, setSortField] = useState<SortField>('full_name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
@@ -82,6 +86,14 @@ const StudentManager: React.FC = () => {
     fetchStudents();
     fetchSections();
   }, []);
+
+  // Reapply the section filter whenever a new initialSectionFilter is supplied
+  // (e.g., when navigating to this screen from a different section row).
+  useEffect(() => {
+    if (initialSectionFilter) {
+      setSectionFilter(initialSectionFilter);
+    }
+  }, [initialSectionFilter]);
 
   const fetchStudents = async () => {
     setIsLoading(true);
