@@ -39,7 +39,11 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
              co.course_name, co.id as course_id_num,
              sem.id as semester_id, sem.semester_name, sem.is_current as semester_is_current,
              i.full_name as primary_instructor_name,
-             (SELECT COUNT(DISTINCT ss.student_id) FROM student_sections ss WHERE ss.section_id = s.section_id) as student_count,
+             (SELECT COUNT(DISTINCT s2.id)
+              FROM students s2
+              WHERE s2.section_id = s.section_id
+                 OR EXISTS (SELECT 1 FROM student_sections ss WHERE ss.student_id = s2.id AND ss.section_id = s.section_id)
+             ) as student_count,
              (SELECT COUNT(*) FROM section_cases sc2 WHERE sc2.section_id = s.section_id) as case_count,
              (SELECT COUNT(*) FROM section_cases sc3 WHERE sc3.section_id = s.section_id AND sc3.active = TRUE) as active_case_count
       FROM sections s

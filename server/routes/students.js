@@ -15,18 +15,40 @@ router.get('/', requireRole(['admin']), requirePermission('students'), async (re
   try {
     const { section_id } = req.query;
 
-    let query = 'SELECT id, created_at, first_name, last_name, full_name, email, favorite_persona, section_id, finished_at FROM students';
+    // Roll up junction-table memberships per student so callers can compute
+    // "enrolled in section X" via either student_sections OR the legacy students.section_id.
+    let query = `
+      SELECT s.id, s.created_at, s.first_name, s.last_name, s.full_name, s.email,
+             s.favorite_persona, s.section_id, s.finished_at,
+             GROUP_CONCAT(DISTINCT ss.section_id) AS section_ids_csv
+      FROM students s
+      LEFT JOIN student_sections ss ON ss.student_id = s.id
+    `;
     const params = [];
 
     if (section_id) {
-      query += ' WHERE section_id = ?';
-      params.push(section_id);
+      query += ` WHERE s.section_id = ?
+                    OR EXISTS (SELECT 1 FROM student_sections ss2 WHERE ss2.student_id = s.id AND ss2.section_id = ?)`;
+      params.push(section_id, section_id);
     }
 
-    query += ' ORDER BY created_at DESC';
+    query += ' GROUP BY s.id, s.created_at, s.first_name, s.last_name, s.full_name, s.email, s.favorite_persona, s.section_id, s.finished_at';
+    query += ' ORDER BY s.created_at DESC';
 
     const [rows] = await pool.execute(query, params);
-    res.json({ data: rows, error: null });
+    const data = rows.map(r => ({
+      id: r.id,
+      created_at: r.created_at,
+      first_name: r.first_name,
+      last_name: r.last_name,
+      full_name: r.full_name,
+      email: r.email,
+      favorite_persona: r.favorite_persona,
+      section_id: r.section_id,
+      finished_at: r.finished_at,
+      section_ids: r.section_ids_csv ? r.section_ids_csv.split(',') : []
+    }));
+    res.json({ data, error: null });
   } catch (error) {
     console.error('Error fetching students:', error);
     res.status(500).json({ data: null, error: { message: error.message } });

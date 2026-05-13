@@ -8,6 +8,7 @@ interface Student {
   full_name: string;
   email: string | null;
   section_id: string | null;
+  section_ids?: string[];
   favorite_persona: string | null;
   created_at: string;
   finished_at: string | null;
@@ -156,12 +157,15 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
       );
     }
 
-    // Apply section filter
+    // Apply section filter — match against legacy section_id OR junction memberships
     if (sectionFilter !== 'all') {
       if (sectionFilter === 'unassigned') {
-        result = result.filter(student => !student.section_id);
+        result = result.filter(student => !student.section_id && (!student.section_ids || student.section_ids.length === 0));
       } else {
-        result = result.filter(student => student.section_id === sectionFilter);
+        result = result.filter(student =>
+          student.section_id === sectionFilter ||
+          (student.section_ids && student.section_ids.includes(sectionFilter))
+        );
       }
     }
 
