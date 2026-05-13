@@ -4144,7 +4144,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleSaveSemester = async (semesterData: any) => {
     try {
       const isEdit = !!editingSemester;
-      const url = isEdit ? `/api/semesters/${editingSemester.id}` : '/api/semesters';
+      const url = isEdit
+        ? `${getApiBaseUrl()}/semesters/${editingSemester.id}`
+        : `${getApiBaseUrl()}/semesters`;
       const method = isEdit ? 'PUT' : 'POST';
 
       const response = await fetch(url, {
@@ -4352,6 +4354,28 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
+  const renderDismissibleErrorBanner = (className: string) =>
+    error ? (
+      <div className={`${className} flex items-start justify-between gap-2`}>
+        <span className="min-w-0 flex-1 break-words">{error}</span>
+        <button
+          type="button"
+          onClick={() => setError(null)}
+          className="flex-shrink-0 text-red-600 hover:text-red-800 p-1 rounded hover:bg-red-200"
+          title="Dismiss"
+          aria-label="Dismiss"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path
+              fillRule="evenodd"
+              d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </button>
+      </div>
+    ) : null;
+
   // Render Semesters Tab
   const renderSemestersTab = () => (
     <div className="p-6 max-w-6xl mx-auto">
@@ -4374,7 +4398,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </button>
       </div>
 
-      {error && <div className="mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</div>}
+      {renderDismissibleErrorBanner('mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg')}
       {successMessage && <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg">{successMessage}</div>}
 
       {isLoadingSemesters ? (
@@ -4705,7 +4729,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       </div>
 
-      {error && <div className="mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</div>}
+      {renderDismissibleErrorBanner('mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg')}
       {successMessage && <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg">{successMessage}</div>}
 
       {/* Semester Selector */}
@@ -4959,9 +4983,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       </div>
 
       {/* Success/Error Messages */}
-      {error && (
-        <div className="mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</div>
-      )}
+      {renderDismissibleErrorBanner('mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg')}
       {successMessage && (
         <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg flex items-center gap-2">
           <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
@@ -5905,9 +5927,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       </div>
 
       {/* Success/Error Messages */}
-      {error && (
-        <div className="mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</div>
-      )}
+      {renderDismissibleErrorBanner('mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg')}
       {successMessage && (
         <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -6600,11 +6620,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     {successMessage}
                   </div>
                 )}
-                {error && isEditingDefault && (
-                  <div className="bg-red-100 border border-red-200 text-red-700 p-3 rounded-lg">
-                    {error}
-                  </div>
-                )}
+                {error && isEditingDefault && renderDismissibleErrorBanner('bg-red-100 border border-red-200 text-red-700 p-3 rounded-lg')}
                 <div className="flex justify-between">
                   {isEditingDefault === 'section' && (
                     <button
@@ -8823,9 +8839,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </div>
             </div>
 
-            {error && (
-              <div className="mb-6 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg">{error}</div>
-            )}
+            {renderDismissibleErrorBanner('mb-6 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg')}
 
             {successMessage && (
               <div className="mb-6 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg flex items-center gap-2">

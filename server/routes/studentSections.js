@@ -198,4 +198,59 @@ router.get('/my-sections', verifyToken, async (req, res) => {
   }
 });
 
+// PATCH /api/student-sections/current - Student sets their active (primary) section
+// Used by multi-section students to switch which section is in focus on the Welcome screen.
+router.patch('/current', verifyToken, async (req, res) => {
+  try {
+    const studentId = req.user?.id;
+    if (!studentId) {
+      return res.status(401).json({ data: null, error: { message: 'Student ID not found in token' } });
+    }
+
+    const { section_id } = req.body;
+    if (!section_id) {
+      return res.status(400).json({ data: null, error: { message: 'section_id is required' } });
+    }
+
+    // Verify the student is enrolled in the requested section
+    const [enrollment] = await pool.execute(
+      'SELECT id FROM student_sections WHERE student_id = ? AND section_id = ?',
+      [studentId, section_id]
+    );
+    if (enrollment.length === 0) {
+      return res.status(403).json({ data: null, error: { message: 'Student is not enrolled in that section' } });
+    }
+
+    // Flip primaries: clear all, then set the chosen one
+    await pool.execute(
+      'UPDATE student_sections SET is_primary = 0 WHERE student_id = ?',
+      [studentId]
+    );
+    await pool.execute(
+      'UPDATE student_sections SET is_primary = 1 WHERE student_id = ? AND section_id = ?',
+      [studentId, section_id]
+    );
+
+    // Keep legacy students.section_id in sync for backward compatibility
+    await pool.execute(
+      'UPDATE students SET section_id = ? WHERE id = ?',
+      [section_id, studentId]
+    );
+
+    const [rows] = await pool.execute(
+      `SELECT ss.section_id, ss.enrolled_at, ss.enrolled_by, ss.is_primary,
+              s.section_title, s.year_term
+       FROM student_sections ss
+       JOIN sections s ON ss.section_id = s.section_id
+       WHERE ss.student_id = ? AND ss.section_id = ?`,
+      [studentId, section_id]
+    );
+
+    res.json({ data: rows[0], error: null });
+  } catch (error) {
+    console.error('Error setting current section:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 export default router;

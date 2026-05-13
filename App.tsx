@@ -179,6 +179,8 @@ const App: React.FC = () => {
   const [isLoadingAvailableCases, setIsLoadingAvailableCases] = useState(false);
   const [studentSavedSectionId, setStudentSavedSectionId] = useState<string | null>(null);
   const [enrolledSectionIds, setEnrolledSectionIds] = useState<string[]>([]);
+  // Enabled status per enrolled section, sourced from my-sections (students can't hit the admin section API)
+  const [enrolledSectionEnabledMap, setEnrolledSectionEnabledMap] = useState<Record<string, boolean>>({});
   const [hasFetchedStudentSection, setHasFetchedStudentSection] = useState(false);
 
   // Scenario support
@@ -392,6 +394,7 @@ const App: React.FC = () => {
                   chat_model: sec.chat_model,
                   super_model: sec.super_model,
                   accept_new_students: sec.accept_new_students,
+                  enabled: sec.enabled !== false && sec.enabled !== 0,
                 });
               }
             }
@@ -417,6 +420,12 @@ const App: React.FC = () => {
         if (!sectionsResponse.error && sectionsResponse.data && sectionsResponse.data.length > 0) {
           const sectionIds = sectionsResponse.data.map((s: any) => s.section_id);
           setEnrolledSectionIds(sectionIds);
+          // Store enabled status from the my-sections response (already has s.enabled via JOIN)
+          const enabledMap: Record<string, boolean> = {};
+          for (const s of sectionsResponse.data) {
+            enabledMap[s.section_id] = s.enabled !== false && s.enabled !== 0;
+          }
+          setEnrolledSectionEnabledMap(enabledMap);
           // Set primary section as selected
           const primary = sectionsResponse.data.find((s: any) => s.is_primary);
           if (primary) {
@@ -451,6 +460,19 @@ const App: React.FC = () => {
       fetchStudentSection();
     }
   }, [sessionUser, conversationPhase, hasFetchedStudentSection]);
+
+  // HMR/hot-reload recovery: if section IDs are already loaded but the enabled map is empty
+  // (new state reset to {} by React on hot update), trigger a re-fetch.
+  useEffect(() => {
+    if (
+      hasFetchedStudentSection &&
+      enrolledSectionIds.length > 0 &&
+      Object.keys(enrolledSectionEnabledMap).length === 0 &&
+      sessionUser?.role === 'student'
+    ) {
+      setHasFetchedStudentSection(false);
+    }
+  }, [hasFetchedStudentSection, enrolledSectionIds, enrolledSectionEnabledMap, sessionUser]);
 
   // Fetch available cases for the selected section
   const fetchAvailableCases = async (sectionId: string) => {
@@ -1373,7 +1395,7 @@ const App: React.FC = () => {
     setScenarioRequireOrder(false);
   };
 
-  const handleSectionChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleSectionChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
       const sectionId = e.target.value;
       setSelectedSection(sectionId);
       // Reset case selection when section changes
@@ -1394,6 +1416,24 @@ const App: React.FC = () => {
               setSelectedChatModel(section.chat_model || defaultModel);
               setSelectedSuperModel(section.super_model || defaultModel);
           }
+      }
+
+      // For multi-section students, persist the chosen section as primary in the DB
+      const hasEnabledData = Object.keys(enrolledSectionEnabledMap).length > 0;
+      const activeEnrolledIds = enrolledSectionIds.filter(id =>
+        !hasEnabledData || enrolledSectionEnabledMap[id] !== false
+      );
+      if (activeEnrolledIds.length > 1 && enrolledSectionIds.includes(sectionId)) {
+        try {
+          const { error: patchError } = await api.patch('/student-sections/current', { section_id: sectionId });
+          if (patchError) {
+            console.error('Error setting current section:', patchError.message);
+          } else {
+            setStudentSavedSectionId(sectionId);
+          }
+        } catch (err) {
+          console.error('Error setting current section:', err);
+        }
       }
   };
 
@@ -1636,33 +1676,66 @@ const App: React.FC = () => {
             </div>
             
             {/* Section Selection */}
-            <div>
-              <label htmlFor="section" className="block text-sm font-medium text-gray-700">Your Course Section</label>
-              {enrolledSectionIds.length > 1 && (
-                <p className="text-xs text-blue-600 mt-1">You are enrolled in {enrolledSectionIds.length} sections</p>
-              )}
-              <select
-                id="section"
-                value={selectedSection}
-                onChange={handleSectionChange}
-                disabled={!!studentSavedSectionId}
-                className={`w-full px-4 py-2 mt-1 text-gray-900 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 ${
-                  studentSavedSectionId ? 'bg-gray-200 cursor-not-allowed' : 'bg-gray-100'
-                }`}
-              >
-                <option value="" disabled>Select your course section...</option>
-                {sections
-                  .filter(sec => enrolledSectionIds.includes(sec.section_id) || sec.accept_new_students)
-                  .map((sec) => (
-                    <option key={sec.section_id} value={sec.section_id}>
-                      {sec.section_title} ({sec.year_term}){enrolledSectionIds.includes(sec.section_id) ? ' ✓' : ''}
-                    </option>
-                  ))}
-              </select>
-              {studentSavedSectionId && selectedSection === studentSavedSectionId && (
-                <p className="mt-1 text-xs text-green-600">✓ Previously selected section (contact instructor to change)</p>
-              )}
-            </div>
+            {(() => {
+              // Use the enabled map populated from my-sections (authoritative for students).
+              // If the map is not yet loaded, default all to active (brief pre-load state).
+              const hasEnabledData = Object.keys(enrolledSectionEnabledMap).length > 0;
+              const activeEnrolledIds = enrolledSectionIds.filter(id =>
+                !hasEnabledData || enrolledSectionEnabledMap[id] !== false
+              );
+              const disabledEnrolledCount = hasEnabledData
+                ? enrolledSectionIds.filter(id => enrolledSectionEnabledMap[id] === false).length
+                : 0;
+              // isMultiActive: only true when 2+ active enrolled sections exist in sections list
+              // (gating on sections state avoids a brief flash before sections load).
+              const activeInSections = sections.filter(sec => activeEnrolledIds.includes(sec.section_id));
+              const isMultiActive = activeInSections.length > 1;
+              const isSectionLocked = !isMultiActive && !!studentSavedSectionId;
+              return (
+                <div>
+                  <label htmlFor="section" className="block text-sm font-medium text-gray-700">Your Course Section</label>
+                  {isMultiActive ? (
+                    <p className="text-xs text-blue-600 mt-1">
+                      You are enrolled in {activeEnrolledIds.length} active course sections. Choose one:
+                      {disabledEnrolledCount > 0 && (
+                        <span className="text-gray-500 ml-1">
+                          (Also enrolled in {disabledEnrolledCount} disabled section{disabledEnrolledCount > 1 ? 's' : ''}.)
+                        </span>
+                      )}
+                    </p>
+                  ) : disabledEnrolledCount > 0 && enrolledSectionIds.length > 1 ? (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Also enrolled in {disabledEnrolledCount} disabled section{disabledEnrolledCount > 1 ? 's' : ''}.
+                    </p>
+                  ) : null}
+                  <select
+                    id="section"
+                    value={selectedSection}
+                    onChange={handleSectionChange}
+                    disabled={isSectionLocked}
+                    className={`w-full px-4 py-2 mt-1 text-gray-900 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 ${
+                      isSectionLocked ? 'bg-gray-200 cursor-not-allowed' : 'bg-gray-100'
+                    }`}
+                  >
+                    <option value="" disabled>Select your course section...</option>
+                    {sections
+                      .filter(sec =>
+                        isMultiActive
+                          ? activeEnrolledIds.includes(sec.section_id)
+                          : enrolledSectionIds.includes(sec.section_id) || sec.accept_new_students
+                      )
+                      .map((sec) => (
+                        <option key={sec.section_id} value={sec.section_id}>
+                          {sec.section_title} ({sec.year_term}){enrolledSectionIds.includes(sec.section_id) ? ' ✓' : ''}
+                        </option>
+                      ))}
+                  </select>
+                  {isSectionLocked && studentSavedSectionId && selectedSection === studentSavedSectionId && (
+                    <p className="mt-1 text-xs text-green-600">✓ Previously selected section (contact instructor to change)</p>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Remember Section Button - shown when section selected but not yet enrolled */}
             {selectedSection && !enrolledSectionIds.includes(selectedSection) && !studentSavedSectionId && (
