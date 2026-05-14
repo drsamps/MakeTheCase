@@ -215,7 +215,7 @@ router.post('/:caseId/process', verifyToken, requireRole(['admin']), requirePerm
       // Step 4: Get model config
       console.log('[CasePrep] Step 4: Getting model config for:', model_id);
       const [models] = await pool.execute(
-        'SELECT model_id, temperature, reasoning_effort FROM models WHERE model_id = ? AND enabled = 1',
+        'SELECT model_id, vendor, temperature, reasoning_effort FROM models WHERE model_id = ? AND enabled = 1',
         [model_id]
       );
 
@@ -233,6 +233,7 @@ router.post('/:caseId/process', verifyToken, requireRole(['admin']), requirePerm
       console.log('[CasePrep] Step 5: Calling LLM to generate outline...');
       const { text: outline, meta } = await generateOutlineWithLLM({
         modelId: model_id,
+        vendor: models[0].vendor,
         prompt: renderedPrompt,
         config: modelConfig
       });

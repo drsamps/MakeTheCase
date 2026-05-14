@@ -184,33 +184,33 @@ function formatNumber(num) {
 /**
  * Get model pricing from database
  * @param {string} modelId
- * @returns {Promise<{input_cost: number|null, output_cost: number|null}>}
+ * @returns {Promise<{cpm_input: number|null, cpm_output: number|null}>}
  */
 async function getModelPricing(modelId) {
   try {
     const [rows] = await pool.execute(
-      'SELECT input_cost, output_cost FROM models WHERE model_id = ?',
+      'SELECT cpm_input, cpm_output FROM models WHERE model_id = ?',
       [modelId]
     );
-    return rows[0] || { input_cost: null, output_cost: null };
+    return rows[0] || { cpm_input: null, cpm_output: null };
   } catch (error) {
     console.warn(`Failed to get pricing for model ${modelId}:`, error.message);
-    return { input_cost: null, output_cost: null };
+    return { cpm_input: null, cpm_output: null };
   }
 }
 
 /**
  * Calculate estimated cost based on token usage and model pricing
  * @param {Object} meta - Meta object with cacheMetrics and provider
- * @param {Object} pricing - { input_cost, output_cost } per million tokens
+ * @param {Object} pricing - { cpm_input, cpm_output } per million tokens
  * @returns {number|null}
  */
 function calculateCost(meta, pricing) {
-  if (!pricing?.input_cost || !pricing?.output_cost) return null;
+  if (!pricing?.cpm_input || !pricing?.cpm_output) return null;
   if (!meta?.cacheMetrics) return null;
 
-  const inputCostPerToken = pricing.input_cost / 1_000_000;
-  const outputCostPerToken = pricing.output_cost / 1_000_000;
+  const inputCostPerToken = pricing.cpm_input / 1_000_000;
+  const outputCostPerToken = pricing.cpm_output / 1_000_000;
 
   // Apply cache discount based on provider
   // Anthropic: ~90% discount on cached tokens

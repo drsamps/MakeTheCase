@@ -21,8 +21,8 @@ interface Model {
     model_name: string;
     enabled?: boolean;
     default?: boolean;
-    input_cost?: number | null;
-    output_cost?: number | null;
+    cpm_input?: number | null;
+    cpm_output?: number | null;
 }
 
 const FONT_SIZES = ['text-xs', 'text-sm', 'text-base', 'text-lg', 'text-xl'];

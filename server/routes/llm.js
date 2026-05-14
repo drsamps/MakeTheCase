@@ -13,7 +13,7 @@ const CASE_FILES_DIR = path.join(__dirname, '../../case_files');
 
 async function getModelConfig(modelId) {
   const [rows] = await pool.execute(
-    'SELECT model_id, temperature, reasoning_effort FROM models WHERE model_id = ?',
+    'SELECT model_id, vendor, temperature, reasoning_effort FROM models WHERE model_id = ?',
     [modelId]
   );
   return rows[0] || null;
@@ -331,6 +331,7 @@ router.post('/chat', async (req, res) => {
     const startTime = Date.now();
     const { text, meta } = await chatWithLLM({
       modelId,
+      vendor: modelConfig.vendor,
       systemPrompt,
       history: Array.isArray(history) ? history : [],
       message,
@@ -373,7 +374,7 @@ router.post('/eval', async (req, res) => {
     }
 
     const startTime = Date.now();
-    const { text, meta } = await evaluateWithLLM({ modelId, prompt, config: modelConfig });
+    const { text, meta } = await evaluateWithLLM({ modelId, vendor: modelConfig.vendor, prompt, config: modelConfig });
     const durationMs = Date.now() - startTime;
 
     // Log prompt if enabled (async, non-blocking)

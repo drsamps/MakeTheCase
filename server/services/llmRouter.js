@@ -7,6 +7,55 @@ import { pool } from '../db.js';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_HTTP_REFERER = process.env.OPENROUTER_HTTP_REFERER;
+const OPENROUTER_X_TITLE = process.env.OPENROUTER_X_TITLE;
+
+function buildOpenRouterHeaders() {
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+  };
+  if (OPENROUTER_HTTP_REFERER) headers['HTTP-Referer'] = OPENROUTER_HTTP_REFERER;
+  if (OPENROUTER_X_TITLE) headers['X-Title'] = OPENROUTER_X_TITLE;
+  return headers;
+}
+
+function parseJsonSafe(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Load supported_parameters, default_parameters, and parameter_settings for a model
+ * and return the merged-and-filtered runtime parameter object. Admin overrides win
+ * over vendor defaults; the result is filtered to keys the model actually supports.
+ */
+export async function resolveModelRuntimeConfiguration(modelId) {
+  if (!modelId) return {};
+  try {
+    const [rows] = await pool.execute(
+      'SELECT supported_parameters, default_parameters, parameter_settings FROM models WHERE model_id = ? LIMIT 1',
+      [modelId]
+    );
+    if (!rows.length) return {};
+    const row = rows[0];
+    const supported = parseJsonSafe(row.supported_parameters, []);
+    const defaults = parseJsonSafe(row.default_parameters, {}) || {};
+    const overrides = parseJsonSafe(row.parameter_settings, {}) || {};
+    const merged = { ...defaults, ...overrides };
+    if (!Array.isArray(supported) || supported.length === 0) return merged;
+    return Object.fromEntries(Object.entries(merged).filter(([k]) => supported.includes(k)));
+  } catch (e) {
+    console.warn('[LLMRouter] resolveModelRuntimeConfiguration failed:', e.message);
+    return {};
+  }
+}
 
 // Track cache metrics in database
 async function trackCacheMetrics(caseId, provider, modelId, cacheMetrics, requestType = 'chat') {
@@ -32,12 +81,48 @@ async function trackCacheMetrics(caseId, provider, modelId, cacheMetrics, reques
   }
 }
 
-const detectProvider = (modelId = '') => {
+const detectProvider = (modelId = '', vendor = null) => {
+  if (vendor && typeof vendor === 'string') {
+    const v = vendor.toLowerCase();
+    if (v === 'openai' || v === 'anthropic' || v === 'google' || v === 'openrouter') return v;
+  }
   const id = modelId.toLowerCase();
+  // OpenRouter model IDs always contain a slash (e.g. "openai/gpt-5"); direct vendor IDs never do.
+  if (id.includes('/')) return 'openrouter';
   if (id.startsWith('gpt') || id.startsWith('o1') || id.includes('openai')) return 'openai';
   if (id.startsWith('claude') || id.includes('anthropic')) return 'anthropic';
   return 'google';
 };
+
+async function callOpenRouter({ modelId, messages, runtimeParams = {}, maxTokens, responseFormat }) {
+  if (!OPENROUTER_API_KEY) throw new Error('OPENROUTER_API_KEY is not set on the server');
+  const payload = {
+    model: modelId,
+    messages,
+    ...runtimeParams,
+  };
+  if (maxTokens !== undefined) payload.max_tokens = maxTokens;
+  if (responseFormat) payload.response_format = responseFormat;
+
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: buildOpenRouterHeaders(),
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`OpenRouter error: ${text}`);
+  }
+  const data = await response.json();
+  const text = data?.choices?.[0]?.message?.content?.trim() || '';
+  const cacheMetrics = {
+    cache_hit: (data.usage?.cached_tokens || data.usage?.prompt_tokens_details?.cached_tokens || 0) > 0,
+    input_tokens: data.usage?.prompt_tokens || 0,
+    cached_tokens: data.usage?.cached_tokens || data.usage?.prompt_tokens_details?.cached_tokens || 0,
+    output_tokens: data.usage?.completion_tokens || 0,
+  };
+  return { text, cacheMetrics, raw: data };
+}
 
 const mapHistoryForOpenAI = (history = []) =>
   history.map((h) => ({
@@ -56,10 +141,39 @@ const isOpenAIReasoning = (modelId = '') => {
   return id.startsWith('o1') || id.startsWith('gpt-5');
 };
 
-export async function chatWithLLM({ modelId, systemPrompt, history = [], message, config = {} }) {
-  const provider = detectProvider(modelId);
-  const temperature = config.temperature ?? null;
-  const reasoningEffort = config.reasoning_effort ?? null;
+export async function chatWithLLM({ modelId, vendor = null, systemPrompt, history = [], message, config = {} }) {
+  const provider = detectProvider(modelId, vendor);
+  const runtimeParams = await resolveModelRuntimeConfiguration(modelId);
+  const temperature = runtimeParams.temperature ?? config.temperature ?? null;
+  const reasoningEffort = runtimeParams.reasoning_effort ?? config.reasoning_effort ?? null;
+
+  if (provider === 'openrouter') {
+    const mergedParams = { ...runtimeParams };
+    if (temperature !== null && temperature !== undefined && mergedParams.temperature === undefined) {
+      mergedParams.temperature = Number(temperature);
+    }
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...mapHistoryForOpenAI(history),
+      { role: 'user', content: message },
+    ];
+    const { text, cacheMetrics } = await callOpenRouter({
+      modelId,
+      messages,
+      runtimeParams: mergedParams,
+      maxTokens: config.maxTokens,
+    });
+    if (config.caseId) trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat');
+    return {
+      text,
+      meta: {
+        provider,
+        temperature: mergedParams.temperature ?? null,
+        reasoning_effort: mergedParams.reasoning_effort ?? null,
+        cacheMetrics,
+      },
+    };
+  }
 
   if (provider === 'openai') {
     if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on the server');
@@ -221,11 +335,38 @@ export async function chatWithLLM({ modelId, systemPrompt, history = [], message
   };
 }
 
-export async function evaluateWithLLM({ modelId, prompt, config = {} }) {
-  const provider = detectProvider(modelId);
-  const temperature = config.temperature ?? null;
-  const reasoningEffort = config.reasoning_effort ?? null;
+export async function evaluateWithLLM({ modelId, vendor = null, prompt, config = {} }) {
+  const provider = detectProvider(modelId, vendor);
+  const runtimeParams = await resolveModelRuntimeConfiguration(modelId);
+  const temperature = runtimeParams.temperature ?? config.temperature ?? null;
+  const reasoningEffort = runtimeParams.reasoning_effort ?? config.reasoning_effort ?? null;
   const reasoningModel = isOpenAIReasoning(modelId);
+
+  if (provider === 'openrouter') {
+    const mergedParams = { ...runtimeParams };
+    if (temperature !== null && temperature !== undefined && mergedParams.temperature === undefined) {
+      mergedParams.temperature = Number(temperature);
+    }
+    const messages = [
+      { role: 'system', content: 'Return only JSON matching the expected evaluation schema.' },
+      { role: 'user', content: prompt },
+    ];
+    const { text, cacheMetrics } = await callOpenRouter({
+      modelId,
+      messages,
+      runtimeParams: mergedParams,
+      responseFormat: { type: 'json_object' },
+    });
+    return {
+      text: text || '{}',
+      meta: {
+        provider,
+        temperature: mergedParams.temperature ?? null,
+        reasoning_effort: mergedParams.reasoning_effort ?? null,
+        cacheMetrics,
+      },
+    };
+  }
 
   if (provider === 'openai') {
     if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on the server');
@@ -396,11 +537,34 @@ export async function evaluateWithLLM({ modelId, prompt, config = {} }) {
  * @param {Object} params - {modelId, prompt, config}
  * @returns {Promise<{text: string, meta: Object}>} - Generated outline and metadata
  */
-export async function generateOutlineWithLLM({ modelId, prompt, config = {} }) {
-  const provider = detectProvider(modelId);
-  const temperature = config.temperature ?? null;
-  const reasoningEffort = config.reasoning_effort ?? null;
+export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, config = {} }) {
+  const provider = detectProvider(modelId, vendor);
+  const runtimeParams = await resolveModelRuntimeConfiguration(modelId);
+  const temperature = runtimeParams.temperature ?? config.temperature ?? null;
+  const reasoningEffort = runtimeParams.reasoning_effort ?? config.reasoning_effort ?? null;
   const reasoningModel = isOpenAIReasoning(modelId);
+
+  if (provider === 'openrouter') {
+    const mergedParams = { ...runtimeParams };
+    if (temperature !== null && temperature !== undefined && mergedParams.temperature === undefined) {
+      mergedParams.temperature = Number(temperature);
+    }
+    const messages = [{ role: 'user', content: prompt }];
+    const { text } = await callOpenRouter({
+      modelId,
+      messages,
+      runtimeParams: mergedParams,
+      maxTokens: 16000,
+    });
+    return {
+      text,
+      meta: {
+        provider,
+        temperature: mergedParams.temperature ?? null,
+        reasoning_effort: mergedParams.reasoning_effort ?? null,
+      },
+    };
+  }
 
   if (provider === 'openai') {
     if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on the server');

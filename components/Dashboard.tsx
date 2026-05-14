@@ -129,14 +129,23 @@ interface EvaluationData {
 interface Model {
   model_id: string;
   model_name: string;
+  vendor?: string;
   enabled: boolean;
   default?: boolean;
-  input_cost?: number | null;
-  output_cost?: number | null;
+  cpm_input?: number | null;
+  cpm_input_cache?: number | null;
+  cpm_output?: number | null;
   temperature?: number | null;
   reasoning_effort?: string | null;
+  release_date?: string | null;
+  type?: string | null;
+  supported_parameters?: string[] | null;
+  default_parameters?: Record<string, unknown> | null;
+  parameter_settings?: Record<string, unknown> | null;
   test_date?: string | null;
+  test_status?: 'pass' | 'fail' | null;
   test_result?: string | null;
+  test_results?: Record<string, unknown> | null;
 }
 
 interface Case {
@@ -333,22 +342,39 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [modelForm, setModelForm] = useState<{
     model_id: string;
     model_name: string;
+    vendor: string;
     enabled: boolean;
     default: boolean;
-    input_cost: string;
-    output_cost: string;
+    cpm_input: string;
+    cpm_input_cache: string;
+    cpm_output: string;
     temperature: string;
     reasoning_effort: string;
+    release_date: string;
+    type: string;
+    supported_parameters: string;
+    default_parameters: string;
+    parameter_settings: string;
   }>({
     model_id: '',
     model_name: '',
+    vendor: 'openai',
     enabled: true,
     default: false,
-    input_cost: '',
-    output_cost: '',
+    cpm_input: '',
+    cpm_input_cache: '',
+    cpm_output: '',
     temperature: '',
     reasoning_effort: '',
+    release_date: '',
+    type: 'regular',
+    supported_parameters: '',
+    default_parameters: '',
+    parameter_settings: '',
   });
+  const [isOpenRouterImport, setIsOpenRouterImport] = useState(false);
+  const [isFetchingOpenRouter, setIsFetchingOpenRouter] = useState(false);
+  const [openRouterContext, setOpenRouterContext] = useState<{ context_length?: number | null; description?: string } | null>(null);
   const [isSavingModel, setIsSavingModel] = useState(false);
   const [isLoadingSections, setIsLoadingSections] = useState(true);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
@@ -742,7 +768,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     setIsLoadingModels(true);
     const { data, error } = await api
       .from('models')
-      .select('model_id, model_name, enabled, default, input_cost, output_cost, temperature, reasoning_effort, test_date, test_result');
+      .select('model_id, model_name, vendor, enabled, default, cpm_input, cpm_input_cache, cpm_output, temperature, reasoning_effort, release_date, type, supported_parameters, default_parameters, parameter_settings, test_date, test_result, test_status, test_results');
     
     if (error) {
       console.error('Failed to fetch models', error);
@@ -2957,16 +2983,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       lines.push('SET FOREIGN_KEY_CHECKS=0;');
 
       for (const m of models) {
-        const cols = ['model_id','model_name','enabled','default_model','input_cost','output_cost'];
+        const cols = ['model_id','model_name','vendor','enabled','default_model','cpm_input','cpm_input_cache','cpm_output'];
         const vals = [
           sqlValue(m.model_id),
           sqlValue(m.model_name),
+          sqlValue((m as any).vendor),
           sqlValue(m.enabled),
           sqlValue((m as any).default),
-          sqlValue(m.input_cost),
-          sqlValue(m.output_cost),
+          sqlValue((m as any).cpm_input),
+          sqlValue((m as any).cpm_input_cache),
+          sqlValue((m as any).cpm_output),
         ];
-        const updates = ['model_name=VALUES(model_name)','enabled=VALUES(enabled)','default_model=VALUES(default_model)','input_cost=VALUES(input_cost)','output_cost=VALUES(output_cost)'];
+        const updates = ['model_name=VALUES(model_name)','vendor=VALUES(vendor)','enabled=VALUES(enabled)','default_model=VALUES(default_model)','cpm_input=VALUES(cpm_input)','cpm_input_cache=VALUES(cpm_input_cache)','cpm_output=VALUES(cpm_output)'];
         lines.push(`INSERT INTO models (${cols.join(',')}) VALUES (${vals.join(',')}) ON DUPLICATE KEY UPDATE ${updates.join(',')};`);
       }
 
@@ -3353,34 +3381,127 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
+  const emptyModelForm = (vendor: string = 'openai') => ({
+    model_id: '',
+    model_name: '',
+    vendor,
+    enabled: true,
+    default: false,
+    cpm_input: '',
+    cpm_input_cache: '',
+    cpm_output: '',
+    temperature: '',
+    reasoning_effort: '',
+    release_date: '',
+    type: 'regular',
+    supported_parameters: '',
+    default_parameters: '',
+    parameter_settings: '',
+  });
+
   const openCreateModelModal = () => {
     setEditingModel(null);
-    setModelForm({
-      model_id: '',
-      model_name: '',
-      enabled: true,
-      default: false,
-      input_cost: '',
-      output_cost: '',
-      temperature: '',
-      reasoning_effort: '',
-    });
+    setIsOpenRouterImport(false);
+    setOpenRouterContext(null);
+    setModelForm(emptyModelForm('openai'));
     setShowModelModal(true);
+  };
+
+  const openOpenRouterImportModal = () => {
+    setEditingModel(null);
+    setIsOpenRouterImport(true);
+    setOpenRouterContext(null);
+    setModelForm(emptyModelForm('openrouter'));
+    setShowModelModal(true);
+  };
+
+  const stringifyJsonField = (value: unknown): string => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string') return value;
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return '';
+    }
   };
 
   const openEditModelModal = (model: Model) => {
     setEditingModel(model);
+    setIsOpenRouterImport(false);
+    setOpenRouterContext(null);
     setModelForm({
       model_id: model.model_id,
       model_name: model.model_name,
+      vendor: model.vendor || 'openai',
       enabled: !!model.enabled,
       default: !!model.default,
-      input_cost: model.input_cost !== null && model.input_cost !== undefined ? String(model.input_cost) : '',
-      output_cost: model.output_cost !== null && model.output_cost !== undefined ? String(model.output_cost) : '',
+      cpm_input: model.cpm_input !== null && model.cpm_input !== undefined ? String(model.cpm_input) : '',
+      cpm_input_cache: model.cpm_input_cache !== null && model.cpm_input_cache !== undefined ? String(model.cpm_input_cache) : '',
+      cpm_output: model.cpm_output !== null && model.cpm_output !== undefined ? String(model.cpm_output) : '',
       temperature: model.temperature !== null && model.temperature !== undefined ? String(model.temperature) : '',
       reasoning_effort: model.reasoning_effort || '',
+      release_date: model.release_date ? String(model.release_date).slice(0, 10) : '',
+      type: model.type || 'regular',
+      supported_parameters: stringifyJsonField(model.supported_parameters),
+      default_parameters: stringifyJsonField(model.default_parameters),
+      parameter_settings: stringifyJsonField(model.parameter_settings),
     });
     setShowModelModal(true);
+  };
+
+  const handleFetchOpenRouterMetadata = async () => {
+    const authToken = localStorage.getItem('admin_auth_token');
+    if (!authToken) {
+      alert('You must be signed in to look up OpenRouter models.');
+      return;
+    }
+    const trimmed = modelForm.model_id.trim();
+    if (!trimmed) {
+      alert('Enter an OpenRouter model ID first (e.g., openai/gpt-5).');
+      return;
+    }
+    setIsFetchingOpenRouter(true);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/models/openrouter/lookup`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ openrouter_model_id: trimmed }),
+      });
+      const result = await parseApiResponse(response);
+      if (!response.ok || result.error) {
+        const message = result?.error?.message || `Server returned ${response.status}`;
+        throw new Error(message);
+      }
+      const prefill = result?.data?.prefill;
+      const ctx = result?.data?.openrouter;
+      if (!prefill) throw new Error('OpenRouter lookup returned no prefill data.');
+      setModelForm({
+        model_id: prefill.model_id || trimmed,
+        model_name: prefill.model_name || trimmed,
+        vendor: 'openrouter',
+        enabled: prefill.enabled !== false,
+        default: false,
+        cpm_input: prefill.cpm_input != null ? String(prefill.cpm_input) : '',
+        cpm_input_cache: prefill.cpm_input_cache != null ? String(prefill.cpm_input_cache) : '',
+        cpm_output: prefill.cpm_output != null ? String(prefill.cpm_output) : '',
+        temperature: '',
+        reasoning_effort: '',
+        release_date: prefill.release_date || '',
+        type: prefill.type || 'regular',
+        supported_parameters: stringifyJsonField(prefill.supported_parameters || []),
+        default_parameters: stringifyJsonField(prefill.default_parameters || {}),
+        parameter_settings: '{}',
+      });
+      setOpenRouterContext(ctx || null);
+    } catch (err: any) {
+      console.error('OpenRouter lookup failed:', err);
+      alert(`OpenRouter lookup failed: ${err.message}`);
+    } finally {
+      setIsFetchingOpenRouter(false);
+    }
   };
 
   const handleSaveModel = async () => {
@@ -3394,38 +3515,49 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       return;
     }
 
-    const parseCost = (val: string) => {
+    const parseNumberOrNull = (val: string, label: string) => {
       const trimmed = val.trim();
       if (!trimmed) return null;
       const parsed = parseFloat(trimmed);
       if (Number.isNaN(parsed)) {
-        throw new Error('Input/output cost must be a number.');
+        throw new Error(`${label} must be a number.`);
       }
       return parsed;
     };
 
-    const parseTemperature = (val: string) => {
+    const parseJsonOrThrow = (val: string, label: string): unknown => {
       const trimmed = val.trim();
       if (!trimmed) return null;
-      const parsed = parseFloat(trimmed);
-      if (Number.isNaN(parsed)) {
-        throw new Error('Temperature must be a number.');
+      try {
+        return JSON.parse(trimmed);
+      } catch (e: any) {
+        throw new Error(`${label} is not valid JSON: ${e.message}`);
       }
-      return parsed;
     };
 
-    const isReasoningModel = (id: string) => id.toLowerCase().startsWith('o1');
-
-    const payload = {
-      model_id: modelForm.model_id.trim(),
-      model_name: modelForm.model_name.trim(),
-      enabled: modelForm.enabled,
-      default: modelForm.default,
-      input_cost: parseCost(modelForm.input_cost),
-      output_cost: parseCost(modelForm.output_cost),
-      temperature: parseTemperature(modelForm.temperature),
-      reasoning_effort: modelForm.reasoning_effort || null,
-    };
+    let payload: Record<string, unknown>;
+    try {
+      payload = {
+        model_id: modelForm.model_id.trim(),
+        model_name: modelForm.model_name.trim(),
+        vendor: modelForm.vendor,
+        enabled: modelForm.enabled,
+        default: modelForm.default,
+        cpm_input: parseNumberOrNull(modelForm.cpm_input, 'CPM input'),
+        cpm_input_cache: parseNumberOrNull(modelForm.cpm_input_cache, 'CPM input cache'),
+        cpm_output: parseNumberOrNull(modelForm.cpm_output, 'CPM output'),
+        temperature: parseNumberOrNull(modelForm.temperature, 'Temperature'),
+        reasoning_effort: modelForm.reasoning_effort || null,
+        release_date: modelForm.release_date || null,
+        type: modelForm.type || 'regular',
+        supported_parameters: parseJsonOrThrow(modelForm.supported_parameters, 'Supported parameters'),
+        default_parameters: parseJsonOrThrow(modelForm.default_parameters, 'Default parameters'),
+        parameter_settings: parseJsonOrThrow(modelForm.parameter_settings, 'Parameter settings'),
+      };
+    } catch (parseErr: any) {
+      alert(parseErr.message);
+      return;
+    }
 
     setIsSavingModel(true);
     try {
@@ -3515,39 +3647,34 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       alert('You must be signed in to test models.');
       return;
     }
-    const prompt = 'What is the capital of France?';
     setTestingModelId(model.model_id);
     try {
-      const response = await fetch(`${getApiBaseUrl()}/llm/chat`, {
+      const response = await fetch(`${getApiBaseUrl()}/models/${encodeURIComponent(model.model_id)}/test`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${authToken}`,
         },
-        body: JSON.stringify({
-          modelId: model.model_id,
-          systemPrompt: 'You are a quick connectivity test agent. Respond concisely.',
-          history: [],
-          message: prompt,
-        }),
       });
       const result = await parseApiResponse(response);
-      if (!response.ok || result.error) {
-        const msg = result?.error?.message || `Server returned ${response.status}`;
-        throw new Error(msg);
+      const data = result?.data || {};
+      const testResults: any = data.test_results || {};
+      await fetchModels();
+      if (response.ok && data.success) {
+        const preview = testResults.response_preview || 'Received empty response.';
+        const usage = testResults.usage || {};
+        const usageBits = [];
+        if (usage.prompt_tokens) usageBits.push(`prompt=${usage.prompt_tokens}`);
+        if (usage.completion_tokens) usageBits.push(`completion=${usage.completion_tokens}`);
+        const usageText = usageBits.length ? ` (${usageBits.join(', ')})` : '';
+        alert(`Pass: ${model.model_name}\n${preview}${usageText}`);
+      } else {
+        const errMsg = testResults.error || result?.error?.message || `Server returned ${response.status}`;
+        alert(`Fail: ${model.model_name}\n${errMsg}`);
       }
-      await persistModelTestResult(model.model_id, 'success');
-      const text = result?.data?.text || '';
-      const meta = result?.data?.meta || {};
-      const parts = [];
-      if (meta.provider) parts.push(`provider=${meta.provider}`);
-      if (meta.temperature !== null && meta.temperature !== undefined) parts.push(`temperature=${meta.temperature}`);
-      if (meta.reasoning_effort) parts.push(`reasoning_effort=${meta.reasoning_effort}`);
-      const metaText = parts.length ? ` (params: ${parts.join(', ')})` : '';
-      alert(`Success: ${model.model_name} reports that the capital of France is: ${text || 'Received empty response.'}${metaText}`);
     } catch (err: any) {
       console.error('Failed to test model:', err);
-      await persistModelTestResult(model.model_id, `failed: ${err.message}`);
+      await fetchModels();
       alert(`Failed to test model: ${err.message}`);
     } finally {
       setTestingModelId(null);
@@ -3651,6 +3778,26 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     </th>
   );
 
+  const vendorLabel = (vendor?: string | null) => {
+    switch ((vendor || '').toLowerCase()) {
+      case 'openai': return 'OpenAI';
+      case 'anthropic': return 'Anthropic';
+      case 'google': return 'Google';
+      case 'openrouter': return 'OpenRouter';
+      default: return vendor || 'Unknown';
+    }
+  };
+
+  const vendorBadgeClasses = (vendor?: string | null) => {
+    switch ((vendor || '').toLowerCase()) {
+      case 'openrouter': return 'bg-purple-100 text-purple-700';
+      case 'anthropic': return 'bg-orange-100 text-orange-700';
+      case 'google': return 'bg-blue-100 text-blue-700';
+      case 'openai': return 'bg-emerald-100 text-emerald-700';
+      default: return 'bg-gray-100 text-gray-700';
+    }
+  };
+
   const providerLabel = (modelId: string) => {
     const provider = detectProvider(modelId);
     if (provider === 'openai') return 'OpenAI';
@@ -3695,6 +3842,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             + Add Model
           </button>
           <button
+            onClick={openOpenRouterImportModal}
+            className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700"
+          >
+            + Add Model from OpenRouter
+          </button>
+          <button
             onClick={fetchModels}
             disabled={isLoadingModels}
             aria-label="Refresh models list"
@@ -3722,17 +3875,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Provider</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Default</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Input Cost</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Output Cost</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" title="Cost per million input tokens">Input $/M</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" title="Cost per million output tokens">Output $/M</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {sortedModels.map(model => {
-                  const hasFailedTest = !!model.test_result && model.test_result !== 'success';
-                  const hasPassedTest = model.test_result === 'success';
+                  const hasPassedTest = model.test_status === 'pass';
+                  const hasFailedTest = model.test_status === 'fail';
                   const testedAt = model.test_date ? new Date(model.test_date).toLocaleString() : 'unknown date';
-                  const safeResult = sanitizeTextForDisplay(String(model.test_result || ''));
+                  const failDetail = (model.test_results && typeof model.test_results === 'object'
+                    ? ((model.test_results as Record<string, unknown>).error || (model.test_results as Record<string, unknown>).message) as string | undefined
+                    : undefined) || model.test_result || '';
+                  const safeResult = sanitizeTextForDisplay(String(failDetail));
                   return (
                     <React.Fragment key={model.model_id}>
                       <tr className={`hover:bg-gray-50 ${model.default ? 'bg-yellow-50' : ''}`}>
@@ -3751,9 +3907,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           ) : null}
                         </td>
                         <td className="px-4 py-3">
-                          <span className="inline-flex items-center px-2 py-1 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
-                            {providerLabel(model.model_id)}
+                          <span className={`inline-flex items-center px-2 py-1 text-xs font-medium rounded-full ${vendorBadgeClasses(model.vendor)}`}>
+                            {vendorLabel(model.vendor)}
                           </span>
+                          {model.type && model.type !== 'regular' && (
+                            <div className="text-[10px] text-gray-500 mt-1">{model.type}</div>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           {model.default ? (
@@ -3786,8 +3945,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                             {model.enabled ? 'Enabled' : 'Disabled'}
                           </button>
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-700">{formatCost(model.input_cost)}</td>
-                        <td className="px-4 py-3 text-sm text-gray-700">{formatCost(model.output_cost)}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700">{formatCost(model.cpm_input)}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700">{formatCost(model.cpm_output)}</td>
                         <td className="px-4 py-3">
                           <div className="flex flex-nowrap items-center gap-2 whitespace-nowrap">
                             <button
@@ -3833,15 +3992,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           </div>
                         </td>
                       </tr>
-                      {hasFailedTest && (
-                        <tr className="bg-pink-50">
-                          <td colSpan={7} className="px-4 pt-1 pb-1 text-[11px] text-gray-600 italic">
-                            <span className="block truncate" title={`↳ Tested ${testedAt} and ${safeResult}`}>
-                              {`↳ Tested ${testedAt} and ${safeResult}`}
-                            </span>
-                          </td>
-                        </tr>
-                      )}
+                      {hasFailedTest && (() => {
+                        const fullText = `↳ Tested ${testedAt} and ${safeResult}`;
+                        const displayText = fullText.length > 200 ? `${fullText.slice(0, 200)}…` : fullText;
+                        return (
+                          <tr className="bg-pink-50">
+                            <td colSpan={7} className="px-4 pt-1 pb-1 text-[11px] text-gray-600 italic">
+                              <span className="block whitespace-normal break-words" title={fullText}>
+                                {displayText}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })()}
                     </React.Fragment>
                   );
                 })}
@@ -9173,10 +9336,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       {/* Model Modal */}
       {showModelModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col">
             <div className="flex justify-between items-center p-4 border-b">
               <h3 className="text-lg font-bold text-gray-900">
-                {editingModel ? 'Edit Model' : 'Create Model'}
+                {editingModel
+                  ? 'Edit Model'
+                  : isOpenRouterImport
+                    ? 'Add Model from OpenRouter'
+                    : 'Create Model'}
               </h3>
               <button
                 onClick={() => setShowModelModal(false)}
@@ -9188,18 +9355,57 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 </svg>
               </button>
             </div>
-            <div className="p-4 space-y-4">
+            <div className="p-4 space-y-4 overflow-y-auto flex-1">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Model ID</label>
-                <input
-                  type="text"
-                  value={modelForm.model_id}
-                  onChange={(e) => setModelForm({ ...modelForm, model_id: e.target.value })}
-                  disabled={!!editingModel}
-                  placeholder="e.g., gemini-1.5-pro, gpt-4o, claude-3.5-sonnet"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-gray-700">Model ID</label>
+                  {isOpenRouterImport && (
+                    <a
+                      href="https://openrouter.ai/models"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs font-medium text-purple-700 hover:text-purple-900 hover:underline"
+                    >
+                      Browse OpenRouter Models ↗
+                    </a>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={modelForm.model_id}
+                    onChange={(e) => setModelForm({ ...modelForm, model_id: e.target.value })}
+                    disabled={!!editingModel}
+                    placeholder={isOpenRouterImport ? 'e.g., openai/gpt-5, anthropic/claude-3.5-sonnet' : 'e.g., gemini-1.5-pro, gpt-4o, claude-3.5-sonnet'}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
+                  />
+                  {isOpenRouterImport && !editingModel && (
+                    <button
+                      type="button"
+                      onClick={handleFetchOpenRouterMetadata}
+                      disabled={isFetchingOpenRouter || !modelForm.model_id.trim()}
+                      className="px-3 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:opacity-60 whitespace-nowrap"
+                    >
+                      {isFetchingOpenRouter ? 'Fetching…' : 'Fetch from OpenRouter'}
+                    </button>
+                  )}
+                </div>
+                {isOpenRouterImport && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Enter the full OpenRouter model ID (vendor/model), then click Fetch to prefill the form.
+                  </p>
+                )}
               </div>
+              {openRouterContext && (
+                <div className="rounded-lg border border-purple-200 bg-purple-50 p-3 text-sm text-gray-700">
+                  {openRouterContext.context_length != null && (
+                    <p><span className="font-semibold">Context window:</span> {openRouterContext.context_length.toLocaleString()} tokens</p>
+                  )}
+                  {openRouterContext.description && (
+                    <p className="mt-1 text-xs text-gray-600 line-clamp-4 whitespace-pre-wrap">{openRouterContext.description}</p>
+                  )}
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
                 <input
@@ -9210,58 +9416,123 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Input Cost</label>
-                  <input
-                    type="number"
-                    step="0.0001"
-                    value={modelForm.input_cost}
-                    onChange={(e) => setModelForm({ ...modelForm, input_cost: e.target.value })}
-                    placeholder="per 1K tokens"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  />
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Vendor</label>
+                  <select
+                    value={modelForm.vendor}
+                    onChange={(e) => setModelForm({ ...modelForm, vendor: e.target.value })}
+                    disabled={!!editingModel}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
+                  >
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="google">Google</option>
+                    <option value="openrouter">OpenRouter</option>
+                  </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Output Cost</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Model Type</label>
+                  <select
+                    value={modelForm.type}
+                    onChange={(e) => setModelForm({ ...modelForm, type: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="regular">regular</option>
+                    <option value="reasoning">reasoning</option>
+                    <option value="hybrid">hybrid</option>
+                    <option value="vision">vision</option>
+                    <option value="code">code</option>
+                    <option value="other">other</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Release Date</label>
                   <input
-                    type="number"
-                    step="0.0001"
-                    value={modelForm.output_cost}
-                    onChange={(e) => setModelForm({ ...modelForm, output_cost: e.target.value })}
-                    placeholder="per 1K tokens"
+                    type="date"
+                    value={modelForm.release_date}
+                    onChange={(e) => setModelForm({ ...modelForm, release_date: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
                 </div>
               </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Temperature (non-reasoning models)</label>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                max="2"
-                value={modelForm.temperature}
-                onChange={(e) => setModelForm({ ...modelForm, temperature: e.target.value })}
-                placeholder="e.g., 0.7"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Reasoning Effort (o1 models)</label>
-              <select
-                value={modelForm.reasoning_effort}
-                onChange={(e) => setModelForm({ ...modelForm, reasoning_effort: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="">(none)</option>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-              </select>
-            </div>
-          </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">CPM Input ($/M tokens)</label>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={modelForm.cpm_input}
+                    onChange={(e) => setModelForm({ ...modelForm, cpm_input: e.target.value })}
+                    placeholder="e.g., 2.50"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">CPM Input Cache</label>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={modelForm.cpm_input_cache}
+                    onChange={(e) => setModelForm({ ...modelForm, cpm_input_cache: e.target.value })}
+                    placeholder="cache read $/M"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">CPM Output ($/M tokens)</label>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={modelForm.cpm_output}
+                    onChange={(e) => setModelForm({ ...modelForm, cpm_output: e.target.value })}
+                    placeholder="e.g., 10.00"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Supported Parameters
+                  <span className="ml-2 text-xs text-gray-500 font-normal">(JSON array — populated automatically from OpenRouter)</span>
+                </label>
+                <textarea
+                  value={modelForm.supported_parameters}
+                  onChange={(e) => setModelForm({ ...modelForm, supported_parameters: e.target.value })}
+                  rows={3}
+                  placeholder='e.g., ["temperature","top_p","max_tokens"]'
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Default Parameters
+                  <span className="ml-2 text-xs text-gray-500 font-normal">(JSON object — vendor recommended defaults)</span>
+                </label>
+                <textarea
+                  value={modelForm.default_parameters}
+                  onChange={(e) => setModelForm({ ...modelForm, default_parameters: e.target.value })}
+                  rows={3}
+                  placeholder='e.g., {"temperature": 0.7}'
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Parameter Settings (Overrides)
+                  <span className="ml-2 text-xs text-gray-500 font-normal">(JSON object — admin overrides applied at call time)</span>
+                </label>
+                <textarea
+                  value={modelForm.parameter_settings}
+                  onChange={(e) => setModelForm({ ...modelForm, parameter_settings: e.target.value })}
+                  rows={3}
+                  placeholder='e.g., {"temperature": 0.3, "top_p": 0.9}'
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  These override defaults and are filtered to keys listed in supported_parameters at call time.
+                </p>
+              </div>
               <div className="flex flex-col gap-2">
                 <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
                   <input
@@ -9295,7 +9566,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 disabled={isSavingModel}
                 className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
               >
-                {isSavingModel ? 'Saving...' : editingModel ? 'Save Changes' : 'Create Model'}
+                {isSavingModel ? 'Saving...' : editingModel ? 'Save Changes' : isOpenRouterImport ? 'Save Model' : 'Create Model'}
               </button>
             </div>
           </div>
