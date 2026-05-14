@@ -7763,6 +7763,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
         <div className="flex items-center gap-4">
           <a
+            href="#/case-writer"
+            className="text-sm font-medium text-blue-600 hover:text-blue-800 p-2 rounded-md hover:bg-blue-50 transition-colors"
+          >
+            Case Writer
+          </a>
+          <a
             href="#"
             onClick={(e) => {
               e.preventDefault();

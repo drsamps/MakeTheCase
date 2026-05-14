@@ -20,8 +20,10 @@ let adminAuthToken: string | null = localStorage.getItem('admin_auth_token');
 let studentAuthToken: string | null = localStorage.getItem('student_auth_token');
 
 // Determine current context based on URL hash
+// Case Writer is instructor/admin-authenticated, so it shares the admin token.
 function isAdminContext(): boolean {
-  return window.location.hash === '#/admin' || window.location.hash.startsWith('#/admin');
+  const h = window.location.hash;
+  return h === '#/admin' || h.startsWith('#/admin') || h.startsWith('#/case-writer');
 }
 
 // Get the appropriate token for the current context

@@ -12,6 +12,7 @@ import MessageInput from './components/MessageInput';
 import Evaluation from './components/Evaluation';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
+import CaseWriterShell from './components/caseWriter/CaseWriterShell';
 import ResizablePanes from './components/ResizablePanes';
 import ScenarioSelector from './components/ScenarioSelector';
 import ChatTimer from './components/ChatTimer';
@@ -107,7 +108,7 @@ const App: React.FC = () => {
   
   // View mode state
   const [isReady, setIsReady] = useState(false);
-  const [view, setView] = useState<'student' | 'admin' | 'evaluation'>('student');
+  const [view, setView] = useState<'student' | 'admin' | 'evaluation' | 'case-writer'>('student');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [sessionUser, setSessionUser] = useState<any>(null);
   const [viewingEvaluationId, setViewingEvaluationId] = useState<string | null>(null);
@@ -263,9 +264,13 @@ const App: React.FC = () => {
 
         // Use hash-based routing for robust SPA navigation.
         // Fallback to query param for AI Studio Preview compatibility.
-        if (window.location.hash === '#/admin' || urlParams.get('view') === 'admin') {
+        const hash = window.location.hash;
+        if (hash === '#/admin' || hash.startsWith('#/admin') || urlParams.get('view') === 'admin') {
             setView('admin');
             setIsAdminAuthenticated(!!session && session.user?.role === 'admin');
+        } else if (hash === '#/case-writer' || hash.startsWith('#/case-writer')) {
+            setView('case-writer');
+            setIsAdminAuthenticated(!!session && (session.user?.role === 'admin' || session.user?.role === 'instructor'));
         } else {
             setView('student');
         }
@@ -1565,6 +1570,13 @@ const App: React.FC = () => {
   if (view === 'admin') {
     if (isAdminAuthenticated) {
       return <Dashboard onLogout={handleAdminLogout} user={sessionUser as any} />;
+    }
+    return <Login onLoginSuccess={handleAdminLogin} />;
+  }
+
+  if (view === 'case-writer') {
+    if (isAdminAuthenticated) {
+      return <CaseWriterShell onLogout={handleAdminLogout} user={sessionUser as any} />;
     }
     return <Login onLoginSuccess={handleAdminLogin} />;
   }

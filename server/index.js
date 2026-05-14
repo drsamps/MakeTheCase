@@ -40,6 +40,7 @@ import instructorsRoutes from './routes/instructors.js';
 import rubricsRoutes from './routes/rubrics.js';
 import rubricCriteriaRoutes from './routes/rubricCriteria.js';
 import logsRoutes from './routes/logs.js';
+import caseWriterRoutes from './routes/caseWriter.js';
 
 // Load environment variables
 // Use absolute path to ensure .env.local is found regardless of working directory
@@ -95,7 +96,9 @@ console.log('✓ Semesters, courses, and instructors routes mounted');
 app.use('/api/rubrics', rubricsRoutes); // Rubric management
 app.use('/api/rubric-criteria', rubricCriteriaRoutes); // Rubric criteria management
 app.use('/api/logs', logsRoutes); // AI prompt logging management
+app.use('/api/case-writer', caseWriterRoutes); // Case Writer authoring tool
 console.log('✓ Rubrics routes mounted');
+console.log('✓ Case Writer routes mounted at /api/case-writer');
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

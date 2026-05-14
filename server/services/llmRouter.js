@@ -543,6 +543,7 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
   const temperature = runtimeParams.temperature ?? config.temperature ?? null;
   const reasoningEffort = runtimeParams.reasoning_effort ?? config.reasoning_effort ?? null;
   const reasoningModel = isOpenAIReasoning(modelId);
+  const overrideMaxTokens = Number.isFinite(config.maxTokens) ? Number(config.maxTokens) : null;
 
   if (provider === 'openrouter') {
     const mergedParams = { ...runtimeParams };
@@ -554,7 +555,7 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
       modelId,
       messages,
       runtimeParams: mergedParams,
-      maxTokens: 16000,
+      maxTokens: overrideMaxTokens ?? 16000,
     });
     return {
       text,
@@ -568,12 +569,16 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
 
   if (provider === 'openai') {
     if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on the server');
+    const tokenCap = overrideMaxTokens ?? 16000;
     const payload = {
       model: modelId,
       messages: [
         { role: 'user', content: prompt },
       ],
-      max_tokens: 16000, // OpenAI GPT-4 supports higher limits for detailed outlines
+      // gpt-5 / o-series reasoning models reject `max_tokens` and require `max_completion_tokens`.
+      ...(reasoningModel
+        ? { max_completion_tokens: tokenCap }
+        : { max_tokens: tokenCap }),
     };
     if (!reasoningModel && temperature !== null && temperature !== undefined) {
       payload.temperature = Number(temperature);
@@ -615,7 +620,7 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
       },
       body: JSON.stringify({
         model: modelId,
-        max_tokens: 8192, // Increased for detailed case outlines (Claude supports up to 8192)
+        max_tokens: overrideMaxTokens ?? 8192, // Claude supports up to 8192 by default
         messages: [
           { role: 'user', content: [{ type: 'text', text: prompt }] },
         ],
@@ -638,7 +643,7 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
     model: modelId,
     contents: prompt,
     config: {
-      maxOutputTokens: 8192, // Gemini supports up to 8192 tokens for detailed outlines
+      maxOutputTokens: overrideMaxTokens ?? 8192,
       ...(temperature !== null && temperature !== undefined ? { temperature: Number(temperature) } : {}),
       topP: 0.9,
     },

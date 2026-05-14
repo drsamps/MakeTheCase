@@ -16,6 +16,8 @@ npm run server:watch   # Backend with nodemon auto-restart
 npm run build          # Build frontend for production
 npm run create-admin   # Create admin: node server/scripts/create-admin.js email password
 npm run seed-malawis   # Seed sample case data
+npm run migrate        # Apply all pending SQL migrations (tracked in schema_migrations table)
+npm run migrate:dry    # List pending migrations without applying them
 ```
 
 ### Windows Shell Commands - NUL Device Note
@@ -85,7 +87,10 @@ fetch('/api/courses', { ... })
 The `getApiBaseUrl()` function returns `/api` in development and `/makethecase/api` in production.
 
 ### Database Migrations
-Run migrations in order after initial schema. Use the dev credentials (user: `claudecode@localhost`, password: `fordevonly`).
+
+**Preferred:** use `npm run migrate` (script at `server/scripts/run-pending-migrations.js`). It tracks applied files in a `schema_migrations` table, runs only pending `NNN_*.sql` files in numeric order with per-file timing, stops on first failure, and exits non-zero if anything failed. Flags: `--dry-run`, `--only NNN`, `--force`, `--mark-applied` (record existing files as applied without running — use once when bootstrapping the tracker against an existing database).
+
+For one-off direct application, use the dev credentials (user: `claudecode@localhost`, password: `fordevonly`).
 
 **Database naming:**
 - **Development:** `ceochat_prod_copy` (local dev server)
@@ -168,6 +173,16 @@ Cache-optimized: static content (case, teaching note) placed first for LLM promp
 
 ### Conversation Flow States
 Defined in `types.ts` as `ConversationPhase` enum: PRE_CHAT → CHATTING → feedback phases → EVALUATION_LOADING → EVALUATING.
+
+### Case Writer (AI-assisted case authoring)
+Instructor-facing wizard that turns a teaching principle into a published case + scenario. Pipeline: Source Material → Brief → Scenarios → Blueprint → Student Case → Teaching Note → Publish → Export.
+
+- **Markdown-first outputs.** All generation prompts (`case_writer.teaching_brief`, `case_blueprint`, `student_case_draft`, `teaching_note`) emit markdown directly. Only `scenario_generation` keeps a JSON wrapper (`[{title, industry, markdown}]`) for the picker UI. Markdown is stored as `JSON.stringify(markdownString)` in the existing JSON columns on `case_writer_projects`; `asMarkdown(value)` in `server/routes/caseWriter.js` unwraps on read.
+- **Source materials ground every step.** Approved rows from `case_writer_references` are joined and injected as `{source_materials}` into every generator prompt. Helper: `loadSourceMaterials(projectId)`. Reference uploads (`POST /projects/:id/references/upload`) store extracted text directly in `case_writer_references.content` — they intentionally bypass `case_files` to avoid the FK to `cases.case_id`.
+- **Publish-time fields** live in dedicated columns (`publish_protagonist`, `publish_chat_question`, `publish_arguments_for`, `publish_arguments_against`) on `case_writer_projects`, not inside the teaching-note JSON. `POST /projects/:id/extract-publish-fields` runs the `case_writer.publish_field_extraction` prompt to auto-fill them.
+- **Model selection.** Project-level `default_model_id` + per-call override. Resolution order: explicit override → `project.default_model_id` → `resolveDefault()`. The OpenAI branch in `generateOutlineWithLLM` uses `isOpenAIReasoning(modelId)` to switch between `max_tokens` and `max_completion_tokens` (required by `gpt-5*` and `o1*`). All generators thread `maxTokens: 32000` to prevent silent truncation.
+- **UI shell.** `components/caseWriter/CaseWriterProject.tsx` is a two-column wizard: left rail (`StepRail.tsx`) with status dots (`○ ◉ ● ▶`), right pane swaps per active step. Each markdown step uses `MarkdownStepEditor.tsx` (textarea + `MarkdownPreview.tsx` side-by-side) with Generate / model-override / Save controls above. Tailwind CDN does **not** include `@tailwindcss/typography`, so `MarkdownPreview` provides explicit `react-markdown` component overrides instead of relying on `prose`.
+- **Full change log:** `docs/Case-Writer-Updates-2026-05-13.md`.
 
 ## Access Points
 - Student view: `http://localhost:3000/`
