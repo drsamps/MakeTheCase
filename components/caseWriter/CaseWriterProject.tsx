@@ -4,6 +4,8 @@ import {
   CaseWriterProject as ProjectData,
   ScenarioCard,
   BoundaryValidationResult,
+  CaseVersion,
+  CaseSize,
   coerceMarkdown
 } from '../../services/caseWriter/api';
 import { getApiBaseUrl } from '../../services/apiClient';
@@ -12,10 +14,14 @@ import StepRail, { RailItem, RailStatus } from './StepRail';
 import MarkdownStepEditor from './MarkdownStepEditor';
 import ScenariosList from './ScenariosList';
 import SourceMaterial from './SourceMaterial';
+import CaseVersionsPanel from './CaseVersionsPanel';
+import PromptInfoButton from './PromptInfoButton';
+import { useGenerationTimer } from './useGenerationTimer';
 
 interface Props {
   projectId: string;
   onBack: () => void;
+  user?: { full_name?: string; email?: string; role?: string } | null;
 }
 
 interface ModelOption {
@@ -57,7 +63,8 @@ const STEP_DESCRIPTIONS: Record<PaneKey, string> = {
   export: 'Download case + teaching note as Markdown, Word, or PDF.'
 };
 
-const CaseWriterProject: React.FC<Props> = ({ projectId, onBack }) => {
+const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
+  const isAdmin = user?.role === 'admin';
   const [project, setProject] = useState<ProjectData | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -85,10 +92,18 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack }) => {
   const [pubFor, setPubFor] = useState('');
   const [pubAgainst, setPubAgainst] = useState('');
   const [extractingPublish, setExtractingPublish] = useState(false);
+  const [extractModelOverride, setExtractModelOverride] = useState<string>('');
+  const [showExtractModelPicker, setShowExtractModelPicker] = useState(false);
+  const extractTimerText = useGenerationTimer(extractingPublish);
 
   const [validation, setValidation] = useState<BoundaryValidationResult | null>(null);
   const [validating, setValidating] = useState(false);
   const [publishing, setPublishing] = useState(false);
+
+  const [versions, setVersions] = useState<CaseVersion[]>([]);
+  // The most recent size used when generating the student case. Defaults to
+  // 'regular'; pre-fills the "Save as version" modal.
+  const [lastStudentSize, setLastStudentSize] = useState<CaseSize>('regular');
 
   async function reload() {
     setLoading(true);
@@ -114,7 +129,7 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack }) => {
     setPubAgainst(data.publish_arguments_against || '');
   }
 
-  useEffect(() => { reload(); }, [projectId]);
+  useEffect(() => { reload(); reloadVersions(); }, [projectId]);
 
   useEffect(() => {
     (async () => {
@@ -254,24 +269,32 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack }) => {
     await reload();
   }
 
-  async function generateStudent(overrideModelId?: string) {
+  async function generateStudent(overrideModelId?: string, opts?: Record<string, string>) {
     if (!project?.case_blueprint) { setErr('Generate the blueprint first'); return; }
+    const length = (opts?.length as CaseSize | undefined) || 'regular';
     setBusyFor('student', true); setErr(null);
-    const { data, error } = await caseWriterApi.generateStudentCase(projectId, { model_id: overrideModelId });
+    const { data, error } = await caseWriterApi.generateStudentCase(projectId, { model_id: overrideModelId, length });
     setBusyFor('student', false);
     if (error || !data) { setErr(error?.message || 'Student case generation failed'); return; }
     setStudentDraft(data.markdown);
+    setLastStudentSize(length);
     await reload();
   }
 
-  async function generateTeaching(overrideModelId?: string) {
+  async function generateTeaching(overrideModelId?: string, opts?: Record<string, string>) {
     if (!project?.student_case) { setErr('Generate the student case first'); return; }
+    const format = (opts?.format as 'brief' | 'standard' | 'detailed' | undefined) || 'standard';
     setBusyFor('teaching', true); setErr(null);
-    const { data, error } = await caseWriterApi.generateTeachingNote(projectId, { model_id: overrideModelId });
+    const { data, error } = await caseWriterApi.generateTeachingNote(projectId, { model_id: overrideModelId, format });
     setBusyFor('teaching', false);
     if (error || !data) { setErr(error?.message || 'Teaching note generation failed'); return; }
     setTeachingDraft(data.markdown);
     await reload();
+  }
+
+  async function reloadVersions() {
+    const { data } = await caseWriterApi.listVersions(projectId);
+    if (data) setVersions(data);
   }
 
   async function runValidate() {
@@ -288,7 +311,9 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack }) => {
       return;
     }
     setExtractingPublish(true); setErr(null);
-    const { data, error } = await caseWriterApi.extractPublishFields(projectId);
+    const { data, error } = await caseWriterApi.extractPublishFields(projectId, {
+      model_id: extractModelOverride || undefined
+    });
     setExtractingPublish(false);
     if (error || !data) { setErr(error?.message || 'Extract failed'); return; }
     setPubProtagonist(data.protagonist || '');
@@ -483,6 +508,7 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack }) => {
                 onError={setErr}
                 models={models}
                 projectDefaultModelId={project.default_model_id}
+                isAdmin={isAdmin}
               />
             </div>
           )}
@@ -500,6 +526,10 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack }) => {
               generateDisabledReason={project.teaching_principle ? null : 'Set teaching principle in Overview'}
               models={models}
               projectDefaultModelId={project.default_model_id}
+              promptUse="case_writer.teaching_brief"
+              isAdmin={isAdmin}
+              tweakStep="brief"
+              projectId={projectId}
             />
           )}
 
@@ -529,6 +559,7 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack }) => {
                 models={models}
                 projectDefaultModelId={project.default_model_id}
                 dirty={scenariosDirty}
+                isAdmin={isAdmin}
               />
             </div>
           )}
@@ -546,6 +577,10 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack }) => {
               generateDisabledReason={project.selected_scenario ? null : 'Select a scenario first'}
               models={models}
               projectDefaultModelId={project.default_model_id}
+              promptUse="case_writer.case_blueprint"
+              isAdmin={isAdmin}
+              tweakStep="blueprint"
+              projectId={projectId}
             />
           )}
 
@@ -562,6 +597,32 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack }) => {
               generateDisabledReason={project.case_blueprint ? null : 'Generate the blueprint first'}
               models={models}
               projectDefaultModelId={project.default_model_id}
+              generateOptions={[{
+                key: 'length',
+                label: 'Size',
+                defaultValue: 'regular',
+                options: [
+                  { value: 'story_problem', label: 'Story-problem' },
+                  { value: 'mini',          label: 'Mini-Case' },
+                  { value: 'abridged',      label: 'Abridged Case' },
+                  { value: 'regular',       label: 'Regular Case' },
+                  { value: 'expanded',      label: 'Expanded Case' }
+                ]
+              }]}
+              promptUse="case_writer.student_case_draft"
+              isAdmin={isAdmin}
+              tweakStep="student_case"
+              projectId={projectId}
+              topAccessory={
+                <CaseVersionsPanel
+                  projectId={projectId}
+                  versions={versions}
+                  workingDraft={studentDraft}
+                  currentSize={lastStudentSize}
+                  onReload={reloadVersions}
+                  onLoadedFromVersion={(text) => { setStudentDraft(text); reload(); }}
+                />
+              }
             />
           )}
 
@@ -578,6 +639,20 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack }) => {
               generateDisabledReason={project.student_case ? null : 'Generate the student case first'}
               models={models}
               projectDefaultModelId={project.default_model_id}
+              generateOptions={[{
+                key: 'format',
+                label: 'Format',
+                defaultValue: 'standard',
+                options: [
+                  { value: 'brief',    label: 'Brief (1–2 pages)' },
+                  { value: 'standard', label: 'Standard (4–6 pages)' },
+                  { value: 'detailed', label: 'Detailed (8+ pages)' }
+                ]
+              }]}
+              promptUse="case_writer.teaching_note"
+              isAdmin={isAdmin}
+              tweakStep="teaching_note"
+              projectId={projectId}
             />
           )}
 
@@ -587,14 +662,45 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack }) => {
                 <h2 className="text-lg font-semibold text-gray-900">Publish</h2>
                 <p className="text-sm text-gray-600 mt-1">{STEP_DESCRIPTIONS.publish}</p>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={autoFillPublish}
                   disabled={extractingPublish || !project.student_case || !project.teaching_note}
-                  className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
+                  className={`px-3 py-1.5 text-sm font-semibold rounded disabled:opacity-50 disabled:cursor-not-allowed ${
+                    extractingPublish
+                      ? 'bg-green-500 text-white animate-pulse cursor-wait'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  }`}
                 >
-                  {extractingPublish ? 'Extracting…' : 'Auto-fill from case & teaching note'}
+                  {extractingPublish
+                    ? `Extracting… ${extractTimerText}`
+                    : 'Auto-fill from case & teaching note'}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setShowExtractModelPicker(s => !s)}
+                  title="Choose a different model for this extraction"
+                  className="text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  ⚙ {extractModelOverride
+                    ? extractModelOverride
+                    : (project.default_model_id ? `default: ${project.default_model_id}` : 'model')}
+                </button>
+                {showExtractModelPicker && models.length > 0 && (
+                  <select
+                    value={extractModelOverride}
+                    onChange={(e) => setExtractModelOverride(e.target.value)}
+                    className="text-xs px-2 py-1 border border-gray-300 rounded"
+                  >
+                    <option value="">(use project default)</option>
+                    {models.map(m => (
+                      <option key={m.model_id} value={m.model_id}>
+                        {m.display_name || m.model_id}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <PromptInfoButton use="case_writer.publish_field_extraction" isAdmin={isAdmin} />
                 <button
                   onClick={runValidate}
                   disabled={validating || !project.student_case}

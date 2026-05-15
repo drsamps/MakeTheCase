@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { caseWriterApi, CaseWriterReference } from '../../services/caseWriter/api';
 import { useGenerationTimer } from './useGenerationTimer';
+import PromptInfoButton from './PromptInfoButton';
 
 interface ModelOption {
   model_id: string;
@@ -13,6 +14,7 @@ interface Props {
   onChange?: () => void;
   models?: ModelOption[];
   projectDefaultModelId?: string | null;
+  isAdmin?: boolean;
 }
 
 const TYPE_LABEL: Record<string, string> = {
@@ -22,7 +24,7 @@ const TYPE_LABEL: Record<string, string> = {
   saved_framework: 'Saved framework'
 };
 
-const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models = [], projectDefaultModelId = null }) => {
+const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models = [], projectDefaultModelId = null, isAdmin = false }) => {
   const [refs, setRefs] = useState<CaseWriterReference[]>([]);
   const [loading, setLoading] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -118,7 +120,9 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
         <p className="text-sm text-gray-600">
           Optional. Approved references are passed to every step's prompt to ground the generated content.
         </p>
-        <div className="relative">
+        <div className="flex items-center gap-2">
+          <PromptInfoButton use="case_writer.reference_summary" isAdmin={isAdmin} />
+          <div className="relative">
           <button
             type="button"
             onClick={() => setAddMenuOpen(o => !o)}
@@ -136,6 +140,7 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
               </label>
             </div>
           )}
+          </div>
         </div>
       </div>
 

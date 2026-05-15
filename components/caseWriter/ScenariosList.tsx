@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import MarkdownPreview from './MarkdownPreview';
 import { ScenarioCard } from '../../services/caseWriter/api';
 import { useGenerationTimer } from './useGenerationTimer';
+import PromptInfoButton from './PromptInfoButton';
 
 interface ModelOption {
   model_id: string;
@@ -20,6 +21,7 @@ interface Props {
   models?: ModelOption[];
   projectDefaultModelId?: string | null;
   dirty: boolean;
+  isAdmin?: boolean;
 }
 
 const ScenariosList: React.FC<Props> = ({
@@ -33,7 +35,8 @@ const ScenariosList: React.FC<Props> = ({
   generateDisabledReason,
   models = [],
   projectDefaultModelId = null,
-  dirty
+  dirty,
+  isAdmin = false
 }) => {
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(0);
@@ -74,10 +77,10 @@ const ScenariosList: React.FC<Props> = ({
           Count:
           <input
             type="number"
-            min={3}
+            min={1}
             max={5}
             value={count}
-            onChange={(e) => setCount(Math.max(3, Math.min(5, Number(e.target.value) || 4)))}
+            onChange={(e) => setCount(Math.max(1, Math.min(5, Number(e.target.value) || 4)))}
             className="ml-1 w-14 px-1 py-0.5 border border-gray-300 rounded text-sm"
           />
         </label>
@@ -100,6 +103,7 @@ const ScenariosList: React.FC<Props> = ({
             ))}
           </select>
         )}
+        <PromptInfoButton use="case_writer.scenario_generation" isAdmin={isAdmin} />
         <button
           type="button"
           disabled={!dirty}

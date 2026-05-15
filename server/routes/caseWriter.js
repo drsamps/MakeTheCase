@@ -575,6 +575,186 @@ router.get('/projects/:id/revisions', async (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
+// Case versions — saved snapshots of the student case with size + notes.
+// Versioning is additive: case_writer_projects.student_case is the working
+// draft, and rows in case_versions are immutable text snapshots a user has
+// saved under a name (with their own notes).
+// ----------------------------------------------------------------------------
+
+const CASE_SIZE_VALUES = ['story_problem', 'mini', 'abridged', 'regular', 'expanded'];
+
+function countWords(text) {
+  if (!text) return 0;
+  const trimmed = String(text).trim();
+  if (!trimmed) return 0;
+  return trimmed.split(/\s+/).length;
+}
+
+router.get('/projects/:id/versions', async (req, res) => {
+  try {
+    const { project, forbidden } = await loadProject(req.params.id, req);
+    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (!project) return fail(res, 404, 'Project not found');
+
+    const [rows] = await pool.execute(
+      `SELECT case_version_id, project_id, case_size, version_name, version_notes,
+              model_id, word_count, version_created, version_updated
+       FROM case_versions WHERE project_id = ?
+       ORDER BY version_created DESC`,
+      [req.params.id]
+    );
+    ok(res, rows);
+  } catch (err) {
+    console.error('[caseWriter] list versions error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
+router.post('/projects/:id/versions', async (req, res) => {
+  try {
+    const { project, forbidden } = await loadProject(req.params.id, req);
+    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (!project) return fail(res, 404, 'Project not found');
+
+    const caseText = project.student_case || '';
+    if (!caseText.trim()) {
+      return fail(res, 400, 'Cannot save an empty case version. Generate or paste case content first.');
+    }
+
+    const { version_name, version_notes, case_size, model_id } = req.body || {};
+    if (!version_name || !version_name.trim()) {
+      return fail(res, 400, 'version_name is required');
+    }
+    const size = CASE_SIZE_VALUES.includes(case_size) ? case_size : 'regular';
+
+    const versionId = uuidv4();
+    const wordCount = countWords(caseText);
+
+    await pool.execute(
+      `INSERT INTO case_versions
+         (case_version_id, project_id, case_size, case_text, version_name,
+          version_notes, model_id, word_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        versionId,
+        req.params.id,
+        size,
+        caseText,
+        version_name.trim(),
+        version_notes || null,
+        model_id || null,
+        wordCount
+      ]
+    );
+
+    const [rows] = await pool.execute(
+      `SELECT case_version_id, project_id, case_size, version_name, version_notes,
+              model_id, word_count, version_created, version_updated
+       FROM case_versions WHERE case_version_id = ?`,
+      [versionId]
+    );
+    ok(res, rows[0]);
+  } catch (err) {
+    console.error('[caseWriter] create version error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
+router.patch('/projects/:id/versions/:vid', async (req, res) => {
+  try {
+    const { project, forbidden } = await loadProject(req.params.id, req);
+    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (!project) return fail(res, 404, 'Project not found');
+
+    const updates = [];
+    const params = [];
+    if (typeof req.body.version_name === 'string') {
+      const trimmed = req.body.version_name.trim();
+      if (!trimmed) return fail(res, 400, 'version_name cannot be empty');
+      updates.push('version_name = ?');
+      params.push(trimmed);
+    }
+    if ('version_notes' in req.body) {
+      updates.push('version_notes = ?');
+      params.push(req.body.version_notes || null);
+    }
+    if (typeof req.body.case_size === 'string') {
+      if (!CASE_SIZE_VALUES.includes(req.body.case_size)) {
+        return fail(res, 400, `case_size must be one of ${CASE_SIZE_VALUES.join(', ')}`);
+      }
+      updates.push('case_size = ?');
+      params.push(req.body.case_size);
+    }
+    if (updates.length === 0) return fail(res, 400, 'No editable fields supplied');
+
+    params.push(req.params.vid, req.params.id);
+    const [result] = await pool.execute(
+      `UPDATE case_versions SET ${updates.join(', ')} WHERE case_version_id = ? AND project_id = ?`,
+      params
+    );
+    if (result.affectedRows === 0) return fail(res, 404, 'Version not found');
+
+    const [rows] = await pool.execute(
+      `SELECT case_version_id, project_id, case_size, version_name, version_notes,
+              model_id, word_count, version_created, version_updated
+       FROM case_versions WHERE case_version_id = ?`,
+      [req.params.vid]
+    );
+    ok(res, rows[0]);
+  } catch (err) {
+    console.error('[caseWriter] patch version error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
+router.delete('/projects/:id/versions/:vid', async (req, res) => {
+  try {
+    const { project, forbidden } = await loadProject(req.params.id, req);
+    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (!project) return fail(res, 404, 'Project not found');
+
+    const [result] = await pool.execute(
+      'DELETE FROM case_versions WHERE case_version_id = ? AND project_id = ?',
+      [req.params.vid, req.params.id]
+    );
+    if (result.affectedRows === 0) return fail(res, 404, 'Version not found');
+    ok(res, { deleted: true });
+  } catch (err) {
+    console.error('[caseWriter] delete version error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
+// Copy a saved version's text back into the project's working draft. Snapshots
+// whatever was in the working draft first via case_writer_revisions, so the
+// user can recover the pre-load text from the existing revisions table.
+router.post('/projects/:id/versions/:vid/load', async (req, res) => {
+  try {
+    const { project, forbidden } = await loadProject(req.params.id, req);
+    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (!project) return fail(res, 404, 'Project not found');
+
+    const [rows] = await pool.execute(
+      'SELECT case_text FROM case_versions WHERE case_version_id = ? AND project_id = ?',
+      [req.params.vid, req.params.id]
+    );
+    if (rows.length === 0) return fail(res, 404, 'Version not found');
+
+    if (project.student_case) {
+      await recordRevision(req.params.id, 'student_case', project.student_case || '', req.user.id);
+    }
+    await pool.execute(
+      'UPDATE case_writer_projects SET student_case = ? WHERE project_id = ?',
+      [rows[0].case_text, req.params.id]
+    );
+    ok(res, { student_case: rows[0].case_text });
+  } catch (err) {
+    console.error('[caseWriter] load version error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
+// ----------------------------------------------------------------------------
 // Generation: teaching brief (markdown)
 // ----------------------------------------------------------------------------
 
@@ -663,7 +843,7 @@ router.post('/projects/:id/generate/scenarios', async (req, res) => {
 
     let count = Number.parseInt(requestedCount, 10);
     if (!Number.isFinite(count)) count = 4;
-    count = Math.max(3, Math.min(5, count));
+    count = Math.max(1, Math.min(5, count));
 
     if (project.scenario_options) {
       await recordRevision(req.params.id, 'scenarios', asJson(project.scenario_options), req.user.id);
@@ -805,10 +985,14 @@ router.post('/projects/:id/generate/blueprint', async (req, res) => {
 // ----------------------------------------------------------------------------
 
 const LENGTH_PRESETS = {
-  mini:     'Mini case, about 500 to 1000 words',
-  standard: 'Standard case, about 2000 to 4000 words',
-  extended: 'Extended case, about 4000 to 7500 words'
+  story_problem: 'Story-problem, about 200 to 500 words, no exhibits, a single short scenario',
+  mini:          'Mini case, about 500 to 1000 words, 1 to 2 exhibits',
+  abridged:      'Abridged case, about 1000 to 2000 words, 1 to 2 exhibits',
+  regular:       'Regular case, about 2000 to 4000 words, normal exhibits',
+  expanded:      'Expanded case, about 4000 to 7500 words, generous exhibits'
 };
+// Back-compat aliases — older clients (and any existing API consumers) keep working.
+const LENGTH_ALIASES = { standard: 'regular', extended: 'expanded' };
 
 router.post('/projects/:id/generate/student-case', async (req, res) => {
   try {
@@ -824,7 +1008,8 @@ router.post('/projects/:id/generate/student-case', async (req, res) => {
     }
 
     const { model_id: requestedModelId, length, revision_hint } = req.body || {};
-    const lengthKey = LENGTH_PRESETS[length] ? length : 'standard';
+    const aliasedLength = LENGTH_ALIASES[length] || length;
+    const lengthKey = LENGTH_PRESETS[aliasedLength] ? aliasedLength : 'regular';
     const lengthTarget = LENGTH_PRESETS[lengthKey];
 
     if (project.student_case) {
@@ -931,8 +1116,12 @@ router.post('/projects/:id/generate/teaching-note', async (req, res) => {
       }
     });
 
-    const markdown = stripMarkdownFence(text);
-    if (!markdown) return fail(res, 502, 'LLM returned an empty response');
+    const rawMarkdown = stripMarkdownFence(text);
+    if (!rawMarkdown) return fail(res, 502, 'LLM returned an empty response');
+
+    const titleLine = `# Teaching note for: ${project.title || 'Untitled case'}\n\n`;
+    const alreadyTitled = /^#\s+Teaching note for:/i.test(rawMarkdown.trimStart());
+    const markdown = alreadyTitled ? rawMarkdown : titleLine + rawMarkdown;
 
     await pool.execute(
       'UPDATE case_writer_projects SET teaching_note = ? WHERE project_id = ?',
@@ -1549,6 +1738,109 @@ router.post('/projects/:id/revise', async (req, res) => {
     });
   } catch (err) {
     console.error('[caseWriter] revise error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Tweak (free-form natural-language revision, no persistence)
+//
+// POST /projects/:id/tweak
+// Body: { step, current_value, instruction, model_id? }
+//   step:           one of brief | blueprint | student_case | teaching_note
+//   current_value:  the markdown the user is looking at (may be unsaved edits)
+//   instruction:    free-text instruction from the user
+//   model_id:       optional override
+// Returns: { revised, meta } — DOES NOT write to the project. The client renders
+// a side-by-side diff and only persists if the user clicks Save after applying.
+// ----------------------------------------------------------------------------
+
+const TWEAK_STEPS = new Set(['brief', 'blueprint', 'student_case', 'teaching_note']);
+
+router.post('/projects/:id/tweak', async (req, res) => {
+  try {
+    const { project, forbidden } = await loadProject(req.params.id, req);
+    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (!project) return fail(res, 404, 'Project not found');
+
+    const { step, current_value: currentValue, instruction, model_id: requestedModelId } = req.body || {};
+    if (!step || !TWEAK_STEPS.has(step)) {
+      return fail(res, 400, `step must be one of: ${[...TWEAK_STEPS].join(', ')}`);
+    }
+    if (typeof currentValue !== 'string' || !currentValue.trim()) {
+      return fail(res, 400, 'current_value is required and cannot be empty');
+    }
+    if (typeof instruction !== 'string' || !instruction.trim()) {
+      return fail(res, 400, 'instruction is required');
+    }
+
+    const sourceMaterials = await loadSourceMaterials(req.params.id);
+
+    // Build a per-step BACKGROUND block. We deliberately omit whichever
+    // upstream artifact is being tweaked (its content is already in
+    // {current_value}), so the model never sees the same text twice with two
+    // different labels — that's what caused the prompt scaffolding to leak
+    // into Blueprint tweak output (migration 045 → 046).
+    const backgroundBlocks = [];
+    if (step !== 'brief' && project.learning_brief) {
+      backgroundBlocks.push(`## Learning brief\n${project.learning_brief}`);
+    }
+    if (step !== 'blueprint' && project.case_blueprint) {
+      backgroundBlocks.push(`## Case blueprint\n${project.case_blueprint}`);
+    }
+    // The student case grounds teaching-note tweaks; everywhere else it's
+    // either the section under edit (step='student_case') or downstream from
+    // the section under edit (so should not influence the tweak).
+    if (step === 'teaching_note' && project.student_case) {
+      backgroundBlocks.push(`## Student case\n${project.student_case}`);
+    }
+    if (sourceMaterials) {
+      backgroundBlocks.push(`## Source materials (approved references)\n${sourceMaterials}`);
+    }
+    const background = backgroundBlocks.length
+      ? backgroundBlocks.join('\n\n---\n\n')
+      : '(no supporting context available)';
+
+    const activePrompt = await getActivePrompt('case_writer.content_tweak');
+    const renderedPrompt = renderPrompt(activePrompt.prompt_template, {
+      step,
+      instruction,
+      current_value: currentValue,
+      background,
+      // Back-compat: the migration-045 template referenced these slots
+      // individually. If somebody downgrades the active prompt, render still
+      // works. New template (migration 046) ignores them.
+      learning_brief: (project.learning_brief || ''),
+      case_blueprint: (project.case_blueprint || ''),
+      source_materials: sourceMaterials || '(none)'
+    });
+
+    const model = await resolveModel(requestedModelId, project.default_model_id);
+    const { text, meta } = await generateOutlineWithLLM({
+      modelId: model.model_id,
+      vendor: model.vendor,
+      prompt: renderedPrompt,
+      config: {
+        temperature: model.temperature,
+        reasoning_effort: model.reasoning_effort,
+        maxTokens: 32000
+      }
+    });
+
+    const revised = stripMarkdownFence(text);
+    if (!revised) return fail(res, 502, 'LLM returned an empty response');
+
+    ok(res, {
+      revised,
+      meta: {
+        model_id: model.model_id,
+        vendor: model.vendor,
+        prompt_version: activePrompt.version,
+        provider: meta?.provider || null
+      }
+    });
+  } catch (err) {
+    console.error('[caseWriter] tweak error:', err);
     fail(res, 500, err.message);
   }
 });

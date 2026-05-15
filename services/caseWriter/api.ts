@@ -128,6 +128,20 @@ export interface PublishFields {
   arguments_against: string;
 }
 
+export type CaseSize = 'story_problem' | 'mini' | 'abridged' | 'regular' | 'expanded';
+
+export interface CaseVersion {
+  case_version_id: string;
+  project_id: string;
+  case_size: CaseSize;
+  version_name: string;
+  version_notes: string | null;
+  model_id: string | null;
+  word_count: number | null;
+  version_created: string;
+  version_updated: string;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers exposed to UI: unwrap a JSON-stringified markdown column value.
 // ---------------------------------------------------------------------------
@@ -188,7 +202,7 @@ export const caseWriterApi = {
 
   generateStudentCase: (
     id: string,
-    body: { model_id?: string; length?: 'mini' | 'standard' | 'extended'; revision_hint?: string } = {}
+    body: { model_id?: string; length?: CaseSize; revision_hint?: string } = {}
   ) =>
     req<{ markdown: string; meta: GenerateMeta }>(`/projects/${id}/generate/student-case`, {
       method: 'POST',
@@ -214,6 +228,20 @@ export const caseWriterApi = {
     }
   ) =>
     req<{ step: string; command: string; revised: any; meta: GenerateMeta }>(`/projects/${id}/revise`, {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }),
+
+  tweakContent: (
+    id: string,
+    body: {
+      step: 'brief' | 'blueprint' | 'student_case' | 'teaching_note';
+      current_value: string;
+      instruction: string;
+      model_id?: string;
+    }
+  ) =>
+    req<{ revised: string; meta: GenerateMeta }>(`/projects/${id}/tweak`, {
       method: 'POST',
       body: JSON.stringify(body)
     }),
@@ -314,6 +342,30 @@ export const caseWriterApi = {
       return { data: null, error: { message: (err as Error).message } };
     }
   },
+
+  // -------------------------- Case versions -----------------------
+
+  listVersions: (id: string) =>
+    req<CaseVersion[]>(`/projects/${id}/versions`),
+
+  createVersion: (
+    id: string,
+    body: { version_name: string; version_notes?: string; case_size: CaseSize; model_id?: string }
+  ) =>
+    req<CaseVersion>(`/projects/${id}/versions`, { method: 'POST', body: JSON.stringify(body) }),
+
+  updateVersion: (
+    id: string,
+    vid: string,
+    patch: { version_name?: string; version_notes?: string | null; case_size?: CaseSize }
+  ) =>
+    req<CaseVersion>(`/projects/${id}/versions/${vid}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+
+  deleteVersion: (id: string, vid: string) =>
+    req<{ deleted: true }>(`/projects/${id}/versions/${vid}`, { method: 'DELETE' }),
+
+  loadVersion: (id: string, vid: string) =>
+    req<{ student_case: string }>(`/projects/${id}/versions/${vid}/load`, { method: 'POST' }),
 
   publish: (id: string, body: { skip_validation?: boolean; validation_model_id?: string } = {}) =>
     req<{ case_id: string; case_title: string; validation: BoundaryValidationResult | null; files: string[] }>(
