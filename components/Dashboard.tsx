@@ -2,7 +2,7 @@
 
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { api, getApiBaseUrl } from '../services/apiClient'; // Dashboard with tiles/list view toggle
+import { api, getApiBaseUrl, getImpersonationId, setImpersonationId } from '../services/apiClient'; // Dashboard with tiles/list view toggle
 import { detectProvider } from '../services/llmService';
 import { PromptManager } from './PromptManager';
 import { SettingsManager } from './SettingsManager';
@@ -12,6 +12,10 @@ import { CaseFilesManager } from './CaseFilesManager';
 import { CacheMetrics } from './CacheMetrics';
 import { ScenarioManager } from './ScenarioManager';
 import InstructorManager from './InstructorManager';
+import ShadowOwnershipManager from './ShadowOwnershipManager';
+import ApiKeysManager from './ApiKeysManager';
+import TeamsManager from './TeamsManager';
+import VisibilityPicker from './ui/VisibilityPicker';
 import StudentManager from './StudentManager';
 import DashboardHome from './DashboardHome';
 import Analytics from './Analytics';
@@ -46,7 +50,7 @@ type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live';
 type ResultsSubTab = 'responses' | 'positions' | 'section-results';
-type AdminSubTab = 'instructors' | 'settings' | 'models' | 'personas' | 'prompts' | 'admins' | 'logging';
+type AdminSubTab = 'instructors' | 'settings' | 'models' | 'personas' | 'prompts' | 'admins' | 'logging' | 'shadow' | 'apikeys' | 'teams';
 type RubricsSubTab = 'criteria' | 'rubrics';
 
 const isEnabledFlag = (value: unknown): boolean =>
@@ -162,6 +166,8 @@ interface Case {
   files?: { id: number; filename: string; file_type: string }[];
   scenarios_count?: number;
   scenarios?: { id: number; scenario_name: string; enabled: boolean; sort_order: number }[];
+  visibility?: 'private' | 'team' | 'public';
+  team_shares?: { team_id: number; access_level?: 'view' | 'edit' }[];
 }
 
 interface SectionStats {
@@ -282,11 +288,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Rubric modal state
   const [showRubricModal, setShowRubricModal] = useState(false);
   const [editingRubric, setEditingRubric] = useState<any>(null);
-  const [rubricForm, setRubricForm] = useState({
+  const [rubricForm, setRubricForm] = useState<{
+    rubric_name: string;
+    description: string;
+    criteria_ids: string[];
+    additional_prompt: string;
+    visibility: 'private' | 'team' | 'public';
+    team_shares: { team_id: number; access_level?: 'view' | 'edit' }[];
+  }>({
     rubric_name: '',
     description: '',
-    criteria_ids: [] as string[],
+    criteria_ids: [],
     additional_prompt: '',
+    visibility: 'private',
+    team_shares: [],
   });
   const [isSavingRubric, setIsSavingRubric] = useState(false);
 
@@ -322,9 +337,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [showSemesterInstructorsModal, setShowSemesterInstructorsModal] = useState(false);
   const [selectedSemesterForInstructors, setSelectedSemesterForInstructors] = useState<any | null>(null);
   const [allInstructors, setAllInstructors] = useState<any[]>([]);
+  // Admin impersonation: which instructor (if any) is the admin currently
+  // "viewing as". null = no impersonation (full admin vision). Persisted via
+  // localStorage by setImpersonationId so it survives reloads.
+  const [impersonateId, setImpersonateIdState] = useState<string | null>(getImpersonationId());
   const [isLoadingInstructors, setIsLoadingInstructors] = useState(false);
 
   const [sectionStats, setSectionStats] = useState<SectionStat[]>([]);
+  const [sectionReadiness, setSectionReadiness] = useState<Record<string, { ready: boolean; missing: string[] }>>({});
   const [selectedSection, setSelectedSection] = useState<SectionStat | null>(null);
   const [resultsInitialSectionId, setResultsInitialSectionId] = useState<string | undefined>(undefined);
   const [resultsInitialCaseId, setResultsInitialCaseId] = useState<string | undefined>(undefined);
@@ -447,7 +467,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     protagonist_initials: '',
     chat_topic: '',
     chat_question: '',
-    enabled: true
+    enabled: true,
+    visibility: 'private' as 'private' | 'team' | 'public',
+    team_shares: [] as { team_id: number; access_level?: 'view' | 'edit' }[]
   });
   const [isSavingCase, setIsSavingCase] = useState(false);
   const [goToScenariosAfterCreate, setGoToScenariosAfterCreate] = useState(false);
@@ -596,13 +618,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [isLoadingPersonas, setIsLoadingPersonas] = useState(false);
   const [showPersonaModal, setShowPersonaModal] = useState(false);
   const [editingPersona, setEditingPersona] = useState<any | null>(null);
-  const [personaForm, setPersonaForm] = useState({
+  const [personaForm, setPersonaForm] = useState<{
+    persona_id: string;
+    persona_name: string;
+    description: string;
+    instructions: string;
+    enabled: boolean;
+    sort_order: number;
+    visibility: 'private' | 'team' | 'public';
+    team_shares: { team_id: number; access_level?: 'view' | 'edit' }[];
+  }>({
     persona_id: '',
     persona_name: '',
     description: '',
     instructions: '',
     enabled: true,
-    sort_order: 0
+    sort_order: 0,
+    visibility: 'private',
+    team_shares: []
   });
   const [isSavingPersona, setIsSavingPersona] = useState(false);
 
@@ -1076,6 +1109,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
     setSectionStats(stats);
     setIsLoadingSections(false);
+
+    // Fire-and-forget readiness probe so the section list can show a green/red
+    // dot indicating whether each section's instructor has the required API keys.
+    (async () => {
+      try {
+        const token = localStorage.getItem('admin_auth_token');
+        const res = await fetch(`${getApiBaseUrl()}/sections/readiness/bulk`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
+        if (!res.ok) return;
+        const json = await res.json();
+        if (json?.data) setSectionReadiness(json.data);
+      } catch { /* non-fatal — dot just won't render */ }
+    })();
   }, []);
 
   const fetchStudentDetails = useCallback(async (sectionId: string, caseIdFilter: string | null = null) => {
@@ -1480,6 +1527,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         description: rubric.description || '',
         criteria_ids: Array.isArray(rubric.criteria_ids) ? rubric.criteria_ids : [],
         additional_prompt: rubric.additional_prompt || '',
+        visibility: (rubric.visibility || 'private') as 'private' | 'team' | 'public',
+        team_shares: Array.isArray(rubric.team_shares) ? rubric.team_shares : [],
       });
     } else {
       setEditingRubric(null);
@@ -1488,6 +1537,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         description: '',
         criteria_ids: [],
         additional_prompt: '',
+        visibility: 'private',
+        team_shares: [],
       });
     }
     setShowRubricModal(true);
@@ -1518,6 +1569,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       if (result.error) {
         alert(`Error: ${result.error.message}`);
       } else {
+        const savedId = result.data?.rubric_id || editingRubric?.rubric_id;
+        if (savedId) {
+          await fetch(`${getApiBaseUrl()}/rubrics/${savedId}/visibility`, {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            },
+            body: JSON.stringify({
+              visibility: rubricForm.visibility,
+              team_ids: rubricForm.team_shares
+            })
+          });
+        }
         setShowRubricModal(false);
         fetchRubrics();
       }
@@ -1708,7 +1773,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         description: persona.description || '',
         instructions: persona.instructions,
         enabled: persona.enabled,
-        sort_order: persona.sort_order || 0
+        sort_order: persona.sort_order || 0,
+        visibility: (persona.visibility || 'private') as 'private' | 'team' | 'public',
+        team_shares: Array.isArray(persona.team_shares) ? persona.team_shares : []
       });
     } else {
       setEditingPersona(null);
@@ -1718,7 +1785,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         description: '',
         instructions: '',
         enabled: true,
-        sort_order: personasList.length
+        sort_order: personasList.length,
+        visibility: 'private',
+        team_shares: []
       });
     }
     setShowPersonaModal(true);
@@ -1748,6 +1817,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const result = await response.json();
       if (!response.ok || result.error) {
         throw new Error(result.error?.message || 'Failed to save persona');
+      }
+
+      // Visibility is set via a dedicated endpoint so the share-table can be
+      // managed atomically. Fire it whenever the form had a visibility set;
+      // backend is idempotent.
+      const savedId = editingPersona?.persona_id || personaForm.persona_id;
+      if (savedId && personaForm.visibility) {
+        await fetch(`${getApiBaseUrl()}/personas/${savedId}/visibility`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({
+            visibility: personaForm.visibility,
+            team_ids: personaForm.team_shares
+          })
+        });
       }
 
       setShowPersonaModal(false);
@@ -1856,7 +1943,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         protagonist_initials: caseItem.protagonist_initials || '',
         chat_topic: caseItem.chat_topic || '',
         chat_question: caseItem.chat_question || '',
-        enabled: caseItem.enabled
+        enabled: caseItem.enabled,
+        visibility: (caseItem.visibility as any) || 'private',
+        team_shares: caseItem.team_shares || []
       });
     } else {
       setEditingCase(null);
@@ -1868,7 +1957,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         protagonist_initials: '',
         chat_topic: '',
         chat_question: '',
-        enabled: true
+        enabled: true,
+        visibility: 'private',
+        team_shares: []
       });
     }
     setGoToScenariosAfterCreate(false);
@@ -1908,6 +1999,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         });
         if (error) throw new Error(error.message);
       }
+      const savedCaseId = editingCase?.case_id || caseForm.case_id;
+      if (savedCaseId && caseForm.visibility) {
+        try {
+          const token = localStorage.getItem('admin_auth_token');
+          await fetch(`${getApiBaseUrl()}/cases/${encodeURIComponent(savedCaseId)}/visibility`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) },
+            body: JSON.stringify({ visibility: caseForm.visibility, team_ids: caseForm.team_shares })
+          });
+        } catch { /* ignore — visibility is optional */ }
+      }
+
       setShowCaseModal(false);
       fetchCases();
 
@@ -2719,6 +2822,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       >
         <td className="px-4 py-3 whitespace-nowrap">
           <div className="flex items-center gap-2">
+            {!isSynthetic && (() => {
+              const r = sectionReadiness[section.section_id];
+              if (!r) return null;
+              return r.ready ? (
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-full bg-green-500"
+                  title="Ready: instructor API keys configured for all required providers."
+                />
+              ) : (
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-full bg-red-500"
+                  title={`Setup incomplete: missing API key for ${r.missing.join(', ')}. Students cannot chat until the instructor configures keys (or an admin grants use_system_key).`}
+                />
+              );
+            })()}
             <span className={`font-medium ${!section.enabled ? 'text-gray-500' : 'text-gray-900'}`}>
               {section.section_title}
             </span>
@@ -4075,7 +4193,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 <tr key={caseItem.case_id} className={!caseItem.enabled ? 'bg-gray-50 opacity-60' : 'hover:bg-gray-50'}>
                   <td className="px-4 py-3">
                     <div className="text-sm font-medium text-gray-900">{caseItem.case_title}</div>
-                    <div className="text-xs text-gray-400">{caseItem.case_id}</div>
+                    <div className="text-xs text-gray-400">
+                      {caseItem.case_id}
+                      {caseItem.visibility && (
+                        <> ({caseItem.visibility.charAt(0).toUpperCase() + caseItem.visibility.slice(1)} visibility)</>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-700">
                     {caseItem.case_version || <span className="text-gray-400">-</span>}
@@ -4540,25 +4663,33 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     ) : null;
 
   // Render Semesters Tab
-  const renderSemestersTab = () => (
+  const renderSemestersTab = () => {
+    const canEditSemesters = user?.role === 'admin' && Boolean(user?.superuser);
+    return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Semesters</h2>
-          <p className="text-sm text-gray-500">Manage academic semesters and clone setups between terms</p>
+          <p className="text-sm text-gray-500">
+            {canEditSemesters
+              ? 'Manage academic semesters and clone setups between terms'
+              : 'View academic semesters. Only superuser admins can create or edit semesters.'}
+          </p>
         </div>
-        <button
-          onClick={() => {
-            setEditingSemester(null);
-            setShowSemesterModal(true);
-          }}
-          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
-          </svg>
-          New Semester
-        </button>
+        {canEditSemesters && (
+          <button
+            onClick={() => {
+              setEditingSemester(null);
+              setShowSemesterModal(true);
+            }}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+            </svg>
+            New Semester
+          </button>
+        )}
       </div>
 
       {renderDismissibleErrorBanner('mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg')}
@@ -4590,49 +4721,51 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     )}
                   </span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      setSelectedSemesterForInstructors(semester);
-                      setShowSemesterInstructorsModal(true);
-                    }}
-                    className="px-3 py-1.5 text-xs font-medium text-purple-600 hover:text-purple-700 hover:bg-purple-50 rounded"
-                  >
-                    Instructors
-                  </button>
-                  {!semester.is_current && (
+                {canEditSemesters && (
+                  <div className="flex items-center gap-2">
                     <button
-                      onClick={() => handleSetCurrentSemester(semester.id)}
-                      className="px-3 py-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded"
+                      onClick={() => {
+                        setSelectedSemesterForInstructors(semester);
+                        setShowSemesterInstructorsModal(true);
+                      }}
+                      className="px-3 py-1.5 text-xs font-medium text-purple-600 hover:text-purple-700 hover:bg-purple-50 rounded"
                     >
-                      Set as Current
+                      Instructors
                     </button>
-                  )}
-                  <button
-                    onClick={() => {
-                      setEditingSemester(semester);
-                      setShowCloneSemesterModal(true);
-                    }}
-                    className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded"
-                  >
-                    Clone
-                  </button>
-                  <button
-                    onClick={() => {
-                      setEditingSemester(semester);
-                      setShowSemesterModal(true);
-                    }}
-                    className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => handleDeleteSemester(semester.id)}
-                    className="px-3 py-1.5 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded"
-                  >
-                    Delete
-                  </button>
-                </div>
+                    {!semester.is_current && (
+                      <button
+                        onClick={() => handleSetCurrentSemester(semester.id)}
+                        className="px-3 py-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded"
+                      >
+                        Set as Current
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        setEditingSemester(semester);
+                        setShowCloneSemesterModal(true);
+                      }}
+                      className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded"
+                    >
+                      Clone
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingSemester(semester);
+                        setShowSemesterModal(true);
+                      }}
+                      className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => handleDeleteSemester(semester.id)}
+                      className="px-3 py-1.5 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -4880,7 +5013,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       )}
     </div>
-  );
+    );
+  };
 
   // Render Course Setup Tab
   const renderCourseSetupTab = () => (
@@ -4914,21 +5048,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
       {selectedSemesterId && (
         <>
-          {/* Create Course Button */}
-          <div className="mb-6">
-            <button
-              onClick={() => {
-                setEditingCourse(null);
-                setShowCourseModal(true);
-              }}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
-              </svg>
-              New Course
-            </button>
-          </div>
+          {/* Create Course Button — admin-only */}
+          {user?.role === 'admin' && (
+            <div className="mb-6">
+              <button
+                onClick={() => {
+                  setEditingCourse(null);
+                  setShowCourseModal(true);
+                }}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+                </svg>
+                New Course
+              </button>
+            </div>
+          )}
 
           {/* Courses List */}
           {isLoadingCourses ? (
@@ -4947,35 +5083,52 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       )}
                       <span className="text-sm text-gray-500 ml-2">
                         • {course.section_count || 0} sections
-                        {course.primary_section_title && (
-                          <span className="text-indigo-600"> • Primary: {course.primary_section_title}</span>
-                        )}
                       </span>
+                      <div className="text-sm mt-1 space-x-3">
+                        {(course as any).primary_instructor_name ? (
+                          <span className="text-emerald-700">
+                            <span className="font-medium">Primary Instructor:</span> {(course as any).primary_instructor_name}
+                          </span>
+                        ) : (
+                          <span className="text-amber-700">
+                            <span className="font-medium">Primary Instructor:</span> <em>not set</em>
+                          </span>
+                        )}
+                        {course.primary_section_title && (
+                          <span className="text-indigo-600">
+                            <span className="font-medium">Template Section:</span> {course.primary_section_title}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => handleSyncCourse(course.id)}
-                        className="px-3 py-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded"
-                        title="Push from primary section to all other sections"
-                      >
-                        Sync
-                      </button>
-                      <button
-                        onClick={() => {
-                          setEditingCourse(course);
-                          setShowCourseModal(true);
-                        }}
-                        className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => handleDeleteCourse(course)}
-                        className="px-3 py-1.5 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded"
-                        title="Delete course"
-                      >
-                        Delete
-                      </button>
+                      {user?.role === 'admin' && (
+                        <>
+                          <button
+                            onClick={() => handleSyncCourse(course.id)}
+                            className="px-3 py-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded"
+                            title="Push from template section to all other sections"
+                          >
+                            Sync
+                          </button>
+                          <button
+                            onClick={() => {
+                              setEditingCourse(course);
+                              setShowCourseModal(true);
+                            }}
+                            className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDeleteCourse(course)}
+                            className="px-3 py-1.5 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded"
+                            title="Delete course"
+                          >
+                            Delete
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                   {course.description && (
@@ -5046,7 +5199,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 course_name: formData.get('course_name'),
                 course_code: formData.get('course_code') || null,
                 description: formData.get('description') || null,
-                sync_scheduling: formData.get('sync_scheduling') === 'on'
+                sync_scheduling: formData.get('sync_scheduling') === 'on',
+                primary_instructor_id: (formData.get('primary_instructor_id') as string) || null,
+                cascade_to_sections: formData.get('cascade_to_sections') === 'on'
               });
             }}>
               <div className="space-y-4">
@@ -5081,6 +5236,41 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Primary Instructor *</label>
+                  <p className="text-xs text-gray-500 mb-1">The instructor who owns this course. Required so student chats can resolve API keys.</p>
+                  <select
+                    name="primary_instructor_id"
+                    defaultValue={editingCourse?.primary_instructor_id || ''}
+                    required
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white"
+                  >
+                    <option value="">Select an instructor...</option>
+                    {allInstructors
+                      .filter((i: any) => i.active && !i.is_system_account)
+                      .map((i: any) => (
+                        <option key={i.id} value={i.id}>
+                          {i.full_name || i.email}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <div className="bg-blue-50 p-3 rounded-lg">
+                  <label className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      name="cascade_to_sections"
+                      defaultChecked
+                      className="rounded mt-0.5"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-gray-700">Also set as primary instructor on all sections in this course</span>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Recommended. Sections need their own <code>primary_instructor_id</code> so student chats can resolve the right API keys. Uncheck only if some sections in this course are owned by different instructors.
+                      </p>
+                    </div>
+                  </label>
+                </div>
                 <div className="bg-gray-50 p-3 rounded-lg">
                   <label className="flex items-start gap-2">
                     <input
@@ -5092,7 +5282,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     <div>
                       <span className="text-sm font-medium text-gray-700">Include case schedules when syncing</span>
                       <p className="text-xs text-gray-500 mt-0.5">
-                        When syncing from the primary section to other sections, also copy the case open/close dates. Uncheck if different sections need different schedules (e.g., different class meeting times).
+                        When syncing from the template section to other sections, also copy the case open/close dates. Uncheck if different sections need different schedules (e.g., different class meeting times).
                       </p>
                     </div>
                   </label>
@@ -7748,8 +7938,45 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     });
   }, [modelsList]);
 
+  // Load instructors once for the admin "View as" picker.
+  useEffect(() => {
+    if (user?.role === 'admin' && allInstructors.length === 0) {
+      fetchAllInstructors();
+    }
+  }, [user, allInstructors.length, fetchAllInstructors]);
+
+  const impersonatedInstructor = useMemo(() => {
+    if (!impersonateId) return null;
+    return allInstructors.find((i: any) => i.id === impersonateId) || null;
+  }, [impersonateId, allInstructors]);
+
+  const applyImpersonation = (id: string | null) => {
+    setImpersonationId(id);
+    setImpersonateIdState(id);
+    // Reload so every cached fetch (cases, sections, rubrics, etc.) re-runs
+    // under the new X-Act-As-Instructor scope.
+    window.location.reload();
+  };
+
   return (
     <div className="flex flex-col h-screen bg-gray-50 text-gray-800 font-sans">
+      {/* Impersonation banner — sticky across the top whenever an admin is
+          viewing as a specific instructor. */}
+      {user?.role === 'admin' && impersonatedInstructor && (
+        <div className="flex-shrink-0 flex items-center justify-between px-6 py-2 bg-yellow-300 border-b border-yellow-500 text-yellow-900 text-sm font-medium">
+          <span>
+            Acting as <strong>{impersonatedInstructor.full_name || impersonatedInstructor.email}</strong>.
+            All reads/writes are scoped to this instructor and audit-logged.
+          </span>
+          <button
+            onClick={() => applyImpersonation(null)}
+            className="ml-4 px-3 py-1 text-xs font-semibold rounded-md bg-yellow-900 text-yellow-50 hover:bg-yellow-800"
+          >
+            Exit impersonation
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <header className="flex-shrink-0 flex justify-between items-center px-6 py-3 bg-white border-b border-gray-200 shadow-sm">
         <div className="flex items-center gap-3">
@@ -7762,6 +7989,41 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           )}
         </div>
         <div className="flex items-center gap-4">
+          {semesters.length > 0 && (
+            <label className="flex items-center gap-2 text-xs font-medium text-gray-600">
+              Semester:
+              <select
+                value={selectedSemesterId || ''}
+                onChange={(e) => setSelectedSemesterId(e.target.value ? Number(e.target.value) : null)}
+                className="px-2 py-1 text-xs border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-blue-500 max-w-[14rem]"
+                title="Filter the dashboard to a specific semester. Defaults to the current semester."
+              >
+                {semesters.map((sem) => (
+                  <option key={sem.id} value={sem.id}>
+                    {sem.semester_name}{sem.is_current ? ' (Current)' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {user?.role === 'admin' && (
+            <label className="flex items-center gap-2 text-xs font-medium text-gray-600">
+              View as:
+              <select
+                value={impersonateId || ''}
+                onChange={(e) => applyImpersonation(e.target.value || null)}
+                className="px-2 py-1 text-xs border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-blue-500 max-w-[14rem]"
+                title="Scope the dashboard to a specific instructor. Useful for impersonating to debug their setup."
+              >
+                <option value="">(self — full admin vision)</option>
+                {allInstructors.filter((i: any) => i.active && !i.is_system_account).map((i: any) => (
+                  <option key={i.id} value={i.id}>
+                    {i.full_name || i.email}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <a
             href="#/case-writer"
             className="text-sm font-medium text-blue-600 hover:text-blue-800 p-2 rounded-md hover:bg-blue-50 transition-colors"
@@ -7958,7 +8220,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
                     <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
                   </svg>
-                  Admin
+                  Admin {user?.superuser ? '*' : ''}
                 </span>
               </button>
             )}
@@ -8186,7 +8448,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  Instructors
+                  Instructors *
                 </button>
               )}
               {hasAccess(user, 'settings') && (
@@ -8198,7 +8460,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  Settings
+                  Settings *
                 </button>
               )}
               {hasAccess(user, 'models') && (
@@ -8210,7 +8472,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  Models
+                  Models *
                 </button>
               )}
               {hasAccess(user, 'personas') && (
@@ -8225,7 +8487,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  Personas
+                  Personas *
                 </button>
               )}
               {hasAccess(user, 'prompts') && (
@@ -8237,7 +8499,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  Prompts
+                  Prompts *
                 </button>
               )}
               {hasAccess(user, 'instructors') && (
@@ -8264,6 +8526,38 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   Logging
                 </button>
               )}
+              {user?.superuser && (
+                <button
+                  onClick={() => setAdminSubTab('shadow')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'shadow'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Shadow-Owned
+                </button>
+              )}
+              <button
+                onClick={() => setAdminSubTab('apikeys')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  adminSubTab === 'apikeys'
+                    ? 'bg-purple-100 text-purple-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                API Keys
+              </button>
+              <button
+                onClick={() => setAdminSubTab('teams')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  adminSubTab === 'teams'
+                    ? 'bg-purple-100 text-purple-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Teams
+              </button>
             </div>
           )}
 
@@ -8351,6 +8645,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <InstructorManager user={user} mode="admins" />
           ) : adminSubTab === 'logging' ? (
             <LoggingManager />
+          ) : adminSubTab === 'shadow' ? (
+            <ShadowOwnershipManager />
+          ) : adminSubTab === 'apikeys' ? (
+            <ApiKeysManager />
+          ) : adminSubTab === 'teams' ? (
+            <TeamsManager />
           ) : null
         ) : primaryTab === 'rubrics' ? (
           <div className="p-6 max-w-7xl mx-auto">
@@ -8781,6 +9081,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         />
                         <p className="text-xs text-gray-500 mt-1">These instructions will be included in the LLM evaluation prompt</p>
                       </div>
+                      <VisibilityPicker
+                        value={rubricForm.visibility}
+                        onChange={v => setRubricForm({ ...rubricForm, visibility: v })}
+                        teamShares={rubricForm.team_shares}
+                        onTeamSharesChange={shares => setRubricForm({ ...rubricForm, team_shares: shares })}
+                        canPublish={Boolean(user?.superuser) || Boolean((user as any)?.can_publish)}
+                      />
                     </div>
                     <div className="mt-6 flex justify-end gap-3">
                       <button
@@ -10050,6 +10357,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   Enabled (available for assignment to sections)
                 </label>
               </div>
+              <VisibilityPicker
+                value={caseForm.visibility}
+                onChange={v => setCaseForm({ ...caseForm, visibility: v })}
+                teamShares={caseForm.team_shares}
+                onTeamSharesChange={shares => setCaseForm({ ...caseForm, team_shares: shares })}
+                canPublish={Boolean(user?.superuser) || Boolean((user as any)?.can_publish)}
+              />
               {!editingCase && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
                   <p className="text-sm text-blue-800">
@@ -10190,6 +10504,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     Enabled (available for selection)
                   </label>
                 </div>
+              </div>
+              <div className="mt-4">
+                <VisibilityPicker
+                  value={personaForm.visibility}
+                  onChange={v => setPersonaForm({ ...personaForm, visibility: v })}
+                  teamShares={personaForm.team_shares}
+                  onTeamSharesChange={shares => setPersonaForm({ ...personaForm, team_shares: shares })}
+                  canPublish={Boolean(user?.superuser) || Boolean((user as any)?.can_publish)}
+                />
               </div>
             </div>
             <div className="flex justify-end gap-2 p-4 border-t bg-gray-50 rounded-b-xl">

@@ -7,6 +7,7 @@ import {
   requireSectionPermission,
   getAccessibleSectionIds
 } from '../middleware/instructorAccess.js';
+import { checkSectionReadiness } from '../services/keyResolver.js';
 
 const router = express.Router();
 
@@ -54,9 +55,12 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
     const params = [];
     const whereClauses = [];
 
-    // Filter by instructor access if not admin
-    if (req.user.role === 'instructor') {
-      const accessibleSectionIds = await getAccessibleSectionIds(req.user.id);
+    // Filter by instructor access (admin without impersonation sees all).
+    const effectiveId = req.user.role === 'instructor'
+      ? req.user.id
+      : (req.user.role === 'admin' && req.effectiveInstructorId ? req.effectiveInstructorId : null);
+    if (effectiveId) {
+      const accessibleSectionIds = await getAccessibleSectionIds(effectiveId);
       if (accessibleSectionIds.length === 0) {
         return res.json({ data: [], error: null });
       }
@@ -206,6 +210,21 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, requireSectionAccess
 
     // Build dynamic update query
     const allowedFields = ['section_title', 'year_term', 'enabled', 'accept_new_students', 'chat_model', 'super_model', 'course_id'];
+    // Per permissions matrix: only admins or the primary instructor may edit
+    // model fields or reassign the course. TAs with section access can only
+    // tune section_title/year_term/enabled/accept_new_students.
+    const primaryOrAdminOnly = new Set(['chat_model', 'super_model', 'course_id']);
+    const isAdmin = req.user.superuser || req.user.role === 'admin';
+    if (!isAdmin && !req.isPrimaryInstructor) {
+      for (const key of Object.keys(updates)) {
+        if (primaryOrAdminOnly.has(key)) {
+          return res.status(403).json({
+            data: null,
+            error: { message: `Only admins or the primary instructor can edit ${key}` }
+          });
+        }
+      }
+    }
     const setClauses = [];
     const params = [];
 
@@ -252,6 +271,49 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, requireSectionAccess
   }
 });
 
+// GET /api/sections/:id/readiness - Is this section ready for students?
+// Returns { ready, missing: [providers], instructor_id }. A section is "ready"
+// when every required provider (chat_model + super_model vendors) has a key
+// resolvable for the section's primary instructor — either an instructor_api_keys
+// row or `use_system_key=1`.
+router.get('/:id/readiness', verifyToken, requireAdminOrInstructor, requireSectionAccess('id'), async (req, res) => {
+  try {
+    const result = await checkSectionReadiness(req.params.id);
+    res.json({ data: result, error: null });
+  } catch (error) {
+    console.error('Error checking section readiness:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/sections/readiness - Bulk readiness for accessible sections.
+// Same shape as :id/readiness but keyed by section_id. Used by the dashboard
+// to render the green/red dot column without N+1 requests.
+router.get('/readiness/bulk', verifyToken, requireAdminOrInstructor, async (req, res) => {
+  try {
+    let ids;
+    if (req.user.role === 'admin' && !req.effectiveInstructorId) {
+      const [rows] = await pool.execute('SELECT section_id FROM sections');
+      ids = rows.map(r => r.section_id);
+    } else {
+      const effectiveId = req.effectiveInstructorId || req.user.id;
+      ids = await getAccessibleSectionIds(effectiveId);
+    }
+    const out = {};
+    for (const sid of ids) {
+      try {
+        out[sid] = await checkSectionReadiness(sid);
+      } catch (_) {
+        out[sid] = { ready: false, missing: ['unknown'], instructorId: null };
+      }
+    }
+    res.json({ data: out, error: null });
+  } catch (error) {
+    console.error('Error bulk checking section readiness:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 // GET /api/sections/:id/students - Get all students enrolled in a section
 router.get('/:id/students', verifyToken, requireAdminOrInstructor, requireSectionAccess('id'), async (req, res) => {
   try {
@@ -279,20 +341,31 @@ router.get('/:id/students', verifyToken, requireAdminOrInstructor, requireSectio
 router.delete('/:id', verifyToken, requireAdminOrInstructor, requireSectionAccess('id'), async (req, res) => {
   try {
     const { id } = req.params;
-    
+
+    // Section deletion is admin/primary-only. requireSectionAccess sets
+    // req.isPrimaryInstructor for primaries; TAs reach here with that flag
+    // unset and must be rejected even when they have can_manage_* TA flags.
+    const isAdmin = req.user.superuser || req.user.role === 'admin';
+    if (!isAdmin && !req.isPrimaryInstructor) {
+      return res.status(403).json({
+        data: null,
+        error: { message: 'Only admins or the primary instructor can delete a section' }
+      });
+    }
+
     // Check if section exists
     const [existing] = await pool.execute(
       'SELECT section_id FROM sections WHERE section_id = ?',
       [id]
     );
-    
+
     if (existing.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Section not found' } });
     }
-    
+
     // Delete the section (students with this section_id will have their section_id set to NULL due to FK constraint)
     await pool.execute('DELETE FROM sections WHERE section_id = ?', [id]);
-    
+
     res.json({ data: { deleted: true }, error: null });
   } catch (error) {
     console.error('Error deleting section:', error);

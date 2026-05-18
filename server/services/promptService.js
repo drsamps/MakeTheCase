@@ -301,14 +301,31 @@ export async function getAllPromptUses() {
   }
 }
 
+// Keys that may NEVER be overlaid per-instructor or per-section. Edits to
+// these always target ('global', ''). Section/instructor reads ignore any
+// non-global rows that might exist for these keys.
+const GLOBAL_ONLY_KEYS = new Set([
+  'log_case_chat_prompts',
+  'log_evaluation_prompts',
+  'max_log_files',
+  'log_with_full_case_context',
+  'default_model_id',
+]);
+function isGlobalOnly(key) {
+  return GLOBAL_ONLY_KEYS.has(key) || key.startsWith('active_prompt_');
+}
+
 /**
- * Get all settings
+ * Get all settings (global scope only).
  * @returns {Promise<Object>} - Settings as key-value object
  */
 export async function getAllSettings() {
   try {
     const [rows] = await pool.execute(
-      'SELECT setting_key, setting_value, description FROM settings ORDER BY setting_key'
+      `SELECT setting_key, setting_value, description
+       FROM settings
+       WHERE scope = 'global' AND scope_id = ''
+       ORDER BY setting_key`
     );
 
     const settings = {};
@@ -326,14 +343,15 @@ export async function getAllSettings() {
 }
 
 /**
- * Get a single setting value
+ * Get a single setting value (global scope).
  * @param {string} key - Setting key
  * @returns {Promise<string|null>} - Setting value or null
  */
 export async function getSetting(key) {
   try {
     const [rows] = await pool.execute(
-      'SELECT setting_value FROM settings WHERE setting_key = ?',
+      `SELECT setting_value FROM settings
+       WHERE setting_key = ? AND scope = 'global' AND scope_id = ''`,
       [key]
     );
 
@@ -344,13 +362,95 @@ export async function getSetting(key) {
 }
 
 /**
- * Update a setting value
- * @param {string} key - Setting key
- * @param {string} value - New setting value
- * @returns {Promise<boolean>} - Success status
+ * Resolve a setting using scope precedence: section → instructor → global.
+ * Global-only keys ignore overlay scopes.
+ *
+ * @param {string} key
+ * @param {{instructorId?: string, sectionId?: string}} ctx
+ * @returns {Promise<string|null>}
  */
-export async function updateSetting(key, value) {
+export async function getSettingForContext(key, ctx = {}) {
+  if (isGlobalOnly(key)) {
+    return await getSetting(key);
+  }
+  const { instructorId, sectionId } = ctx;
+  if (sectionId) {
+    const [rows] = await pool.execute(
+      `SELECT setting_value FROM settings
+       WHERE setting_key = ? AND scope = 'section' AND scope_id = ?`,
+      [key, sectionId]
+    );
+    if (rows.length > 0) return rows[0].setting_value;
+  }
+  if (instructorId) {
+    const [rows] = await pool.execute(
+      `SELECT setting_value FROM settings
+       WHERE setting_key = ? AND scope = 'instructor' AND scope_id = ?`,
+      [key, instructorId]
+    );
+    if (rows.length > 0) return rows[0].setting_value;
+  }
+  return await getSetting(key);
+}
+
+/**
+ * Return a merged settings object for the given context. Each key resolves
+ * to its most-specific overlay value.
+ */
+export async function getMergedSettings(ctx = {}) {
+  const { instructorId, sectionId } = ctx;
+  const out = {};
+  const [globalRows] = await pool.execute(
+    `SELECT setting_key, setting_value, description FROM settings
+     WHERE scope = 'global' AND scope_id = ''`
+  );
+  for (const r of globalRows) {
+    out[r.setting_key] = { value: r.setting_value, description: r.description, source: 'global' };
+  }
+  if (instructorId) {
+    const [iRows] = await pool.execute(
+      `SELECT setting_key, setting_value FROM settings
+       WHERE scope = 'instructor' AND scope_id = ?`,
+      [instructorId]
+    );
+    for (const r of iRows) {
+      if (isGlobalOnly(r.setting_key)) continue;
+      const existing = out[r.setting_key] || {};
+      out[r.setting_key] = { ...existing, value: r.setting_value, source: 'instructor' };
+    }
+  }
+  if (sectionId) {
+    const [sRows] = await pool.execute(
+      `SELECT setting_key, setting_value FROM settings
+       WHERE scope = 'section' AND scope_id = ?`,
+      [sectionId]
+    );
+    for (const r of sRows) {
+      if (isGlobalOnly(r.setting_key)) continue;
+      const existing = out[r.setting_key] || {};
+      out[r.setting_key] = { ...existing, value: r.setting_value, source: 'section' };
+    }
+  }
+  return out;
+}
+
+/**
+ * Update a setting value at the given scope. Defaults to ('global','').
+ * Global-only keys are forced to global scope.
+ *
+ * @param {string} key
+ * @param {string} value
+ * @param {{scope?: 'global'|'instructor'|'section', scopeId?: string}} [opts]
+ */
+export async function updateSetting(key, value, opts = {}) {
   try {
+    let scope = opts.scope || 'global';
+    let scopeId = opts.scopeId || '';
+    if (isGlobalOnly(key)) {
+      scope = 'global';
+      scopeId = '';
+    }
+
     // If it's a prompt setting, validate the prompt exists
     if (key.startsWith('active_prompt_')) {
       const use = key.replace('active_prompt_', '');
@@ -365,8 +465,11 @@ export async function updateSetting(key, value) {
     }
 
     await pool.execute(
-      'UPDATE settings SET setting_value = ?, updated_at = CURRENT_TIMESTAMP WHERE setting_key = ?',
-      [value, key]
+      `INSERT INTO settings (setting_key, scope, scope_id, setting_value)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value),
+                               updated_at = CURRENT_TIMESTAMP`,
+      [key, scope, scopeId, value]
     );
 
     return true;

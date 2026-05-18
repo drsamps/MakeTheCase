@@ -3,11 +3,34 @@ import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { inferPositionsFromChat, shouldInferPositions } from '../services/positionInference.js';
+import { checkSectionReadiness } from '../services/keyResolver.js';
 
 const router = express.Router();
 
 // Valid status values
 const VALID_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'killed', 'completed', 'evaluation_failed'];
+
+// Section IDs an instructor may see chats for: any section they are primary on
+// (directly or via course) OR a TA assignment with can_view_chats=1.
+// Admins (without impersonation) get null = no scope filter.
+async function getChatViewableSectionIds(req) {
+  const isAdmin = req.user.role === 'admin';
+  const scopedInstructorId = req.effectiveInstructorId || (req.user.role === 'instructor' ? req.user.id : null);
+
+  if (isAdmin && !scopedInstructorId) return null; // full vision
+
+  const [rows] = await pool.execute(`
+    SELECT section_id FROM sections WHERE primary_instructor_id = ?
+    UNION
+    SELECT s.section_id FROM sections s
+    JOIN courses c ON s.course_id = c.id
+    WHERE c.primary_instructor_id = ?
+    UNION
+    SELECT section_id FROM instructor_sections
+    WHERE instructor_id = ? AND can_view_chats = 1
+  `, [scopedInstructorId, scopedInstructorId, scopedInstructorId]);
+  return rows.map(r => r.section_id);
+}
 
 // POST /api/case-chats - Create a new chat session
 router.post('/', async (req, res) => {
@@ -19,6 +42,20 @@ router.post('/', async (req, res) => {
         data: null,
         error: { message: 'student_id and case_id are required' }
       });
+    }
+
+    if (section_id) {
+      const readiness = await checkSectionReadiness(section_id);
+      if (!readiness.ready) {
+        return res.status(409).json({
+          data: null,
+          error: {
+            code: 'INSTRUCTOR_SETUP_INCOMPLETE',
+            message: "This section isn't ready yet — your instructor still needs to finish setup. Please check back later.",
+            missing_providers: readiness.missing
+          }
+        });
+      }
     }
 
     const id = uuidv4();
@@ -217,8 +254,11 @@ router.patch('/:id/complete', async (req, res) => {
   }
 });
 
-// GET /api/case-chats - List chats with filters (admin only)
-router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
+// GET /api/case-chats - List chats with filters.
+// Admins (without impersonation) see all chats. Instructors and admins acting
+// as an instructor see chats only from their accessible sections (primary or
+// TA with can_view_chats=1). Empty scope returns an empty list rather than 403.
+router.get('/', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { status, section_id, student_id, case_id } = req.query;
     let { limit = 100, offset = 0 } = req.query;
@@ -226,6 +266,11 @@ router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
     // Ensure limit and offset are valid numbers
     limit = Math.max(1, parseInt(limit) || 100);
     offset = Math.max(0, parseInt(offset) || 0);
+
+    const scopedSectionIds = await getChatViewableSectionIds(req);
+    if (scopedSectionIds && scopedSectionIds.length === 0) {
+      return res.json({ data: [], total: 0, limit, offset, error: null });
+    }
 
     let query = `
       SELECT cc.*,
@@ -240,12 +285,21 @@ router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
     `;
     const params = [];
 
+    if (scopedSectionIds) {
+      query += ` AND cc.section_id IN (${scopedSectionIds.map(() => '?').join(',')})`;
+      params.push(...scopedSectionIds);
+    }
+
     if (status && status !== 'all') {
       query += ' AND cc.status = ?';
       params.push(status);
     }
 
     if (section_id && section_id !== 'all') {
+      // For instructors, the requested section must be in their scope
+      if (scopedSectionIds && !scopedSectionIds.includes(section_id)) {
+        return res.json({ data: [], total: 0, limit, offset, error: null });
+      }
       query += ' AND cc.section_id = ?';
       params.push(section_id);
     }
@@ -271,6 +325,10 @@ router.get('/', verifyToken, requireRole(['admin']), async (req, res) => {
     let countQuery = 'SELECT COUNT(*) as total FROM case_chats cc WHERE 1=1';
     const countParams = [];
 
+    if (scopedSectionIds) {
+      countQuery += ` AND cc.section_id IN (${scopedSectionIds.map(() => '?').join(',')})`;
+      countParams.push(...scopedSectionIds);
+    }
     if (status && status !== 'all') {
       countQuery += ' AND cc.status = ?';
       countParams.push(status);
@@ -706,19 +764,30 @@ router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   }
 });
 
-// POST /api/case-chats/mark-abandoned - Mark old chats as abandoned (for background job)
-router.post('/mark-abandoned', verifyToken, requireRole(['admin']), async (req, res) => {
+// POST /api/case-chats/mark-abandoned - Mark old chats as abandoned (for background job).
+// Replaces a cron. Called whenever a staff dashboard opens the Latest Chats tab.
+// Admins (without impersonation) sweep all chats; instructors and admins acting
+// as an instructor sweep only their accessible sections (no-op if empty scope).
+router.post('/mark-abandoned', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { timeout_minutes = 60 } = req.body;
     const timeout = parseInt(timeout_minutes) || 60;
 
-    const [result] = await pool.query(
-      `UPDATE case_chats
+    const scopedSectionIds = await getChatViewableSectionIds(req);
+    if (scopedSectionIds && scopedSectionIds.length === 0) {
+      return res.json({ data: { affected_rows: 0, message: 'Marked 0 chat(s) as abandoned' }, error: null });
+    }
+
+    let sql = `UPDATE case_chats
        SET status = 'abandoned', end_time = CURRENT_TIMESTAMP
        WHERE status IN ('started', 'in_progress')
-         AND last_activity < DATE_SUB(NOW(), INTERVAL ? MINUTE)`,
-      [timeout]
-    );
+         AND last_activity < DATE_SUB(NOW(), INTERVAL ? MINUTE)`;
+    const params = [timeout];
+    if (scopedSectionIds) {
+      sql += ` AND section_id IN (${scopedSectionIds.map(() => '?').join(',')})`;
+      params.push(...scopedSectionIds);
+    }
+    const [result] = await pool.query(sql, params);
 
     res.json({
       data: {

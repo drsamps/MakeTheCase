@@ -2,21 +2,74 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { pool } from '../db.js';
-import { verifyToken, requireRole } from '../middleware/auth.js';
-import { requirePermission, hasPermission } from '../middleware/permissions.js';
+import { verifyToken } from '../middleware/auth.js';
+import {
+  requireAdminOrInstructor,
+  getAccessibleSectionIds,
+  isPrimaryInstructorForSection,
+  getTAPermissions
+} from '../middleware/instructorAccess.js';
 
 const router = express.Router();
 
-// All routes require authentication
 router.use(verifyToken);
 
-// GET /api/students - Get all students (optionally filter by section_id) - Admin only
-router.get('/', requireRole(['admin']), requirePermission('students'), async (req, res) => {
+function callerInstructorId(req) {
+  if (req.user?.role === 'instructor') return req.user.id;
+  if (req.user?.role === 'admin') return req.effectiveInstructorId || null;
+  return null;
+}
+
+async function canManageStudentsInSection(req, sectionId) {
+  if (req.user.role === 'admin' && !req.effectiveInstructorId) return true;
+  const instructorId = callerInstructorId(req);
+  if (!instructorId) return false;
+  if (await isPrimaryInstructorForSection(instructorId, sectionId)) return true;
+  const perms = await getTAPermissions(instructorId, sectionId);
+  return Boolean(perms?.canManageStudents);
+}
+
+async function studentVisibleToCaller(req, studentId) {
+  if (req.user.role === 'admin' && !req.effectiveInstructorId) return true;
+  const instructorId = callerInstructorId(req);
+  if (!instructorId) return false;
+  const accessibleSectionIds = await getAccessibleSectionIds(instructorId);
+  if (accessibleSectionIds.length === 0) return false;
+  const placeholders = accessibleSectionIds.map(() => '?').join(',');
+  const [rows] = await pool.execute(
+    `SELECT 1
+       FROM students s
+       LEFT JOIN student_sections ss ON ss.student_id = s.id
+      WHERE s.id = ?
+        AND (s.section_id IN (${placeholders}) OR ss.section_id IN (${placeholders}))
+      LIMIT 1`,
+    [studentId, ...accessibleSectionIds, ...accessibleSectionIds]
+  );
+  return rows.length > 0;
+}
+
+// GET /api/students - List students; scoped to accessible sections for instructors
+router.get('/', requireAdminOrInstructor, async (req, res) => {
   try {
     const { section_id } = req.query;
+    const isPureAdmin = req.user.role === 'admin' && !req.effectiveInstructorId;
 
-    // Roll up junction-table memberships per student so callers can compute
-    // "enrolled in section X" via either student_sections OR the legacy students.section_id.
+    let accessibleSectionIds = null;
+    if (!isPureAdmin) {
+      const instructorId = callerInstructorId(req);
+      if (!instructorId) {
+        return res.status(400).json({ data: null, error: { message: 'admins must impersonate an instructor to view students' } });
+      }
+      accessibleSectionIds = await getAccessibleSectionIds(instructorId);
+
+      if (section_id && !accessibleSectionIds.includes(section_id)) {
+        return res.json({ data: [], error: null });
+      }
+      if (accessibleSectionIds.length === 0) {
+        return res.json({ data: [], error: null });
+      }
+    }
+
     let query = `
       SELECT s.id, s.created_at, s.first_name, s.last_name, s.full_name, s.email,
              s.favorite_persona, s.section_id, s.finished_at,
@@ -24,14 +77,26 @@ router.get('/', requireRole(['admin']), requirePermission('students'), async (re
       FROM students s
       LEFT JOIN student_sections ss ON ss.student_id = s.id
     `;
+    const whereClauses = [];
     const params = [];
 
     if (section_id) {
-      query += ` WHERE s.section_id = ?
-                    OR EXISTS (SELECT 1 FROM student_sections ss2 WHERE ss2.student_id = s.id AND ss2.section_id = ?)`;
+      whereClauses.push(`(s.section_id = ?
+                          OR EXISTS (SELECT 1 FROM student_sections ss2
+                                       WHERE ss2.student_id = s.id AND ss2.section_id = ?))`);
       params.push(section_id, section_id);
+    } else if (accessibleSectionIds) {
+      const placeholders = accessibleSectionIds.map(() => '?').join(',');
+      whereClauses.push(`(s.section_id IN (${placeholders})
+                          OR EXISTS (SELECT 1 FROM student_sections ss3
+                                       WHERE ss3.student_id = s.id
+                                         AND ss3.section_id IN (${placeholders})))`);
+      params.push(...accessibleSectionIds, ...accessibleSectionIds);
     }
 
+    if (whereClauses.length > 0) {
+      query += ' WHERE ' + whereClauses.join(' AND ');
+    }
     query += ' GROUP BY s.id, s.created_at, s.first_name, s.last_name, s.full_name, s.email, s.favorite_persona, s.section_id, s.finished_at';
     query += ' ORDER BY s.created_at DESC';
 
@@ -55,9 +120,12 @@ router.get('/', requireRole(['admin']), requirePermission('students'), async (re
   }
 });
 
-// GET /api/students/:id - Get single student - Admin only
-router.get('/:id', requireRole(['admin']), requirePermission('students'), async (req, res) => {
+// GET /api/students/:id - Get single student
+router.get('/:id', requireAdminOrInstructor, async (req, res) => {
   try {
+    if (!(await studentVisibleToCaller(req, req.params.id))) {
+      return res.status(403).json({ data: null, error: { message: 'Forbidden' } });
+    }
     const [rows] = await pool.execute(
       'SELECT id, created_at, first_name, last_name, full_name, email, favorite_persona, section_id, finished_at FROM students WHERE id = ?',
       [req.params.id]
@@ -74,8 +142,8 @@ router.get('/:id', requireRole(['admin']), requirePermission('students'), async 
   }
 });
 
-// POST /api/students - Create new student - Admin only
-router.post('/', requireRole(['admin']), requirePermission('students'), async (req, res) => {
+// POST /api/students - Create new student
+router.post('/', requireAdminOrInstructor, async (req, res) => {
   try {
     const { id, first_name, last_name, full_name, email, password, favorite_persona, section_id } = req.body;
 
@@ -83,15 +151,23 @@ router.post('/', requireRole(['admin']), requirePermission('students'), async (r
       return res.status(400).json({ data: null, error: { message: 'Full name is required' } });
     }
 
+    const isPureAdmin = req.user.role === 'admin' && !req.effectiveInstructorId;
+    if (!isPureAdmin) {
+      if (!section_id) {
+        return res.status(400).json({ data: null, error: { message: 'section_id is required when creating a student as an instructor' } });
+      }
+      if (!(await canManageStudentsInSection(req, section_id))) {
+        return res.status(403).json({ data: null, error: { message: 'You cannot manage students in this section' } });
+      }
+    }
+
     const studentId = id || uuidv4();
 
-    // Check if student already exists
     const [existing] = await pool.execute('SELECT id FROM students WHERE id = ?', [studentId]);
     if (existing.length > 0) {
       return res.status(400).json({ data: null, error: { message: 'Student with this ID already exists' } });
     }
 
-    // Hash password if provided
     let password_hash = null;
     if (password) {
       password_hash = await bcrypt.hash(password, 10);
@@ -102,7 +178,6 @@ router.post('/', requireRole(['admin']), requirePermission('students'), async (r
       [studentId, first_name || '', last_name || '', full_name, email, password_hash, favorite_persona || null, section_id || null]
     );
 
-    // Return the created student
     const [rows] = await pool.execute(
       'SELECT id, created_at, first_name, last_name, full_name, email, favorite_persona, section_id, finished_at FROM students WHERE id = ?',
       [studentId]
@@ -115,30 +190,26 @@ router.post('/', requireRole(['admin']), requirePermission('students'), async (r
   }
 });
 
-// PATCH /api/students/:id - Update student (Admins can update any student, students can update themselves)
+// PATCH /api/students/:id - Admins/instructors can update students they manage; students can update themselves
 router.patch('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
-    const isAdmin = req.user.role === 'admin';
+    const role = req.user.role;
+    const isStaff = role === 'admin' || role === 'instructor';
     const isSelf = req.user.id === id;
 
-    // Students can only update their own records
-    if (!isAdmin && !isSelf) {
+    if (!isStaff && !isSelf) {
       return res.status(403).json({ data: null, error: { message: 'Forbidden' } });
     }
 
-    // Check admin permission if user is admin
-    if (isAdmin) {
-      if (!hasPermission(req.user, 'students')) {
-        return res.status(403).json({ data: null, error: { message: 'Forbidden' } });
-      }
+    if (isStaff && !(await studentVisibleToCaller(req, id))) {
+      return res.status(403).json({ data: null, error: { message: 'Forbidden' } });
     }
 
-    // Define allowed fields based on role
-    const allowedFields = isAdmin
+    const allowedFields = isStaff
       ? ['first_name', 'last_name', 'full_name', 'email', 'favorite_persona', 'section_id', 'finished_at']
-      : ['first_name', 'last_name', 'full_name', 'favorite_persona', 'section_id']; // Students can't change email or finished_at
+      : ['first_name', 'last_name', 'full_name', 'favorite_persona', 'section_id'];
 
     const setClauses = [];
     const params = [];
@@ -150,9 +221,8 @@ router.patch('/:id', async (req, res) => {
       }
     }
 
-    // Handle password separately (admin only)
     if (updates.password) {
-      if (!isAdmin) {
+      if (!isStaff) {
         return res.status(403).json({ data: null, error: { message: 'Students cannot change password via this endpoint' } });
       }
       const password_hash = await bcrypt.hash(updates.password, 10);
@@ -171,7 +241,6 @@ router.patch('/:id', async (req, res) => {
       params
     );
 
-    // Return updated student
     const [rows] = await pool.execute(
       'SELECT id, created_at, first_name, last_name, full_name, email, favorite_persona, section_id, finished_at FROM students WHERE id = ?',
       [id]
@@ -188,18 +257,48 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
-// DELETE /api/students/:id - Delete student - Admin only
-router.delete('/:id', requireRole(['admin']), requirePermission('students'), async (req, res) => {
+// DELETE /api/students/:id - Admins/primary-instructors only
+router.delete('/:id', requireAdminOrInstructor, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check if student exists
+    if (!(await studentVisibleToCaller(req, id))) {
+      return res.status(403).json({ data: null, error: { message: 'Forbidden' } });
+    }
+
+    const isPureAdmin = req.user.role === 'admin' && !req.effectiveInstructorId;
+    if (!isPureAdmin) {
+      // Instructor must be able to manage at least one section the student is in
+      const instructorId = callerInstructorId(req);
+      const accessible = await getAccessibleSectionIds(instructorId);
+      const placeholders = accessible.map(() => '?').join(',');
+      const [studentSections] = await pool.execute(
+        `SELECT s.section_id
+           FROM students st
+           LEFT JOIN student_sections s ON s.student_id = st.id
+          WHERE st.id = ?
+            AND s.section_id IN (${placeholders || 'NULL'})
+          UNION
+          SELECT section_id FROM students WHERE id = ? AND section_id IN (${placeholders || 'NULL'})`,
+        [id, ...accessible, id, ...accessible]
+      );
+      let canManage = false;
+      for (const row of studentSections) {
+        if (await canManageStudentsInSection(req, row.section_id)) {
+          canManage = true;
+          break;
+        }
+      }
+      if (!canManage) {
+        return res.status(403).json({ data: null, error: { message: 'You cannot manage this student' } });
+      }
+    }
+
     const [existing] = await pool.execute('SELECT id FROM students WHERE id = ?', [id]);
     if (existing.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Student not found' } });
     }
 
-    // Delete student
     await pool.execute('DELETE FROM students WHERE id = ?', [id]);
 
     res.json({ data: { success: true }, error: null });
@@ -209,8 +308,8 @@ router.delete('/:id', requireRole(['admin']), requirePermission('students'), asy
   }
 });
 
-// POST /api/students/:id/reset-password - Reset student password - Admin only
-router.post('/:id/reset-password', requireRole(['admin']), requirePermission('students'), async (req, res) => {
+// POST /api/students/:id/reset-password
+router.post('/:id/reset-password', requireAdminOrInstructor, async (req, res) => {
   try {
     const { id } = req.params;
     const { password } = req.body;
@@ -219,7 +318,10 @@ router.post('/:id/reset-password', requireRole(['admin']), requirePermission('st
       return res.status(400).json({ data: null, error: { message: 'Password is required' } });
     }
 
-    // Check if student exists
+    if (!(await studentVisibleToCaller(req, id))) {
+      return res.status(403).json({ data: null, error: { message: 'Forbidden' } });
+    }
+
     const [existing] = await pool.execute('SELECT id FROM students WHERE id = ?', [id]);
     if (existing.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Student not found' } });
@@ -239,10 +341,14 @@ router.post('/:id/reset-password', requireRole(['admin']), requirePermission('st
 // Multi-Section Enrollment Endpoints
 // ============================================================================
 
-// GET /api/students/:id/sections - Get all sections a student is enrolled in - Admin only
-router.get('/:id/sections', requireRole(['admin']), requirePermission('students'), async (req, res) => {
+// GET /api/students/:id/sections
+router.get('/:id/sections', requireAdminOrInstructor, async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (!(await studentVisibleToCaller(req, id))) {
+      return res.status(403).json({ data: null, error: { message: 'Forbidden' } });
+    }
 
     const [rows] = await pool.execute(
       `SELECT ss.section_id, ss.enrolled_at, ss.enrolled_by, ss.is_primary,
@@ -261,8 +367,8 @@ router.get('/:id/sections', requireRole(['admin']), requirePermission('students'
   }
 });
 
-// POST /api/students/:id/sections - Enroll student in a section (instructor use) - Admin only
-router.post('/:id/sections', requireRole(['admin']), requirePermission('students'), async (req, res) => {
+// POST /api/students/:id/sections - Enroll student in a section
+router.post('/:id/sections', requireAdminOrInstructor, async (req, res) => {
   try {
     const { id } = req.params;
     const { section_id, is_primary } = req.body;
@@ -271,19 +377,20 @@ router.post('/:id/sections', requireRole(['admin']), requirePermission('students
       return res.status(400).json({ data: null, error: { message: 'section_id is required' } });
     }
 
-    // Check if student exists
+    if (!(await canManageStudentsInSection(req, section_id))) {
+      return res.status(403).json({ data: null, error: { message: 'You cannot manage students in this section' } });
+    }
+
     const [student] = await pool.execute('SELECT id FROM students WHERE id = ?', [id]);
     if (student.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Student not found' } });
     }
 
-    // Check if section exists
     const [section] = await pool.execute('SELECT section_id FROM sections WHERE section_id = ?', [section_id]);
     if (section.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Section not found' } });
     }
 
-    // Check if already enrolled
     const [existing] = await pool.execute(
       'SELECT id FROM student_sections WHERE student_id = ? AND section_id = ?',
       [id, section_id]
@@ -293,7 +400,6 @@ router.post('/:id/sections', requireRole(['admin']), requirePermission('students
       return res.status(409).json({ data: null, error: { message: 'Student already enrolled in this section' } });
     }
 
-    // If setting as primary, unset other primary sections for this student
     if (is_primary) {
       await pool.execute(
         'UPDATE student_sections SET is_primary = 0 WHERE student_id = ?',
@@ -301,18 +407,15 @@ router.post('/:id/sections', requireRole(['admin']), requirePermission('students
       );
     }
 
-    // Insert enrollment
     await pool.execute(
       'INSERT INTO student_sections (student_id, section_id, enrolled_by, is_primary) VALUES (?, ?, ?, ?)',
       [id, section_id, 'instructor', is_primary ? 1 : 0]
     );
 
-    // If primary, sync to students.section_id for backward compatibility
     if (is_primary) {
       await pool.execute('UPDATE students SET section_id = ? WHERE id = ?', [section_id, id]);
     }
 
-    // Return the enrollment record
     const [rows] = await pool.execute(
       `SELECT ss.section_id, ss.enrolled_at, ss.enrolled_by, ss.is_primary,
               s.section_title, s.year_term
@@ -329,12 +432,15 @@ router.post('/:id/sections', requireRole(['admin']), requirePermission('students
   }
 });
 
-// DELETE /api/students/:id/sections/:sectionId - Remove student from section - Admin only
-router.delete('/:id/sections/:sectionId', requireRole(['admin']), requirePermission('students'), async (req, res) => {
+// DELETE /api/students/:id/sections/:sectionId - Remove student from section
+router.delete('/:id/sections/:sectionId', requireAdminOrInstructor, async (req, res) => {
   try {
     const { id, sectionId } = req.params;
 
-    // Check if enrollment exists
+    if (!(await canManageStudentsInSection(req, sectionId))) {
+      return res.status(403).json({ data: null, error: { message: 'You cannot manage students in this section' } });
+    }
+
     const [existing] = await pool.execute(
       'SELECT id, is_primary FROM student_sections WHERE student_id = ? AND section_id = ?',
       [id, sectionId]
@@ -346,13 +452,11 @@ router.delete('/:id/sections/:sectionId', requireRole(['admin']), requirePermiss
 
     const wasPrimary = existing[0].is_primary;
 
-    // Delete enrollment
     await pool.execute(
       'DELETE FROM student_sections WHERE student_id = ? AND section_id = ?',
       [id, sectionId]
     );
 
-    // If deleted was primary, set another as primary (if any remain)
     if (wasPrimary) {
       const [remaining] = await pool.execute(
         'SELECT section_id FROM student_sections WHERE student_id = ? ORDER BY enrolled_at ASC LIMIT 1',
@@ -366,7 +470,6 @@ router.delete('/:id/sections/:sectionId', requireRole(['admin']), requirePermiss
         );
         await pool.execute('UPDATE students SET section_id = ? WHERE id = ?', [remaining[0].section_id, id]);
       } else {
-        // No sections remain, set section_id to NULL
         await pool.execute('UPDATE students SET section_id = NULL WHERE id = ?', [id]);
       }
     }
@@ -378,13 +481,16 @@ router.delete('/:id/sections/:sectionId', requireRole(['admin']), requirePermiss
   }
 });
 
-// PATCH /api/students/:id/sections/:sectionId - Update enrollment (e.g., set primary) - Admin only
-router.patch('/:id/sections/:sectionId', requireRole(['admin']), requirePermission('students'), async (req, res) => {
+// PATCH /api/students/:id/sections/:sectionId - Update enrollment (e.g., set primary)
+router.patch('/:id/sections/:sectionId', requireAdminOrInstructor, async (req, res) => {
   try {
     const { id, sectionId } = req.params;
     const { is_primary } = req.body;
 
-    // Check if enrollment exists
+    if (!(await canManageStudentsInSection(req, sectionId))) {
+      return res.status(403).json({ data: null, error: { message: 'You cannot manage students in this section' } });
+    }
+
     const [existing] = await pool.execute(
       'SELECT id FROM student_sections WHERE student_id = ? AND section_id = ?',
       [id, sectionId]
@@ -396,7 +502,6 @@ router.patch('/:id/sections/:sectionId', requireRole(['admin']), requirePermissi
 
     if (is_primary !== undefined) {
       if (is_primary) {
-        // Unset other primary sections
         await pool.execute(
           'UPDATE student_sections SET is_primary = 0 WHERE student_id = ?',
           [id]
@@ -408,13 +513,11 @@ router.patch('/:id/sections/:sectionId', requireRole(['admin']), requirePermissi
         [is_primary ? 1 : 0, id, sectionId]
       );
 
-      // Sync to students.section_id
       if (is_primary) {
         await pool.execute('UPDATE students SET section_id = ? WHERE id = ?', [sectionId, id]);
       }
     }
 
-    // Return updated enrollment
     const [rows] = await pool.execute(
       `SELECT ss.section_id, ss.enrolled_at, ss.enrolled_by, ss.is_primary,
               s.section_title, s.year_term
@@ -432,4 +535,3 @@ router.patch('/:id/sections/:sectionId', requireRole(['admin']), requirePermissi
 });
 
 export default router;
-

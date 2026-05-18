@@ -2,6 +2,7 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import { writeAudit } from '../services/auditLog.js';
 
 const router = express.Router();
 
@@ -277,6 +278,8 @@ router.patch('/:id/anonymize', verifyToken, requireRole(['admin']), async (req, 
       [id]
     );
 
+    await writeAudit(req, { action: 'transcript.anonymize', resourceType: 'transcript', resourceId: id });
+
     res.json({ data: rows[0], error: null });
   } catch (error) {
     console.error('Error anonymizing transcript:', error);
@@ -306,6 +309,8 @@ router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
     }
 
     await pool.execute('DELETE FROM transcripts WHERE id = ?', [id]);
+
+    await writeAudit(req, { action: 'transcript.delete', resourceType: 'transcript', resourceId: id });
 
     res.json({ data: { deleted: true }, error: null });
   } catch (error) {

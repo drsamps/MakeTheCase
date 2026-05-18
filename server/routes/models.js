@@ -3,6 +3,8 @@ import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/permissions.js';
 import { chatWithLLM } from '../services/llmRouter.js';
+import { getEffectiveInstructorId } from '../services/resourceAccess.js';
+import { getAvailableProviders } from '../services/keyResolver.js';
 
 const router = express.Router();
 
@@ -56,10 +58,14 @@ async function fetchModelRow(modelId) {
   return rows[0] ? serializeRow(rows[0]) : null;
 }
 
-// GET /api/models - Get all models (optionally filter by enabled)
+// GET /api/models - Get all models (optionally filter by enabled).
+// When the caller is authenticated as an instructor (or admin impersonating
+// one), each row is annotated with `available` indicating whether the caller
+// has a usable API key for that vendor. `available_only=true` filters out
+// rows where !available.
 router.get('/', async (req, res) => {
   try {
-    const { enabled } = req.query;
+    const { enabled, available_only } = req.query;
     let query = `SELECT ${MODEL_FIELDS} FROM models`;
     const params = [];
     if (enabled !== undefined) {
@@ -68,7 +74,25 @@ router.get('/', async (req, res) => {
     }
     query += ' ORDER BY model_name ASC';
     const [rows] = await pool.execute(query, params);
-    res.json({ data: rows.map(serializeRow), error: null });
+
+    // Best-effort: only annotate when we can read instructor identity.
+    let availableSet = null;
+    try {
+      const instructorId = getEffectiveInstructorId(req);
+      if (instructorId !== undefined) {
+        availableSet = await getAvailableProviders(instructorId);
+      }
+    } catch (_) { /* swallow — annotation is optional */ }
+
+    let data = rows.map(serializeRow).map(r => ({
+      ...r,
+      available: availableSet ? availableSet.has(r.vendor) : true,
+    }));
+    if (available_only === 'true' && availableSet) {
+      data = data.filter(r => r.available);
+    }
+
+    res.json({ data, error: null });
   } catch (error) {
     console.error('Error fetching models:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
@@ -396,7 +420,7 @@ router.post(
           systemPrompt,
           history: [],
           message: prompt,
-          config: { temperature: 0.2 },
+          config: { temperature: 0.2, instructorId: getEffectiveInstructorId(req) },
         });
         const text = (result?.text ?? '').trim();
         const passed = Boolean(text) && text.toLowerCase().includes('paris');

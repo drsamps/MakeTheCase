@@ -475,14 +475,16 @@ export async function deleteCriterion(criteriaId) {
  * @returns {Promise<Object>} - Created rubric
  */
 export async function createRubric(data) {
-  const { rubric_name, description, criteria_ids, additional_prompt, created_by } = data;
+  const {
+    rubric_name, description, criteria_ids, additional_prompt,
+    created_by, created_by_type, visibility
+  } = data;
 
   if (!rubric_name || !criteria_ids || criteria_ids.length === 0) {
     throw new Error('Missing required fields: rubric_name, criteria_ids (non-empty array)');
   }
 
   try {
-    // Validate all criteria_ids exist
     const criteria = await getCriteriaForRubric(criteria_ids);
     if (criteria.length !== criteria_ids.length) {
       const foundIds = criteria.map(c => c.criteria_id);
@@ -490,16 +492,20 @@ export async function createRubric(data) {
       throw new Error(`Invalid criteria_ids: ${missingIds.join(', ')}`);
     }
 
-    // Generate prompt and calculate total
     const criteriaPrompt = generateCriteriaPrompt(criteria);
     const totalPoints = calculateTotalPoints(criteria);
-
     const criteriaIdsJson = JSON.stringify(criteria_ids);
 
     const [result] = await pool.execute(
-      `INSERT INTO rubrics (rubric_name, description, criteria_ids, total_points, criteria_prompt, additional_prompt, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [rubric_name, description || null, criteriaIdsJson, totalPoints, criteriaPrompt, additional_prompt || null, created_by || null]
+      `INSERT INTO rubrics (rubric_name, description, criteria_ids, total_points,
+                            criteria_prompt, additional_prompt, created_by,
+                            created_by_type, visibility)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        rubric_name, description || null, criteriaIdsJson, totalPoints,
+        criteriaPrompt, additional_prompt || null, created_by || null,
+        created_by_type || 'admin', visibility || 'private'
+      ]
     );
 
     return await getRubricById(result.insertId);
@@ -621,6 +627,75 @@ export async function deleteRubric(rubricId) {
   } catch (error) {
     throw new Error(`Failed to delete rubric: ${error.message}`);
   }
+}
+
+/**
+ * Clone a rubric for the calling instructor. The new rubric references the
+ * same criteria_ids as the source (no fork of criteria). Visibility resets
+ * to 'private' and the clone is owned by the caller.
+ *
+ * @param {number} sourceRubricId
+ * @param {Object} owner - { created_by, created_by_type, nameSuffix? }
+ * @returns {Promise<Object>} - Newly created rubric
+ */
+export async function cloneRubric(sourceRubricId, owner) {
+  const { created_by, created_by_type, nameSuffix = ' (copy)' } = owner;
+  const source = await getRubricById(sourceRubricId);
+  if (!source) {
+    throw new Error(`Rubric not found: ${sourceRubricId}`);
+  }
+  const criteriaIds = typeof source.criteria_ids === 'string'
+    ? JSON.parse(source.criteria_ids)
+    : source.criteria_ids;
+  return await createRubric({
+    rubric_name: `${source.rubric_name}${nameSuffix}`,
+    description: source.description,
+    criteria_ids: criteriaIds,
+    additional_prompt: source.additional_prompt,
+    created_by,
+    created_by_type,
+    visibility: 'private',
+  });
+}
+
+/**
+ * Clone a criterion. The new criterion has a new criteria_id derived from the
+ * source plus an instructor-scoped suffix to dodge the UNIQUE index.
+ *
+ * @param {string} sourceCriteriaId
+ * @param {Object} owner - { created_by, created_by_type, instructorShort? }
+ * @returns {Promise<Object>} - Newly created criterion (with new criteria_id)
+ */
+export async function cloneCriterion(sourceCriteriaId, owner) {
+  const { created_by, created_by_type, instructorShort = 'me' } = owner;
+  const source = await getCriterionById(sourceCriteriaId);
+  if (!source) {
+    throw new Error(`Criterion not found: ${sourceCriteriaId}`);
+  }
+  // Build a stable, unique criteria_id: <orig>_<instructorShort>_<rand4>
+  const rand4 = Math.random().toString(36).slice(2, 6);
+  const newId = `${sourceCriteriaId}_${instructorShort}_${rand4}`;
+
+  await pool.execute(
+    `INSERT INTO rubric_criteria
+       (criteria_id, name, question_text, max_points, scoring_guide, prompt_text,
+        is_system_default, created_by, created_by_type, visibility, enabled)
+     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'private', 1)`,
+    [
+      newId,
+      source.name + ' (copy)',
+      source.question_text,
+      source.max_points,
+      typeof source.scoring_guide === 'string'
+        ? source.scoring_guide
+        : (source.scoring_guide ? JSON.stringify(source.scoring_guide) : null),
+      source.prompt_text || null,
+      created_by || null,
+      created_by_type || 'instructor',
+    ]
+  );
+
+  return await getCriterionById(newId);
 }
 
 /**

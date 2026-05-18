@@ -9,6 +9,7 @@ import {
   coerceMarkdown
 } from '../../services/caseWriter/api';
 import { getApiBaseUrl } from '../../services/apiClient';
+import VisibilityPicker, { Visibility, TeamShare } from '../ui/VisibilityPicker';
 import ErrorBanner from './ErrorBanner';
 import StepRail, { RailItem, RailStatus } from './StepRail';
 import MarkdownStepEditor from './MarkdownStepEditor';
@@ -86,6 +87,9 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
   const [difficultyDraft, setDifficultyDraft] = useState('');
   const [caseTypeDraft, setCaseTypeDraft] = useState('');
   const [defaultModelDraft, setDefaultModelDraft] = useState('');
+  const [visibilityDraft, setVisibilityDraft] = useState<Visibility>('private');
+  const [teamSharesDraft, setTeamSharesDraft] = useState<TeamShare[]>([]);
+  const [savingVisibility, setSavingVisibility] = useState(false);
 
   const [pubProtagonist, setPubProtagonist] = useState('');
   const [pubQuestion, setPubQuestion] = useState('');
@@ -123,6 +127,9 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     setDifficultyDraft(data.difficulty || '');
     setCaseTypeDraft(data.case_type || '');
     setDefaultModelDraft(data.default_model_id || '');
+    setVisibilityDraft((data.visibility as Visibility) || 'private');
+    // The list endpoint doesn't return team_shares, so we leave the
+    // editor's selection empty until the user picks Team and chooses teams.
     setPubProtagonist(data.publish_protagonist || '');
     setPubQuestion(data.publish_chat_question || '');
     setPubFor(data.publish_arguments_for || '');
@@ -470,6 +477,43 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
                     {models.map(m => <option key={m.model_id} value={m.model_id}>{m.display_name || m.model_id}</option>)}
                   </select>
                 </Field>
+              </div>
+              <div className="border-t pt-4">
+                <VisibilityPicker
+                  value={visibilityDraft}
+                  onChange={setVisibilityDraft}
+                  teamShares={teamSharesDraft}
+                  onTeamSharesChange={setTeamSharesDraft}
+                  canPublish={isAdmin || Boolean((user as any)?.can_publish)}
+                />
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    disabled={savingVisibility || (visibilityDraft === (project?.visibility || 'private') && teamSharesDraft.length === 0)}
+                    onClick={async () => {
+                      setSavingVisibility(true);
+                      try {
+                        const token = localStorage.getItem('admin_auth_token');
+                        const res = await fetch(`${getApiBaseUrl()}/case-writer/projects/${projectId}/visibility`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                          body: JSON.stringify({ visibility: visibilityDraft, team_ids: teamSharesDraft })
+                        });
+                        if (!res.ok) {
+                          const j = await res.json().catch(() => ({}));
+                          setErr(j?.error?.message || 'Failed to set visibility');
+                        } else {
+                          await reload();
+                        }
+                      } finally {
+                        setSavingVisibility(false);
+                      }
+                    }}
+                    className="px-3 py-1.5 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {savingVisibility ? 'Saving…' : 'Save visibility'}
+                  </button>
+                </div>
               </div>
               <div>
                 <button

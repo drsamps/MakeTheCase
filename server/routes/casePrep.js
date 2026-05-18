@@ -14,6 +14,7 @@ import { fileURLToPath } from 'url';
 import { convertFile } from '../services/fileConverter.js';
 import { getActivePrompt, renderPrompt } from '../services/promptService.js';
 import { generateOutlineWithLLM } from '../services/llmRouter.js';
+import { getEffectiveInstructorId } from '../services/resourceAccess.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -225,7 +226,8 @@ router.post('/:caseId/process', verifyToken, requireRole(['admin']), requirePerm
 
       const modelConfig = {
         temperature: models[0].temperature,
-        reasoning_effort: models[0].reasoning_effort
+        reasoning_effort: models[0].reasoning_effort,
+        instructorId: getEffectiveInstructorId(req)
       };
       console.log('[CasePrep] Model config:', modelConfig);
 

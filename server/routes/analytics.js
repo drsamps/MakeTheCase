@@ -1,8 +1,66 @@
 import express from 'express';
 import { pool } from '../db.js';
-import { verifyToken, requireRole } from '../middleware/auth.js';
+import { verifyToken } from '../middleware/auth.js';
+import {
+  requireAdminOrInstructor,
+  getAccessibleSectionIds
+} from '../middleware/instructorAccess.js';
 
 const router = express.Router(); // Position analytics updated to show all defined positions
+
+// Resolve which sections the caller may see analytics for.
+// Returns null when the caller is an admin without impersonation (no scoping).
+// Returns an array of section_ids when scoping applies; an empty array means
+// the caller has zero accessible sections (so queries should short-circuit).
+async function resolveScopedSectionIds(req) {
+  const effectiveId = req.user.role === 'instructor'
+    ? req.user.id
+    : (req.user.role === 'admin' && req.effectiveInstructorId ? req.effectiveInstructorId : null);
+  if (!effectiveId) return null;
+  return await getAccessibleSectionIds(effectiveId);
+}
+
+// Build the WHERE clause for the /positions* endpoints, including section
+// scoping for instructors / impersonating admins.
+// Returns { whereClause, params, denied } where denied=true means the caller
+// has zero matching sections and the handler should short-circuit.
+async function buildPositionsScope(req, baseConditions) {
+  const { section_id, case_id, scenario_id } = req.query;
+  const whereConditions = [...baseConditions];
+  const params = [];
+
+  const scopedSectionIds = await resolveScopedSectionIds(req);
+  if (scopedSectionIds !== null) {
+    if (scopedSectionIds.length === 0) {
+      return { denied: true };
+    }
+    if (section_id) {
+      if (!scopedSectionIds.includes(section_id)) {
+        return { denied: true };
+      }
+      whereConditions.push('cc.section_id = ?');
+      params.push(section_id);
+    } else {
+      whereConditions.push(`cc.section_id IN (${scopedSectionIds.map(() => '?').join(',')})`);
+      params.push(...scopedSectionIds);
+    }
+  } else if (section_id) {
+    whereConditions.push('cc.section_id = ?');
+    params.push(section_id);
+  }
+
+  if (case_id) {
+    whereConditions.push('cc.case_id = ?');
+    params.push(case_id);
+  }
+
+  if (scenario_id) {
+    whereConditions.push('cc.scenario_id = ?');
+    params.push(scenario_id);
+  }
+
+  return { whereClause: whereConditions.join(' AND '), params, denied: false };
+}
 
 /**
  * GET /api/analytics/results
@@ -17,7 +75,7 @@ const router = express.Router(); // Position analytics updated to show all defin
  * - sort_by: column to sort by (default: "completion_time")
  * - sort_dir: "asc" or "desc" (default: "desc")
  */
-router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const {
       section_ids = 'all',
@@ -31,9 +89,44 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
     } = req.query;
 
     // Parse section, case IDs, and statuses
-    const sectionIdList = section_ids === 'all' ? null : section_ids.split(',').map(s => s.trim());
+    let sectionIdList = section_ids === 'all' ? null : section_ids.split(',').map(s => s.trim());
     const caseIdList = case_ids === 'all' ? null : case_ids.split(',').map(s => s.trim());
     const statusList = statuses === 'all' ? null : statuses.split(',').map(s => s.trim());
+
+    // Scope to sections the caller has access to (instructors / admin impersonation).
+    const scopedSectionIds = await resolveScopedSectionIds(req);
+    if (scopedSectionIds !== null) {
+      if (scopedSectionIds.length === 0) {
+        return res.json({
+          data: {
+            summary: {
+              totalStudents: 0,
+              completedStudents: 0,
+              totalCompletions: 0,
+              avgScore: null,
+              avgHints: null,
+              avgHelpful: null,
+              completionRate: 0,
+              scoreDistribution: Array.from({ length: 16 }, (_, score) => ({ score, count: 0 })),
+              sectionBreakdown: null,
+              caseBreakdown: null
+            },
+            students: [],
+            total: 0,
+            limit: parseInt(limit),
+            offset: parseInt(offset)
+          },
+          error: null
+        });
+      }
+      const scopedSet = new Set(scopedSectionIds);
+      sectionIdList = sectionIdList
+        ? sectionIdList.filter(id => scopedSet.has(id))
+        : scopedSectionIds;
+      if (sectionIdList.length === 0) {
+        return res.status(403).json({ data: null, error: { message: 'No accessible sections in filter' } });
+      }
+    }
 
     // Validate sort direction
     const sortDirection = sort_dir.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
@@ -346,24 +439,39 @@ router.get('/results', verifyToken, requireRole(['admin']), async (req, res) => 
  * GET /api/analytics/filters
  * Get available sections and cases for filter dropdowns
  */
-router.get('/filters', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/filters', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
-    // Get enabled sections
-    const [sections] = await pool.execute(`
+    const scopedSectionIds = await resolveScopedSectionIds(req);
+    if (scopedSectionIds !== null && scopedSectionIds.length === 0) {
+      return res.json({ data: { sections: [], cases: [] }, error: null });
+    }
+
+    let sectionsQuery = `
       SELECT DISTINCT sec.section_id, sec.section_title, sec.year_term
       FROM sections sec
       WHERE sec.enabled = TRUE
-      ORDER BY sec.section_title
-    `);
+    `;
+    const sectionsParams = [];
+    if (scopedSectionIds !== null) {
+      sectionsQuery += ` AND sec.section_id IN (${scopedSectionIds.map(() => '?').join(',')})`;
+      sectionsParams.push(...scopedSectionIds);
+    }
+    sectionsQuery += ' ORDER BY sec.section_title';
+    const [sections] = await pool.execute(sectionsQuery, sectionsParams);
 
-    // Get enabled cases that are assigned to at least one section
-    const [cases] = await pool.execute(`
+    let casesQuery = `
       SELECT DISTINCT c.case_id, c.case_title
       FROM cases c
       JOIN section_cases sc ON c.case_id = sc.case_id
       WHERE c.enabled = TRUE
-      ORDER BY c.case_title
-    `);
+    `;
+    const casesParams = [];
+    if (scopedSectionIds !== null) {
+      casesQuery += ` AND sc.section_id IN (${scopedSectionIds.map(() => '?').join(',')})`;
+      casesParams.push(...scopedSectionIds);
+    }
+    casesQuery += ' ORDER BY c.case_title';
+    const [cases] = await pool.execute(casesQuery, casesParams);
 
     res.json({
       data: {
@@ -399,30 +507,23 @@ router.get('/filters', verifyToken, requireRole(['admin']), async (req, res) => 
  * - case_id: filter by case (optional)
  * - scenario_id: filter by scenario (optional)
  */
-router.get('/positions', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/positions', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
-    const { section_id, case_id, scenario_id } = req.query;
+    const { case_id, scenario_id } = req.query;
 
-    // Build WHERE clause
-    let whereConditions = ["cc.status = 'completed'"];
-    let params = [];
-
-    if (section_id) {
-      whereConditions.push('cc.section_id = ?');
-      params.push(section_id);
+    const scope = await buildPositionsScope(req, ["cc.status = 'completed'"]);
+    if (scope.denied) {
+      return res.json({
+        data: {
+          summary: { total_chats: 0, total_chats_with_positions: 0, total_position_changes: 0, change_rate: 0 },
+          by_position: [],
+          change_matrix: {},
+          by_student: []
+        },
+        error: null
+      });
     }
-
-    if (case_id) {
-      whereConditions.push('cc.case_id = ?');
-      params.push(case_id);
-    }
-
-    if (scenario_id) {
-      whereConditions.push('cc.scenario_id = ?');
-      params.push(scenario_id);
-    }
-
-    const whereClause = whereConditions.join(' AND ');
+    const { whereClause, params } = scope;
 
     // Get summary statistics
     const [summaryRows] = await pool.execute(
@@ -636,30 +737,24 @@ router.get('/positions', verifyToken, requireRole(['admin']), async (req, res) =
  * - case_id: filter by case (optional)
  * - scenario_id: filter by scenario (optional)
  */
-router.get('/positions/correlation', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/positions/correlation', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
-    const { section_id, case_id, scenario_id } = req.query;
-
-    // Build WHERE clause
-    let whereConditions = ["cc.status = 'completed'"];
-    let params = [];
-
-    if (section_id) {
-      whereConditions.push('cc.section_id = ?');
-      params.push(section_id);
+    const scope = await buildPositionsScope(req, ["cc.status = 'completed'"]);
+    if (scope.denied) {
+      return res.json({
+        data: {
+          position_score_correlation: [],
+          change_score_correlation: {
+            changed_avg_score: null, changed_count: 0,
+            unchanged_avg_score: null, unchanged_count: 0,
+            unspecified_avg_score: null, unspecified_count: 0
+          },
+          max_score: 15
+        },
+        error: null
+      });
     }
-
-    if (case_id) {
-      whereConditions.push('cc.case_id = ?');
-      params.push(case_id);
-    }
-
-    if (scenario_id) {
-      whereConditions.push('cc.scenario_id = ?');
-      params.push(scenario_id);
-    }
-
-    const whereClause = whereConditions.join(' AND ');
+    const { whereClause, params } = scope;
 
     // Get max score from actual data (for dynamic rubric support)
     const [maxScoreRows] = await pool.execute(
@@ -773,30 +868,13 @@ router.get('/positions/correlation', verifyToken, requireRole(['admin']), async 
  * - case_id: filter by case (optional)
  * - scenario_id: filter by scenario (optional)
  */
-router.get('/positions/score-distribution', verifyToken, requireRole(['admin']), async (req, res) => {
+router.get('/positions/score-distribution', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
-    const { section_id, case_id, scenario_id } = req.query;
-
-    // Build WHERE clause
-    let whereConditions = ["cc.status = 'completed'"];
-    let params = [];
-
-    if (section_id) {
-      whereConditions.push('cc.section_id = ?');
-      params.push(section_id);
+    const scope = await buildPositionsScope(req, ["cc.status = 'completed'"]);
+    if (scope.denied) {
+      return res.json({ data: { by_position: {}, max_score: 15 }, error: null });
     }
-
-    if (case_id) {
-      whereConditions.push('cc.case_id = ?');
-      params.push(case_id);
-    }
-
-    if (scenario_id) {
-      whereConditions.push('cc.scenario_id = ?');
-      params.push(scenario_id);
-    }
-
-    const whereClause = whereConditions.join(' AND ');
+    const { whereClause, params } = scope;
 
     // Get max score for this dataset
     const [maxScoreResult] = await pool.execute(

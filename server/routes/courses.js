@@ -7,6 +7,7 @@ import {
   getAccessibleSemesterIds,
   getAccessibleCourseIds
 } from '../middleware/instructorAccess.js';
+import { writeAudit } from '../services/auditLog.js';
 
 const router = express.Router();
 
@@ -36,9 +37,12 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
 
     const params = [];
 
-    // Filter by instructor access if not admin
-    if (req.user.role === 'instructor') {
-      const accessibleCourseIds = await getAccessibleCourseIds(req.user.id);
+    // Filter by instructor access (admin without impersonation sees all).
+    const effectiveId = req.user.role === 'instructor'
+      ? req.user.id
+      : (req.user.role === 'admin' && req.effectiveInstructorId ? req.effectiveInstructorId : null);
+    if (effectiveId) {
+      const accessibleCourseIds = await getAccessibleCourseIds(effectiveId);
       if (accessibleCourseIds.length === 0) {
         return res.json({ data: [], error: null });
       }
@@ -120,54 +124,122 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, requireCourseAccess('i
 });
 
 // PUT /api/courses/:id - Update course
-router.put('/:id', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
+router.put('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+  const connection = await pool.getConnection();
   try {
     const { id } = req.params;
-    const { course_name, course_code, description, sync_scheduling } = req.body;
+    const {
+      course_name,
+      course_code,
+      description,
+      sync_scheduling,
+      primary_instructor_id,
+      cascade_to_sections
+    } = req.body;
 
     // Check course exists
-    const [existing] = await pool.execute('SELECT id, semester_id FROM courses WHERE id = ?', [id]);
+    const [existing] = await connection.execute(
+      'SELECT id, semester_id, primary_instructor_id FROM courses WHERE id = ?',
+      [id]
+    );
     if (existing.length === 0) {
+      connection.release();
       return res.status(404).json({ data: null, error: { message: 'Course not found' } });
     }
 
     // Check for duplicate name in same semester (if name changed)
     if (course_name) {
-      const [duplicate] = await pool.execute(
+      const [duplicate] = await connection.execute(
         'SELECT id FROM courses WHERE semester_id = ? AND course_name = ? AND id != ?',
         [existing[0].semester_id, course_name, id]
       );
       if (duplicate.length > 0) {
+        connection.release();
         return res.status(409).json({ data: null, error: { message: 'Another course with this name already exists in this semester' } });
       }
     }
 
-    await pool.execute(
+    // Validate primary instructor when set
+    const primaryIdProvided = primary_instructor_id !== undefined;
+    if (primaryIdProvided && primary_instructor_id) {
+      const [inst] = await connection.execute(
+        'SELECT id, active FROM instructors WHERE id = ?',
+        [primary_instructor_id]
+      );
+      if (inst.length === 0) {
+        connection.release();
+        return res.status(400).json({ data: null, error: { message: 'Primary instructor not found' } });
+      }
+      if (!inst[0].active) {
+        connection.release();
+        return res.status(400).json({ data: null, error: { message: 'Primary instructor is deactivated' } });
+      }
+    }
+
+    await connection.beginTransaction();
+
+    await connection.execute(
       `UPDATE courses SET
         course_name = COALESCE(?, course_name),
         course_code = ?,
         description = ?,
-        sync_scheduling = COALESCE(?, sync_scheduling)
+        sync_scheduling = COALESCE(?, sync_scheduling),
+        primary_instructor_id = ${primaryIdProvided ? '?' : 'primary_instructor_id'}
        WHERE id = ?`,
-      [course_name, course_code, description, sync_scheduling !== undefined ? (sync_scheduling ? 1 : 0) : null, id]
+      primaryIdProvided
+        ? [course_name, course_code, description, sync_scheduling !== undefined ? (sync_scheduling ? 1 : 0) : null, primary_instructor_id || null, id]
+        : [course_name, course_code, description, sync_scheduling !== undefined ? (sync_scheduling ? 1 : 0) : null, id]
     );
 
-    // Return updated course
-    const [rows] = await pool.execute(
-      'SELECT id, semester_id, course_name, course_code, description, primary_section_id, sync_scheduling, created_at FROM courses WHERE id = ?',
+    // Cascade to sections only when caller asks AND we're setting a non-null instructor.
+    let sectionsCascaded = 0;
+    if (primaryIdProvided && primary_instructor_id && cascade_to_sections) {
+      const [r] = await connection.execute(
+        'UPDATE sections SET primary_instructor_id = ? WHERE course_id = ?',
+        [primary_instructor_id, id]
+      );
+      sectionsCascaded = r.affectedRows || 0;
+    }
+
+    await connection.commit();
+
+    // Audit the primary-instructor change (if any).
+    if (primaryIdProvided && primary_instructor_id !== existing[0].primary_instructor_id) {
+      await writeAudit(req, {
+        action: 'course.primary_instructor',
+        resourceType: 'course',
+        resourceId: String(id),
+        details: {
+          old: existing[0].primary_instructor_id,
+          new: primary_instructor_id || null,
+          cascaded_sections: sectionsCascaded
+        }
+      });
+    }
+
+    const [rows] = await connection.execute(
+      `SELECT c.id, c.semester_id, c.course_name, c.course_code, c.description,
+              c.primary_section_id, c.primary_instructor_id, c.sync_scheduling, c.created_at,
+              i.full_name AS primary_instructor_name
+         FROM courses c
+         LEFT JOIN instructors i ON c.primary_instructor_id = i.id
+        WHERE c.id = ?`,
       [id]
     );
 
-    res.json({ data: rows[0], error: null });
+    res.json({ data: { ...rows[0], cascaded_sections: sectionsCascaded }, error: null });
   } catch (error) {
+    try { await connection.rollback(); } catch (_) {}
     console.error('Error updating course:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
+  } finally {
+    connection.release();
   }
 });
 
 // DELETE /api/courses/:id - Delete course
 // Use ?cascade=true to delete all sections, assignments, and student enrollments
-router.delete('/:id', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
+router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { id } = req.params;
     const { cascade } = req.query;

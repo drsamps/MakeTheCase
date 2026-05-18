@@ -41,6 +41,9 @@ import rubricsRoutes from './routes/rubrics.js';
 import rubricCriteriaRoutes from './routes/rubricCriteria.js';
 import logsRoutes from './routes/logs.js';
 import caseWriterRoutes from './routes/caseWriter.js';
+import shadowOwnershipRoutes from './routes/shadowOwnership.js';
+import apiKeysRoutes from './routes/apiKeys.js';
+import teamsRoutes from './routes/teams.js';
 
 // Load environment variables
 // Use absolute path to ensure .env.local is found regardless of working directory
@@ -97,6 +100,9 @@ app.use('/api/rubrics', rubricsRoutes); // Rubric management
 app.use('/api/rubric-criteria', rubricCriteriaRoutes); // Rubric criteria management
 app.use('/api/logs', logsRoutes); // AI prompt logging management
 app.use('/api/case-writer', caseWriterRoutes); // Case Writer authoring tool
+app.use('/api/admin/shadow-ownership', shadowOwnershipRoutes); // Admin: transfer legacy resources off the shadow instructor
+app.use('/api/api-keys', apiKeysRoutes); // Per-instructor encrypted API key storage
+app.use('/api/teams', teamsRoutes); // Instructor teams + sharing
 console.log('✓ Rubrics routes mounted');
 console.log('✓ Case Writer routes mounted at /api/case-writer');
 

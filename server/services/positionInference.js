@@ -9,6 +9,7 @@
 
 import { pool } from '../db.js';
 import { chatWithLLM } from './llmRouter.js';
+import { resolveInstructorForCaseChat } from './keyResolver.js';
 
 /**
  * Build the system prompt for position inference
@@ -151,12 +152,13 @@ export async function inferPositionsFromChat(caseChatId, modelId = 'gemini-1.5-f
   // Call the LLM
   const userMessage = `CONVERSATION TRANSCRIPT:\n\n${chat.transcript}\n\nAnalyze this conversation and provide your position inference as JSON.`;
 
+  const instructorId = await resolveInstructorForCaseChat(caseChatId);
   const response = await chatWithLLM({
     modelId,
     systemPrompt,
     history: [],
     message: userMessage,
-    config: { temperature: 0.3 } // Lower temperature for more consistent analysis
+    config: { temperature: 0.3, instructorId } // Lower temperature for more consistent analysis
   });
 
   // Parse the response
@@ -257,7 +259,7 @@ export async function shouldInferPositions(caseChatId) {
  * Legacy function for backward compatibility
  * Infer position from a transcript string (old interface)
  */
-export async function inferPositionFromTranscript(transcript, caseData, positionOptions, modelId) {
+export async function inferPositionFromTranscript(transcript, caseData, positionOptions, modelId, instructorId = null) {
   if (!transcript || transcript.trim().length === 0) {
     console.log('[PositionInference] No transcript provided');
     return null;
@@ -296,7 +298,7 @@ Respond ONLY with valid JSON:
       systemPrompt: 'You are an expert at analyzing conversations and determining a person\'s stance on issues. Respond only with valid JSON.',
       history: [],
       message: prompt,
-      config: { temperature: 0.3 }
+      config: { temperature: 0.3, instructorId }
     });
 
     // Parse the JSON response

@@ -8,6 +8,7 @@
  */
 
 import { pool } from '../db.js';
+import { canAccessResource, getEffectiveInstructorId, hasAdminVision } from '../services/resourceAccess.js';
 
 // ============================================================
 // Helper functions to get accessible resources
@@ -19,15 +20,22 @@ import { pool } from '../db.js';
  * @returns {Promise<number[]>} Array of semester IDs
  */
 export async function getAccessibleSemesterIds(instructorId) {
-  const [rows] = await pool.execute(
-    'SELECT semester_id FROM instructor_semesters WHERE instructor_id = ?',
-    [instructorId]
-  );
+  const [rows] = await pool.execute(`
+    SELECT semester_id FROM instructor_semesters WHERE instructor_id = ?
+    UNION
+    SELECT DISTINCT c.semester_id FROM courses c WHERE c.primary_instructor_id = ?
+    UNION
+    SELECT DISTINCT c.semester_id
+    FROM courses c
+    JOIN sections s ON s.course_id = c.id
+    WHERE s.primary_instructor_id = ?
+  `, [instructorId, instructorId, instructorId]);
   return rows.map(r => r.semester_id);
 }
 
 /**
- * Get all course IDs an instructor has access to (via semester assignment)
+ * Get all course IDs an instructor has access to
+ * Sources: semester assignment, course primary, section primary
  * @param {string} instructorId - Instructor UUID
  * @returns {Promise<number[]>} Array of course IDs
  */
@@ -37,38 +45,38 @@ export async function getAccessibleCourseIds(instructorId) {
     FROM courses c
     JOIN instructor_semesters isem ON c.semester_id = isem.semester_id
     WHERE isem.instructor_id = ?
-  `, [instructorId]);
+    UNION
+    SELECT id FROM courses WHERE primary_instructor_id = ?
+    UNION
+    SELECT DISTINCT s.course_id FROM sections s WHERE s.primary_instructor_id = ?
+  `, [instructorId, instructorId, instructorId]);
   return rows.map(r => r.id);
 }
 
 /**
  * Get all section IDs an instructor has access to
- * Includes sections via course assignment AND direct TA assignment
+ * Sources: semester assignment, course primary, section primary, direct TA assignment
  * @param {string} instructorId - Instructor UUID
  * @returns {Promise<string[]>} Array of section IDs
  */
 export async function getAccessibleSectionIds(instructorId) {
-  // Get sections via semester -> course -> section path (primary instructor)
-  const [courseSections] = await pool.execute(`
+  const [rows] = await pool.execute(`
     SELECT DISTINCT s.section_id
     FROM sections s
     JOIN courses c ON s.course_id = c.id
     JOIN instructor_semesters isem ON c.semester_id = isem.semester_id
     WHERE isem.instructor_id = ?
-  `, [instructorId]);
-
-  // Get directly assigned sections (TA)
-  const [directSections] = await pool.execute(
-    'SELECT section_id FROM instructor_sections WHERE instructor_id = ?',
-    [instructorId]
-  );
-
-  const allSectionIds = new Set([
-    ...courseSections.map(r => r.section_id),
-    ...directSections.map(r => r.section_id)
-  ]);
-
-  return Array.from(allSectionIds);
+    UNION
+    SELECT s.section_id
+    FROM sections s
+    JOIN courses c ON s.course_id = c.id
+    WHERE c.primary_instructor_id = ?
+    UNION
+    SELECT section_id FROM sections WHERE primary_instructor_id = ?
+    UNION
+    SELECT section_id FROM instructor_sections WHERE instructor_id = ?
+  `, [instructorId, instructorId, instructorId, instructorId]);
+  return rows.map(r => r.section_id);
 }
 
 // ============================================================
@@ -82,10 +90,19 @@ export async function getAccessibleSectionIds(instructorId) {
  * @returns {Promise<boolean>}
  */
 export async function canAccessSemester(instructorId, semesterId) {
-  const [rows] = await pool.execute(
-    'SELECT id FROM instructor_semesters WHERE instructor_id = ? AND semester_id = ?',
-    [instructorId, semesterId]
-  );
+  const [rows] = await pool.execute(`
+    SELECT 1 FROM instructor_semesters
+    WHERE instructor_id = ? AND semester_id = ?
+    UNION
+    SELECT 1 FROM courses
+    WHERE primary_instructor_id = ? AND semester_id = ?
+    UNION
+    SELECT 1
+    FROM sections s
+    JOIN courses c ON s.course_id = c.id
+    WHERE s.primary_instructor_id = ? AND c.semester_id = ?
+    LIMIT 1
+  `, [instructorId, semesterId, instructorId, semesterId, instructorId, semesterId]);
   return rows.length > 0;
 }
 
@@ -98,11 +115,16 @@ export async function canAccessSemester(instructorId, semesterId) {
  */
 export async function canAccessCourse(instructorId, courseId) {
   const [rows] = await pool.execute(`
-    SELECT c.id
+    SELECT 1
     FROM courses c
     JOIN instructor_semesters isem ON c.semester_id = isem.semester_id
     WHERE isem.instructor_id = ? AND c.id = ?
-  `, [instructorId, courseId]);
+    UNION
+    SELECT 1 FROM courses WHERE primary_instructor_id = ? AND id = ?
+    UNION
+    SELECT 1 FROM sections WHERE primary_instructor_id = ? AND course_id = ?
+    LIMIT 1
+  `, [instructorId, courseId, instructorId, courseId, instructorId, courseId]);
   return rows.length > 0;
 }
 
@@ -114,23 +136,26 @@ export async function canAccessCourse(instructorId, courseId) {
  * @returns {Promise<boolean>}
  */
 export async function canAccessSection(instructorId, sectionId) {
-  // Check direct section assignment (TA)
-  const [directAccess] = await pool.execute(
-    'SELECT id FROM instructor_sections WHERE instructor_id = ? AND section_id = ?',
-    [instructorId, sectionId]
-  );
-  if (directAccess.length > 0) return true;
-
-  // Check via course -> semester assignment (primary instructor)
-  const [courseAccess] = await pool.execute(`
-    SELECT s.section_id
+  const [rows] = await pool.execute(`
+    SELECT 1 FROM instructor_sections
+    WHERE instructor_id = ? AND section_id = ?
+    UNION
+    SELECT 1
     FROM sections s
     JOIN courses c ON s.course_id = c.id
     JOIN instructor_semesters isem ON c.semester_id = isem.semester_id
     WHERE isem.instructor_id = ? AND s.section_id = ?
-  `, [instructorId, sectionId]);
+    UNION
+    SELECT 1 FROM sections WHERE primary_instructor_id = ? AND section_id = ?
+    UNION
+    SELECT 1
+    FROM sections s
+    JOIN courses c ON s.course_id = c.id
+    WHERE c.primary_instructor_id = ? AND s.section_id = ?
+    LIMIT 1
+  `, [instructorId, sectionId, instructorId, sectionId, instructorId, sectionId, instructorId, sectionId]);
 
-  return courseAccess.length > 0;
+  return rows.length > 0;
 }
 
 /**
@@ -163,40 +188,34 @@ export async function getTAPermissions(instructorId, sectionId) {
  */
 export async function isPrimaryInstructorForSection(instructorId, sectionId) {
   const [rows] = await pool.execute(`
-    SELECT s.section_id
+    SELECT 1
     FROM sections s
     JOIN courses c ON s.course_id = c.id
     JOIN instructor_semesters isem ON c.semester_id = isem.semester_id
     WHERE isem.instructor_id = ? AND s.section_id = ?
-  `, [instructorId, sectionId]);
+    UNION
+    SELECT 1 FROM sections WHERE primary_instructor_id = ? AND section_id = ?
+    UNION
+    SELECT 1
+    FROM sections s
+    JOIN courses c ON s.course_id = c.id
+    WHERE c.primary_instructor_id = ? AND s.section_id = ?
+    LIMIT 1
+  `, [instructorId, sectionId, instructorId, sectionId, instructorId, sectionId]);
   return rows.length > 0;
 }
 
 /**
- * Check if a user can access a case
- * Admins always can; instructors can if they own it or it's shared
- * @param {string} userId - User UUID
- * @param {string} caseId - Case ID
- * @param {boolean} isSuperuser - Whether user is a superuser
- * @param {string} userRole - 'admin' or 'instructor'
- * @returns {Promise<boolean>}
+ * @deprecated Use `canAccessResource(req, 'case', caseId, action)` from
+ * services/resourceAccess.js, which honors the visibility enum + team shares
+ * + admin impersonation. This wrapper exists only for legacy call sites that
+ * don't have access to `req`.
  */
 export async function canAccessCase(userId, caseId, isSuperuser, userRole) {
-  // Superusers and regular admins can access all cases
-  if (isSuperuser || userRole === 'admin') {
-    return true;
-  }
-
-  // Instructors: can access if they created it or if it's shared
-  const [rows] = await pool.execute(
-    'SELECT case_id, created_by, is_shared FROM cases WHERE case_id = ?',
-    [caseId]
-  );
-
-  if (rows.length === 0) return false;
-
-  const caseData = rows[0];
-  return caseData.created_by === userId || Boolean(caseData.is_shared);
+  if (isSuperuser || userRole === 'admin') return true;
+  const fakeReq = { user: { id: userId, role: userRole, superuser: !!isSuperuser } };
+  const result = await canAccessResource(fakeReq, 'case', caseId, 'view');
+  return result.allowed;
 }
 
 // ============================================================
@@ -394,34 +413,68 @@ export function requireSectionPermission(permission) {
 }
 
 /**
- * Middleware factory: Require access to a specific case
- * Superusers and admins can access all; instructors need ownership or shared status
+ * Middleware factory: Require access to a specific case.
+ *
+ * Delegates to the unified visibility/ownership model in
+ * services/resourceAccess.js (honors `visibility` enum + `resource_team_shares`
+ * + admin impersonation). For backward compatibility this thin wrapper still
+ * accepts just a param name; supply `action` ('edit' | 'delete' | 'share') for
+ * mutating routes — default is 'view'.
+ *
  * @param {string} caseIdParam - Request param name containing case ID (default: 'id')
+ * @param {'view'|'edit'|'share'|'delete'} action
  */
-export function requireCaseAccess(caseIdParam = 'id') {
+export function requireCaseAccess(caseIdParam = 'id', action = 'view') {
+  return requireResourceAccess('case', caseIdParam, action);
+}
+
+/**
+ * Middleware factory: Require access to a generic shared resource (case,
+ * rubric, rubric_criteria, persona, case_writer_project) via the unified
+ * visibility/ownership model in services/resourceAccess.js.
+ *
+ *   router.get('/rubrics/:id',
+ *     verifyToken,
+ *     requireResourceAccess('rubric', 'id', 'view'),
+ *     async (req, res) => { ... }
+ *   );
+ *
+ * On success, attaches:
+ *   req.resource       - the fetched row
+ *   req.resourceAccess - { allowed: true, reason, row }
+ *
+ * @param {string} resourceType - 'case' | 'rubric' | 'rubric_criteria' | 'persona' | 'case_writer_project'
+ * @param {string} paramName - request param key holding the resource id (default 'id')
+ * @param {'view'|'edit'|'share'|'delete'} action
+ */
+export function requireResourceAccess(resourceType, paramName = 'id', action = 'view') {
   return async (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ error: 'Authentication required' });
     }
-
-    const caseId = req.params[caseIdParam] || req.body.case_id;
-    if (!caseId) {
-      return res.status(400).json({ error: 'Case ID required' });
+    const resourceId = req.params[paramName] || req.body[paramName];
+    if (!resourceId) {
+      return res.status(400).json({ error: `${paramName} required` });
     }
-
-    const hasAccess = await canAccessCase(
-      req.user.id,
-      caseId,
-      req.user.superuser,
-      req.user.role
-    );
-
-    if (!hasAccess) {
-      return res.status(403).json({
-        error: 'Access denied to this case. The case may be private.'
-      });
+    try {
+      const result = await canAccessResource(req, resourceType, resourceId, action);
+      if (!result.allowed) {
+        // For 'view' actions, hide existence by mapping `not_visible` → 404 so
+        // the caller can't probe for the existence of private/team resources
+        // they don't have access to. For mutating actions, keep 403 since the
+        // caller may have already discovered the resource via view/list.
+        let code;
+        if (result.reason === 'not_found') code = 404;
+        else if (action === 'view' && result.reason === 'not_visible') code = 404;
+        else code = 403;
+        return res.status(code).json({ error: result.reason });
+      }
+      req.resource = result.row;
+      req.resourceAccess = result;
+      next();
+    } catch (err) {
+      console.error('[requireResourceAccess]', err);
+      return res.status(500).json({ error: 'Access check failed' });
     }
-
-    next();
   };
 }

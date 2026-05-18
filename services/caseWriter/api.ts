@@ -48,6 +48,8 @@ export interface CaseWriterProjectSummary {
   owner_type: 'admin' | 'instructor';
   title: string | null;
   status: CaseWriterStatus;
+  visibility?: 'private' | 'team' | 'public';
+  created_by_type?: 'admin' | 'instructor' | 'system';
   teaching_principle: string | null;
   audience: string | null;
   course_context: string | null;

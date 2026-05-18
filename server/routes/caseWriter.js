@@ -10,6 +10,8 @@ import { verifyToken } from '../middleware/auth.js';
 import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
 import { getActivePrompt, renderPrompt } from '../services/promptService.js';
 import { generateOutlineWithLLM } from '../services/llmRouter.js';
+import { getEffectiveInstructorId, buildVisibilityScope, canAccessResource } from '../services/resourceAccess.js';
+import { setVisibility } from '../services/visibilityWrites.js';
 import { markdownToDocxBuffer, markdownToPdfBuffer } from '../services/markdownExport.js';
 import { convertFile } from '../services/fileConverter.js';
 
@@ -22,6 +24,16 @@ const router = express.Router();
 // ----------------------------------------------------------------------------
 // LLM helpers
 // ----------------------------------------------------------------------------
+
+// Wrap generateOutlineWithLLM so every case-writer call threads the caller's
+// instructor identity (so per-instructor API keys actually fire).
+async function callOutline(req, params) {
+  const instructorId = getEffectiveInstructorId(req);
+  return generateOutlineWithLLM({
+    ...params,
+    config: { ...(params.config || {}), instructorId }
+  });
+}
 
 async function resolveModel(requestedModelId, projectDefaultModelId) {
   const candidate = requestedModelId || projectDefaultModelId || null;
@@ -124,6 +136,7 @@ async function loadSourceMaterials(projectId) {
 
 const PROJECT_COLUMNS = [
   'project_id', 'owner_id', 'owner_type', 'title', 'status',
+  'visibility', 'created_by_type',
   'teaching_principle', 'audience', 'course_context', 'difficulty', 'case_type',
   'learning_brief', 'scenario_options', 'selected_scenario', 'case_blueprint',
   'student_case', 'teaching_note',
@@ -159,25 +172,24 @@ function fail(res, status, message) {
 }
 
 function ownerScopeWhere(req) {
-  if (req.user.role === 'admin') return { sql: '', params: [] };
-  return {
-    sql: ' WHERE owner_id = ? AND owner_type = ?',
-    params: [req.user.id, 'instructor']
-  };
+  // Visibility-aware list scope (owner + team-shared + public, with admin
+  // vision when not impersonating).
+  const scope = buildVisibilityScope(req, 'case_writer_project', 'case_writer_projects');
+  return { sql: ' WHERE ' + scope.whereSql, params: scope.params };
 }
 
 async function loadProject(projectId, req) {
+  const access = await canAccessResource(req, 'case_writer_project', projectId, 'view');
+  if (!access.allowed) {
+    if (access.reason === 'not_found') return { project: null, forbidden: false };
+    return { project: null, forbidden: true };
+  }
   const [rows] = await pool.execute(
     `SELECT ${PROJECT_COLUMNS.join(', ')} FROM case_writer_projects WHERE project_id = ?`,
     [projectId]
   );
   if (rows.length === 0) return { project: null, forbidden: false };
-  const project = rows[0];
-  if (req.user.role !== 'admin') {
-    const isOwner = project.owner_id === req.user.id && project.owner_type === req.user.role;
-    if (!isOwner) return { project: null, forbidden: true };
-  }
-  return { project, forbidden: false };
+  return { project: rows[0], forbidden: false };
 }
 
 // After migration 043, the markdown columns (learning_brief, case_blueprint,
@@ -294,6 +306,26 @@ router.patch('/projects/:id', async (req, res) => {
     ok(res, rows[0]);
   } catch (err) {
     console.error('[caseWriter] update project error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
+// PATCH /api/case-writer/projects/:id/visibility — Set Private/Team/Public + team_ids.
+router.patch('/projects/:id/visibility', async (req, res) => {
+  try {
+    const access = await canAccessResource(req, 'case_writer_project', req.params.id, 'share');
+    if (!access.allowed) {
+      return res.status(access.reason === 'not_found' ? 404 : 403).json({
+        data: null, error: { message: access.reason }
+      });
+    }
+    const result = await setVisibility(req, 'case_writer_project', req.params.id, req.body || {});
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ data: null, error: { message: result.error } });
+    }
+    res.json({ data: { project_id: req.params.id, visibility: req.body?.visibility }, error: null });
+  } catch (err) {
+    console.error('[caseWriter] visibility error:', err);
     fail(res, 500, err.message);
   }
 });
@@ -786,7 +818,7 @@ router.post('/projects/:id/generate/brief', async (req, res) => {
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
-    const { text, meta } = await generateOutlineWithLLM({
+    const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
       prompt: renderedPrompt,
@@ -860,7 +892,7 @@ router.post('/projects/:id/generate/scenarios', async (req, res) => {
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
-    const { text, meta } = await generateOutlineWithLLM({
+    const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
       prompt: renderedPrompt,
@@ -946,7 +978,7 @@ router.post('/projects/:id/generate/blueprint', async (req, res) => {
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
-    const { text, meta } = await generateOutlineWithLLM({
+    const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
       prompt: renderedPrompt,
@@ -1027,7 +1059,7 @@ router.post('/projects/:id/generate/student-case', async (req, res) => {
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
-    const { text, meta } = await generateOutlineWithLLM({
+    const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
       prompt: renderedPrompt,
@@ -1105,7 +1137,7 @@ router.post('/projects/:id/generate/teaching-note', async (req, res) => {
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
-    const { text, meta } = await generateOutlineWithLLM({
+    const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
       prompt: renderedPrompt,
@@ -1148,7 +1180,7 @@ router.post('/projects/:id/generate/teaching-note', async (req, res) => {
 // Boundary validation
 // ----------------------------------------------------------------------------
 
-async function runBoundaryValidation(project, requestedModelId) {
+async function runBoundaryValidation(req, project, requestedModelId) {
   const studentCaseMarkdown = (project.student_case || '');
 
   const activePrompt = await getActivePrompt('case_writer.boundary_validation');
@@ -1157,7 +1189,7 @@ async function runBoundaryValidation(project, requestedModelId) {
   });
 
   const model = await resolveModel(requestedModelId, project.default_model_id);
-  const { text, meta } = await generateOutlineWithLLM({
+  const { text, meta } = await callOutline(req, {
     modelId: model.model_id,
     vendor: model.vendor,
     prompt: renderedPrompt,
@@ -1193,7 +1225,7 @@ router.post('/projects/:id/validate', async (req, res) => {
       return fail(res, 400, 'Project must have a student_case before validation');
     }
 
-    const result = await runBoundaryValidation(project, req.body?.model_id);
+    const result = await runBoundaryValidation(req, project, req.body?.model_id);
     ok(res, result);
   } catch (err) {
     console.error('[caseWriter] validate error:', err);
@@ -1221,7 +1253,7 @@ router.post('/projects/:id/extract-publish-fields', async (req, res) => {
     });
 
     const model = await resolveModel(req.body?.model_id, project.default_model_id);
-    const { text, meta } = await generateOutlineWithLLM({
+    const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
       prompt: renderedPrompt,
@@ -1310,7 +1342,7 @@ router.post('/extract-principles',
     });
 
     const model = await resolveModel(model_id);
-    const { text, meta } = await generateOutlineWithLLM({
+    const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
       prompt: renderedPrompt,
@@ -1409,7 +1441,7 @@ router.post('/projects/:id/publish', async (req, res) => {
     const skipValidation = req.body?.skip_validation === true;
     let validation = null;
     if (!skipValidation) {
-      validation = await runBoundaryValidation(project, req.body?.validation_model_id);
+      validation = await runBoundaryValidation(req, project, req.body?.validation_model_id);
       if (!validation.passes) {
         return res.status(422).json({
           data: null,
@@ -1553,7 +1585,7 @@ router.post('/projects/:id/references/:refId/summarize', async (req, res) => {
     });
 
     const model = await resolveModel(req.body?.model_id, project.default_model_id);
-    const { text, meta } = await generateOutlineWithLLM({
+    const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
       prompt: renderedPrompt,
@@ -1678,7 +1710,7 @@ router.post('/projects/:id/revise', async (req, res) => {
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
-    const { text, meta } = await generateOutlineWithLLM({
+    const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
       prompt: renderedPrompt,
@@ -1816,7 +1848,7 @@ router.post('/projects/:id/tweak', async (req, res) => {
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
-    const { text, meta } = await generateOutlineWithLLM({
+    const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
       prompt: renderedPrompt,

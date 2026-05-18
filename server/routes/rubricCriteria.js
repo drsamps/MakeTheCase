@@ -1,17 +1,27 @@
 import express from 'express';
+import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/permissions.js';
+import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
+import { buildVisibilityScope, canAccessResource } from '../services/resourceAccess.js';
+import { setVisibility } from '../services/visibilityWrites.js';
 import * as rubricService from '../services/rubricService.js';
 
 const router = express.Router();
 
-// GET /api/rubric-criteria - List all criteria
-router.get('/', async (req, res) => {
+// GET /api/rubric-criteria - List criteria visible to caller (system + own + team + public).
+router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { enabled } = req.query;
     const enabledOnly = enabled !== 'false';
 
-    const criteria = await rubricService.getAllCriteria(enabledOnly);
+    const scope = buildVisibilityScope(req, 'rubric_criteria', 'rc');
+    let query = `SELECT rc.* FROM rubric_criteria rc WHERE ${scope.whereSql}`;
+    const params = [...scope.params];
+    if (enabledOnly) query += ' AND rc.enabled = 1';
+    query += ' ORDER BY rc.is_system_default DESC, rc.name';
+
+    const [criteria] = await pool.execute(query, params);
     res.json({ data: criteria, error: null });
   } catch (error) {
     console.error('Error fetching criteria:', error);
@@ -50,8 +60,8 @@ router.get('/:criteriaId/usage', async (req, res) => {
   }
 });
 
-// POST /api/rubric-criteria - Create new criterion (admin only)
-router.post('/', verifyToken, requireRole(['admin']), requirePermission('rubrics'), async (req, res) => {
+// POST /api/rubric-criteria - Create new criterion (admin or instructor; private by default)
+router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { criteria_id, name, question_text, max_points, scoring_guide, prompt_text } = req.body;
 
@@ -62,7 +72,6 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('rubrics
       });
     }
 
-    // Validate criteria_id format (lowercase alphanumeric with underscores, max 50 chars)
     if (!/^[a-z0-9_]+$/.test(criteria_id) || criteria_id.length > 50) {
       return res.status(400).json({
         data: null,
@@ -70,7 +79,6 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('rubrics
       });
     }
 
-    // Validate max_points if provided
     if (max_points !== undefined && (max_points < 1 || max_points > 100)) {
       return res.status(400).json({
         data: null,
@@ -78,37 +86,109 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('rubrics
       });
     }
 
-    const criterion = await rubricService.createCriterion({
-      criteria_id,
-      name,
-      question_text,
-      max_points: max_points || 5,
-      scoring_guide,
-      prompt_text,
-      created_by: req.user?.id || null
-    });
+    const effectiveId = req.effectiveInstructorId || req.user?.id || null;
+    const createdByType = req.user.role === 'admin' && !req.effectiveInstructorId ? 'admin' : 'instructor';
 
-    res.status(201).json({ data: criterion, error: null });
+    const scoringGuideJson = scoring_guide
+      ? (typeof scoring_guide === 'string' ? scoring_guide : JSON.stringify(scoring_guide))
+      : null;
+
+    try {
+      await pool.execute(
+        `INSERT INTO rubric_criteria
+           (criteria_id, name, question_text, max_points, scoring_guide, prompt_text,
+            is_system_default, created_by, created_by_type, visibility, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'private', 1)`,
+        [criteria_id, name, question_text, max_points || 5, scoringGuideJson, prompt_text || null,
+         effectiveId, createdByType]
+      );
+    } catch (e) {
+      if (e.code === 'ER_DUP_ENTRY') {
+        return res.status(409).json({
+          data: null, error: { message: `Criterion already exists with criteria_id: ${criteria_id}` }
+        });
+      }
+      throw e;
+    }
+
+    const created = await rubricService.getCriterionById(criteria_id);
+    res.status(201).json({ data: created, error: null });
   } catch (error) {
     console.error('Error creating criterion:', error);
-    if (error.message.includes('already exists')) {
-      return res.status(409).json({ data: null, error: { message: error.message } });
-    }
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
 
-// PATCH /api/rubric-criteria/:criteriaId - Update criterion (admin only)
-router.patch('/:criteriaId', verifyToken, requireRole(['admin']), requirePermission('rubrics'), async (req, res) => {
+// POST /api/rubric-criteria/:criteriaId/clone - Clone for caller's library (new id)
+router.post('/:criteriaId/clone', verifyToken, requireAdminOrInstructor, async (req, res) => {
+  try {
+    const { criteriaId } = req.params;
+    const access = await canAccessResource(req, 'rubric_criteria', criteriaId, 'view');
+    if (!access.allowed) {
+      return res.status(access.reason === 'not_found' ? 404 : 403).json({
+        data: null, error: { message: access.reason }
+      });
+    }
+    const effectiveId = req.effectiveInstructorId || req.user?.id || null;
+    const createdByType = req.user.role === 'admin' && !req.effectiveInstructorId ? 'admin' : 'instructor';
+    const instructorShort = (effectiveId || 'me').toString().replace(/[^a-z0-9]/gi, '').slice(0, 6).toLowerCase() || 'me';
+    const criterion = await rubricService.cloneCriterion(criteriaId, {
+      created_by: effectiveId,
+      created_by_type: createdByType,
+      instructorShort,
+    });
+    res.status(201).json({ data: criterion, error: null });
+  } catch (error) {
+    console.error('Error cloning criterion:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/rubric-criteria/:criteriaId/visibility - Set Private/Team/Public
+router.patch('/:criteriaId/visibility', verifyToken, requireAdminOrInstructor, async (req, res) => {
+  try {
+    const { criteriaId } = req.params;
+    const access = await canAccessResource(req, 'rubric_criteria', criteriaId, 'share');
+    if (!access.allowed) {
+      return res.status(access.reason === 'not_found' ? 404 : 403).json({
+        data: null, error: { message: access.reason }
+      });
+    }
+    const result = await setVisibility(req, 'rubric_criteria', criteriaId, req.body || {});
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ data: null, error: { message: result.error } });
+    }
+    res.json({ data: { criteria_id: criteriaId, visibility: req.body.visibility }, error: null });
+  } catch (error) {
+    console.error('Error setting criterion visibility:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/rubric-criteria/:criteriaId - Update criterion (owner or admin)
+router.patch('/:criteriaId', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { criteriaId } = req.params;
     const { name, question_text, max_points, scoring_guide, prompt_text, enabled } = req.body;
 
-    // Check if criterion exists
-    const existing = await rubricService.getCriterionById(criteriaId);
-    if (!existing) {
-      return res.status(404).json({ data: null, error: { message: 'Criterion not found' } });
+    const access = await canAccessResource(req, 'rubric_criteria', criteriaId, 'edit');
+    if (!access.allowed) {
+      if (access.reason === 'not_found') {
+        return res.status(404).json({ data: null, error: { message: 'Criterion not found' } });
+      }
+      // Hint for system-default criteria: clone first
+      if (access.row?.is_system_default) {
+        return res.status(409).json({
+          data: null,
+          error: {
+            code: 'SYSTEM_DEFAULT_READONLY',
+            message: 'System-default criteria are read-only. Clone this criterion to your own library to edit it.',
+          },
+        });
+      }
+      return res.status(403).json({ data: null, error: { message: access.reason } });
     }
+    const existing = access.row;
 
     // Validate max_points if provided
     if (max_points !== undefined && (max_points < 1 || max_points > 100)) {
@@ -138,15 +218,16 @@ router.patch('/:criteriaId', verifyToken, requireRole(['admin']), requirePermiss
   }
 });
 
-// DELETE /api/rubric-criteria/:criteriaId - Delete criterion (admin only)
-router.delete('/:criteriaId', verifyToken, requireRole(['admin']), requirePermission('rubrics'), async (req, res) => {
+// DELETE /api/rubric-criteria/:criteriaId - Delete criterion (owner or admin)
+router.delete('/:criteriaId', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { criteriaId } = req.params;
 
-    // Check if criterion exists
-    const existing = await rubricService.getCriterionById(criteriaId);
-    if (!existing) {
-      return res.status(404).json({ data: null, error: { message: 'Criterion not found' } });
+    const access = await canAccessResource(req, 'rubric_criteria', criteriaId, 'delete');
+    if (!access.allowed) {
+      return res.status(access.reason === 'not_found' ? 404 : 403).json({
+        data: null, error: { message: access.reason }
+      });
     }
 
     await rubricService.deleteCriterion(criteriaId);

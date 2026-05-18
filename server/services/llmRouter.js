@@ -3,18 +3,16 @@
 // Now includes prompt caching support for Anthropic and cache metrics tracking
 import { GoogleGenAI, Type } from '@google/genai';
 import { pool } from '../db.js';
+import { resolveProviderKey } from './keyResolver.js';
+import { assertWithinUsageCap } from './usageGuard.js';
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_HTTP_REFERER = process.env.OPENROUTER_HTTP_REFERER;
 const OPENROUTER_X_TITLE = process.env.OPENROUTER_X_TITLE;
 
-function buildOpenRouterHeaders() {
+function buildOpenRouterHeaders(apiKey) {
   const headers = {
     'Content-Type': 'application/json',
-    Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+    Authorization: `Bearer ${apiKey}`,
   };
   if (OPENROUTER_HTTP_REFERER) headers['HTTP-Referer'] = OPENROUTER_HTTP_REFERER;
   if (OPENROUTER_X_TITLE) headers['X-Title'] = OPENROUTER_X_TITLE;
@@ -58,14 +56,15 @@ export async function resolveModelRuntimeConfiguration(modelId) {
 }
 
 // Track cache metrics in database
-async function trackCacheMetrics(caseId, provider, modelId, cacheMetrics, requestType = 'chat') {
+async function trackCacheMetrics(caseId, provider, modelId, cacheMetrics, requestType = 'chat', instructorId = null) {
   if (!caseId || !cacheMetrics) return;
   try {
     await pool.execute(
-      `INSERT INTO llm_cache_metrics (case_id, provider, model_id, cache_hit, input_tokens, cached_tokens, output_tokens, request_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO llm_cache_metrics (case_id, instructor_id, provider, model_id, cache_hit, input_tokens, cached_tokens, output_tokens, request_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         caseId,
+        instructorId || null,
         provider,
         modelId,
         cacheMetrics.cache_hit ? 1 : 0,
@@ -94,8 +93,8 @@ const detectProvider = (modelId = '', vendor = null) => {
   return 'google';
 };
 
-async function callOpenRouter({ modelId, messages, runtimeParams = {}, maxTokens, responseFormat }) {
-  if (!OPENROUTER_API_KEY) throw new Error('OPENROUTER_API_KEY is not set on the server');
+async function callOpenRouter({ modelId, messages, runtimeParams = {}, maxTokens, responseFormat, apiKey }) {
+  if (!apiKey) throw new Error('OpenRouter API key is required');
   const payload = {
     model: modelId,
     messages,
@@ -106,7 +105,7 @@ async function callOpenRouter({ modelId, messages, runtimeParams = {}, maxTokens
 
   const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
-    headers: buildOpenRouterHeaders(),
+    headers: buildOpenRouterHeaders(apiKey),
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
@@ -143,11 +142,14 @@ const isOpenAIReasoning = (modelId = '') => {
 
 export async function chatWithLLM({ modelId, vendor = null, systemPrompt, history = [], message, config = {} }) {
   const provider = detectProvider(modelId, vendor);
+  // A1 usage cap (only enforced for use_system_key=1 instructors with a cap set)
+  await assertWithinUsageCap(config.instructorId);
   const runtimeParams = await resolveModelRuntimeConfiguration(modelId);
   const temperature = runtimeParams.temperature ?? config.temperature ?? null;
   const reasoningEffort = runtimeParams.reasoning_effort ?? config.reasoning_effort ?? null;
 
   if (provider === 'openrouter') {
+    const apiKey = await resolveProviderKey('openrouter', config.instructorId);
     const mergedParams = { ...runtimeParams };
     if (temperature !== null && temperature !== undefined && mergedParams.temperature === undefined) {
       mergedParams.temperature = Number(temperature);
@@ -162,8 +164,9 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
       messages,
       runtimeParams: mergedParams,
       maxTokens: config.maxTokens,
+      apiKey,
     });
-    if (config.caseId) trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat');
+    if (config.caseId) trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat', config.instructorId || null);
     return {
       text,
       meta: {
@@ -176,7 +179,7 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
   }
 
   if (provider === 'openai') {
-    if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on the server');
+    const apiKey = await resolveProviderKey('openai', config.instructorId);
     const reasoningModel = isOpenAIReasoning(modelId);
     const payload = {
       model: modelId,
@@ -201,7 +204,7 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(payload),
     });
@@ -223,14 +226,14 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
 
     // Track metrics if caseId is provided
     if (config.caseId) {
-      trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat');
+      trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat', config.instructorId || null);
     }
 
     return { text, meta: { ...appliedParams, cacheMetrics } };
   }
 
   if (provider === 'anthropic') {
-    if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set on the server');
+    const apiKey = await resolveProviderKey('anthropic', config.instructorId);
 
     // Use prompt caching for Anthropic
     // Structure system prompt with cache_control for static content
@@ -246,7 +249,7 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
         'anthropic-beta': 'prompt-caching-2024-07-31', // Enable prompt caching
       },
@@ -278,7 +281,7 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
 
     // Track metrics if caseId is provided in config
     if (config.caseId) {
-      trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat');
+      trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat', config.instructorId || null);
     }
 
     return {
@@ -292,8 +295,8 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
     };
   }
 
-  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set on the server');
-  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  const apiKey = await resolveProviderKey('google', config.instructorId);
+  const ai = new GoogleGenAI({ apiKey });
   const formattedHistory = history.map((msg) => ({
     role: msg.role,
     parts: [{ text: msg.content }],
@@ -321,7 +324,7 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
 
   // Track metrics if caseId is provided
   if (config.caseId) {
-    trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat');
+    trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat', config.instructorId || null);
   }
 
   return {
@@ -337,12 +340,15 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
 
 export async function evaluateWithLLM({ modelId, vendor = null, prompt, config = {} }) {
   const provider = detectProvider(modelId, vendor);
+  // A1 usage cap (only enforced for use_system_key=1 instructors with a cap set)
+  await assertWithinUsageCap(config.instructorId);
   const runtimeParams = await resolveModelRuntimeConfiguration(modelId);
   const temperature = runtimeParams.temperature ?? config.temperature ?? null;
   const reasoningEffort = runtimeParams.reasoning_effort ?? config.reasoning_effort ?? null;
   const reasoningModel = isOpenAIReasoning(modelId);
 
   if (provider === 'openrouter') {
+    const apiKey = await resolveProviderKey('openrouter', config.instructorId);
     const mergedParams = { ...runtimeParams };
     if (temperature !== null && temperature !== undefined && mergedParams.temperature === undefined) {
       mergedParams.temperature = Number(temperature);
@@ -356,6 +362,7 @@ export async function evaluateWithLLM({ modelId, vendor = null, prompt, config =
       messages,
       runtimeParams: mergedParams,
       responseFormat: { type: 'json_object' },
+      apiKey,
     });
     return {
       text: text || '{}',
@@ -369,7 +376,7 @@ export async function evaluateWithLLM({ modelId, vendor = null, prompt, config =
   }
 
   if (provider === 'openai') {
-    if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on the server');
+    const apiKey = await resolveProviderKey('openai', config.instructorId);
     const payload = {
       model: modelId,
       response_format: { type: 'json_object' },
@@ -388,7 +395,7 @@ export async function evaluateWithLLM({ modelId, vendor = null, prompt, config =
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(payload),
     });
@@ -419,12 +426,12 @@ export async function evaluateWithLLM({ modelId, vendor = null, prompt, config =
   }
 
   if (provider === 'anthropic') {
-    if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set on the server');
+    const apiKey = await resolveProviderKey('anthropic', config.instructorId);
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
@@ -461,8 +468,8 @@ export async function evaluateWithLLM({ modelId, vendor = null, prompt, config =
     };
   }
 
-  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set on the server');
-  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  const apiKey = await resolveProviderKey('google', config.instructorId);
+  const ai = new GoogleGenAI({ apiKey });
   const generation = await ai.models.generateContent({
     model: modelId,
     contents: prompt,
@@ -546,6 +553,7 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
   const overrideMaxTokens = Number.isFinite(config.maxTokens) ? Number(config.maxTokens) : null;
 
   if (provider === 'openrouter') {
+    const apiKey = await resolveProviderKey('openrouter', config.instructorId);
     const mergedParams = { ...runtimeParams };
     if (temperature !== null && temperature !== undefined && mergedParams.temperature === undefined) {
       mergedParams.temperature = Number(temperature);
@@ -556,6 +564,7 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
       messages,
       runtimeParams: mergedParams,
       maxTokens: overrideMaxTokens ?? 16000,
+      apiKey,
     });
     return {
       text,
@@ -568,7 +577,7 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
   }
 
   if (provider === 'openai') {
-    if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on the server');
+    const apiKey = await resolveProviderKey('openai', config.instructorId);
     const tokenCap = overrideMaxTokens ?? 16000;
     const payload = {
       model: modelId,
@@ -595,7 +604,7 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(payload),
     });
@@ -610,12 +619,12 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
   }
 
   if (provider === 'anthropic') {
-    if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set on the server');
+    const apiKey = await resolveProviderKey('anthropic', config.instructorId);
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
@@ -637,8 +646,8 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
   }
 
   // Google Gemini
-  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set on the server');
-  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  const apiKey = await resolveProviderKey('google', config.instructorId);
+  const ai = new GoogleGenAI({ apiKey });
   const generation = await ai.models.generateContent({
     model: modelId,
     contents: prompt,

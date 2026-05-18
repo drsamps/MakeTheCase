@@ -4,9 +4,11 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 import {
   requireAdminOrInstructor,
   requireCaseAccess,
-  requireSuperuser,
-  canAccessCase
+  requireSuperuser
 } from '../middleware/instructorAccess.js';
+import { buildVisibilityScope, canAccessResource } from '../services/resourceAccess.js';
+import { setVisibility } from '../services/visibilityWrites.js';
+import { writeAudit } from '../services/auditLog.js';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
@@ -65,7 +67,7 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
     const { enabled, include_scenarios } = req.query;
     let query = `
       SELECT c.case_id, c.case_title, c.case_version, c.base_scenario_id,
-             c.created_at, c.enabled, c.is_shared, c.created_by, c.created_by_type,
+             c.created_at, c.enabled, c.is_shared, c.visibility, c.created_by, c.created_by_type,
              CASE
                WHEN c.created_by_type = 'admin' THEN (SELECT who FROM admins WHERE id = c.created_by)
                WHEN c.created_by_type = 'instructor' THEN (SELECT full_name FROM instructors WHERE id = c.created_by)
@@ -76,11 +78,10 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
     const params = [];
     const whereClauses = [];
 
-    // Filter by instructor access (owner or shared)
-    if (req.user.role === 'instructor') {
-      whereClauses.push('(c.is_shared = 1 OR c.created_by = ?)');
-      params.push(req.user.id);
-    }
+    // Filter by visibility / ownership / team-shares.
+    const scope = buildVisibilityScope(req, 'case', 'c');
+    whereClauses.push(scope.whereSql);
+    params.push(...scope.params);
 
     if (enabled !== undefined) {
       whereClauses.push('c.enabled = ?');
@@ -172,9 +173,13 @@ router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
       return res.status(409).json({ data: null, error: { message: 'Case ID already exists' } });
     }
 
-    // Track ownership: is_shared defaults to false for new cases
-    const createdByType = req.user.role; // 'admin' or 'instructor'
-    const createdBy = req.user.id;
+    // Track ownership. When an admin is impersonating an instructor via
+    // X-Act-As-Instructor, the resource is owned by the impersonated instructor
+    // (matrix invariant: "admins do not own teaching resources"). This also
+    // produces a dual-attribution audit row via writeAudit().
+    const effectiveId = req.effectiveInstructorId || req.user?.id || null;
+    const createdByType = req.user.role === 'admin' && !req.effectiveInstructorId ? 'admin' : 'instructor';
+    const createdBy = effectiveId;
 
     await pool.execute(
       `INSERT INTO cases (case_id, case_title, case_version, enabled, created_by_type, created_by, is_shared)
@@ -209,7 +214,7 @@ router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
 });
 
 // PATCH /api/cases/:id - Update case (owner or admin)
-router.patch('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'), async (req, res) => {
+router.patch('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('id', 'edit'), async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
@@ -260,7 +265,7 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('i
 });
 
 // DELETE /api/cases/:id - Delete case (owner or admin)
-router.delete('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'), async (req, res) => {
+router.delete('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('id', 'delete'), async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -292,7 +297,9 @@ router.delete('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('
     
     // Delete from database (case_files will cascade)
     await pool.execute('DELETE FROM cases WHERE case_id = ?', [id]);
-    
+
+    await writeAudit(req, { action: 'case.delete', resourceType: 'case', resourceId: id });
+
     res.json({ data: { deleted: true }, error: null });
   } catch (error) {
     console.error('Error deleting case:', error);
@@ -301,7 +308,7 @@ router.delete('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('
 });
 
 // POST /api/cases/:id/upload - Upload case or teaching note file (owner or admin)
-router.post('/:id/upload', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'), upload.single('file'), async (req, res) => {
+router.post('/:id/upload', verifyToken, requireAdminOrInstructor, requireCaseAccess('id', 'edit'), upload.single('file'), async (req, res) => {
   try {
     const { id } = req.params;
     const fileType = req.body.file_type || 'case'; // 'case' or 'teaching_note'
@@ -398,6 +405,27 @@ router.get('/:id/content/:fileType', verifyToken, requireAdminOrInstructor, requ
     }
   } catch (error) {
     console.error('Error reading case content:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/cases/:id/visibility - Set Private/Team/Public + optional team_ids.
+router.patch('/:id/visibility', verifyToken, requireAdminOrInstructor, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const access = await canAccessResource(req, 'case', id, 'share');
+    if (!access.allowed) {
+      return res.status(access.reason === 'not_found' ? 404 : 403).json({
+        data: null, error: { message: access.reason }
+      });
+    }
+    const result = await setVisibility(req, 'case', id, req.body || {});
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ data: null, error: { message: result.error } });
+    }
+    res.json({ data: { case_id: id, visibility: req.body.visibility }, error: null });
+  } catch (error) {
+    console.error('Error setting case visibility:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

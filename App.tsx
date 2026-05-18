@@ -5,7 +5,7 @@ import { Message, MessageRole, ConversationPhase, EvaluationResult, CEOPersona, 
 import { createChatSession, getEvaluation } from './services/llmService';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
-import { api, getApiBaseUrl } from './services/apiClient';
+import { api, getApiBaseUrl, refreshAuthToken } from './services/apiClient';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
 import MessageInput from './components/MessageInput';
@@ -198,6 +198,19 @@ const App: React.FC = () => {
   const isLargeScreen = useMediaQuery('(min-width: 1024px)');
   const direction = isLargeScreen ? 'vertical' : 'horizontal';
   const initialSize = isLargeScreen ? 33 : 50;
+
+  // Proactive JWT refresh: on app boot, on window focus, and every 20 minutes.
+  // Keeps a logged-in user from being bounced mid-session by the 12h TTL.
+  useEffect(() => {
+    refreshAuthToken();
+    const onFocus = () => { refreshAuthToken(); };
+    window.addEventListener('focus', onFocus);
+    const interval = window.setInterval(() => { refreshAuthToken(); }, 20 * 60 * 1000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     // Handles client-side routing and auth state
@@ -1339,6 +1352,10 @@ const App: React.FC = () => {
           body: JSON.stringify(caseChatPayload),
         });
         const caseChatResult = await caseChatResponse.json();
+        if (caseChatResponse.status === 409 && caseChatResult?.error?.code === 'INSTRUCTOR_SETUP_INCOMPLETE') {
+          setError(caseChatResult.error.message || "This section isn't ready yet — your instructor still needs to finish setup.");
+          return;
+        }
         if (caseChatResult.data?.id) {
           setCurrentCaseChatId(caseChatResult.data.id);
         }

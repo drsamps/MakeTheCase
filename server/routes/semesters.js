@@ -1,6 +1,8 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import { requireSuperuser } from '../middleware/instructorAccess.js';
+import { writeAudit } from '../services/auditLog.js';
 
 const router = express.Router();
 
@@ -30,7 +32,9 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/semesters/current - Get current semester with courses
+// GET /api/semesters/current - Get current semester.
+// Prefers system_state.current_semester_id (CAS-managed); falls back to the
+// legacy semesters.is_current flag for callers that haven't migrated yet.
 router.get('/current', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
@@ -42,7 +46,10 @@ router.get('/current', async (req, res) => {
         sem.end_date,
         sem.created_at
       FROM semesters sem
-      WHERE sem.is_current = TRUE
+      WHERE sem.id = COALESCE(
+        (SELECT current_semester_id FROM system_state WHERE id = 1),
+        (SELECT id FROM semesters WHERE is_current = TRUE LIMIT 1)
+      )
       LIMIT 1
     `);
 
@@ -107,7 +114,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/semesters - Create new semester
-router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
+router.post('/', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
   try {
     const { semester_name, start_date, end_date, is_current } = req.body;
 
@@ -149,7 +156,7 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // PUT /api/semesters/:id - Update semester
-router.put('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+router.put('/:id', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
   try {
     const { id } = req.params;
     const { semester_name, start_date, end_date } = req.body;
@@ -189,38 +196,83 @@ router.put('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   }
 });
 
-// PUT /api/semesters/:id/current - Set semester as current
-router.put('/:id/current', verifyToken, requireRole(['admin']), async (req, res) => {
+// PUT /api/semesters/:id/current - Set semester as current.
+// CAS-safe: client must send the expected_previous_id it saw when the page
+// loaded. If another admin has switched the semester in the meantime, the
+// CAS update touches zero rows and we return 409 so the caller can refresh.
+router.put('/:id/current', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
+  const connection = await pool.getConnection();
   try {
     const { id } = req.params;
+    const newId = Number(id);
+    const expectedPrev = req.body?.expected_previous_id;
 
-    // Check if semester exists
-    const [existing] = await pool.execute('SELECT id FROM semesters WHERE id = ?', [id]);
+    const [existing] = await connection.execute('SELECT id, semester_name FROM semesters WHERE id = ?', [newId]);
     if (existing.length === 0) {
+      connection.release();
       return res.status(404).json({ data: null, error: { message: 'Semester not found' } });
     }
 
-    // Clear current flag from all semesters
-    await pool.execute('UPDATE semesters SET is_current = FALSE');
+    await connection.beginTransaction();
 
-    // Set this semester as current
-    await pool.execute('UPDATE semesters SET is_current = TRUE WHERE id = ?', [id]);
+    // Read current state under the transaction for the audit trail.
+    const [stateRows] = await connection.execute(
+      'SELECT current_semester_id FROM system_state WHERE id = 1 FOR UPDATE'
+    );
+    const currentId = stateRows[0]?.current_semester_id ?? null;
 
-    // Return updated semester
-    const [rows] = await pool.execute(
-      'SELECT id, semester_name, is_current, start_date, end_date, created_at FROM semesters WHERE id = ?',
-      [id]
+    // CAS guard - only enforced when caller passes the value they saw.
+    if (expectedPrev !== undefined && Number(expectedPrev) !== Number(currentId)) {
+      await connection.rollback();
+      connection.release();
+      return res.status(409).json({
+        data: null,
+        error: {
+          code: 'CURRENT_SEMESTER_CAS_CONFLICT',
+          message: 'Current semester was changed by another admin. Refresh and try again.',
+          current_semester_id: currentId
+        }
+      });
+    }
+
+    // Update system_state.
+    await connection.execute(
+      `UPDATE system_state
+         SET current_semester_id = ?,
+             updated_by_admin_id = ?
+       WHERE id = 1`,
+      [newId, req.user.role === 'admin' ? req.user.id : null]
     );
 
+    // Mirror to semesters.is_current for any code still reading that flag.
+    await connection.execute('UPDATE semesters SET is_current = FALSE');
+    await connection.execute('UPDATE semesters SET is_current = TRUE WHERE id = ?', [newId]);
+
+    await connection.commit();
+
+    await writeAudit(req, {
+      action: 'semester.set_current',
+      resourceType: 'semester',
+      resourceId: String(newId),
+      details: { previous_semester_id: currentId, new_semester_id: newId }
+    });
+
+    const [rows] = await pool.execute(
+      'SELECT id, semester_name, is_current, start_date, end_date, created_at FROM semesters WHERE id = ?',
+      [newId]
+    );
     res.json({ data: rows[0], error: null });
   } catch (error) {
+    try { await connection.rollback(); } catch (_) {}
     console.error('Error setting current semester:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
+  } finally {
+    try { connection.release(); } catch (_) {}
   }
 });
 
 // DELETE /api/semesters/:id - Delete semester
-router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+router.delete('/:id', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -250,7 +302,7 @@ router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
 });
 
 // POST /api/semesters/:id/clone - Clone semester to new semester
-router.post('/:id/clone', verifyToken, requireRole(['admin']), async (req, res) => {
+router.post('/:id/clone', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
   const connection = await pool.getConnection();
 
   try {
@@ -487,16 +539,20 @@ router.get('/:semesterId/courses', async (req, res) => {
         c.course_code,
         c.description,
         c.primary_section_id,
+        c.primary_instructor_id,
         c.sync_scheduling,
         c.created_at,
         ps.section_title as primary_section_title,
+        i.full_name as primary_instructor_name,
         COUNT(s.section_id) as section_count
       FROM courses c
       LEFT JOIN sections s ON c.id = s.course_id
       LEFT JOIN sections ps ON c.primary_section_id = ps.section_id
+      LEFT JOIN instructors i ON c.primary_instructor_id = i.id
       WHERE c.semester_id = ?
       GROUP BY c.id, c.semester_id, c.course_name, c.course_code, c.description,
-               c.primary_section_id, c.sync_scheduling, c.created_at, ps.section_title
+               c.primary_section_id, c.primary_instructor_id, c.sync_scheduling, c.created_at,
+               ps.section_title, i.full_name
       ORDER BY c.course_name
     `, [semesterId]);
 
@@ -540,44 +596,99 @@ router.get('/:id/instructors', verifyToken, requireRole(['admin']), async (req, 
 
 // POST /api/semesters/:semesterId/courses - Create new course in semester
 router.post('/:semesterId/courses', verifyToken, requireRole(['admin']), async (req, res) => {
+  const connection = await pool.getConnection();
   try {
     const { semesterId } = req.params;
-    const { course_name, course_code, description, sync_scheduling } = req.body;
+    const {
+      course_name,
+      course_code,
+      description,
+      sync_scheduling,
+      primary_instructor_id,
+      cascade_to_sections
+    } = req.body;
 
     if (!course_name) {
+      connection.release();
       return res.status(400).json({ data: null, error: { message: 'Course name is required' } });
     }
 
     // Check semester exists
-    const [semester] = await pool.execute('SELECT id FROM semesters WHERE id = ?', [semesterId]);
+    const [semester] = await connection.execute('SELECT id FROM semesters WHERE id = ?', [semesterId]);
     if (semester.length === 0) {
+      connection.release();
       return res.status(404).json({ data: null, error: { message: 'Semester not found' } });
     }
 
+    // Validate primary instructor (when provided)
+    if (primary_instructor_id) {
+      const [inst] = await connection.execute(
+        'SELECT id, active FROM instructors WHERE id = ?',
+        [primary_instructor_id]
+      );
+      if (inst.length === 0) {
+        connection.release();
+        return res.status(400).json({ data: null, error: { message: 'Primary instructor not found' } });
+      }
+      if (!inst[0].active) {
+        connection.release();
+        return res.status(400).json({ data: null, error: { message: 'Primary instructor is deactivated' } });
+      }
+    }
+
     // Check for duplicate course name in semester
-    const [existing] = await pool.execute(
+    const [existing] = await connection.execute(
       'SELECT id FROM courses WHERE semester_id = ? AND course_name = ?',
       [semesterId, course_name]
     );
     if (existing.length > 0) {
+      connection.release();
       return res.status(409).json({ data: null, error: { message: 'A course with this name already exists in this semester' } });
     }
 
-    const [result] = await pool.execute(
-      'INSERT INTO courses (semester_id, course_name, course_code, description, sync_scheduling) VALUES (?, ?, ?, ?, ?)',
-      [semesterId, course_name, course_code || null, description || null, sync_scheduling ? 1 : 0]
+    await connection.beginTransaction();
+
+    const [result] = await connection.execute(
+      `INSERT INTO courses (semester_id, course_name, course_code, description, sync_scheduling, primary_instructor_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        semesterId,
+        course_name,
+        course_code || null,
+        description || null,
+        sync_scheduling ? 1 : 0,
+        primary_instructor_id || null
+      ]
     );
 
-    // Return created course
-    const [rows] = await pool.execute(
-      'SELECT id, semester_id, course_name, course_code, description, primary_section_id, sync_scheduling, created_at FROM courses WHERE id = ?',
+    // Cascade primary instructor to existing sections in this course (none on create,
+    // but kept for symmetry with PUT).
+    if (primary_instructor_id && cascade_to_sections) {
+      await connection.execute(
+        'UPDATE sections SET primary_instructor_id = ? WHERE course_id = ?',
+        [primary_instructor_id, result.insertId]
+      );
+    }
+
+    await connection.commit();
+
+    const [rows] = await connection.execute(
+      `SELECT c.id, c.semester_id, c.course_name, c.course_code, c.description,
+              c.primary_section_id, c.primary_instructor_id, c.sync_scheduling, c.created_at,
+              i.full_name AS primary_instructor_name
+         FROM courses c
+         LEFT JOIN instructors i ON c.primary_instructor_id = i.id
+        WHERE c.id = ?`,
       [result.insertId]
     );
 
     res.status(201).json({ data: rows[0], error: null });
   } catch (error) {
+    try { await connection.rollback(); } catch (_) {}
     console.error('Error creating course:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
+  } finally {
+    connection.release();
   }
 });
 

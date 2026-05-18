@@ -285,9 +285,14 @@ export interface Course {
 export interface AdminUser {
   id: string;
   email: string;
-  role: 'admin';
-  superuser: boolean;
-  adminAccess: string[];
+  role: 'admin' | 'instructor';
+  superuser?: boolean;
+  adminAccess?: string[];
+  firstName?: string;
+  lastName?: string;
+  fullName?: string;
+  can_publish?: boolean;
+  use_system_key?: boolean;
 }
 
 export interface PositionLog {

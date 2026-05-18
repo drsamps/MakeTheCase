@@ -112,6 +112,9 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
     last_name: '',
     full_name: '',
     active: true,
+    use_system_key: false,
+    can_publish: false,
+    monthly_token_cap: '' as string,
   });
 
   const [assignFormData, setAssignFormData] = useState({
@@ -312,6 +315,9 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
       last_name: '',
       full_name: '',
       active: true,
+      use_system_key: false,
+      can_publish: false,
+      monthly_token_cap: '',
     });
     setShowInstructorModal(true);
   };
@@ -325,6 +331,11 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
       last_name: instructor.last_name || '',
       full_name: instructor.full_name,
       active: instructor.active,
+      use_system_key: Boolean((instructor as any).use_system_key),
+      can_publish: Boolean((instructor as any).can_publish),
+      monthly_token_cap: (instructor as any).monthly_token_cap == null
+        ? ''
+        : String((instructor as any).monthly_token_cap),
     });
     setShowInstructorModal(true);
   };
@@ -341,6 +352,11 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
           full_name: instructorFormData.full_name || `${instructorFormData.first_name} ${instructorFormData.last_name}`.trim(),
           email: instructorFormData.email,
           active: instructorFormData.active,
+          use_system_key: instructorFormData.use_system_key,
+          can_publish: instructorFormData.can_publish,
+          monthly_token_cap: instructorFormData.monthly_token_cap === ''
+            ? null
+            : Number(instructorFormData.monthly_token_cap),
         };
         if (instructorFormData.password) {
           updateData.password = instructorFormData.password;
@@ -677,11 +693,27 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
                         <div className="text-sm text-gray-600">{instructor.email}</div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        {instructor.active ? (
-                          <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">Active</span>
-                        ) : (
-                          <span className="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-800">Inactive</span>
-                        )}
+                        <div className="flex flex-wrap gap-1 items-center">
+                          {instructor.active ? (
+                            <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">Active</span>
+                          ) : (
+                            <span className="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-800">Inactive</span>
+                          )}
+                          {(instructor as any).use_system_key && (
+                            <span className="px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-800" title="Uses system API key">sys-key</span>
+                          )}
+                          {(instructor as any).use_system_key && (instructor as any).monthly_token_cap != null && (
+                            <span
+                              className="px-2 py-0.5 text-xs rounded bg-amber-50 text-amber-700 border border-amber-200"
+                              title="Monthly token cap (input + cached + output)"
+                            >
+                              cap: {Number((instructor as any).monthly_token_cap).toLocaleString()}
+                            </span>
+                          )}
+                          {(instructor as any).can_publish && (
+                            <span className="px-2 py-0.5 text-xs rounded bg-blue-100 text-blue-800" title="Can publish to all instructors">publish</span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-6 py-4">
                         {(instructor.semester_count || 0) > 0 || (instructor.section_count || 0) > 0 ? (
@@ -975,18 +1007,68 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
               </div>
 
               {editingInstructor && (
-                <div className="flex items-center">
-                  <input
-                    type="checkbox"
-                    id="active"
-                    checked={instructorFormData.active}
-                    onChange={(e) => setInstructorFormData({ ...instructorFormData, active: e.target.checked })}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                  />
-                  <label htmlFor="active" className="ml-2 block text-sm text-gray-900">
-                    Active (can log in)
-                  </label>
-                </div>
+                <>
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="active"
+                      checked={instructorFormData.active}
+                      onChange={(e) => setInstructorFormData({ ...instructorFormData, active: e.target.checked })}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="active" className="ml-2 block text-sm text-gray-900">
+                      Active (can log in)
+                    </label>
+                  </div>
+
+                  <div className="border-t border-gray-200 pt-3 space-y-2">
+                    <div className="text-xs font-medium text-gray-500 uppercase">Admin grants</div>
+                    <div className="flex items-start">
+                      <input
+                        type="checkbox"
+                        id="use_system_key"
+                        checked={instructorFormData.use_system_key}
+                        onChange={(e) => setInstructorFormData({ ...instructorFormData, use_system_key: e.target.checked })}
+                        className="h-4 w-4 mt-0.5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                      />
+                      <label htmlFor="use_system_key" className="ml-2 block text-sm text-gray-900">
+                        Use system API key
+                        <div className="text-xs text-gray-500">Bypass per-instructor key requirement; use server env keys.</div>
+                      </label>
+                    </div>
+                    <div className="flex items-start">
+                      <input
+                        type="checkbox"
+                        id="can_publish"
+                        checked={instructorFormData.can_publish}
+                        onChange={(e) => setInstructorFormData({ ...instructorFormData, can_publish: e.target.checked })}
+                        className="h-4 w-4 mt-0.5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                      />
+                      <label htmlFor="can_publish" className="ml-2 block text-sm text-gray-900">
+                        Can publish to all instructors
+                        <div className="text-xs text-gray-500">Allow this instructor to set resources to Public visibility.</div>
+                      </label>
+                    </div>
+                    <div>
+                      <label htmlFor="monthly_token_cap" className="block text-sm font-medium text-gray-700">
+                        Monthly token cap
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        id="monthly_token_cap"
+                        value={instructorFormData.monthly_token_cap}
+                        onChange={(e) => setInstructorFormData({ ...instructorFormData, monthly_token_cap: e.target.value })}
+                        placeholder="(no cap)"
+                        className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Only enforced when "Use system API key" is on. Total tokens (input + cached + output) per calendar month. Leave blank for no cap.
+                      </p>
+                    </div>
+                  </div>
+                </>
               )}
 
               <div className="flex justify-end gap-3 pt-4">

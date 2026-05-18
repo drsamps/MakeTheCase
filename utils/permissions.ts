@@ -5,10 +5,21 @@
 import { AdminUser } from '../types';
 
 // Base functions available to all instructors
-const BASE_FUNCTIONS = ['chats', 'assignments', 'sections', 'students', 'cases'];
+const BASE_FUNCTIONS = [
+  'chats', 'assignments', 'sections', 'students', 'cases',
+  // Multi-instructor additions:
+  'teams',     // self-service Teams membership / sharing
+  'apikeys',   // per-instructor API keys
+  'rubrics',   // owned + system + team-shared
+  'personas',  // system defaults (read-only) + per-instructor + team-shared
+];
 
 // Superuser-only functions by default
-const SUPERUSER_FUNCTIONS = ['caseprep', 'personas', 'prompts', 'models', 'settings', 'instructors'];
+const SUPERUSER_FUNCTIONS = [
+  'caseprep', 'prompts', 'models', 'settings', 'instructors',
+  'semesters', // semester catalog + set-current
+  'auditlog',  // audit_log viewer
+];
 
 /**
  * Check if a user has access to a specific dashboard function
@@ -18,19 +29,20 @@ const SUPERUSER_FUNCTIONS = ['caseprep', 'personas', 'prompts', 'models', 'setti
  * @returns True if user has access, false otherwise
  */
 export function hasAccess(user: AdminUser | null | undefined, functionName: string): boolean {
-  if (!user || user.role !== 'admin') {
-    return false;
+  if (!user) return false;
+
+  // Instructors get the base set, never the admin-only set.
+  if (user.role === 'instructor') {
+    return BASE_FUNCTIONS.includes(functionName);
   }
+
+  if (user.role !== 'admin') return false;
 
   // Superusers have access to everything
-  if (user.superuser) {
-    return true;
-  }
+  if (user.superuser) return true;
 
-  // Base functions available to all
-  if (BASE_FUNCTIONS.includes(functionName)) {
-    return true;
-  }
+  // Base functions available to all admins
+  if (BASE_FUNCTIONS.includes(functionName)) return true;
 
   // Check specific permissions
   return user.adminAccess?.includes(functionName) ?? false;

@@ -15,6 +15,8 @@ import {
   canAccessSection,
   isPrimaryInstructorForSection
 } from '../middleware/instructorAccess.js';
+import { writeAudit } from '../services/auditLog.js';
+import { getMonthlyUsage } from '../services/usageGuard.js';
 
 const router = express.Router();
 
@@ -30,7 +32,8 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     let query = `
       SELECT i.id, i.email, i.first_name, i.last_name, i.full_name,
-             i.active, i.created_at, i.last_login,
+             i.active, i.use_system_key, i.can_publish, i.monthly_token_cap, i.is_system_account,
+             i.created_at, i.last_login,
              COUNT(DISTINCT isem.semester_id) as semester_count,
              COUNT(DISTINCT isec.section_id) as section_count
       FROM instructors i
@@ -66,7 +69,11 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
 
     const instructors = rows.map(row => ({
       ...row,
-      active: Boolean(row.active)
+      active: Boolean(row.active),
+      use_system_key: Boolean(row.use_system_key),
+      can_publish: Boolean(row.can_publish),
+      is_system_account: Boolean(row.is_system_account),
+      monthly_token_cap: row.monthly_token_cap == null ? null : Number(row.monthly_token_cap),
     }));
 
     res.json({ data: instructors, error: null });
@@ -85,7 +92,9 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => {
 
     // Get instructor
     const [instructorRows] = await pool.execute(
-      `SELECT id, email, first_name, last_name, full_name, active, created_at, last_login
+      `SELECT id, email, first_name, last_name, full_name, active,
+              use_system_key, can_publish, monthly_token_cap, is_system_account,
+              created_at, last_login
        FROM instructors WHERE id = ?`,
       [id]
     );
@@ -96,7 +105,11 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => {
 
     const instructor = {
       ...instructorRows[0],
-      active: Boolean(instructorRows[0].active)
+      active: Boolean(instructorRows[0].active),
+      use_system_key: Boolean(instructorRows[0].use_system_key),
+      can_publish: Boolean(instructorRows[0].can_publish),
+      is_system_account: Boolean(instructorRows[0].is_system_account),
+      monthly_token_cap: instructorRows[0].monthly_token_cap == null ? null : Number(instructorRows[0].monthly_token_cap),
     };
 
     // Get semester assignments
@@ -198,13 +211,32 @@ router.post('/', verifyToken, requireRole(['admin']), requireSuperuser, async (r
 });
 
 /**
+ * GET /api/instructors/:id/usage - current-month token usage + cap status
+ * Visible to: the instructor themselves, any admin.
+ */
+router.get('/:id/usage', verifyToken, requireAdminOrInstructor, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (req.user.role === 'instructor' && req.user.id !== id) {
+      return res.status(403).json({ error: 'You can only view your own usage' });
+    }
+    const usage = await getMonthlyUsage(id);
+    res.json({ data: usage, error: null });
+  } catch (error) {
+    console.error('Error fetching instructor usage:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+/**
  * PATCH /api/instructors/:id - Update instructor
  * Superuser can update any instructor; instructors can update themselves
  */
 router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { id } = req.params;
-    const { email, password, first_name, last_name, full_name, active } = req.body;
+    const { email, password, first_name, last_name, full_name, active,
+            use_system_key, can_publish, monthly_token_cap } = req.body;
 
     // Non-superusers can only update themselves
     if (!req.user.superuser && req.user.id !== id) {
@@ -214,6 +246,9 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
     // Only superusers can change active status
     if (active !== undefined && !req.user.superuser) {
       return res.status(403).json({ error: 'Only superusers can change active status' });
+    }
+    if ((use_system_key !== undefined || can_publish !== undefined || monthly_token_cap !== undefined) && !req.user.superuser) {
+      return res.status(403).json({ error: 'Only superusers can grant use_system_key, can_publish, or set monthly_token_cap' });
     }
 
     const updates = [];
@@ -265,6 +300,28 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
       values.push(active ? 1 : 0);
     }
 
+    // Admin-grantable permission flags
+    let auditDetails = null;
+    if (use_system_key !== undefined) {
+      updates.push('use_system_key = ?');
+      values.push(use_system_key ? 1 : 0);
+      auditDetails = { ...(auditDetails || {}), use_system_key: Boolean(use_system_key) };
+    }
+    if (can_publish !== undefined) {
+      updates.push('can_publish = ?');
+      values.push(can_publish ? 1 : 0);
+      auditDetails = { ...(auditDetails || {}), can_publish: Boolean(can_publish) };
+    }
+    if (monthly_token_cap !== undefined) {
+      const cap = monthly_token_cap === null || monthly_token_cap === '' ? null : Number(monthly_token_cap);
+      if (cap !== null && (!Number.isFinite(cap) || cap < 0)) {
+        return res.status(400).json({ error: 'monthly_token_cap must be a non-negative number or null' });
+      }
+      updates.push('monthly_token_cap = ?');
+      values.push(cap);
+      auditDetails = { ...(auditDetails || {}), monthly_token_cap: cap };
+    }
+
     if (updates.length === 0) {
       return res.status(400).json({ error: 'No fields to update' });
     }
@@ -275,9 +332,19 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
       values
     );
 
+    if (auditDetails) {
+      await writeAudit(req, {
+        action: 'instructor.permissions',
+        resourceType: 'instructor',
+        resourceId: id,
+        details: auditDetails,
+      });
+    }
+
     // Fetch updated record
     const [rows] = await pool.execute(
-      `SELECT id, email, first_name, last_name, full_name, active, created_at, last_login
+      `SELECT id, email, first_name, last_name, full_name, active,
+              use_system_key, can_publish, monthly_token_cap, created_at, last_login
        FROM instructors WHERE id = ?`,
       [id]
     );
@@ -287,7 +354,13 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
     }
 
     res.json({
-      data: { ...rows[0], active: Boolean(rows[0].active) },
+      data: {
+        ...rows[0],
+        active: Boolean(rows[0].active),
+        use_system_key: Boolean(rows[0].use_system_key),
+        can_publish: Boolean(rows[0].can_publish),
+        monthly_token_cap: rows[0].monthly_token_cap == null ? null : Number(rows[0].monthly_token_cap),
+      },
       error: null
     });
   } catch (error) {
@@ -302,10 +375,23 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
 router.delete('/:id', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
   try {
     const { id } = req.params;
+    const force = req.query.force === 'true';
 
-    // Prevent self-deletion
     if (req.user.id === id) {
       return res.status(400).json({ error: 'Cannot delete your own account' });
+    }
+
+    // Check for owned resources first; require explicit transfer or ?force=true.
+    const ownership = await getOwnershipCounts(id);
+    if (!force && ownership.total > 0) {
+      return res.status(409).json({
+        data: null,
+        error: {
+          code: 'INSTRUCTOR_OWNS_RESOURCES',
+          message: 'Instructor still owns resources. Transfer ownership first or pass ?force=true to orphan-and-delete.',
+          ownership
+        }
+      });
     }
 
     const [result] = await pool.execute(
@@ -317,10 +403,233 @@ router.delete('/:id', verifyToken, requireRole(['admin']), requireSuperuser, asy
       return res.status(404).json({ error: 'Instructor not found' });
     }
 
+    await writeAudit(req, {
+      action: 'instructor.delete',
+      resourceType: 'instructor',
+      resourceId: id,
+      details: { force, ownership }
+    });
+
     res.json({ data: { success: true }, error: null });
   } catch (error) {
     console.error('Error deleting instructor:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// ============================================================
+// Deactivation / activation
+// ============================================================
+async function getOwnershipCounts(instructorId) {
+  const [[cases]] = await pool.execute(
+    'SELECT COUNT(*) c FROM cases WHERE created_by = ? AND created_by_type = "instructor"',
+    [instructorId]
+  );
+  const [[rubrics]] = await pool.execute(
+    'SELECT COUNT(*) c FROM rubrics WHERE created_by = ? AND created_by_type = "instructor"',
+    [instructorId]
+  );
+  const [[criteria]] = await pool.execute(
+    'SELECT COUNT(*) c FROM rubric_criteria WHERE created_by = ? AND created_by_type = "instructor"',
+    [instructorId]
+  );
+  const [[personas]] = await pool.execute(
+    'SELECT COUNT(*) c FROM personas WHERE created_by = ? AND created_by_type = "instructor"',
+    [instructorId]
+  );
+  const [[projects]] = await pool.execute(
+    'SELECT COUNT(*) c FROM case_writer_projects WHERE owner_id = ? AND owner_type = "instructor"',
+    [instructorId]
+  );
+  const [[courses]] = await pool.execute(
+    'SELECT COUNT(*) c FROM courses WHERE primary_instructor_id = ?',
+    [instructorId]
+  );
+  const [[sections]] = await pool.execute(
+    'SELECT COUNT(*) c FROM sections WHERE primary_instructor_id = ?',
+    [instructorId]
+  );
+  const out = {
+    cases: cases.c, rubrics: rubrics.c, rubric_criteria: criteria.c,
+    personas: personas.c, case_writer_projects: projects.c,
+    courses: courses.c, sections: sections.c
+  };
+  out.total = Object.values(out).reduce((a, b) => a + b, 0);
+  return out;
+}
+
+/**
+ * POST /api/instructors/:id/deactivate - Soft-delete (active=0).
+ * Resources remain owned; team-shared content stays visible. JWTs for the
+ * instructor are rejected at the auth middleware on next request.
+ */
+router.post('/:id/deactivate', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (req.user.id === id) {
+      return res.status(400).json({ error: 'Cannot deactivate your own account' });
+    }
+    const [result] = await pool.execute(
+      'UPDATE instructors SET active = 0 WHERE id = ?',
+      [id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Instructor not found' });
+    }
+    await writeAudit(req, {
+      action: 'instructor.deactivate',
+      resourceType: 'instructor',
+      resourceId: id
+    });
+    res.json({ data: { success: true, active: false }, error: null });
+  } catch (error) {
+    console.error('Error deactivating instructor:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+/**
+ * POST /api/instructors/:id/activate - Re-enable a deactivated instructor.
+ */
+router.post('/:id/activate', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [result] = await pool.execute(
+      'UPDATE instructors SET active = 1 WHERE id = ?',
+      [id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Instructor not found' });
+    }
+    await writeAudit(req, {
+      action: 'instructor.activate',
+      resourceType: 'instructor',
+      resourceId: id
+    });
+    res.json({ data: { success: true, active: true }, error: null });
+  } catch (error) {
+    console.error('Error activating instructor:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+/**
+ * GET /api/instructors/:id/ownership - Count owned resources (used before
+ * deactivating or deleting to show "you still own N items" warnings).
+ */
+router.get('/:id/ownership', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
+  try {
+    const ownership = await getOwnershipCounts(req.params.id);
+    res.json({ data: ownership, error: null });
+  } catch (error) {
+    console.error('Error computing ownership:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+/**
+ * POST /api/instructors/:id/transfer-ownership
+ * Body: { targetInstructorId, scope: 'all' | { cases:[ids], rubrics:[ids], ... } }
+ *
+ * Re-points created_by / primary_instructor_id from :id to targetInstructorId.
+ * Writes one audit entry summarising the transfer.
+ */
+router.post('/:id/transfer-ownership', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const { id } = req.params;
+    const { targetInstructorId, scope = 'all' } = req.body || {};
+
+    if (!targetInstructorId) {
+      connection.release();
+      return res.status(400).json({ error: 'targetInstructorId is required' });
+    }
+    if (targetInstructorId === id) {
+      connection.release();
+      return res.status(400).json({ error: 'Source and target instructors must differ' });
+    }
+
+    const [src] = await connection.execute('SELECT id FROM instructors WHERE id = ?', [id]);
+    const [tgt] = await connection.execute('SELECT id, active FROM instructors WHERE id = ?', [targetInstructorId]);
+    if (src.length === 0) {
+      connection.release();
+      return res.status(404).json({ error: 'Source instructor not found' });
+    }
+    if (tgt.length === 0) {
+      connection.release();
+      return res.status(404).json({ error: 'Target instructor not found' });
+    }
+    if (!tgt[0].active) {
+      connection.release();
+      return res.status(400).json({ error: 'Target instructor is deactivated' });
+    }
+
+    await connection.beginTransaction();
+
+    const before = await getOwnershipCounts(id);
+    const transferred = {};
+
+    async function moveAll(table, ownerCol, typeCol = null) {
+      if (typeCol) {
+        const [r] = await connection.execute(
+          `UPDATE ${table} SET ${ownerCol} = ? WHERE ${ownerCol} = ? AND ${typeCol} = 'instructor'`,
+          [targetInstructorId, id]
+        );
+        return r.affectedRows;
+      }
+      const [r] = await connection.execute(
+        `UPDATE ${table} SET ${ownerCol} = ? WHERE ${ownerCol} = ?`,
+        [targetInstructorId, id]
+      );
+      return r.affectedRows;
+    }
+    async function moveSubset(table, ownerCol, ids, typeCol = null) {
+      if (!ids || ids.length === 0) return 0;
+      const placeholders = ids.map(() => '?').join(',');
+      const where = typeCol
+        ? `${ownerCol} = ? AND ${typeCol} = 'instructor' AND id IN (${placeholders})`
+        : `${ownerCol} = ? AND id IN (${placeholders})`;
+      const [r] = await connection.execute(
+        `UPDATE ${table} SET ${ownerCol} = ? WHERE ${where}`,
+        [targetInstructorId, id, ...ids]
+      );
+      return r.affectedRows;
+    }
+
+    if (scope === 'all') {
+      transferred.cases = await moveAll('cases', 'created_by', 'created_by_type');
+      transferred.rubrics = await moveAll('rubrics', 'created_by', 'created_by_type');
+      transferred.rubric_criteria = await moveAll('rubric_criteria', 'created_by', 'created_by_type');
+      transferred.personas = await moveAll('personas', 'created_by', 'created_by_type');
+      transferred.case_writer_projects = await moveAll('case_writer_projects', 'owner_id', 'owner_type');
+      transferred.courses = await moveAll('courses', 'primary_instructor_id');
+      transferred.sections = await moveAll('sections', 'primary_instructor_id');
+    } else {
+      transferred.cases = await moveSubset('cases', 'created_by', scope.cases, 'created_by_type');
+      transferred.rubrics = await moveSubset('rubrics', 'created_by', scope.rubrics, 'created_by_type');
+      transferred.rubric_criteria = await moveSubset('rubric_criteria', 'created_by', scope.rubric_criteria, 'created_by_type');
+      transferred.personas = await moveSubset('personas', 'created_by', scope.personas, 'created_by_type');
+      transferred.case_writer_projects = await moveSubset('case_writer_projects', 'owner_id', scope.case_writer_projects, 'owner_type');
+      transferred.courses = await moveSubset('courses', 'primary_instructor_id', scope.courses);
+      transferred.sections = await moveSubset('sections', 'primary_instructor_id', scope.sections);
+    }
+
+    await connection.commit();
+
+    await writeAudit(req, {
+      action: 'instructor.transfer_ownership',
+      resourceType: 'instructor',
+      resourceId: id,
+      details: { source: id, target: targetInstructorId, scope, before, transferred }
+    });
+
+    res.json({ data: { source: id, target: targetInstructorId, transferred }, error: null });
+  } catch (error) {
+    try { await connection.rollback(); } catch (_) {}
+    console.error('Error transferring ownership:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  } finally {
+    try { connection.release(); } catch (_) {}
   }
 });
 

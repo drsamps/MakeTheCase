@@ -8,6 +8,7 @@ import { buildCoachPrompt } from '../services/promptBuilder.js';
 import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
+import { resolveInstructorForSection, resolveInstructorForCaseChat } from '../services/keyResolver.js';
 import {
   parseEvaluationResponse,
   validateEvaluationResult,
@@ -178,8 +179,9 @@ router.post('/run', async (req, res) => {
     const prompt = buildCoachPrompt(chatHistory, full_name, caseData, freeHints, rubric);
 
     // 7. Call LLM
+    const instructorId = await resolveInstructorForSection(section_id);
     const startTime = Date.now();
-    const { text: rawResult, meta } = await evaluateWithLLM({ modelId, vendor: modelConfig.vendor, prompt, config: modelConfig });
+    const { text: rawResult, meta } = await evaluateWithLLM({ modelId, vendor: modelConfig.vendor, prompt, config: { ...modelConfig, instructorId } });
     const durationMs = Date.now() - startTime;
 
     // Log prompt (async, non-blocking)
@@ -214,7 +216,7 @@ router.post('/run', async (req, res) => {
       try {
         const correctionPrompt = buildCorrectionPrompt(prompt, issues, expectedCriteria, result);
         const retryStartTime = Date.now();
-        const { text: retryRaw, meta: retryMeta } = await evaluateWithLLM({ modelId, vendor: modelConfig.vendor, prompt: correctionPrompt, config: modelConfig });
+        const { text: retryRaw, meta: retryMeta } = await evaluateWithLLM({ modelId, vendor: modelConfig.vendor, prompt: correctionPrompt, config: { ...modelConfig, instructorId } });
         const retryDurationMs = Date.now() - retryStartTime;
 
         logPromptIfEnabled({
@@ -357,8 +359,9 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
     console.log('[Re-evaluate] Step 6: Calling LLM with model:', model_id);
     const { getModelConfig: getReEvalModelConfig } = await import('./llm.js');
     const reEvalModelConfig = await getReEvalModelConfig(model_id);
+    const reEvalInstructorId = await resolveInstructorForCaseChat(case_chat_id);
     const reEvalStartTime = Date.now();
-    const { text: evalResult, meta: evalMeta } = await evaluateWithLLM({ modelId: model_id, vendor: reEvalModelConfig?.vendor || null, prompt });
+    const { text: evalResult, meta: evalMeta } = await evaluateWithLLM({ modelId: model_id, vendor: reEvalModelConfig?.vendor || null, prompt, config: { ...(reEvalModelConfig || {}), instructorId: reEvalInstructorId } });
     const reEvalDurationMs = Date.now() - reEvalStartTime;
     console.log('[Re-evaluate] Step 6: Got LLM result');
 
@@ -677,11 +680,13 @@ router.post('/', async (req, res) => {
 
           // Infer position using AI
           const modelId = chat.chat_model || 'gemini-1.5-flash'; // Use chat model or default
+          const inferenceInstructorId = await resolveInstructorForSection(chat.section_id);
           const inferenceResult = await inferPositionFromTranscript(
             transcriptText,
             caseData,
             positionOptions,
-            modelId
+            modelId,
+            inferenceInstructorId
           );
 
           if (inferenceResult && inferenceResult.position) {

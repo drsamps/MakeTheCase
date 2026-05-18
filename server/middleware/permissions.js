@@ -3,10 +3,20 @@
  */
 
 // Base functions available to all instructors
-const BASE_FUNCTIONS = ['chats', 'assignments', 'sections', 'students', 'cases', 'casefiles'];
+const BASE_FUNCTIONS = [
+  'chats', 'assignments', 'sections', 'students', 'cases', 'casefiles',
+  // Multi-instructor additions:
+  'teams',     // self-service Teams membership / sharing
+  'apikeys',   // per-instructor API keys
+  'rubrics',   // instructors manage their own rubrics
+];
 
 // Superuser-only functions by default
-const SUPERUSER_FUNCTIONS = ['caseprep', 'personas', 'prompts', 'models', 'settings', 'instructors', 'rubrics'];
+const SUPERUSER_FUNCTIONS = [
+  'caseprep', 'personas', 'prompts', 'models', 'settings', 'instructors',
+  'semesters', // semester catalog + set-current
+  'auditlog',  // audit_log viewer
+];
 
 /**
  * Middleware to check if admin has access to specific dashboard function

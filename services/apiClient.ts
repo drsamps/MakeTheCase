@@ -61,6 +61,22 @@ export function setAuthToken(token: string | null, role?: 'admin' | 'student') {
   }
 }
 
+// Admin-only impersonation header. When an admin selects "View as <instructor>"
+// in the dashboard, the chosen instructor id is stashed in localStorage so
+// every subsequent API call sends X-Act-As-Instructor.
+export function getImpersonationId(): string | null {
+  if (!isAdminContext()) return null;
+  return localStorage.getItem('mtc_impersonate_id');
+}
+
+export function setImpersonationId(id: string | null) {
+  if (id) {
+    localStorage.setItem('mtc_impersonate_id', id);
+  } else {
+    localStorage.removeItem('mtc_impersonate_id');
+  }
+}
+
 function getAuthHeaders(): HeadersInit {
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
@@ -69,7 +85,60 @@ function getAuthHeaders(): HeadersInit {
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
+  const actAs = getImpersonationId();
+  if (actAs) {
+    headers['X-Act-As-Instructor'] = actAs;
+  }
   return headers;
+}
+
+// Called by apiFetch when a request returns 401. Clears the token for the
+// current context and bounces to login. Safe to call repeatedly.
+let redirectingOnUnauth = false;
+function handleUnauthorized() {
+  if (redirectingOnUnauth) return;
+  redirectingOnUnauth = true;
+  setAuthToken(null);
+  setImpersonationId(null);
+  // Defer to next tick so React can finish the render that triggered this.
+  setTimeout(() => {
+    redirectingOnUnauth = false;
+    // Only redirect if we're not already on the login screen.
+    if (!window.location.hash.startsWith('#/login')) {
+      window.location.hash = isAdminContext() ? '#/admin' : '#/';
+      window.location.reload();
+    }
+  }, 0);
+}
+
+// Proactive token refresh. Call on app boot, on window focus, and on a timer.
+// Cheap (one round-trip every ~20 min) and keeps a logged-in instructor from
+// being booted mid-class by a 12h TTL expiry.
+let refreshInFlight: Promise<boolean> | null = null;
+export async function refreshAuthToken(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight;
+  const token = getActiveToken();
+  if (!token) return false;
+  refreshInFlight = (async () => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) return false;
+      const result = await response.json();
+      if (result?.token) {
+        setAuthToken(result.token);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
 }
 
 // Generic fetch wrapper
@@ -89,6 +158,9 @@ async function apiFetch<T>(
     const result = await response.json();
 
     if (!response.ok) {
+      if (response.status === 401) {
+        handleUnauthorized();
+      }
       return { data: null, error: { message: result.error || 'Request failed' } };
     }
 
@@ -159,24 +231,39 @@ export const auth = {
     }
 
     try {
-      const response = await fetch(`${API_BASE}/auth/session`, {
+      let response = await fetch(`${API_BASE}/auth/session`, {
         headers: getAuthHeaders(),
       });
 
+      // Token near TTL boundary or transient verify hiccup: try a refresh
+      // once before giving up. Without this, impersonation reloads can race
+      // refreshAuthToken() and boot the admin to login.
+      if (response.status === 401) {
+        const refreshed = await refreshAuthToken();
+        if (refreshed) {
+          response = await fetch(`${API_BASE}/auth/session`, {
+            headers: getAuthHeaders(),
+          });
+        }
+      }
+
       if (!response.ok) {
-        // Clear the token for the current context
-        setAuthToken(null);
+        // Only clear on confirmed-bad auth, not on transient 5xx/network.
+        if (response.status === 401 || response.status === 403) {
+          setAuthToken(null);
+        }
         return { data: { session: null }, error: null };
       }
 
       const result = await response.json();
       return {
         data: {
-          session: { access_token: token, user: result.user },
+          session: { access_token: getActiveToken() || token, user: result.user },
         },
         error: null,
       };
     } catch {
+      // Network error — leave token intact; caller will retry on next render.
       return { data: { session: null }, error: null };
     }
   },

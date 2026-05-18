@@ -15,6 +15,9 @@
 
 export { default as ChatOptionsHelp } from './ChatOptionsHelp';
 export { default as ResultsHelp } from './ResultsHelp';
+export { default as TeamsHelp } from './TeamsHelp';
+export { default as ApiKeysHelp } from './ApiKeysHelp';
+export { default as VisibilityHelp } from './VisibilityHelp';
 
 // Future help content exports:
 // export { default as AssignmentsHelp } from './AssignmentsHelp';

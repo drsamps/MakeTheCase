@@ -2,23 +2,28 @@ import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/permissions.js';
+import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
+import { buildVisibilityScope, canAccessResource } from '../services/resourceAccess.js';
+import { setVisibility } from '../services/visibilityWrites.js';
+import { writeAudit } from '../services/auditLog.js';
 
 const router = express.Router();
 
-// GET /api/personas - List all personas (optionally filtered by enabled status)
-router.get('/', async (req, res) => {
+// GET /api/personas - List personas visible to caller (system + own + team + public).
+router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { enabled } = req.query;
 
-    let query = 'SELECT * FROM personas';
-    const params = [];
+    const scope = buildVisibilityScope(req, 'persona', 'p');
+    let query = `SELECT p.* FROM personas p WHERE ${scope.whereSql}`;
+    const params = [...scope.params];
 
     if (enabled !== undefined) {
-      query += ' WHERE enabled = ?';
+      query += ' AND p.enabled = ?';
       params.push(enabled === 'true' ? 1 : 0);
     }
 
-    query += ' ORDER BY sort_order ASC, persona_id ASC';
+    query += ' ORDER BY p.sort_order ASC, p.persona_id ASC';
 
     const [rows] = await pool.execute(query, params);
     res.json({ data: rows, error: null });
@@ -50,7 +55,7 @@ router.get('/:personaId', async (req, res) => {
 });
 
 // POST /api/personas - Create a new persona (admin only)
-router.post('/', verifyToken, requireRole(['admin']), requirePermission('personas'), async (req, res) => {
+router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { persona_id, persona_name, description, instructions, enabled, sort_order } = req.body;
 
@@ -61,7 +66,6 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('persona
       });
     }
 
-    // Validate persona_id format (alphanumeric and hyphens, max 30 chars)
     if (!/^[a-z0-9-]+$/.test(persona_id) || persona_id.length > 30) {
       return res.status(400).json({
         data: null,
@@ -69,7 +73,6 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('persona
       });
     }
 
-    // Check if persona_id already exists
     const [existing] = await pool.execute(
       'SELECT persona_id FROM personas WHERE persona_id = ?',
       [persona_id]
@@ -79,16 +82,22 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('persona
       return res.status(409).json({ data: null, error: { message: 'Persona ID already exists' } });
     }
 
+    const effectiveId = req.effectiveInstructorId || req.user?.id || null;
+    const createdByType = req.user.role === 'admin' && !req.effectiveInstructorId ? 'admin' : 'instructor';
+
     await pool.execute(
-      `INSERT INTO personas (persona_id, persona_name, description, instructions, enabled, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO personas (persona_id, persona_name, description, instructions, enabled, sort_order,
+                             created_by, created_by_type, visibility)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'private')`,
       [
         persona_id,
         persona_name,
         description || null,
         instructions,
         enabled !== undefined ? (enabled ? 1 : 0) : 1,
-        sort_order || 0
+        sort_order || 0,
+        effectiveId,
+        createdByType
       ]
     );
 
@@ -104,21 +113,38 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('persona
   }
 });
 
-// PATCH /api/personas/:personaId - Update a persona (admin only)
-router.patch('/:personaId', verifyToken, requireRole(['admin']), requirePermission('personas'), async (req, res) => {
+// PATCH /api/personas/:personaId/visibility
+router.patch('/:personaId/visibility', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { personaId } = req.params;
-    const { persona_name, description, instructions, enabled, sort_order } = req.body;
-
-    // Check if persona exists
-    const [existing] = await pool.execute(
-      'SELECT persona_id FROM personas WHERE persona_id = ?',
-      [personaId]
-    );
-
-    if (existing.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Persona not found' } });
+    const access = await canAccessResource(req, 'persona', personaId, 'share');
+    if (!access.allowed) {
+      return res.status(access.reason === 'not_found' ? 404 : 403).json({
+        data: null, error: { message: access.reason }
+      });
     }
+    const result = await setVisibility(req, 'persona', personaId, req.body || {});
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ data: null, error: { message: result.error } });
+    }
+    res.json({ data: { persona_id: personaId, visibility: req.body.visibility }, error: null });
+  } catch (error) {
+    console.error('Error setting persona visibility:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/personas/:personaId - Update a persona (owner or admin)
+router.patch('/:personaId', verifyToken, requireAdminOrInstructor, async (req, res) => {
+  try {
+    const { personaId } = req.params;
+    const access = await canAccessResource(req, 'persona', personaId, 'edit');
+    if (!access.allowed) {
+      return res.status(access.reason === 'not_found' ? 404 : 403).json({
+        data: null, error: { message: access.reason }
+      });
+    }
+    const { persona_name, description, instructions, enabled, sort_order } = req.body;
 
     // Build update query dynamically
     const updates = [];
@@ -168,10 +194,17 @@ router.patch('/:personaId', verifyToken, requireRole(['admin']), requirePermissi
   }
 });
 
-// DELETE /api/personas/:personaId - Delete a persona (admin only)
-router.delete('/:personaId', verifyToken, requireRole(['admin']), requirePermission('personas'), async (req, res) => {
+// DELETE /api/personas/:personaId - Delete a persona (owner or admin)
+router.delete('/:personaId', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { personaId } = req.params;
+
+    const access = await canAccessResource(req, 'persona', personaId, 'delete');
+    if (!access.allowed) {
+      return res.status(access.reason === 'not_found' ? 404 : 403).json({
+        data: null, error: { message: access.reason }
+      });
+    }
 
     // Check if persona exists
     const [existing] = await pool.execute(
@@ -204,6 +237,8 @@ router.delete('/:personaId', verifyToken, requireRole(['admin']), requirePermiss
     }
 
     await pool.execute('DELETE FROM personas WHERE persona_id = ?', [personaId]);
+
+    await writeAudit(req, { action: 'persona.delete', resourceType: 'persona', resourceId: personaId });
 
     res.json({ data: { deleted: true }, error: null });
   } catch (error) {

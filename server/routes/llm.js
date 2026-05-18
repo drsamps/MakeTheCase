@@ -2,6 +2,7 @@ import express from 'express';
 import { pool } from '../db.js';
 import { chatWithLLM, evaluateWithLLM } from '../services/llmRouter.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
+import { resolveInstructorForStudentCase } from '../services/keyResolver.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -328,6 +329,8 @@ router.post('/chat', async (req, res) => {
       return res.status(404).json({ data: null, error: { message: 'Model not found' } });
     }
 
+    const instructorId = await resolveInstructorForStudentCase(studentId, caseId);
+
     const startTime = Date.now();
     const { text, meta } = await chatWithLLM({
       modelId,
@@ -335,7 +338,7 @@ router.post('/chat', async (req, res) => {
       systemPrompt,
       history: Array.isArray(history) ? history : [],
       message,
-      config: { ...modelConfig, caseId },  // Include caseId for metrics tracking
+      config: { ...modelConfig, caseId, instructorId },
     });
     const durationMs = Date.now() - startTime;
 
@@ -357,6 +360,12 @@ router.post('/chat', async (req, res) => {
 
     res.json({ data: { text, meta }, error: null });
   } catch (error) {
+    if (error?.code === 'INSTRUCTOR_SETUP_INCOMPLETE') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: "This section isn't ready yet — your instructor still needs to finish setup.", provider: error.provider } });
+    }
+    if (error?.code === 'INSTRUCTOR_USAGE_CAP_EXCEEDED') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: 'Monthly usage cap reached for this instructor. Please contact your instructor.', used: error.used, cap: error.cap } });
+    }
     console.error('LLM chat error:', error);
     res.status(500).json({ data: null, error: { message: error.message || 'LLM chat failed' } });
   }
@@ -373,8 +382,10 @@ router.post('/eval', async (req, res) => {
       return res.status(404).json({ data: null, error: { message: 'Model not found' } });
     }
 
+    const instructorId = await resolveInstructorForStudentCase(studentId, caseId);
+
     const startTime = Date.now();
-    const { text, meta } = await evaluateWithLLM({ modelId, vendor: modelConfig.vendor, prompt, config: modelConfig });
+    const { text, meta } = await evaluateWithLLM({ modelId, vendor: modelConfig.vendor, prompt, config: { ...modelConfig, instructorId } });
     const durationMs = Date.now() - startTime;
 
     // Log prompt if enabled (async, non-blocking)
@@ -393,6 +404,12 @@ router.post('/eval', async (req, res) => {
 
     res.json({ data: text, error: null });
   } catch (error) {
+    if (error?.code === 'INSTRUCTOR_SETUP_INCOMPLETE') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: "This section isn't ready yet — your instructor still needs to finish setup.", provider: error.provider } });
+    }
+    if (error?.code === 'INSTRUCTOR_USAGE_CAP_EXCEEDED') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: 'Monthly usage cap reached for this instructor.', used: error.used, cap: error.cap } });
+    }
     console.error('LLM eval error:', error);
     res.status(500).json({ data: null, error: { message: error.message || 'LLM evaluation failed' } });
   }
