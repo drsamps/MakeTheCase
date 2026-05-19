@@ -2,6 +2,8 @@
 
 Every shareable teaching resource in MakeTheCase has a **visibility** that determines who can see and use it. This doc covers the data model, the read/write helpers, and the team-sharing flow.
 
+> **Team membership first.** An instructor must belong to a team before team-shared resources become visible to them. Creating teams, inviting colleagues, and accepting invitations are documented in **[multi-instructor-teams.md](./multi-instructor-teams.md)**.
+
 ## The three visibility levels
 
 | Value | Who can see it |
@@ -27,6 +29,8 @@ Five types share the visibility model. Each has a row in `RESOURCE_CONFIG` in `s
 Owner-type ENUM: `'instructor' | 'admin' | 'system'`.
 
 ## Team shares
+
+Membership in a team is managed separately — see **[multi-instructor-teams.md](./multi-instructor-teams.md)** for create / invite / accept. This section covers how resources are linked to teams once members exist.
 
 `resource_team_shares` is the join table used only when `visibility='team'`:
 

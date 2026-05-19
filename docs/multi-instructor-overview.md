@@ -9,6 +9,7 @@ This doc is the index for everything below.
 - **[multi-instructor-permissions.md](./multi-instructor-permissions.md)** — Permission matrix (Admin / Primary / TA / Other Instructor) for every action.
 - **[multi-instructor-personas.md](./multi-instructor-personas.md)** — Built-in vs custom personas, clone, Allowed Personas in chat options, student `available_personas`.
 - **[multi-instructor-visibility.md](./multi-instructor-visibility.md)** — Resource visibility (Private / Team / Public) + team sharing.
+- **[multi-instructor-teams.md](./multi-instructor-teams.md)** — Team membership, roles, invitations (in-app accept flow).
 - **[multi-instructor-api-keys.md](./multi-instructor-api-keys.md)** — Per-instructor API keys, encryption, usage caps, the system-key fallback.
 - **[multi-instructor-impersonation.md](./multi-instructor-impersonation.md)** — Admin "act as instructor" flow + audit log.
 
@@ -132,7 +133,7 @@ Idempotent: each UPDATE is guarded by `WHERE … IS NULL`. Re-running on already
 - **The `MTC_KEY_ENCRYPTION_SECRET` env var is unrecoverable if lost.** Document this in your deployment runbook. If it must rotate, plan to mass-invalidate keys and have instructors re-enter them.
 - **Frontend `user.can_publish` / `user.use_system_key` come from `/auth/session`.** The dashboard reads them on mount and uses them to gate affordances (most visibly the Public option in `VisibilityPicker`). Any new instructor-scoped flag that the UI must see at startup needs to be added to the `/auth/session` payload in `server/routes/auth.js`, not just to the `instructors` row.
 - **Permission changes need an end-to-end pass.** The verification artifact at `dev/2026-05-16-permissions-test-checklist.md` (driven by `.claude/perm-tests/run.mjs`) covers all five role contexts × the matrix in `multi-instructor-permissions.md`. Re-run it after touching middleware, route gates, `resourceAccess.js`, or `visibilityWrites.js`.
-- **Admin sub-tab asterisks mark default admin-only tools.** Sub-tabs labeled with ` *` (Instructors, Settings, Models, Prompts) map to `SUPERUSER_FUNCTIONS`. Instructor-accessible admin-area tabs (Personas, API Keys, Teams) omit the asterisk. See `multi-instructor-personas.md` § Dashboard navigation.
+- **"Setup" and "Admin" are two distinct primary tabs.** Instructor-accessible tools (Personas, API Keys, Teams) live under **Setup** — visible to every instructor and admin via `hasSetupAccess()`. Admin-only tools (Instructors, Settings, Models, Prompts, Admins, Logging, Shadow-Owned) live under **Admin** — visible only when `hasAdminAccess()` passes (i.e. access to `instructors`/`prompts`/`models`/`settings`, all in `SUPERUSER_FUNCTIONS`). The `*` on the top-level **Admin** tab label still marks `user.superuser`. See `multi-instructor-personas.md` § Dashboard navigation.
 
 ## What's not in this implementation (deferred)
 

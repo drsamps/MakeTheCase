@@ -188,6 +188,15 @@ Instructor-facing wizard that turns a teaching principle into a published case +
 - Student view: `http://localhost:3000/`
 - Instructor dashboard: `http://localhost:3000/#/admin` (or Ctrl+click header)
 
+### Dashboard primary tabs: Setup vs Admin
+
+The dashboard has two distinct admin-area primary tabs in `components/Dashboard.tsx`:
+
+- **Setup** — visible to every instructor and admin (`hasSetupAccess()`). Sub-tabs: **Personas, API Keys, Teams**. These are in `BASE_FUNCTIONS` in `utils/permissions.ts`.
+- **Admin** — visible only to admins with access to admin-only tools (`hasAdminAccess()` — checks `instructors`/`prompts`/`models`/`settings`). Sub-tabs: **Instructors, Settings, Models, Prompts, Admins, Logging, Shadow-Owned** (last is superuser-only). These are in `SUPERUSER_FUNCTIONS`.
+
+When adding a new admin-area feature, place it under **Setup** if instructors should reach it, or **Admin** if it's admin-only. Don't reintroduce instructor-accessible items under Admin — that was the prior structure and was confusing to instructors. Full rationale in `docs/multi-instructor-personas.md` § Dashboard navigation.
+
 ## Platform-Specific Notes
 
 The `.claude/` directory (gitignored) contains machine-specific settings:

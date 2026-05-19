@@ -141,6 +141,15 @@ export async function refreshAuthToken(): Promise<boolean> {
   return refreshInFlight;
 }
 
+function normalizeApiError(err: unknown, fallback: string): string {
+  if (typeof err === 'string') return err;
+  if (err && typeof err === 'object' && 'message' in err) {
+    const message = (err as { message: unknown }).message;
+    if (typeof message === 'string') return message;
+  }
+  return fallback;
+}
+
 // Generic fetch wrapper
 async function apiFetch<T>(
   endpoint: string,
@@ -161,7 +170,7 @@ async function apiFetch<T>(
       if (response.status === 401) {
         handleUnauthorized();
       }
-      return { data: null, error: { message: result.error || 'Request failed' } };
+      return { data: null, error: { message: normalizeApiError(result.error, 'Request failed') } };
     }
 
     return result;
@@ -183,7 +192,7 @@ export const auth = {
     const result = await response.json();
 
     if (!response.ok) {
-      return { data: null, error: { message: result.error || 'Login failed' } };
+      return { data: null, error: { message: normalizeApiError(result.error, 'Login failed') } };
     }
 
     // Store the token as admin (signInWithPassword is only used for admin login)

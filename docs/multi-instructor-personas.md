@@ -59,17 +59,14 @@ The student app:
 
 ## Dashboard navigation
 
-The **Admin** primary tab appears when the user has access to any admin sub-function (`hasAdminAccess()` in `components/Dashboard.tsx`).
+Personas lives under the **Setup** primary tab alongside **API Keys** and **Teams**. Setup is shown whenever `hasSetupAccess()` is true (in practice: every instructor and admin, since Personas / API Keys / Teams are all in `BASE_FUNCTIONS`).
 
-**Sub-tab asterisk convention** (suffix ` *` on the label):
-
-| Sub-tab | Asterisk? | Why |
+| Primary tab | Visibility | Sub-tabs |
 |---|---|---|
-| Instructors, Settings, Models, Prompts | **Yes** | Default **admin-only** tools (`SUPERUSER_FUNCTIONS` in `utils/permissions.ts`); non-super admins need an explicit `adminAccess` grant |
-| **Personas** | **No** | In **instructor base** functions — all instructors with dashboard access can open it |
-| API Keys, Teams, Logging, Admins, Shadow-Owned | **No** | Instructor-accessible or mixed; no admin-only-default marker |
+| **Setup** | `hasSetupAccess()` — all instructors and admins | Personas, API Keys, Teams |
+| **Admin** | `hasAdminAccess()` — admins with access to any of `instructors` / `prompts` / `models` / `settings` (all `SUPERUSER_FUNCTIONS`) | Instructors, Settings, Models, Prompts, Admins, Logging, Shadow-Owned (superuser) |
 
-The top-level **Admin** tab label shows `*` only when `user.superuser` is true (platform superuser), independent of sub-tab asterisks.
+The top-level **Admin** tab label shows trailing `*` only when `user.superuser` is true. Sub-tab labels no longer carry an asterisk — the Setup/Admin split now communicates the audience.
 
 ## Enforcement
 

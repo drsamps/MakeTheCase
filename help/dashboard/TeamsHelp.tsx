@@ -22,6 +22,10 @@ const TeamsHelp: React.FC = () => (
       shared resources only become visible to that instructor after they
       accept. Owners can revoke pending invites at any time.
     </p>
+    <p>
+      No email is sent. The invitee must sign in and accept the invitation
+      from the <strong>Teams</strong> tab (pending invitations appear at the top).
+    </p>
 
     <h4>Sharing a resource with a team</h4>
     <p>

@@ -59,13 +59,14 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 // New workflow-centric navigation types
-type PrimaryTab = 'home' | 'assignments' | 'monitor' | 'results' | 'courses' | 'content' | 'rubrics' | 'admin';
+type PrimaryTab = 'home' | 'assignments' | 'monitor' | 'results' | 'courses' | 'content' | 'rubrics' | 'setup' | 'admin';
 type AssignmentsSubTab = 'assignments' | 'chat-options';
 type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live';
 type ResultsSubTab = 'responses' | 'positions' | 'section-results';
-type AdminSubTab = 'instructors' | 'settings' | 'models' | 'personas' | 'prompts' | 'admins' | 'logging' | 'shadow' | 'apikeys' | 'teams';
+type SetupSubTab = 'personas' | 'apikeys' | 'teams';
+type AdminSubTab = 'instructors' | 'settings' | 'models' | 'prompts' | 'admins' | 'logging' | 'shadow';
 type RubricsSubTab = 'criteria' | 'rubrics';
 
 const isEnabledFlag = (value: unknown): boolean =>
@@ -281,6 +282,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [monitorSubTab, setMonitorSubTab] = useState<MonitorSubTab>('chats');
   const [resultsSubTab, setResultsSubTab] = useState<ResultsSubTab>('responses');
   const [adminSubTab, setAdminSubTab] = useState<AdminSubTab>('instructors');
+  const [setupSubTab, setSetupSubTab] = useState<SetupSubTab>('personas');
   const [rubricsSubTab, setRubricsSubTab] = useState<RubricsSubTab>('rubrics');
 
   // Rubrics state
@@ -327,9 +329,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   // Check if user has access to any admin functions
   const hasAdminAccess = useCallback(() => {
-    return hasAccess(user, 'personas') || hasAccess(user, 'prompts') ||
-           hasAccess(user, 'models') || hasAccess(user, 'settings') ||
-           hasAccess(user, 'instructors');
+    return hasAccess(user, 'instructors') || hasAccess(user, 'prompts') ||
+           hasAccess(user, 'models') || hasAccess(user, 'settings');
+  }, [user]);
+
+  const hasSetupAccess = useCallback(() => {
+    return hasAccess(user, 'personas') || hasAccess(user, 'apikeys') ||
+           hasAccess(user, 'teams');
   }, [user]);
 
   // Semesters and Courses state
@@ -785,9 +791,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         }
         break;
       case 'admin':
-        setPrimaryTab('admin');
-        if (subTab && ['personas', 'prompts', 'models', 'settings', 'instructors'].includes(subTab)) {
-          setAdminSubTab(subTab as AdminSubTab);
+        if (subTab && ['personas', 'apikeys', 'teams'].includes(subTab)) {
+          setPrimaryTab('setup');
+          setSetupSubTab(subTab as SetupSubTab);
+        } else {
+          setPrimaryTab('admin');
+          if (subTab && ['prompts', 'models', 'settings', 'instructors', 'admins', 'logging', 'shadow'].includes(subTab)) {
+            setAdminSubTab(subTab as AdminSubTab);
+          }
+        }
+        break;
+      case 'setup':
+        setPrimaryTab('setup');
+        if (subTab && ['personas', 'apikeys', 'teams'].includes(subTab)) {
+          setSetupSubTab(subTab as SetupSubTab);
         }
         break;
       case 'assignments':
@@ -8392,13 +8409,32 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </button>
             )}
 
+            {/* Setup */}
+            {hasSetupAccess() && (
+              <button
+                onClick={() => {
+                  setPrimaryTab('setup');
+                  if (personasList.length === 0 && hasAccess(user, 'personas')) fetchPersonas();
+                }}
+                className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
+                  primaryTab === 'setup'
+                    ? 'bg-gray-50 text-teal-600 border-b-2 border-teal-600'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M5 4a1 1 0 00-2 0v7.268a2 2 0 000 3.464V16a1 1 0 102 0v-1.268a2 2 0 000-3.464V4zM11 4a1 1 0 10-2 0v1.268a2 2 0 000 3.464V16a1 1 0 102 0V8.732a2 2 0 000-3.464V4zM16 3a1 1 0 011 1v7.268a2 2 0 010 3.464V16a1 1 0 11-2 0v-1.268a2 2 0 010-3.464V4a1 1 0 011-1z" />
+                  </svg>
+                  Setup
+                </span>
+              </button>
+            )}
+
             {/* Admin */}
             {hasAdminAccess() && (
               <button
-                onClick={() => {
-                  setPrimaryTab('admin');
-                  if (personasList.length === 0 && hasAccess(user, 'personas')) fetchPersonas();
-                }}
+                onClick={() => setPrimaryTab('admin')}
                 className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
                   primaryTab === 'admin'
                     ? 'bg-gray-50 text-purple-600 border-b-2 border-purple-600'
@@ -8626,6 +8662,51 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             </div>
           )}
 
+          {/* Sub-navigation for Setup */}
+          {primaryTab === 'setup' && (
+            <div className="flex gap-1 mt-2 pb-2">
+              {hasAccess(user, 'personas') && (
+                <button
+                  onClick={() => {
+                    setSetupSubTab('personas');
+                    if (personasList.length === 0) fetchPersonas();
+                  }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    setupSubTab === 'personas'
+                      ? 'bg-teal-100 text-teal-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Personas
+                </button>
+              )}
+              {hasAccess(user, 'apikeys') && (
+                <button
+                  onClick={() => setSetupSubTab('apikeys')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    setupSubTab === 'apikeys'
+                      ? 'bg-teal-100 text-teal-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  API Keys
+                </button>
+              )}
+              {hasAccess(user, 'teams') && (
+                <button
+                  onClick={() => setSetupSubTab('teams')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    setupSubTab === 'teams'
+                      ? 'bg-teal-100 text-teal-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Teams
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Sub-navigation for Admin */}
           {primaryTab === 'admin' && (
             <div className="flex gap-1 mt-2 pb-2">
@@ -8638,7 +8719,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  Instructors *
+                  Instructors
                 </button>
               )}
               {hasAccess(user, 'settings') && (
@@ -8650,7 +8731,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  Settings *
+                  Settings
                 </button>
               )}
               {hasAccess(user, 'models') && (
@@ -8662,22 +8743,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  Models *
-                </button>
-              )}
-              {hasAccess(user, 'personas') && (
-                <button
-                  onClick={() => {
-                    setAdminSubTab('personas');
-                    if (personasList.length === 0) fetchPersonas();
-                  }}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    adminSubTab === 'personas'
-                      ? 'bg-purple-100 text-purple-700'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  Personas
+                  Models
                 </button>
               )}
               {hasAccess(user, 'prompts') && (
@@ -8689,7 +8755,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  Prompts *
+                  Prompts
                 </button>
               )}
               {hasAccess(user, 'instructors') && (
@@ -8728,26 +8794,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   Shadow-Owned
                 </button>
               )}
-              <button
-                onClick={() => setAdminSubTab('apikeys')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  adminSubTab === 'apikeys'
-                    ? 'bg-purple-100 text-purple-700'
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                API Keys
-              </button>
-              <button
-                onClick={() => setAdminSubTab('teams')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  adminSubTab === 'teams'
-                    ? 'bg-purple-100 text-purple-700'
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                Teams
-              </button>
             </div>
           )}
 
@@ -8820,27 +8866,29 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           ) : (
             renderCasesTab()
           )
+        ) : primaryTab === 'setup' ? (
+          setupSubTab === 'personas' ? (
+            renderPersonasTab()
+          ) : setupSubTab === 'apikeys' ? (
+            <ApiKeysManager />
+          ) : setupSubTab === 'teams' ? (
+            <TeamsManager />
+          ) : null
         ) : primaryTab === 'admin' ? (
           adminSubTab === 'models' ? (
             renderModelsTab()
-          ) : adminSubTab === 'personas' ? (
-            renderPersonasTab()
           ) : adminSubTab === 'prompts' ? (
             <PromptManager />
           ) : adminSubTab === 'settings' ? (
             <SettingsManager />
-          ) : adminSubTab === 'instructors' ? (
+          ) : adminSubTab === 'instructors' && hasAccess(user, 'instructors') ? (
             <InstructorManager user={user} mode="instructors" />
-          ) : adminSubTab === 'admins' ? (
+          ) : adminSubTab === 'admins' && hasAccess(user, 'instructors') ? (
             <InstructorManager user={user} mode="admins" />
           ) : adminSubTab === 'logging' ? (
             <LoggingManager />
           ) : adminSubTab === 'shadow' ? (
             <ShadowOwnershipManager />
-          ) : adminSubTab === 'apikeys' ? (
-            <ApiKeysManager />
-          ) : adminSubTab === 'teams' ? (
-            <TeamsManager />
           ) : null
         ) : primaryTab === 'rubrics' ? (
           <div className="p-6 max-w-7xl mx-auto">

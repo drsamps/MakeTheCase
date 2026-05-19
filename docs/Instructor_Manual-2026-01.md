@@ -303,7 +303,7 @@ Export student results for analysis in Excel or other tools.
 
 Personas define the protagonist's conversational style and behavior.
 
-**Access**: Admin → Personas
+**Access**: Setup → Personas
 
 #### Built-in Personas
 Five personas are included by default:
@@ -314,7 +314,7 @@ Five personas are included by default:
 - Sycophantic
 
 #### Create a Custom Persona
-**Admin → Personas → + Add Persona**
+**Setup → Personas → + Add Persona**
 
 1. **Persona ID**: Unique identifier (e.g., `encouraging-mentor`)
 2. **Persona Title**: Display name (e.g., "Encouraging Mentor")
@@ -323,7 +323,7 @@ Five personas are included by default:
 5. **Enabled**: Toggle on to make available
 
 #### Edit or Disable a Persona
-**Admin → Personas → Select Persona → Edit**
+**Setup → Personas → Select Persona → Edit**
 
 Update instructions or disable to hide from students.
 

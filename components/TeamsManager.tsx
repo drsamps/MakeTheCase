@@ -61,6 +61,10 @@ interface MyInvite {
 
 const ROLE_OPTIONS: Role[] = ['owner', 'editor', 'viewer'];
 
+function apiErrorMessage(message: unknown): string {
+  return typeof message === 'string' ? message : 'Request failed';
+}
+
 const TeamsManager: React.FC = () => {
   const [teams, setTeams] = useState<TeamSummary[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
@@ -88,7 +92,7 @@ const TeamsManager: React.FC = () => {
       api.get<MyInvite[]>('/teams/invitations/mine'),
     ]);
     setLoading(false);
-    if (tErr) setError(tErr.message);
+    if (tErr) setError(apiErrorMessage(tErr.message));
     setTeams(tData || []);
     setMyInvites(iData || []);
   }, []);
@@ -97,7 +101,7 @@ const TeamsManager: React.FC = () => {
     setError(null);
     const { data, error } = await api.get<TeamDetail>(`/teams/${id}`);
     if (error) {
-      setError(error.message);
+      setError(apiErrorMessage(error.message));
       setDetail(null);
       return;
     }
@@ -120,7 +124,7 @@ const TeamsManager: React.FC = () => {
       description: newDesc.trim() || null,
     });
     setCreating(false);
-    if (error) { setError(error.message); return; }
+    if (error) { setError(apiErrorMessage(error.message)); return; }
     setNewName('');
     setNewDesc('');
     setMessage(`Team "${data?.team_name}" created`);
@@ -131,7 +135,7 @@ const TeamsManager: React.FC = () => {
   const handleDeleteTeam = async (id: string, name: string) => {
     if (!confirm(`Delete team "${name}"? This revokes all shares and removes all members.`)) return;
     const { error } = await api.delete(`/teams/${id}`);
-    if (error) { setError(error.message); return; }
+    if (error) { setError(apiErrorMessage(error.message)); return; }
     setMessage(`Team "${name}" deleted`);
     setSelectedTeamId(null);
     await loadTeams();
@@ -143,11 +147,11 @@ const TeamsManager: React.FC = () => {
     setInviting(true);
     setError(null);
     const { error } = await api.post(`/teams/${selectedTeamId}/invitations`, {
-      invited_email: inviteEmail.trim(),
-      proposed_role: inviteRole,
+      email: inviteEmail.trim(),
+      role: inviteRole,
     });
     setInviting(false);
-    if (error) { setError(error.message); return; }
+    if (error) { setError(apiErrorMessage(error.message)); return; }
     setMessage(`Invitation sent to ${inviteEmail}`);
     setInviteEmail('');
     await loadDetail(selectedTeamId);
@@ -156,7 +160,7 @@ const TeamsManager: React.FC = () => {
   const handleRevokeInvite = async (invId: number) => {
     if (!confirm('Revoke this invitation?')) return;
     const { error } = await api.post(`/teams/invitations/${invId}/revoke`);
-    if (error) { setError(error.message); return; }
+    if (error) { setError(apiErrorMessage(error.message)); return; }
     if (selectedTeamId) await loadDetail(selectedTeamId);
   };
 
@@ -164,27 +168,27 @@ const TeamsManager: React.FC = () => {
     if (!selectedTeamId) return;
     if (!confirm(`Remove ${name} from this team?`)) return;
     const { error } = await api.delete(`/teams/${selectedTeamId}/members/${instructorId}`);
-    if (error) { setError(error.message); return; }
+    if (error) { setError(apiErrorMessage(error.message)); return; }
     await loadDetail(selectedTeamId);
   };
 
   const handleChangeRole = async (instructorId: string, role: Role) => {
     if (!selectedTeamId) return;
     const { error } = await api.patch(`/teams/${selectedTeamId}/members/${instructorId}`, { role });
-    if (error) { setError(error.message); return; }
+    if (error) { setError(apiErrorMessage(error.message)); return; }
     await loadDetail(selectedTeamId);
   };
 
   const handleAcceptInvite = async (invId: number) => {
     const { error } = await api.post(`/teams/invitations/${invId}/accept`);
-    if (error) { setError(error.message); return; }
+    if (error) { setError(apiErrorMessage(error.message)); return; }
     setMessage('Invitation accepted');
     await loadTeams();
   };
 
   const handleDeclineInvite = async (invId: number) => {
     const { error } = await api.post(`/teams/invitations/${invId}/decline`);
-    if (error) { setError(error.message); return; }
+    if (error) { setError(apiErrorMessage(error.message)); return; }
     await loadTeams();
   };
 
@@ -313,10 +317,10 @@ const TeamsManager: React.FC = () => {
 
               {/* Members */}
               <div className="px-4 py-3">
-                <h4 className="text-sm font-medium text-gray-700 mb-2">Members ({detail.members.length})</h4>
+                <h4 className="text-sm font-medium text-gray-700 mb-2">Members ({(detail.members ?? []).length})</h4>
                 <table className="w-full text-sm">
                   <tbody className="divide-y divide-gray-100">
-                    {detail.members.map(m => (
+                    {(detail.members ?? []).map(m => (
                       <tr key={m.instructor_id}>
                         <td className="py-1.5">
                           <div className="font-medium text-gray-900">{m.full_name}</div>
@@ -352,11 +356,11 @@ const TeamsManager: React.FC = () => {
               </div>
 
               {/* Pending invitations */}
-              {detail.invitations.length > 0 && (
+              {(detail.invitations ?? []).length > 0 && (
                 <div className="px-4 py-3 border-t border-gray-100">
                   <h4 className="text-sm font-medium text-gray-700 mb-2">Pending invitations</h4>
                   <ul className="space-y-1 text-sm">
-                    {detail.invitations.map(inv => (
+                    {(detail.invitations ?? []).map(inv => (
                       <li key={inv.id} className="flex items-center justify-between">
                         <span>{inv.invited_email} <span className="text-xs text-gray-500">({inv.proposed_role})</span></span>
                         {isOwner && (

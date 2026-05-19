@@ -297,8 +297,9 @@ router.delete('/:id', verifyToken, requireAdminOrInstructor, async (req, res) =>
 router.post('/:id/invitations', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { id: teamId } = req.params;
-    const { email, role } = req.body || {};
-    if (!email || !email.trim()) {
+    const email = (req.body?.email || req.body?.invited_email || '').trim();
+    const role = req.body?.role ?? req.body?.proposed_role;
+    if (!email) {
       return res.status(400).json({ data: null, error: { message: 'email is required' } });
     }
     const proposedRole = ['owner', 'editor', 'viewer'].includes(role) ? role : 'viewer';
@@ -312,7 +313,7 @@ router.post('/:id/invitations', verifyToken, requireAdminOrInstructor, async (re
     // Resolve invited instructor (best-effort) by email
     const [invitedRows] = await pool.execute(
       'SELECT id FROM instructors WHERE email = ?',
-      [email.trim().toLowerCase()]
+      [email.toLowerCase()]
     );
     const invitedInstructorId = invitedRows[0]?.id || null;
 
@@ -334,7 +335,7 @@ router.post('/:id/invitations', verifyToken, requireAdminOrInstructor, async (re
     const [pending] = await pool.execute(
       `SELECT id FROM instructor_team_invitations
        WHERE team_id = ? AND invited_email = ? AND status = 'pending'`,
-      [teamId, email.trim().toLowerCase()]
+      [teamId, email.toLowerCase()]
     );
     if (pending.length > 0) {
       return res.status(409).json({
@@ -348,7 +349,7 @@ router.post('/:id/invitations', verifyToken, requireAdminOrInstructor, async (re
       `INSERT INTO instructor_team_invitations
          (team_id, invited_instructor_id, invited_email, invited_by, proposed_role, status)
        VALUES (?, ?, ?, ?, ?, 'pending')`,
-      [teamId, invitedInstructorId, email.trim().toLowerCase(), inviterId, proposedRole]
+      [teamId, invitedInstructorId, email.toLowerCase(), inviterId, proposedRole]
     );
 
     await writeAudit(req, {
