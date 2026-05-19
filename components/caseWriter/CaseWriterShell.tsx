@@ -22,6 +22,12 @@ const CaseWriterShell: React.FC<Props> = ({ onLogout, user }) => {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
+  useEffect(() => {
+    const previous = document.title;
+    document.title = 'Case Writer';
+    return () => { document.title = previous; };
+  }, []);
+
   const openProject = (id: string) => {
     window.location.hash = `#/case-writer/${id}`;
   };
@@ -35,12 +41,17 @@ const CaseWriterShell: React.FC<Props> = ({ onLogout, user }) => {
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="flex-shrink-0 flex justify-between items-center px-6 py-3 bg-white border-b border-gray-200 shadow-sm">
-        <div className="flex items-center gap-4">
-          <h1 className="text-xl font-bold text-gray-900">Case Writer</h1>
-          <a href="#/admin" className="text-xs text-blue-600 hover:underline">Back to Dashboard</a>
-        </div>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-600">{displayName}</span>
+          <h1 className="text-xl font-bold text-gray-900">Case Writer</h1>
+          <span className="text-xs font-medium text-gray-600">{displayName}</span>
+        </div>
+        <div className="flex items-center gap-4">
+          <a
+            href="#/admin"
+            className="text-sm font-medium text-blue-600 hover:text-blue-800 p-2 rounded-md hover:bg-blue-50 transition-colors"
+          >
+            Back to Instructor Dashboard
+          </a>
           <button
             onClick={onLogout}
             className="px-3 py-1.5 text-sm font-semibold text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-100"

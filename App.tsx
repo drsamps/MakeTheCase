@@ -287,7 +287,7 @@ const App: React.FC = () => {
         const hash = window.location.hash;
         if (hash === '#/admin' || hash.startsWith('#/admin') || urlParams.get('view') === 'admin') {
             setView('admin');
-            setIsAdminAuthenticated(!!session && session.user?.role === 'admin');
+            setIsAdminAuthenticated(!!session && (session.user?.role === 'admin' || session.user?.role === 'instructor'));
         } else if (hash === '#/case-writer' || hash.startsWith('#/case-writer')) {
             setView('case-writer');
             setIsAdminAuthenticated(!!session && (session.user?.role === 'admin' || session.user?.role === 'instructor'));
@@ -297,16 +297,10 @@ const App: React.FC = () => {
         setIsReady(true);
     };
     
-    // On initial page load, always default to the student view.
-    // If the URL hash points to the admin page, we clear it.
-    // The 'hashchange' listener will then fire and call handleRouteChange,
-    // which will correctly set the view to 'student'.
-    if (window.location.hash === '#/admin') {
-        window.location.hash = '';
-    } else {
-        // If the hash is not '#/admin', we can safely perform the initial render check.
-        handleRouteChange();
-    }
+    // Resolve the current route on initial load. An unauthenticated visit to
+    // #/admin will render the Instructor Login screen directly; an authenticated
+    // admin/instructor will land on the Dashboard.
+    handleRouteChange();
 
     // Listen for hash changes to handle subsequent navigation (e.g., back/forward buttons, ctrl+click)
     window.addEventListener('hashchange', handleRouteChange);
@@ -1668,7 +1662,11 @@ const App: React.FC = () => {
               Make The Case
             </h1>
             <p className="mt-2 text-gray-600">
-              Click below to sign in with your BYU NetID to chat with cases as assigned by your instructor.
+              Click below to sign in with your BYU NetID to chat with cases as assigned by your{' '}
+              <a
+                href="#/admin"
+                className="text-gray-600 no-underline hover:no-underline"
+              >instructor</a>.
             </p>
           </div>
           <div className="space-y-4">

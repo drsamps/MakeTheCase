@@ -508,9 +508,7 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
       {/* Welcome Header */}
       <div className="flex flex-wrap justify-between items-center gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">
-            Welcome back{user?.who ? `, ${user.who.split(' ')[0]}` : ''}
-          </h2>
+          <h2 className="text-2xl font-bold text-gray-900">Dashboard Summary</h2>
           <p className="text-sm text-gray-500 mt-1">
             {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
             {stats.casesOpenNow > 0 && ` • ${stats.casesOpenNow} case${stats.casesOpenNow > 1 ? 's' : ''} open now`}

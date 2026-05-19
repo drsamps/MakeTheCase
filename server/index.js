@@ -45,6 +45,7 @@ import shadowOwnershipRoutes from './routes/shadowOwnership.js';
 import apiKeysRoutes from './routes/apiKeys.js';
 import teamsRoutes from './routes/teams.js';
 import feedbackRoutes from './routes/feedback.js';
+import contentRoutes from './routes/content.js';
 
 // Load environment variables
 // Use absolute path to ensure .env.local is found regardless of working directory
@@ -105,6 +106,7 @@ app.use('/api/admin/shadow-ownership', shadowOwnershipRoutes); // Admin: transfe
 app.use('/api/api-keys', apiKeysRoutes); // Per-instructor encrypted API key storage
 app.use('/api/teams', teamsRoutes); // Instructor teams + sharing
 app.use('/api/feedback', feedbackRoutes); // In-app user feedback system
+app.use('/api/content', contentRoutes); // Static markdown content (e.g. instructor welcome screen)
 console.log('✓ Rubrics routes mounted');
 console.log('✓ Case Writer routes mounted at /api/case-writer');
 

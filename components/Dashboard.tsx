@@ -23,6 +23,7 @@ import { setCurrentScreen } from '../services/screenContext';
 import VisibilityPicker from './ui/VisibilityPicker';
 import StudentManager from './StudentManager';
 import DashboardHome from './DashboardHome';
+import WelcomeScreen from './WelcomeScreen';
 import Analytics from './Analytics';
 import PositionAnalytics from './PositionAnalytics';
 import SectionResultsSummary from './SectionResultsSummary';
@@ -65,6 +66,7 @@ import { CSS } from '@dnd-kit/utilities';
 
 // New workflow-centric navigation types
 type PrimaryTab = 'home' | 'assignments' | 'monitor' | 'results' | 'courses' | 'content' | 'setup' | 'feedback' | 'admin';
+type HomeSubTab = 'welcome' | 'dashboard';
 type AssignmentsSubTab = 'assignments' | 'chat-options';
 type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
@@ -282,6 +284,7 @@ const SortablePositionItem: React.FC<SortablePositionItemProps> = ({ position, s
 const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // New workflow-centric navigation state
   const [primaryTab, setPrimaryTab] = useState<PrimaryTab>('home');
+  const [homeSubTab, setHomeSubTab] = useState<HomeSubTab>('welcome');
   const [assignmentsSubTab, setAssignmentsSubTab] = useState<AssignmentsSubTab>('assignments');
   const [coursesSubTab, setCoursesSubTab] = useState<CoursesSubTab>('sections');
   const [contentSubTab, setContentSubTab] = useState<ContentSubTab>('cases');
@@ -326,6 +329,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       feedback: 'Feedback',
       admin: 'Admin',
     };
+    const HOME: Record<HomeSubTab, string> = {
+      welcome: 'Welcome', dashboard: 'Dashboard',
+    };
     const ASSIGNMENTS: Record<AssignmentsSubTab, string> = {
       assignments: 'Assignments', 'chat-options': 'Chat Options',
     };
@@ -352,7 +358,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     };
 
     const parts: string[] = ['Instructor Dashboard', PRIMARY_LABELS[primaryTab]];
-    if (primaryTab === 'assignments') parts.push(ASSIGNMENTS[assignmentsSubTab]);
+    if (primaryTab === 'home') parts.push(HOME[homeSubTab]);
+    else if (primaryTab === 'assignments') parts.push(ASSIGNMENTS[assignmentsSubTab]);
     else if (primaryTab === 'monitor') parts.push(MONITOR[monitorSubTab]);
     else if (primaryTab === 'results') parts.push(RESULTS[resultsSubTab]);
     else if (primaryTab === 'courses') parts.push(COURSES[coursesSubTab]);
@@ -366,7 +373,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     setCurrentScreen(parts.join(' > '));
     return () => setCurrentScreen(null);
   }, [
-    primaryTab, assignmentsSubTab, monitorSubTab, resultsSubTab, coursesSubTab,
+    primaryTab, homeSubTab, assignmentsSubTab, monitorSubTab, resultsSubTab, coursesSubTab,
     contentSubTab, setupSubTab, rubricsSubTab, feedbackSubTab, adminSubTab,
   ]);
 
@@ -8358,7 +8365,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
                   <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
                 </svg>
-                Dashboard
+                Home
               </span>
             </button>
 
@@ -8534,6 +8541,32 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </button>
             )}
           </div>
+
+          {/* Sub-navigation for Home */}
+          {primaryTab === 'home' && (
+            <div className="flex gap-1 mt-2 pb-2">
+              <button
+                onClick={() => setHomeSubTab('welcome')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  homeSubTab === 'welcome'
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Welcome
+              </button>
+              <button
+                onClick={() => setHomeSubTab('dashboard')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  homeSubTab === 'dashboard'
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Dashboard
+              </button>
+            </div>
+          )}
 
           {/* Sub-navigation for Assignments */}
           {primaryTab === 'assignments' && (
@@ -8977,7 +9010,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
         {/* Content Rendering based on Primary Tab */}
         {primaryTab === 'home' ? (
-          <DashboardHome user={user} onNavigate={handleNavigate} />
+          homeSubTab === 'welcome' ? (
+            <WelcomeScreen />
+          ) : (
+            <DashboardHome user={user} onNavigate={handleNavigate} />
+          )
         ) : primaryTab === 'assignments' ? (
           assignmentsSubTab === 'chat-options' ? (
             renderChatOptionsTab()
