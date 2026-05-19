@@ -1,7 +1,7 @@
 
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Message, MessageRole, ConversationPhase, EvaluationResult, CEOPersona, Section, CaseChat, ChatStatus, RubricForPrompt } from './types';
+import { Message, MessageRole, ConversationPhase, EvaluationResult, Section, CaseChat, ChatStatus, RubricForPrompt } from './types';
 import { createChatSession, getEvaluation } from './services/llmService';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
@@ -123,7 +123,13 @@ const App: React.FC = () => {
   const [sections, setSections] = useState<Section[]>([]);
   const [selectedSection, setSelectedSection] = useState<string>('');
   const [otherSectionText, setOtherSectionText] = useState<string>('');
-  const [ceoPersona, setCeoPersona] = useState<CEOPersona>(CEOPersona.MODERATE);
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string>('moderate');
+  const [availablePersonas, setAvailablePersonas] = useState<Array<{
+    persona_id: string;
+    persona_name: string;
+    description?: string | null;
+    instructions?: string;
+  }>>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatSession, setChatSession] = useState<LLMChatSession | null>(null);
   const [conversationPhase, setConversationPhase] = useState<ConversationPhase>(ConversationPhase.PRE_CHAT);
@@ -640,16 +646,19 @@ const App: React.FC = () => {
           setActiveRubric(null);
         }
 
-        // Set default persona from chat options
-        if (options.default_persona) {
-          const personaMap: Record<string, CEOPersona> = {
-            moderate: CEOPersona.MODERATE,
-            strict: CEOPersona.STRICT,
-            liberal: CEOPersona.LIBERAL,
-            leading: CEOPersona.LEADING,
-            sycophantic: CEOPersona.SYCOPHANTIC
-          };
-          setCeoPersona(personaMap[options.default_persona] || CEOPersona.MODERATE);
+        // Personas available for this assignment (from server)
+        const personas = Array.isArray(selectedCase.available_personas)
+          ? selectedCase.available_personas
+          : [];
+        setAvailablePersonas(personas);
+
+        const defaultId = options.default_persona?.trim?.()?.toLowerCase?.();
+        if (defaultId && personas.some((p: any) => p.persona_id === defaultId)) {
+          setSelectedPersonaId(defaultId);
+        } else if (personas.length > 0) {
+          setSelectedPersonaId(personas[0].persona_id);
+        } else {
+          setSelectedPersonaId('moderate');
         }
 
         // Handle scenarios from the active-case response
@@ -755,7 +764,7 @@ const App: React.FC = () => {
     }
   }, [currentCaseChatId, conversationPhase]);
 
-  const startConversation = useCallback(async (name: string, persona: CEOPersona, modelId: string, studentId?: string) => {
+  const startConversation = useCallback(async (name: string, personaId: string, modelId: string, studentId?: string) => {
     setIsLoading(true);
     setError(null);
     setHintsUsed(0);  // Reset hint counter at start of conversation
@@ -811,7 +820,26 @@ const App: React.FC = () => {
       // Create chat session with case data for cache-optimized prompts
       const freeHints = chatOptions?.free_hints ?? 1;
       const chatbotPersonality = chatOptions?.chatbot_personality || undefined;
-      const session = createChatSession(name, persona, modelId, initialHistory, caseData, { freeHints, chatbotPersonality }, studentId || studentDBId || undefined);
+      const personaRow = availablePersonas.find((p) => p.persona_id === personaId);
+      const personaData = personaRow
+        ? {
+            persona_id: personaRow.persona_id,
+            persona_name: personaRow.persona_name,
+            description: personaRow.description ?? null,
+            instructions: personaRow.instructions || '',
+            enabled: true,
+            sort_order: 0,
+          }
+        : undefined;
+      const session = createChatSession(
+        name,
+        personaId,
+        modelId,
+        initialHistory,
+        caseData,
+        { freeHints, chatbotPersonality, personaData },
+        studentId || studentDBId || undefined
+      );
       setChatSession(session);
       setMessages(initialHistory);
       setConversationPhase(ConversationPhase.CHATTING);
@@ -836,7 +864,7 @@ const App: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId, chatOptions]);
+  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId, chatOptions, availablePersonas, studentDBId]);
   
   const handleSendMessage = async (userMessage: string) => {
     if (conversationPhase === ConversationPhase.CHATTING) {
@@ -1306,7 +1334,7 @@ const App: React.FC = () => {
           first_name: trimmedFirstName,
           last_name: trimmedLastName,
           full_name: fullName,
-          favorite_persona: ceoPersona,
+          favorite_persona: selectedPersonaId,
           section_id: sectionToSave,
         })
         .eq('id', sessionUser.id)
@@ -1330,7 +1358,7 @@ const App: React.FC = () => {
           student_id: studentId,
           case_id: selectedCaseId,
           section_id: sectionToSave,
-          persona: ceoPersona,
+          persona: selectedPersonaId,
           chat_model: selectedChatModel,
           scenario_id: selectedScenarioId || undefined,
         };
@@ -1364,7 +1392,7 @@ const App: React.FC = () => {
         // Continue anyway - chat tracking is optional
       }
 
-      await startConversation(trimmedFirstName, ceoPersona, selectedChatModel, studentId);
+      await startConversation(trimmedFirstName, selectedPersonaId, selectedChatModel, studentId);
     } finally {
       setIsLoading(false);
     }
@@ -1391,7 +1419,8 @@ const App: React.FC = () => {
     setError(null);
     setConversationPhase(ConversationPhase.PRE_CHAT);
     setEvaluationResult(null);
-    setCeoPersona(CEOPersona.MODERATE);
+    setSelectedPersonaId('moderate');
+    setAvailablePersonas([]);
     setCurrentCaseChatId(null);
     setSelectedInitialPositionId(null);
     setSelectedFinalPositionId(null);
@@ -1537,7 +1566,7 @@ const App: React.FC = () => {
 
     // Immediately start a new conversation with the same settings
     if (studentFirstName && selectedChatModel) {
-      await startConversation(studentFirstName, ceoPersona, selectedChatModel, studentDBId || undefined);
+      await startConversation(studentFirstName, selectedPersonaId, selectedChatModel, studentDBId || undefined);
     }
   };
 
@@ -1950,21 +1979,25 @@ const App: React.FC = () => {
               <div>
                 <label htmlFor="ceoPersona" className="block text-sm font-medium text-gray-700">Protagonist Personality</label>
                 <p className="mt-1 text-xs text-gray-500">Determines how strictly the protagonist requires you to cite case facts.</p>
-                <select id="ceoPersona" value={ceoPersona} onChange={(e) => setCeoPersona(e.target.value as CEOPersona)} className="w-full px-4 py-2 mt-1 text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
-                    {/* Filter personas based on allowed_personas from chat options */}
-                    {(() => {
-                      const allowedList = (chatOptions?.allowed_personas || 'moderate,strict,liberal,leading,sycophantic').split(',').map((p: string) => p.trim().toLowerCase());
-                      const personaOptions = [
-                        { value: CEOPersona.MODERATE, label: 'Moderate (Recommended)', key: 'moderate' },
-                        { value: CEOPersona.STRICT, label: 'Strict', key: 'strict' },
-                        { value: CEOPersona.LIBERAL, label: 'Liberal', key: 'liberal' },
-                        { value: CEOPersona.LEADING, label: 'Leading', key: 'leading' },
-                        { value: CEOPersona.SYCOPHANTIC, label: 'Sycophantic', key: 'sycophantic' },
-                      ];
-                      return personaOptions
-                        .filter(p => allowedList.includes(p.key))
-                        .map(p => <option key={p.value} value={p.value}>{p.label}</option>);
-                    })()}
+                <select
+                  id="ceoPersona"
+                  value={selectedPersonaId}
+                  onChange={(e) => setSelectedPersonaId(e.target.value)}
+                  className="w-full px-4 py-2 mt-1 text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                >
+                  {availablePersonas.length > 0 ? (
+                    availablePersonas.map((p) => (
+                      <option key={p.persona_id} value={p.persona_id}>{p.persona_name}</option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="moderate">Moderate (Recommended)</option>
+                      <option value="strict">Strict</option>
+                      <option value="liberal">Liberal</option>
+                      <option value="leading">Leading</option>
+                      <option value="sycophantic">Sycophantic</option>
+                    </>
+                  )}
                 </select>
               </div>
             )}
@@ -1977,7 +2010,7 @@ const App: React.FC = () => {
               <div className="p-4 bg-red-50 border-2 border-red-300 rounded-lg">
                 <p className="text-sm font-semibold text-red-800 mb-1">⚠️ Error Loading Case</p>
                 <p className="text-sm text-red-700">{error}</p>
-                <p className="text-xs text-red-600 mt-2">Please check the browser console (F12) for more details, or contact your instructor.</p>
+                <p className="text-xs text-red-600 mt-2">Please report the information above to your instructor.</p>
               </div>
             )}
             
@@ -2027,7 +2060,10 @@ const App: React.FC = () => {
       <ChatWindow
         messages={messages}
         isLoading={isLoading}
-        ceoPersona={ceoPersona}
+        personaDisplayName={
+          availablePersonas.find((p) => p.persona_id === selectedPersonaId)?.persona_name
+          || selectedPersonaId
+        }
         chatModelName={chatModelName}
         chatFontSize={chatFontSize}
         protagonistName={activeCaseData?.protagonist}

@@ -22,8 +22,23 @@ import Analytics from './Analytics';
 import PositionAnalytics from './PositionAnalytics';
 import SectionResultsSummary from './SectionResultsSummary';
 import HelpTooltip from './ui/HelpTooltip';
-import { ChatOptionsHelp } from '../help/dashboard';
+import { ChatOptionsHelp, PersonasHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
+import {
+  canDeletePersona,
+  canEditPersona,
+  canTogglePersonaEnabled,
+  formatAllowedPersonas,
+  isSystemPersona,
+  ownerLabel,
+  personaApiErrorMessage,
+  personasForDefaultDropdown,
+  resolveAllowedPersonasForForm,
+  sortPersonasList,
+  visibilityLabel,
+  type PersonaAccessContext,
+  type PersonaRow,
+} from '../utils/personas';
 import { AdminUser } from '../types';
 import {
   DndContext,
@@ -638,6 +653,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     team_shares: []
   });
   const [isSavingPersona, setIsSavingPersona] = useState(false);
+  const [personaModalError, setPersonaModalError] = useState<string | null>(null);
+  const [personaListError, setPersonaListError] = useState<string | null>(null);
+  const [personaViewOnly, setPersonaViewOnly] = useState(false);
+  const [isCloningPersona, setIsCloningPersona] = useState(false);
+
+  const personaAccessContext = useMemo((): PersonaAccessContext => ({
+    superuser: Boolean(user?.superuser),
+    role: user?.role,
+    effectiveInstructorId: user?.role === 'admin' ? getImpersonationId() : (user?.id ?? null),
+  }), [user]);
 
   // Assignments view state
   const [assignmentsSectionsList, setAssignmentsSectionsList] = useState<any[]>([]);
@@ -1755,7 +1780,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       if (result.error) {
         console.error('Error fetching personas:', result.error);
       } else {
-        setPersonasList(result.data || []);
+        setPersonasList(sortPersonasList(result.data || []));
       }
     } catch (err) {
       console.error('Error fetching personas:', err);
@@ -1764,21 +1789,29 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
-  const handleOpenPersonaModal = (persona?: any) => {
+  const fillPersonaForm = (persona: PersonaRow) => {
+    setPersonaForm({
+      persona_id: persona.persona_id,
+      persona_name: persona.persona_name,
+      description: persona.description || '',
+      instructions: persona.instructions || '',
+      enabled: Boolean(persona.enabled),
+      sort_order: persona.sort_order || 0,
+      visibility: (persona.visibility || 'private') as 'private' | 'team' | 'public',
+      team_shares: Array.isArray((persona as any).team_shares) ? (persona as any).team_shares : []
+    });
+  };
+
+  const handleOpenPersonaModal = (persona?: PersonaRow, viewOnly = false) => {
+    setPersonaModalError(null);
     if (persona) {
       setEditingPersona(persona);
-      setPersonaForm({
-        persona_id: persona.persona_id,
-        persona_name: persona.persona_name,
-        description: persona.description || '',
-        instructions: persona.instructions,
-        enabled: persona.enabled,
-        sort_order: persona.sort_order || 0,
-        visibility: (persona.visibility || 'private') as 'private' | 'team' | 'public',
-        team_shares: Array.isArray(persona.team_shares) ? persona.team_shares : []
-      });
+      fillPersonaForm(persona);
+      const readOnly = viewOnly || (isSystemPersona(persona) && !personaAccessContext.superuser);
+      setPersonaViewOnly(readOnly);
     } else {
       setEditingPersona(null);
+      setPersonaViewOnly(false);
       setPersonaForm({
         persona_id: '',
         persona_name: '',
@@ -1794,11 +1827,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   const handleSavePersona = async () => {
+    if (personaViewOnly) return;
     if (!personaForm.persona_id || !personaForm.persona_name || !personaForm.instructions) {
-      setError('Please fill in persona ID, name, and instructions');
+      setPersonaModalError('Please fill in persona ID, name, and instructions');
       return;
     }
     setIsSavingPersona(true);
+    setPersonaModalError(null);
     try {
       const token = localStorage.getItem('admin_auth_token');
       const url = editingPersona
@@ -1816,15 +1851,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
       const result = await response.json();
       if (!response.ok || result.error) {
-        throw new Error(result.error?.message || 'Failed to save persona');
+        throw new Error(personaApiErrorMessage(result.error?.code, result.error?.message));
       }
 
-      // Visibility is set via a dedicated endpoint so the share-table can be
-      // managed atomically. Fire it whenever the form had a visibility set;
-      // backend is idempotent.
       const savedId = editingPersona?.persona_id || personaForm.persona_id;
       if (savedId && personaForm.visibility) {
-        await fetch(`${getApiBaseUrl()}/personas/${savedId}/visibility`, {
+        const visResponse = await fetch(`${getApiBaseUrl()}/personas/${savedId}/visibility`, {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
@@ -1835,19 +1867,51 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             team_ids: personaForm.team_shares
           })
         });
+        const visResult = await visResponse.json();
+        if (!visResponse.ok || visResult.error) {
+          throw new Error(personaApiErrorMessage(visResult.error?.code, visResult.error?.message));
+        }
       }
 
       setShowPersonaModal(false);
+      setPersonaViewOnly(false);
       fetchPersonas();
     } catch (err: any) {
-      setError(err.message || 'Failed to save persona');
+      setPersonaModalError(err.message || 'Failed to save persona');
     } finally {
       setIsSavingPersona(false);
     }
   };
 
+  const handleClonePersona = async (persona: PersonaRow) => {
+    setIsCloningPersona(true);
+    setPersonaListError(null);
+    try {
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(`${getApiBaseUrl()}/personas/${persona.persona_id}/clone`, {
+        method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw new Error(personaApiErrorMessage(result.error?.code, result.error?.message));
+      }
+      await fetchPersonas();
+      if (result.data) {
+        handleOpenPersonaModal(result.data, false);
+      }
+      setSuccessMessage(`Cloned "${persona.persona_name}" to your library. Set it under Assignments → Chat Options if needed.`);
+      setTimeout(() => setSuccessMessage(null), 8000);
+    } catch (err: any) {
+      setPersonaListError(err.message || 'Failed to clone persona');
+    } finally {
+      setIsCloningPersona(false);
+    }
+  };
+
   const handleDeletePersona = async (personaId: string) => {
     if (!confirm(`Are you sure you want to delete persona "${personaId}"? This cannot be undone.`)) return;
+    setPersonaListError(null);
     try {
       const token = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/personas/${personaId}`, {
@@ -1857,16 +1921,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
       const result = await response.json();
       if (!response.ok || result.error) {
-        throw new Error(result.error?.message || 'Failed to delete persona');
+        throw new Error(personaApiErrorMessage(result.error?.code, result.error?.message));
       }
 
       fetchPersonas();
     } catch (err: any) {
-      setError(err.message || 'Failed to delete persona');
+      setPersonaListError(err.message || 'Failed to delete persona');
     }
   };
 
-  const handleTogglePersonaEnabled = async (persona: any) => {
+  const handleTogglePersonaEnabled = async (persona: PersonaRow) => {
+    setPersonaListError(null);
     try {
       const token = localStorage.getItem('admin_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/personas/${persona.persona_id}`, {
@@ -1880,13 +1945,97 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
       const result = await response.json();
       if (!response.ok || result.error) {
-        throw new Error(result.error?.message || 'Failed to update persona');
+        throw new Error(personaApiErrorMessage(result.error?.code, result.error?.message));
       }
 
       fetchPersonas();
     } catch (err: any) {
-      setError(err.message || 'Failed to update persona');
+      setPersonaListError(err.message || 'Failed to update persona');
     }
+  };
+
+  const renderPersonaChatOptionsFields = (disabled = false) => {
+    if (!editingChatOptions) return null;
+    const enabledPersonas = personasList.filter((p) => p.enabled);
+    const { allowAll, selectedIds } = resolveAllowedPersonasForForm(
+      editingChatOptions.allowed_personas,
+      enabledPersonas
+    );
+    const defaultOptions = personasForDefaultDropdown(enabledPersonas, editingChatOptions.allowed_personas);
+
+    const updateAllowed = (nextAllowAll: boolean, nextSelected: string[]) => {
+      const allowed_personas = nextAllowAll ? '' : formatAllowedPersonas(nextSelected);
+      let default_persona = editingChatOptions.default_persona;
+      const allowedSet = nextAllowAll ? enabledPersonas.map((p) => p.persona_id) : nextSelected;
+      if (!allowedSet.includes(default_persona)) {
+        default_persona = allowedSet[0] || default_persona;
+      }
+      setEditingChatOptions({ ...editingChatOptions, allowed_personas, default_persona });
+    };
+
+    return (
+      <>
+        <div className="mb-4">
+          <label className="block text-xs font-medium text-gray-700 mb-2">Allowed Personas</label>
+          <label className={`flex items-center gap-2 text-sm mb-2 ${disabled ? 'text-gray-400' : ''}`}>
+            <input
+              type="checkbox"
+              checked={allowAll}
+              disabled={disabled}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  updateAllowed(true, enabledPersonas.map((p) => p.persona_id));
+                } else {
+                  updateAllowed(false, selectedIds.length ? selectedIds : enabledPersonas.map((p) => p.persona_id));
+                }
+              }}
+              className="rounded border-gray-300"
+            />
+            All enabled personas
+          </label>
+          {!allowAll && (
+            <div className={`space-y-1 max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-2 ${disabled ? 'opacity-60' : ''}`}>
+              {enabledPersonas.map((p) => (
+                <label key={p.persona_id} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(p.persona_id)}
+                    disabled={disabled}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                        ? [...selectedIds, p.persona_id]
+                        : selectedIds.filter((id) => id !== p.persona_id);
+                      updateAllowed(false, next.length ? next : []);
+                    }}
+                    className="rounded border-gray-300"
+                  />
+                  <span>{p.persona_name}</span>
+                  <span className="text-xs text-gray-400 font-mono">({p.persona_id})</span>
+                </label>
+              ))}
+            </div>
+          )}
+          <p className="text-xs text-gray-500 mt-1">Leave &quot;All enabled&quot; checked to allow every enabled persona, including new clones.</p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-700 mb-1">Default Persona</label>
+          <select
+            value={editingChatOptions.default_persona ?? defaultOptions[0]?.persona_id ?? 'moderate'}
+            onChange={(e) => setEditingChatOptions({ ...editingChatOptions, default_persona: e.target.value })}
+            disabled={disabled || defaultOptions.length === 0}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+          >
+            {defaultOptions.length > 0 ? (
+              defaultOptions.map((p) => (
+                <option key={p.persona_id} value={p.persona_id}>{p.persona_name}</option>
+              ))
+            ) : (
+              <option value="moderate">Moderate</option>
+            )}
+          </select>
+        </div>
+      </>
+    );
   };
 
   // Assignments tab functions
@@ -6728,26 +6877,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </button>
               {expandedCategories.has('persona') && (
                 <div className="pb-4 pt-2">
-                  <label className="block text-xs font-medium text-gray-700 mb-1">Default Persona</label>
-                  <select
-                    value={editingChatOptions.default_persona ?? 'moderate'}
-                    onChange={(e) => setEditingChatOptions({...editingChatOptions, default_persona: e.target.value})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                  >
-                    {personasList.length > 0 ? (
-                      personasList.filter(p => p.enabled).map(p => (
-                        <option key={p.persona_id} value={p.persona_id}>{p.persona_name}</option>
-                      ))
-                    ) : (
-                      <>
-                        <option value="moderate">Moderate</option>
-                        <option value="strict">Strict</option>
-                        <option value="liberal">Liberal</option>
-                        <option value="leading">Leading</option>
-                        <option value="sycophantic">Sycophantic</option>
-                      </>
-                    )}
-                  </select>
+                  {renderPersonaChatOptionsFields(!isEditingDefault && useDefaultOptions)}
                 </div>
               )}
             </div>
@@ -7147,9 +7277,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const renderPersonasTab = () => (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Chatbot Personas</h2>
-          <p className="text-sm text-gray-500">Manage AI personality configurations for case chats</p>
+        <div className="flex items-center gap-2">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900">Chatbot Personas</h2>
+            <p className="text-sm text-gray-500">Manage AI personality configurations for case chats</p>
+          </div>
+          <HelpTooltip title="Chatbot Personas">
+            <PersonasHelp />
+          </HelpTooltip>
         </div>
         <div className="flex gap-2">
           <button
@@ -7172,6 +7307,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       </div>
 
+      <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-900">
+        Built-in personas are read-only. Use <strong>Clone</strong> to create your own version, then choose it under <strong>Assignments → Chat Options</strong>.
+      </div>
+
+      {personaListError && (
+        <div className="mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg flex items-start justify-between gap-2">
+          <span className="min-w-0 flex-1 break-words">{personaListError}</span>
+          <button type="button" onClick={() => setPersonaListError(null)} className="text-red-600 hover:text-red-800 p-1">×</button>
+        </div>
+      )}
+
       {isLoadingPersonas ? (
         <div className="text-center py-12">
           <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
@@ -7188,49 +7334,92 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">ID</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Name</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Type</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Owner</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Description</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {personasList.map((persona) => (
+              {sortPersonasList(personasList).map((persona) => {
+                const editable = canEditPersona(persona, personaAccessContext);
+                const deletable = canDeletePersona(persona, personaAccessContext);
+                const canToggle = canTogglePersonaEnabled(persona, personaAccessContext);
+                return (
                 <tr key={persona.persona_id} className={!persona.enabled ? 'bg-gray-50 opacity-60' : 'hover:bg-gray-50'}>
                   <td className="px-4 py-3 text-sm font-medium text-gray-900">{persona.persona_id}</td>
                   <td className="px-4 py-3 text-sm text-gray-700 font-medium">{persona.persona_name}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600 max-w-xs truncate" title={persona.description}>
+                  <td className="px-4 py-3">
+                    {isSystemPersona(persona) ? (
+                      <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded">Built-in</span>
+                    ) : (
+                      <span className="px-2 py-0.5 text-xs bg-gray-100 text-gray-700 rounded">Custom</span>
+                    )}
+                    {!isSystemPersona(persona) && persona.visibility && persona.visibility !== 'private' && (
+                      <span className="ml-1 px-2 py-0.5 text-xs bg-purple-50 text-purple-700 rounded">{visibilityLabel(persona.visibility)}</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">{ownerLabel(persona, personaAccessContext)}</td>
+                  <td className="px-4 py-3 text-sm text-gray-600 max-w-xs truncate" title={persona.description || undefined}>
                     {persona.description || '-'}
                   </td>
                   <td className="px-4 py-3">
-                    <button
-                      onClick={() => handleTogglePersonaEnabled(persona)}
-                      className={`px-2 py-1 text-xs font-medium rounded-full ${
-                        persona.enabled
-                          ? 'bg-green-100 text-green-700'
-                          : 'bg-gray-100 text-gray-500'
-                      }`}
-                    >
-                      {persona.enabled ? 'Enabled' : 'Disabled'}
-                    </button>
+                    {canToggle ? (
+                      <button
+                        onClick={() => handleTogglePersonaEnabled(persona)}
+                        className={`px-2 py-1 text-xs font-medium rounded-full ${
+                          persona.enabled
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-gray-100 text-gray-500'
+                        }`}
+                      >
+                        {persona.enabled ? 'Enabled' : 'Disabled'}
+                      </button>
+                    ) : (
+                      <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                        persona.enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                      }`}>
+                        {persona.enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-wrap">
+                      {editable ? (
+                        <button
+                          onClick={() => handleOpenPersonaModal(persona, false)}
+                          className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                        >
+                          Edit
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleOpenPersonaModal(persona, true)}
+                          className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                        >
+                          View
+                        </button>
+                      )}
                       <button
-                        onClick={() => handleOpenPersonaModal(persona)}
-                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                        onClick={() => handleClonePersona(persona)}
+                        disabled={isCloningPersona}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-blue-700 border-blue-200 hover:bg-blue-50 disabled:opacity-50"
                       >
-                        Edit
+                        Clone
                       </button>
-                      <button
-                        onClick={() => handleDeletePersona(persona.persona_id)}
-                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
-                      >
-                        Delete
-                      </button>
+                      {deletable && (
+                        <button
+                          onClick={() => handleDeletePersona(persona.persona_id)}
+                          className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
+                        >
+                          Delete
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         </div>
@@ -8246,6 +8435,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 onClick={() => {
                   setAssignmentsSubTab('chat-options');
                   fetchAssignmentsSections();
+                  if (personasList.length === 0) fetchPersonas();
                 }}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   assignmentsSubTab === 'chat-options'
@@ -8487,7 +8677,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
-                  Personas *
+                  Personas
                 </button>
               )}
               {hasAccess(user, 'prompts') && (
@@ -10215,18 +10405,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                               </label>
                             </div>
                             <div>
-                              <label className="block text-xs font-medium text-gray-700 mb-1">Default Persona</label>
-                              <select
-                                value={editingChatOptions.default_persona ?? 'moderate'}
-                                onChange={(e) => setEditingChatOptions({...editingChatOptions, default_persona: e.target.value})}
-                                className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
-                              >
-                                <option value="moderate">Moderate</option>
-                                <option value="strict">Strict</option>
-                                <option value="liberal">Liberal</option>
-                                <option value="leading">Leading</option>
-                                <option value="sycophantic">Sycophantic</option>
-                              </select>
+                              {renderPersonaChatOptionsFields(false)}
                             </div>
 
                             {/* Position Tracking Override */}
@@ -10425,10 +10604,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center p-4 border-b sticky top-0 bg-white">
               <h3 className="text-lg font-bold text-gray-900">
-                {editingPersona ? 'Edit Persona' : 'Create New Persona'}
+                {personaViewOnly ? 'View Persona' : editingPersona ? 'Edit Persona' : 'Create New Persona'}
               </h3>
               <button
-                onClick={() => setShowPersonaModal(false)}
+                onClick={() => { setShowPersonaModal(false); setPersonaViewOnly(false); setPersonaModalError(null); }}
                 className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
@@ -10436,6 +10615,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 </svg>
               </button>
             </div>
+            {personaModalError && (
+              <div className="mx-4 mt-4 bg-red-100 border border-red-200 text-red-700 p-3 rounded-lg text-sm">
+                {personaModalError}
+              </div>
+            )}
+            {personaViewOnly && editingPersona && isSystemPersona(editingPersona) && (
+              <div className="mx-4 mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-900">
+                Built-in personas are read-only. Clone to create your own editable copy.
+              </div>
+            )}
             <div className="p-4 space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -10444,7 +10633,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     type="text"
                     value={personaForm.persona_id}
                     onChange={(e) => setPersonaForm({ ...personaForm, persona_id: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-') })}
-                    disabled={!!editingPersona}
+                    disabled={!!editingPersona || personaViewOnly}
                     placeholder="e.g., friendly-mentor"
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
                   />
@@ -10456,8 +10645,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     type="text"
                     value={personaForm.persona_name}
                     onChange={(e) => setPersonaForm({ ...personaForm, persona_name: e.target.value })}
+                    disabled={personaViewOnly}
                     placeholder="e.g., Friendly Mentor"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
                   />
                 </div>
               </div>
@@ -10467,8 +10657,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   type="text"
                   value={personaForm.description}
                   onChange={(e) => setPersonaForm({ ...personaForm, description: e.target.value })}
+                  disabled={personaViewOnly}
                   placeholder="Brief description of this persona's behavior"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
                 />
               </div>
               <div>
@@ -10476,9 +10667,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 <textarea
                   value={personaForm.instructions}
                   onChange={(e) => setPersonaForm({ ...personaForm, instructions: e.target.value })}
+                  disabled={personaViewOnly}
                   placeholder="Detailed instructions for the AI chatbot on how to behave with this persona..."
                   rows={8}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-y"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-y disabled:bg-gray-100"
                 />
                 <p className="text-xs text-gray-500 mt-1">These instructions guide the chatbot's personality and interaction style</p>
               </div>
@@ -10489,8 +10681,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     type="number"
                     value={personaForm.sort_order}
                     onChange={(e) => setPersonaForm({ ...personaForm, sort_order: parseInt(e.target.value) || 0 })}
+                    disabled={personaViewOnly}
                     min="0"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
                   />
                 </div>
                 <div className="flex items-center pt-6">
@@ -10499,36 +10692,49 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       type="checkbox"
                       checked={personaForm.enabled}
                       onChange={(e) => setPersonaForm({ ...personaForm, enabled: e.target.checked })}
+                      disabled={personaViewOnly}
                       className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                     />
                     Enabled (available for selection)
                   </label>
                 </div>
               </div>
-              <div className="mt-4">
-                <VisibilityPicker
-                  value={personaForm.visibility}
-                  onChange={v => setPersonaForm({ ...personaForm, visibility: v })}
-                  teamShares={personaForm.team_shares}
-                  onTeamSharesChange={shares => setPersonaForm({ ...personaForm, team_shares: shares })}
-                  canPublish={Boolean(user?.superuser) || Boolean((user as any)?.can_publish)}
-                />
-              </div>
+              {!personaViewOnly && (
+                <div className="mt-4">
+                  <VisibilityPicker
+                    value={personaForm.visibility}
+                    onChange={v => setPersonaForm({ ...personaForm, visibility: v })}
+                    teamShares={personaForm.team_shares}
+                    onTeamSharesChange={shares => setPersonaForm({ ...personaForm, team_shares: shares })}
+                    canPublish={Boolean(user?.superuser) || Boolean((user as any)?.can_publish)}
+                  />
+                </div>
+              )}
             </div>
             <div className="flex justify-end gap-2 p-4 border-t bg-gray-50 rounded-b-xl">
               <button
-                onClick={() => setShowPersonaModal(false)}
+                onClick={() => { setShowPersonaModal(false); setPersonaViewOnly(false); setPersonaModalError(null); }}
                 className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
               >
                 Cancel
               </button>
-              <button
-                onClick={handleSavePersona}
-                disabled={isSavingPersona}
-                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
-              >
-                {isSavingPersona ? 'Saving...' : editingPersona ? 'Save Changes' : 'Create Persona'}
-              </button>
+              {personaViewOnly && editingPersona ? (
+                <button
+                  onClick={() => handleClonePersona(editingPersona)}
+                  disabled={isCloningPersona}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                >
+                  {isCloningPersona ? 'Cloning...' : 'Clone to my library'}
+                </button>
+              ) : (
+                <button
+                  onClick={handleSavePersona}
+                  disabled={isSavingPersona}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                >
+                  {isSavingPersona ? 'Saving...' : editingPersona ? 'Save Changes' : 'Create Persona'}
+                </button>
+              )}
             </div>
           </div>
         </div>

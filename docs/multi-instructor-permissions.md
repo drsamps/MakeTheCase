@@ -54,6 +54,7 @@ This is the canonical reference for "who can do what" across the four user types
 | **Personas** |
 | List personas | all (read) | all (read) | system defaults + own + team + public | same | same |
 | Edit system-default persona | superuser only | ✗ | ✗ | ✗ | ✗ |
+| Clone system or custom persona | n/a | n/a | ✓ (`POST /personas/:id/clone`) | ✓ | ✓ |
 | Create persona | ✗ | ✗ | ✓ | ✓ | ✓ |
 | **Case Writer projects** |
 | Create project | ✗ | ✗ | ✓ | ✓ | ✓ |
@@ -81,6 +82,7 @@ This is the canonical reference for "who can do what" across the four user types
 - **Revocation does not auto-demote** existing public items. If an admin removes `can_publish` from instructor A, A's previously-published items remain public until an admin explicitly demotes them.
 - **Impersonation actions are double-attributed.** Any write performed by an admin under impersonation logs `actor_admin_id` AND `acted_as_instructor_id` in `audit_log`. See `multi-instructor-impersonation.md`.
 - **Semesters sub-tab is read-only for everyone except superuser admins.** Primary instructors and TAs see the Courses → Semesters tab and the list of semesters (the matrix grants them read access), but the New Semester button and the per-row action cluster (Instructors, Set as Current, Clone, Edit, Delete) are hidden unless `user.role === 'admin' && user.superuser`. Non-superuser admins also see the list without action buttons — this matches the server, which gates every mutating `/api/semesters` endpoint with `requireRole(['admin'])` + `requireSuperuser`. Hiding buttons that the API would reject avoids 403s on click. Enforced in `components/Dashboard.tsx` (`renderSemestersTab`, `canEditSemesters`).
+- **Personas is instructor-accessible under Admin.** The Personas sub-tab has no ` *` suffix (unlike Models or Prompts). Instructors reach it via `hasAccess(user, 'personas')` (`BASE_FUNCTIONS`). Built-in personas remain read-only except for superuser; instructors use **Clone** for editable copies. Chat-option **Allowed Personas** (blank = all enabled) is documented in `multi-instructor-personas.md`.
 
 ## Enforcement locations
 
@@ -96,7 +98,8 @@ This is the canonical reference for "who can do what" across the four user types
 | Key resolution | `server/services/keyResolver.js` | `resolveProviderKey` (env key vs. per-instructor key vs. error) |
 | Usage cap | `server/services/usageGuard.js` | `assertWithinUsageCap` (only when `use_system_key=1`) |
 | Client tab gating | `utils/permissions.ts` | `hasAccess(user, functionName)` — drives Dashboard tab visibility |
-| Client per-tab gating | `components/Dashboard.tsx` | Inline `user.superuser` checks for mutation controls inside otherwise-readable tabs (e.g. `renderSemestersTab.canEditSemesters`) |
+| Client per-tab gating | `components/Dashboard.tsx` | Inline `user.superuser` checks for mutation controls inside otherwise-readable tabs (e.g. `renderSemestersTab.canEditSemesters`). Admin sub-tab labels: ` *` suffix only on default admin-only tools (`SUPERUSER_FUNCTIONS`); **Personas** has no asterisk because it is in `BASE_FUNCTIONS`. |
+| Persona resolution (students) | `server/services/personaService.js` | `resolveAvailablePersonas`, `clonePersona`; used by `sectionCases.js` and `personas.js` |
 | Audit | `server/services/auditLog.js` | `writeAudit(req, …)` writes append-only rows to `audit_log` |
 
 ## Verification

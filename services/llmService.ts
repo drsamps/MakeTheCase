@@ -24,7 +24,7 @@ export const detectProvider = (modelId: string) => {
 
 export const createChatSession = (
   studentName: string,
-  persona: CEOPersona,
+  persona: CEOPersona | string,
   modelId: string,
   history: Message[] = [],
   caseData?: CaseData,

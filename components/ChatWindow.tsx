@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { Message, MessageRole, CEOPersona } from '../types';
+import { Message, MessageRole } from '../types';
 
 interface PositionOption {
   position_id: number;
@@ -10,7 +10,7 @@ interface PositionOption {
 interface ChatWindowProps {
   messages: Message[];
   isLoading: boolean;
-  ceoPersona: CEOPersona;
+  personaDisplayName?: string;
   chatModelName: string | null;
   chatFontSize: string;
   // Optional props for dynamic protagonist
@@ -36,7 +36,7 @@ const renderMessageContent = (content: string) => {
 const ChatWindow: React.FC<ChatWindowProps> = ({
   messages,
   isLoading,
-  ceoPersona,
+  personaDisplayName,
   chatModelName,
   chatFontSize,
   protagonistName = 'Kent Beck',
@@ -61,7 +61,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     alert('Sorry, cut-and-paste are disabled while using this simulation.');
   };
 
-  const personaName = ceoPersona.charAt(0).toUpperCase() + ceoPersona.slice(1);
+  const personaName = personaDisplayName || 'Protagonist';
   const protagonistTitle = `${protagonistName}, ${personaName} protagonist of ${caseTitle} (AI model: ${chatModelName || '...'})`;
 
   return (

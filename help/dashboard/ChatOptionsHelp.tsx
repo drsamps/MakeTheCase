@@ -76,7 +76,8 @@ const ChatOptionsHelp: React.FC = () => (
 
     <h4>Persona</h4>
     <ul>
-      <li><strong>Default Persona</strong> - Pre-selected chatbot personality for new chats</li>
+      <li><strong>Allowed Personas</strong> - Which personas students may choose. Leave &quot;All enabled personas&quot; checked to allow every enabled persona; uncheck to pick a subset.</li>
+      <li><strong>Default Persona</strong> - Pre-selected chatbot personality for new chats (must be in the allowed set)</li>
     </ul>
 
     <h4>Custom Instructions</h4>

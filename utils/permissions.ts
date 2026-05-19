@@ -11,10 +11,10 @@ const BASE_FUNCTIONS = [
   'teams',     // self-service Teams membership / sharing
   'apikeys',   // per-instructor API keys
   'rubrics',   // owned + system + team-shared
-  'personas',  // system defaults (read-only) + per-instructor + team-shared
+  'personas',  // system defaults (read-only) + per-instructor + team-shared — no " *" on Admin sub-tab
 ];
 
-// Superuser-only functions by default
+// Superuser-only functions by default (Admin sub-tabs show a trailing " *" in the UI)
 const SUPERUSER_FUNCTIONS = [
   'caseprep', 'prompts', 'models', 'settings', 'instructors',
   'semesters', // semester catalog + set-current

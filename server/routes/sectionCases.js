@@ -1,8 +1,23 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import { resolveAvailablePersonas } from '../services/personaService.js';
 
 const router = express.Router();
+
+function normalizeChatOptions(chatOptions) {
+  if (chatOptions === null || chatOptions === undefined) return null;
+  if (typeof chatOptions === 'string') {
+    try { return JSON.parse(chatOptions); } catch { return null; }
+  }
+  return chatOptions;
+}
+
+async function attachAvailablePersonas(parsedChatOptions) {
+  const opts = normalizeChatOptions(parsedChatOptions) || {};
+  const available_personas = await resolveAvailablePersonas(opts.allowed_personas);
+  return available_personas;
+}
 
 // Helper function to resolve chat options with defaults fallback
 async function resolveChatOptions(sectionId, chatOptions) {
@@ -75,7 +90,8 @@ router.get('/:sectionId/cases', async (req, res) => {
         }
 
         if (!row.use_scenarios) {
-          return { ...row, chat_options: parsedChatOptions, chat_options_is_custom: chatOptionsIsCustom };
+          const available_personas = await attachAvailablePersonas(parsedChatOptions);
+          return { ...row, chat_options: parsedChatOptions, chat_options_is_custom: chatOptionsIsCustom, available_personas };
         }
 
         const [scenarios] = await pool.execute(
@@ -152,11 +168,13 @@ router.get('/:sectionId/cases', async (req, res) => {
           }));
         }
 
+        const available_personas = await attachAvailablePersonas(parsedChatOptions);
         return {
           ...row,
           chat_options: parsedChatOptions,
           chat_options_is_custom: chatOptionsIsCustom,
-          scenarios: scenariosWithPositions
+          scenarios: scenariosWithPositions,
+          available_personas,
         };
       })
     );
@@ -310,10 +328,13 @@ router.get('/:sectionId/active-case', async (req, res) => {
       resolvedChatOptions = await resolveChatOptions(caseData.section_id, resolvedChatOptions);
     }
 
+    const available_personas = await attachAvailablePersonas(resolvedChatOptions);
+
     res.json({
       data: {
         ...caseData,
         chat_options: resolvedChatOptions,
+        available_personas,
         is_available: availability.available,
         availability_message: availability.reason,
         scenarios: scenarios

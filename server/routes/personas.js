@@ -6,8 +6,19 @@ import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
 import { buildVisibilityScope, canAccessResource } from '../services/resourceAccess.js';
 import { setVisibility } from '../services/visibilityWrites.js';
 import { writeAudit } from '../services/auditLog.js';
+import { clonePersona } from '../services/personaService.js';
 
 const router = express.Router();
+
+function systemReadonlyResponse() {
+  return {
+    data: null,
+    error: {
+      code: 'SYSTEM_DEFAULT_READONLY',
+      message: 'Built-in personas are read-only. Clone this persona to create your own editable copy.',
+    },
+  };
+}
 
 // GET /api/personas - List personas visible to caller (system + own + team + public).
 router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
@@ -23,7 +34,7 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
       params.push(enabled === 'true' ? 1 : 0);
     }
 
-    query += ' ORDER BY p.sort_order ASC, p.persona_id ASC';
+    query += ' ORDER BY p.is_system_default DESC, p.sort_order ASC, p.persona_id ASC';
 
     const [rows] = await pool.execute(query, params);
     res.json({ data: rows, error: null });
@@ -113,6 +124,31 @@ router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   }
 });
 
+// POST /api/personas/:personaId/clone - Clone for caller's library (new id)
+router.post('/:personaId/clone', verifyToken, requireAdminOrInstructor, async (req, res) => {
+  try {
+    const { personaId } = req.params;
+    const access = await canAccessResource(req, 'persona', personaId, 'view');
+    if (!access.allowed) {
+      return res.status(access.reason === 'not_found' ? 404 : 403).json({
+        data: null, error: { message: access.reason }
+      });
+    }
+    const effectiveId = req.effectiveInstructorId || req.user?.id || null;
+    const createdByType = req.user.role === 'admin' && !req.effectiveInstructorId ? 'admin' : 'instructor';
+    const instructorShort = (effectiveId || 'me').toString().replace(/[^a-z0-9]/gi, '').slice(0, 6).toLowerCase() || 'me';
+    const persona = await clonePersona(personaId, {
+      created_by: effectiveId,
+      created_by_type: createdByType,
+      instructorShort,
+    });
+    res.status(201).json({ data: persona, error: null });
+  } catch (error) {
+    console.error('Error cloning persona:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 // PATCH /api/personas/:personaId/visibility
 router.patch('/:personaId/visibility', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
@@ -140,9 +176,13 @@ router.patch('/:personaId', verifyToken, requireAdminOrInstructor, async (req, r
     const { personaId } = req.params;
     const access = await canAccessResource(req, 'persona', personaId, 'edit');
     if (!access.allowed) {
-      return res.status(access.reason === 'not_found' ? 404 : 403).json({
-        data: null, error: { message: access.reason }
-      });
+      if (access.reason === 'not_found') {
+        return res.status(404).json({ data: null, error: { message: 'Persona not found' } });
+      }
+      if (access.row?.is_system_default) {
+        return res.status(409).json(systemReadonlyResponse());
+      }
+      return res.status(403).json({ data: null, error: { message: access.reason } });
     }
     const { persona_name, description, instructions, enabled, sort_order } = req.body;
 
@@ -201,9 +241,13 @@ router.delete('/:personaId', verifyToken, requireAdminOrInstructor, async (req, 
 
     const access = await canAccessResource(req, 'persona', personaId, 'delete');
     if (!access.allowed) {
-      return res.status(access.reason === 'not_found' ? 404 : 403).json({
-        data: null, error: { message: access.reason }
-      });
+      if (access.reason === 'not_found') {
+        return res.status(404).json({ data: null, error: { message: 'Persona not found' } });
+      }
+      if (access.row?.is_system_default) {
+        return res.status(409).json(systemReadonlyResponse());
+      }
+      return res.status(403).json({ data: null, error: { message: access.reason } });
     }
 
     // Check if persona exists

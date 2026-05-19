@@ -7,6 +7,7 @@ This doc is the index for everything below.
 ## Related docs
 
 - **[multi-instructor-permissions.md](./multi-instructor-permissions.md)** — Permission matrix (Admin / Primary / TA / Other Instructor) for every action.
+- **[multi-instructor-personas.md](./multi-instructor-personas.md)** — Built-in vs custom personas, clone, Allowed Personas in chat options, student `available_personas`.
 - **[multi-instructor-visibility.md](./multi-instructor-visibility.md)** — Resource visibility (Private / Team / Public) + team sharing.
 - **[multi-instructor-api-keys.md](./multi-instructor-api-keys.md)** — Per-instructor API keys, encryption, usage caps, the system-key fallback.
 - **[multi-instructor-impersonation.md](./multi-instructor-impersonation.md)** — Admin "act as instructor" flow + audit log.
@@ -98,7 +99,8 @@ Idempotent: each UPDATE is guarded by `WHERE … IS NULL`. Re-running on already
 | `components/TeamsManager.tsx` | Self-service team CRUD + invite/accept flow. |
 | `components/ApiKeysManager.tsx` | Per-instructor key entry/rotate/remove. Plaintext never re-displayed; UI shows only the 4-char hint. |
 | `components/ui/VisibilityPicker.tsx` | Reusable Private/Team/Public selector with team multi-select and `can_publish` gating. |
-| `utils/permissions.ts` | `hasAccess(user, functionName)` — drives which tabs render in the dashboard. |
+| `utils/permissions.ts` | `hasAccess(user, functionName)` — drives which tabs render in the dashboard. `BASE_FUNCTIONS` includes `personas`, `teams`, `apikeys`, `rubrics`; `SUPERUSER_FUNCTIONS` includes `prompts`, `models`, `settings`, `instructors`. |
+| `utils/personas.ts` | Client helpers for persona row actions (built-in vs custom), Allowed Personas parsing, and chat-options persona pickers. |
 | `services/apiClient.ts` | Centralizes the `Authorization` header + `X-Act-As-Instructor` impersonation header + token refresh on focus. |
 
 ## Server surface
@@ -118,6 +120,8 @@ Idempotent: each UPDATE is guarded by `WHERE … IS NULL`. Re-running on already
 | `server/routes/instructors.js` | CRUD; impersonate token issuance; `GET /:id/usage`. |
 | `server/routes/teams.js` | Team CRUD, invitations, membership. |
 | `server/routes/apiKeys.js` | Per-instructor key CRUD; admin grant of `use_system_key`. |
+| `server/routes/personas.js` | Persona CRUD, clone (`POST /:id/clone`), visibility; system-default PATCH returns 409. |
+| `server/services/personaService.js` | `clonePersona`, `resolveAvailablePersonas` for student case lists. |
 | `server/scripts/backfill-multi-instructor.js` | Legacy ownership claim. |
 
 ## Conventions
@@ -128,6 +132,7 @@ Idempotent: each UPDATE is guarded by `WHERE … IS NULL`. Re-running on already
 - **The `MTC_KEY_ENCRYPTION_SECRET` env var is unrecoverable if lost.** Document this in your deployment runbook. If it must rotate, plan to mass-invalidate keys and have instructors re-enter them.
 - **Frontend `user.can_publish` / `user.use_system_key` come from `/auth/session`.** The dashboard reads them on mount and uses them to gate affordances (most visibly the Public option in `VisibilityPicker`). Any new instructor-scoped flag that the UI must see at startup needs to be added to the `/auth/session` payload in `server/routes/auth.js`, not just to the `instructors` row.
 - **Permission changes need an end-to-end pass.** The verification artifact at `dev/2026-05-16-permissions-test-checklist.md` (driven by `.claude/perm-tests/run.mjs`) covers all five role contexts × the matrix in `multi-instructor-permissions.md`. Re-run it after touching middleware, route gates, `resourceAccess.js`, or `visibilityWrites.js`.
+- **Admin sub-tab asterisks mark default admin-only tools.** Sub-tabs labeled with ` *` (Instructors, Settings, Models, Prompts) map to `SUPERUSER_FUNCTIONS`. Instructor-accessible admin-area tabs (Personas, API Keys, Teams) omit the asterisk. See `multi-instructor-personas.md` § Dashboard navigation.
 
 ## What's not in this implementation (deferred)
 
