@@ -16,6 +16,7 @@ import CaseWriterShell from './components/caseWriter/CaseWriterShell';
 import ResizablePanes from './components/ResizablePanes';
 import ScenarioSelector from './components/ScenarioSelector';
 import ChatTimer from './components/ChatTimer';
+import FeedbackWidget from './components/feedback/FeedbackWidget';
 
 interface Model {
     model_id: string;
@@ -1615,14 +1616,24 @@ const App: React.FC = () => {
 
   if (view === 'admin') {
     if (isAdminAuthenticated) {
-      return <Dashboard onLogout={handleAdminLogout} user={sessionUser as any} />;
+      return (
+        <>
+          <Dashboard onLogout={handleAdminLogout} user={sessionUser as any} />
+          <FeedbackWidget userId={sessionUser?.id || null} />
+        </>
+      );
     }
     return <Login onLoginSuccess={handleAdminLogin} />;
   }
 
   if (view === 'case-writer') {
     if (isAdminAuthenticated) {
-      return <CaseWriterShell onLogout={handleAdminLogout} user={sessionUser as any} />;
+      return (
+        <>
+          <CaseWriterShell onLogout={handleAdminLogout} user={sessionUser as any} />
+          <FeedbackWidget userId={sessionUser?.id || null} />
+        </>
+      );
     }
     return <Login onLoginSuccess={handleAdminLogin} />;
   }
@@ -2252,19 +2263,27 @@ const App: React.FC = () => {
   if (conversationPhase === ConversationPhase.EVALUATION_LOADING || conversationPhase === ConversationPhase.EVALUATING) {
     const displayName = sessionUser?.full_name || studentFirstName || 'Student';
     return (
-      <Evaluation
-        result={evaluationResult}
-        studentName={displayName}
-        onRestart={handleRestart}
-        superModelName={superModelName}
-        onLogout={handleStudentLogout}
-        onTitleContextNav={handleRestart}
-        showDetails={chatOptions?.show_evaluation_details !== false}
-      />
+      <>
+        <Evaluation
+          result={evaluationResult}
+          studentName={displayName}
+          onRestart={handleRestart}
+          superModelName={superModelName}
+          onLogout={handleStudentLogout}
+          onTitleContextNav={handleRestart}
+          showDetails={chatOptions?.show_evaluation_details !== false}
+        />
+        <FeedbackWidget userId={sessionUser?.id || null} />
+      </>
     );
   }
 
-  return studentShell;
+  return (
+    <>
+      {studentShell}
+      <FeedbackWidget userId={sessionUser?.id || null} />
+    </>
+  );
 };
 
 export default App;

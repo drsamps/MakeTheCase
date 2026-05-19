@@ -262,11 +262,42 @@ export async function canAccessResource(req, resourceType, resourceId, action = 
       const access = await teamShareAccess(cfg.shareResourceType, row[cfg.pkCol], effectiveId);
       if (access === 'edit') return { allowed: true, reason: 'team:edit', row };
     }
-    return { allowed: false, reason: 'not_owner', row };
+    const ownerLabel = await describeOwner(row[cfg.ownerCol], row[cfg.ownerTypeCol]);
+    return { allowed: false, reason: 'not_owner', row, ownerLabel };
   }
 
   // 'share' and 'delete' require ownership; non-owners cannot.
-  return { allowed: false, reason: 'not_owner', row };
+  const ownerLabel = await describeOwner(row[cfg.ownerCol], row[cfg.ownerTypeCol]);
+  return { allowed: false, reason: 'not_owner', row, ownerLabel };
+}
+
+/**
+ * Look up a human-readable label for a resource owner.
+ * Returns "Name (email)" when available, falls back to the bare id.
+ */
+async function describeOwner(ownerId, ownerType) {
+  if (!ownerId) return null;
+  try {
+    if (ownerType === 'instructor') {
+      const [rows] = await pool.execute(
+        'SELECT full_name, email FROM instructors WHERE id = ? LIMIT 1',
+        [ownerId]
+      );
+      if (rows[0]) {
+        const name = rows[0].full_name || rows[0].email;
+        return rows[0].full_name && rows[0].email ? `${rows[0].full_name} (${rows[0].email})` : name;
+      }
+    } else if (ownerType === 'admin') {
+      const [rows] = await pool.execute(
+        'SELECT email FROM admins WHERE id = ? LIMIT 1',
+        [ownerId]
+      );
+      if (rows[0]) return `${rows[0].email} (admin)`;
+    }
+  } catch (err) {
+    console.warn('[describeOwner] lookup failed:', err.message);
+  }
+  return String(ownerId);
 }
 
 /**

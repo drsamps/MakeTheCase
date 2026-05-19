@@ -7,6 +7,8 @@ import { AdminUser } from '../types';
 // Base functions available to all instructors
 const BASE_FUNCTIONS = [
   'chats', 'assignments', 'sections', 'students', 'cases',
+  'casefiles', // Case file uploads/conversions
+  'caseprep',  // AI-assisted case authoring (Case Writer)
   // Multi-instructor additions:
   'teams',     // self-service Teams membership / sharing
   'apikeys',   // per-instructor API keys
@@ -16,9 +18,10 @@ const BASE_FUNCTIONS = [
 
 // Superuser-only functions by default (Admin sub-tabs show a trailing " *" in the UI)
 const SUPERUSER_FUNCTIONS = [
-  'caseprep', 'prompts', 'models', 'settings', 'instructors',
+  'prompts', 'models', 'settings', 'instructors',
   'semesters', // semester catalog + set-current
   'auditlog',  // audit_log viewer
+  'feedback_admin', // feedback inbox/summary admin controls + categories/settings management
 ];
 
 /**

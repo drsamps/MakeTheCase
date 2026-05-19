@@ -6,8 +6,8 @@
 
 import express from 'express';
 import { pool } from '../db.js';
-import { verifyToken, requireRole } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permissions.js';
+import { verifyToken } from '../middleware/auth.js';
+import { requireAdminOrInstructor, requireCaseAccess, requireCaseAccessByRow } from '../middleware/instructorAccess.js';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
@@ -91,7 +91,7 @@ function getFileTypeLabel(fileType) {
 }
 
 // GET /api/case-files/:caseId - List all files for a case with full metadata
-router.get('/:caseId', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+router.get('/:caseId', verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'view'), async (req, res) => {
   try {
     const { caseId } = req.params;
 
@@ -140,7 +140,7 @@ router.get('/:caseId', verifyToken, requireRole(['admin']), requirePermission('c
 });
 
 // POST /api/case-files/:caseId/upload - Upload file with extended metadata
-router.post('/:caseId/upload', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+router.post('/:caseId/upload', verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'edit'), async (req, res) => {
   upload.single('file')(req, res, async (err) => {
     if (err) {
       console.error('[CaseFiles] Multer error:', err);
@@ -265,7 +265,7 @@ router.post('/:caseId/upload', verifyToken, requireRole(['admin']), requirePermi
 });
 
 // POST /api/case-files/:caseId/download-url - Download file from URL
-router.post('/:caseId/download-url', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+router.post('/:caseId/download-url', verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'view'), async (req, res) => {
   try {
     const { caseId } = req.params;
     const {
@@ -425,7 +425,7 @@ router.post('/:caseId/download-url', verifyToken, requireRole(['admin']), requir
 });
 
 // PATCH /api/case-files/:fileId - Update file metadata
-router.patch('/:fileId', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+router.patch('/:fileId', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'edit'), async (req, res) => {
   try {
     const { fileId } = req.params;
     const updates = req.body;
@@ -519,7 +519,7 @@ router.patch('/:fileId', verifyToken, requireRole(['admin']), requirePermission(
 });
 
 // PATCH /api/case-files/:fileId/reorder - Update prompt_order (for drag-and-drop)
-router.patch('/:fileId/reorder', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+router.patch('/:fileId/reorder', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'edit'), async (req, res) => {
   try {
     const { fileId } = req.params;
     const { prompt_order } = req.body;
@@ -551,7 +551,7 @@ router.patch('/:fileId/reorder', verifyToken, requireRole(['admin']), requirePer
 });
 
 // DELETE /api/case-files/:fileId - Delete a file
-router.delete('/:fileId', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+router.delete('/:fileId', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'delete'), async (req, res) => {
   try {
     const { fileId } = req.params;
 
@@ -597,7 +597,7 @@ router.delete('/:fileId', verifyToken, requireRole(['admin']), requirePermission
 });
 
 // POST /api/case-files/:fileId/confirm-proprietary - Confirm proprietary content usage
-router.post('/:fileId/confirm-proprietary', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+router.post('/:fileId/confirm-proprietary', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'edit'), async (req, res) => {
   try {
     const { fileId } = req.params;
     const adminId = req.user.id;
@@ -740,7 +740,7 @@ router.get('/:caseId/prompt-context', verifyToken, async (req, res) => {
 });
 
 // GET /api/case-files/:fileId/content - Get file content (text conversion)
-router.get('/:fileId/content', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+router.get('/:fileId/content', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'view'), async (req, res) => {
   try {
     const { fileId } = req.params;
 
@@ -803,7 +803,7 @@ router.get('/:fileId/content', verifyToken, requireRole(['admin']), requirePermi
 });
 
 // GET /api/case-files/:fileId/converted-text - Get cached converted text and metadata
-router.get('/:fileId/converted-text', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+router.get('/:fileId/converted-text', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'view'), async (req, res) => {
   try {
     const { fileId } = req.params;
 
@@ -844,7 +844,7 @@ router.get('/:fileId/converted-text', verifyToken, requireRole(['admin']), requi
 });
 
 // PUT /api/case-files/:fileId/converted-text - Save edited converted text
-router.put('/:fileId/converted-text', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+router.put('/:fileId/converted-text', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'edit'), async (req, res) => {
   try {
     const { fileId } = req.params;
     const { converted_text } = req.body;
@@ -892,7 +892,7 @@ router.put('/:fileId/converted-text', verifyToken, requireRole(['admin']), requi
 });
 
 // POST /api/case-files/:fileId/reconvert - Re-extract text from the original file on disk
-router.post('/:fileId/reconvert', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+router.post('/:fileId/reconvert', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'edit'), async (req, res) => {
   try {
     const { fileId } = req.params;
 
@@ -938,7 +938,7 @@ router.post('/:fileId/reconvert', verifyToken, requireRole(['admin']), requirePe
 });
 
 // POST /api/case-files/:caseId/sync - Sync database with filesystem
-router.post('/:caseId/sync', verifyToken, requireRole(['admin']), requirePermission('casefiles'), async (req, res) => {
+router.post('/:caseId/sync', verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'edit'), async (req, res) => {
   try {
     const { caseId } = req.params;
 

@@ -447,6 +447,57 @@ export function requireCaseAccess(caseIdParam = 'id', action = 'view') {
  * @param {string} paramName - request param key holding the resource id (default 'id')
  * @param {'view'|'edit'|'share'|'delete'} action
  */
+/**
+ * Middleware factory: Require access to the case that owns the row identified
+ * by `req.params[paramName]` in the given `table`. Used to gate routes that
+ * accept a file/row id (e.g. `/case-files/:fileId`) where ownership is
+ * inherited from the parent case. Falls back to 404 when the row is missing
+ * to avoid leaking row existence.
+ *
+ * @param {string} table - the table to look up (must have a `case_id` column)
+ * @param {string} paramName - request param key holding the row id
+ * @param {'view'|'edit'|'share'|'delete'} action
+ */
+export function requireCaseAccessByRow(table, paramName = 'fileId', action = 'view') {
+  // Whitelist allowed table names to prevent SQL injection.
+  const ALLOWED_TABLES = new Set(['case_files', 'case_prep_files']);
+  if (!ALLOWED_TABLES.has(table)) {
+    throw new Error(`requireCaseAccessByRow: disallowed table ${table}`);
+  }
+  return async (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+    const rowId = req.params[paramName];
+    if (!rowId) return res.status(400).json({ error: `${paramName} required` });
+    try {
+      const [rows] = await pool.query(`SELECT case_id FROM ${table} WHERE id = ? LIMIT 1`, [rowId]);
+      if (!rows[0]) return res.status(404).json({ error: 'not_found' });
+      const result = await canAccessResource(req, 'case', rows[0].case_id, action);
+      if (!result.allowed) {
+        const code = result.reason === 'not_found' || (action === 'view' && result.reason === 'not_visible')
+          ? 404 : 403;
+        return res.status(code).json({ error: formatAccessError(result) });
+      }
+      req.resource = result.row;
+      req.resourceAccess = result;
+      next();
+    } catch (err) {
+      console.error('[requireCaseAccessByRow]', err);
+      return res.status(500).json({ error: 'Access check failed' });
+    }
+  };
+}
+
+/**
+ * Build a user-facing error message from a canAccessResource result. For
+ * `not_owner` we append the owner's name/email so the user knows who to ask.
+ */
+function formatAccessError(result) {
+  if (result.reason === 'not_owner' && result.ownerLabel) {
+    return `not_owner — owned by ${result.ownerLabel}`;
+  }
+  return result.reason;
+}
+
 export function requireResourceAccess(resourceType, paramName = 'id', action = 'view') {
   return async (req, res, next) => {
     if (!req.user) {
@@ -467,7 +518,7 @@ export function requireResourceAccess(resourceType, paramName = 'id', action = '
         if (result.reason === 'not_found') code = 404;
         else if (action === 'view' && result.reason === 'not_visible') code = 404;
         else code = 403;
-        return res.status(code).json({ error: result.reason });
+        return res.status(code).json({ error: formatAccessError(result) });
       }
       req.resource = result.row;
       req.resourceAccess = result;

@@ -45,6 +45,17 @@ This is the canonical reference for "who can do what" across the four user types
 | Edit team-shared case | n/a | n/a | only if `access_level=edit` on the share | only if `access_level=edit` | only if `access_level=edit` |
 | Delete own case | n/a | n/a | ✓ | ✓ | ✓ |
 | Change visibility to **public** | ✓ | ✓ | only if `can_publish=1` | only if `can_publish=1` | only if `can_publish=1` |
+| **Case files (uploads/downloads on a case)** |
+| List files for own case | ✓ | ✓ | ✓ | ✓ | ✓ |
+| List files for public / team-shared case | ✓ | ✓ | ✓ (view) | ✓ (view) | ✓ (view) |
+| Upload / replace / reorder / delete files on own case | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Edit / reconvert files on team-shared case | ✓ | ✓ | only if `access_level=edit` | only if `access_level=edit` | only if `access_level=edit` |
+| Read converted text / file content (own or visible case) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **AI Case Prep (outline generation from uploads)** |
+| Upload source for own case | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Run AI processing on own case | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Edit generated outline (own or `access_level=edit` share) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| View original / converted content for visible case | ✓ | ✓ | ✓ | ✓ | ✓ |
 | **Rubrics & rubric_criteria** |
 | List rubrics | all (read) | all (read) | system defaults + own + team + public | same as primary | same as primary |
 | Create rubric | ✗ | ✗ | ✓ | ✓ | ✓ |
@@ -84,17 +95,19 @@ This is the canonical reference for "who can do what" across the four user types
 - **Semesters sub-tab is read-only for everyone except superuser admins.** Primary instructors and TAs see the Courses → Semesters tab and the list of semesters (the matrix grants them read access), but the New Semester button and the per-row action cluster (Instructors, Set as Current, Clone, Edit, Delete) are hidden unless `user.role === 'admin' && user.superuser`. Non-superuser admins also see the list without action buttons — this matches the server, which gates every mutating `/api/semesters` endpoint with `requireRole(['admin'])` + `requireSuperuser`. Hiding buttons that the API would reject avoids 403s on click. Enforced in `components/Dashboard.tsx` (`renderSemestersTab`, `canEditSemesters`).
 - **Personas is instructor-accessible under Setup.** Personas, API Keys, and Teams live under a dedicated **Setup** primary tab (visible to all instructors and admins). Instructors reach Personas via `hasAccess(user, 'personas')` (`BASE_FUNCTIONS`). Built-in personas remain read-only except for superuser; instructors use **Clone** for editable copies. Chat-option **Allowed Personas** (blank = all enabled) is documented in `multi-instructor-personas.md`.
 - **Teams workflow (invite / accept).** The matrix above lists who may invite or accept; step-by-step UI flow, in-app-only notifications, and API routes are in **`multi-instructor-teams.md`**.
+- **Case Files and AI Case Prep are instructor-accessible under Content.** Both sub-tabs sit under the **Content** primary tab and are reached via `hasAccess(user, 'casefiles')` / `hasAccess(user, 'caseprep')` — both members of `BASE_FUNCTIONS` in `utils/permissions.ts` and `server/middleware/permissions.js`. Server-side, the previous `requireRole(['admin']) + requirePermission(...)` gates were ownership-blind and produced "Forbidden" for any non-admin; the routes now use `requireCaseAccess` / `requireCaseAccessByRow`, mirroring `/cases`. Net effect: instructors can manage files on cases they own (or have edit-level team shares on) and read files on any case visible to them, while still being blocked from cases owned by others.
 
 ## Enforcement locations
 
 | Layer | File | What it enforces |
 |---|---|---|
 | JWT verify | `server/middleware/auth.js` | Token validity, 12h TTL, deactivated-instructor rejection |
-| Role gates | `server/middleware/instructorAccess.js` | `requireSuperuser`, `requireAdminOrInstructor`, `requireSectionAccess`, `requireResourceAccess` |
+| Role gates | `server/middleware/instructorAccess.js` | `requireSuperuser`, `requireAdminOrInstructor`, `requireSectionAccess`, `requireResourceAccess`, `requireCaseAccess`, `requireCaseAccessByRow` |
 | Permission lookup | `server/middleware/permissions.js` | `requirePermission(functionName)` for the legacy `adminAccess` allowlist |
 | Resource visibility | `server/services/resourceAccess.js` | `buildVisibilityScope`, `canAccessResource` |
 | Resource writes | `server/services/visibilityWrites.js` | `setVisibility` (enforces `can_publish`, normalizes team_ids) |
 | Section field gates | `server/routes/sections.js` | `PATCH /:id` blocks non-admin/non-primary edits of `chat_model`, `super_model`, `course_id` (TAs with `can_manage_cases` can edit other fields but not these) |
+| Case file gates | `server/routes/caseFiles.js`, `server/routes/casePrep.js` | All routes use `requireAdminOrInstructor` + (`requireCaseAccess('caseId', action)` for `:caseId` routes \| `requireCaseAccessByRow('case_files', 'fileId', action)` for `:fileId` routes). Instructors reach Case Files & AI Case Prep sub-tabs through `BASE_FUNCTIONS` (`casefiles`, `caseprep`); access to the file rows themselves flows through the case's `visibility`/team-share rules. |
 | Chat scoping | `server/routes/caseChats.js` | `getChatViewableSectionIds(req)` scopes `GET /case-chats` and `POST /case-chats/mark-abandoned` for instructors to sections where they are primary or have `can_view_chats=1`; admins not impersonating see everything |
 | Key resolution | `server/services/keyResolver.js` | `resolveProviderKey` (env key vs. per-instructor key vs. error) |
 | Usage cap | `server/services/usageGuard.js` | `assertWithinUsageCap` (only when `use_system_key=1`) |

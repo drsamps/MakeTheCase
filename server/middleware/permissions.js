@@ -5,6 +5,7 @@
 // Base functions available to all instructors
 const BASE_FUNCTIONS = [
   'chats', 'assignments', 'sections', 'students', 'cases', 'casefiles',
+  'caseprep',  // AI-assisted case authoring (Case Writer)
   // Multi-instructor additions:
   'teams',     // self-service Teams membership / sharing
   'apikeys',   // per-instructor API keys
@@ -13,9 +14,10 @@ const BASE_FUNCTIONS = [
 
 // Superuser-only functions by default
 const SUPERUSER_FUNCTIONS = [
-  'caseprep', 'personas', 'prompts', 'models', 'settings', 'instructors',
+  'personas', 'prompts', 'models', 'settings', 'instructors',
   'semesters', // semester catalog + set-current
   'auditlog',  // audit_log viewer
+  'feedback_admin', // feedback inbox/summary admin controls + categories/settings management
 ];
 
 /**

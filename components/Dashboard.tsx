@@ -15,6 +15,11 @@ import InstructorManager from './InstructorManager';
 import ShadowOwnershipManager from './ShadowOwnershipManager';
 import ApiKeysManager from './ApiKeysManager';
 import TeamsManager from './TeamsManager';
+import FeedbackMine from './feedback/FeedbackMine';
+import FeedbackInbox from './feedback/FeedbackInbox';
+import FeedbackSummary from './feedback/FeedbackSummary';
+import { useFeedbackEligibility } from '../hooks/useFeedbackEligibility';
+import { setCurrentScreen } from '../services/screenContext';
 import VisibilityPicker from './ui/VisibilityPicker';
 import StudentManager from './StudentManager';
 import DashboardHome from './DashboardHome';
@@ -59,15 +64,16 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 // New workflow-centric navigation types
-type PrimaryTab = 'home' | 'assignments' | 'monitor' | 'results' | 'courses' | 'content' | 'rubrics' | 'setup' | 'admin';
+type PrimaryTab = 'home' | 'assignments' | 'monitor' | 'results' | 'courses' | 'content' | 'setup' | 'feedback' | 'admin';
 type AssignmentsSubTab = 'assignments' | 'chat-options';
 type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live';
 type ResultsSubTab = 'responses' | 'positions' | 'section-results';
-type SetupSubTab = 'personas' | 'apikeys' | 'teams';
+type SetupSubTab = 'personas' | 'apikeys' | 'teams' | 'rubrics';
 type AdminSubTab = 'instructors' | 'settings' | 'models' | 'prompts' | 'admins' | 'logging' | 'shadow';
 type RubricsSubTab = 'criteria' | 'rubrics';
+type FeedbackSubTab = 'mine' | 'inbox' | 'summary';
 
 const isEnabledFlag = (value: unknown): boolean =>
   value === true || value === 1 || value === '1' || value === 'true';
@@ -284,6 +290,85 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [adminSubTab, setAdminSubTab] = useState<AdminSubTab>('instructors');
   const [setupSubTab, setSetupSubTab] = useState<SetupSubTab>('personas');
   const [rubricsSubTab, setRubricsSubTab] = useState<RubricsSubTab>('rubrics');
+  const [feedbackSubTab, setFeedbackSubTab] = useState<FeedbackSubTab>('mine');
+  const [feedbackUnreadCount, setFeedbackUnreadCount] = useState<number>(0);
+  const { eligibility: feedbackEligibility } = useFeedbackEligibility(user?.id || null);
+
+  const refreshFeedbackUnreadCount = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const token = localStorage.getItem('admin_auth_token') || localStorage.getItem('student_auth_token');
+      if (!token) return;
+      const response = await fetch(`${getApiBaseUrl()}/feedback/unread-count`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      setFeedbackUnreadCount(typeof data?.count === 'number' ? data.count : 0);
+    } catch {
+      /* no-op */
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    refreshFeedbackUnreadCount();
+  }, [refreshFeedbackUnreadCount, primaryTab]);
+
+  useEffect(() => {
+    const PRIMARY_LABELS: Record<PrimaryTab, string> = {
+      home: 'Home',
+      assignments: 'Assignments',
+      monitor: 'Monitor',
+      results: 'Results',
+      courses: 'Courses',
+      content: 'Content',
+      setup: 'Setup',
+      feedback: 'Feedback',
+      admin: 'Admin',
+    };
+    const ASSIGNMENTS: Record<AssignmentsSubTab, string> = {
+      assignments: 'Assignments', 'chat-options': 'Chat Options',
+    };
+    const MONITOR: Record<MonitorSubTab, string> = { chats: 'Chats', cache: 'Cache', live: 'Live' };
+    const RESULTS: Record<ResultsSubTab, string> = {
+      responses: 'Student Results', positions: 'Position Analytics', 'section-results': 'Section Results',
+    };
+    const COURSES: Record<CoursesSubTab, string> = {
+      semesters: 'Semesters', 'course-setup': 'Course Setup', sections: 'Sections', students: 'Students',
+    };
+    const CONTENT: Record<ContentSubTab, string> = {
+      cases: 'Cases', casefiles: 'Case Files', caseprep: 'Case Prep',
+    };
+    const SETUP: Record<SetupSubTab, string> = {
+      personas: 'Personas', apikeys: 'API Keys', teams: 'Teams', rubrics: 'Rubrics',
+    };
+    const RUBRICS_SUB: Record<RubricsSubTab, string> = { rubrics: 'Rubrics', criteria: 'Criteria Library' };
+    const FEEDBACK: Record<FeedbackSubTab, string> = {
+      mine: 'My Feedback', inbox: 'Inbox', summary: 'Summary',
+    };
+    const ADMIN: Record<AdminSubTab, string> = {
+      instructors: 'Instructors', settings: 'Settings', models: 'Models', prompts: 'Prompts',
+      admins: 'Admins', logging: 'Logging', shadow: 'Shadow-Owned',
+    };
+
+    const parts: string[] = ['Instructor Dashboard', PRIMARY_LABELS[primaryTab]];
+    if (primaryTab === 'assignments') parts.push(ASSIGNMENTS[assignmentsSubTab]);
+    else if (primaryTab === 'monitor') parts.push(MONITOR[monitorSubTab]);
+    else if (primaryTab === 'results') parts.push(RESULTS[resultsSubTab]);
+    else if (primaryTab === 'courses') parts.push(COURSES[coursesSubTab]);
+    else if (primaryTab === 'content') parts.push(CONTENT[contentSubTab]);
+    else if (primaryTab === 'setup') {
+      parts.push(SETUP[setupSubTab]);
+      if (setupSubTab === 'rubrics') parts.push(RUBRICS_SUB[rubricsSubTab]);
+    } else if (primaryTab === 'feedback') parts.push(FEEDBACK[feedbackSubTab]);
+    else if (primaryTab === 'admin') parts.push(ADMIN[adminSubTab]);
+
+    setCurrentScreen(parts.join(' > '));
+    return () => setCurrentScreen(null);
+  }, [
+    primaryTab, assignmentsSubTab, monitorSubTab, resultsSubTab, coursesSubTab,
+    contentSubTab, setupSubTab, rubricsSubTab, feedbackSubTab, adminSubTab,
+  ]);
 
   // Rubrics state
   const [rubricsList, setRubricsList] = useState<any[]>([]);
@@ -335,7 +420,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   const hasSetupAccess = useCallback(() => {
     return hasAccess(user, 'personas') || hasAccess(user, 'apikeys') ||
-           hasAccess(user, 'teams');
+           hasAccess(user, 'teams') || hasAccess(user, 'rubrics');
   }, [user]);
 
   // Semesters and Courses state
@@ -8364,8 +8449,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </button>
             )}
 
-            {/* Cases (formerly Case Library/Content) */}
-            {(hasAccess(user, 'cases') || hasAccess(user, 'caseprep')) && (
+            {/* Content */}
+            {(hasAccess(user, 'cases') || hasAccess(user, 'casefiles') || hasAccess(user, 'caseprep')) && (
               <button
                 onClick={() => {
                   setPrimaryTab('content');
@@ -8381,30 +8466,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
                     <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" />
                   </svg>
-                  Cases
-                </span>
-              </button>
-            )}
-
-            {/* Rubrics */}
-            {hasAccess(user, 'rubrics') && (
-              <button
-                onClick={() => {
-                  setPrimaryTab('rubrics');
-                  if (rubricsList.length === 0) fetchRubrics();
-                  if (criteriaList.length === 0) fetchCriteria();
-                }}
-                className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
-                  primaryTab === 'rubrics'
-                    ? 'bg-gray-50 text-green-600 border-b-2 border-green-600'
-                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                }`}
-              >
-                <span className="flex items-center gap-2">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                  </svg>
-                  Rubrics
+                  Content
                 </span>
               </button>
             )}
@@ -8430,6 +8492,28 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 </span>
               </button>
             )}
+
+            {/* Feedback */}
+            <button
+              onClick={() => setPrimaryTab('feedback')}
+              className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
+                primaryTab === 'feedback'
+                  ? 'bg-gray-50 text-indigo-600 border-b-2 border-indigo-600'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M18 5v8a2 2 0 01-2 2h-5l-5 4v-4H4a2 2 0 01-2-2V5a2 2 0 012-2h12a2 2 0 012 2zM7 8H5v2h2V8zm2 0h2v2H9V8zm6 0h-2v2h2V8z" clipRule="evenodd" />
+                </svg>
+                Feedback
+                {feedbackUnreadCount > 0 && (
+                  <span className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-red-600 text-white text-[10px] font-semibold">
+                    {feedbackUnreadCount > 99 ? '99+' : feedbackUnreadCount}
+                  </span>
+                )}
+              </span>
+            </button>
 
             {/* Admin */}
             {hasAdminAccess() && (
@@ -8704,6 +8788,67 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   Teams
                 </button>
               )}
+              {hasAccess(user, 'rubrics') && (
+                <button
+                  onClick={() => {
+                    setSetupSubTab('rubrics');
+                    if (rubricsList.length === 0) fetchRubrics();
+                    if (criteriaList.length === 0) fetchCriteria();
+                  }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    setupSubTab === 'rubrics'
+                      ? 'bg-teal-100 text-teal-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Rubrics
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Sub-navigation for Feedback */}
+          {primaryTab === 'feedback' && (
+            <div className="flex gap-1 mt-2 pb-2">
+              <button
+                onClick={() => setFeedbackSubTab('mine')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  feedbackSubTab === 'mine'
+                    ? 'bg-indigo-100 text-indigo-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                My Feedback
+              </button>
+              {(hasAccess(user, 'feedback_admin') || feedbackEligibility?.viewerHasAnyAllowedSource) && (
+                <button
+                  onClick={() => setFeedbackSubTab('inbox')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    feedbackSubTab === 'inbox'
+                      ? 'bg-indigo-100 text-indigo-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Inbox
+                  {feedbackUnreadCount > 0 && (
+                    <span className="ml-1.5 inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-red-600 text-white text-[10px] font-semibold">
+                      {feedbackUnreadCount > 99 ? '99+' : feedbackUnreadCount}
+                    </span>
+                  )}
+                </button>
+              )}
+              {hasAccess(user, 'feedback_admin') && (
+                <button
+                  onClick={() => setFeedbackSubTab('summary')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    feedbackSubTab === 'summary'
+                      ? 'bg-indigo-100 text-indigo-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Summary
+                </button>
+              )}
             </div>
           )}
 
@@ -8797,8 +8942,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             </div>
           )}
 
-          {/* Sub-navigation for Rubrics */}
-          {primaryTab === 'rubrics' && (
+          {/* Sub-navigation for Rubrics (under Setup) */}
+          {primaryTab === 'setup' && setupSubTab === 'rubrics' && (
             <div className="flex gap-1 mt-2 pb-2">
               <button
                 onClick={() => {
@@ -8866,13 +9011,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           ) : (
             renderCasesTab()
           )
-        ) : primaryTab === 'setup' ? (
+        ) : primaryTab === 'setup' && setupSubTab !== 'rubrics' ? (
           setupSubTab === 'personas' ? (
             renderPersonasTab()
           ) : setupSubTab === 'apikeys' ? (
             <ApiKeysManager />
           ) : setupSubTab === 'teams' ? (
             <TeamsManager />
+          ) : null
+        ) : primaryTab === 'feedback' ? (
+          feedbackSubTab === 'mine' ? (
+            <FeedbackMine />
+          ) : feedbackSubTab === 'inbox' ? (
+            <FeedbackInbox onChange={refreshFeedbackUnreadCount} />
+          ) : feedbackSubTab === 'summary' ? (
+            <FeedbackSummary />
           ) : null
         ) : primaryTab === 'admin' ? (
           adminSubTab === 'models' ? (
@@ -8890,7 +9043,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           ) : adminSubTab === 'shadow' ? (
             <ShadowOwnershipManager />
           ) : null
-        ) : primaryTab === 'rubrics' ? (
+        ) : primaryTab === 'setup' && setupSubTab === 'rubrics' ? (
           <div className="p-6 max-w-7xl mx-auto">
             {rubricsSubTab === 'rubrics' ? (
               <div>
