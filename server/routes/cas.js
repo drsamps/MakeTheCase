@@ -153,6 +153,53 @@ router.get('/verify', async (req, res) => {
       return callbackRedirect(res, payload);
     }
 
+    // Instructor check: pre-provisioned by an admin with auth_method 'cas' or 'both'.
+    // Match on netid first (canonical CAS identifier), then on email.
+    if (requestedRole !== 'student') {
+      const [instructorRows] = await pool.execute(
+        `SELECT id, email, netid, auth_method, active, first_name, last_name, full_name
+           FROM instructors
+          WHERE (netid IS NOT NULL AND netid = ?) OR email = ?
+          ORDER BY (netid = ?) DESC
+          LIMIT 1`,
+        [netid, email, netid]
+      );
+
+      if (instructorRows.length > 0) {
+        const inst = instructorRows[0];
+        if (!inst.active) {
+          return res.status(403).json({ error: 'Instructor account is disabled. Contact an administrator.' });
+        }
+        if (inst.auth_method === 'password') {
+          return res.status(403).json({ error: 'This instructor account is configured for password login. Sign in with email and password instead.' });
+        }
+
+        // Backfill netid when matched by email
+        if (!inst.netid && netid) {
+          try {
+            await pool.execute('UPDATE instructors SET netid = ? WHERE id = ?', [netid, inst.id]);
+          } catch (e) {
+            // Ignore unique-constraint races; the row is still usable.
+            console.warn('CAS netid backfill skipped:', e.message);
+          }
+        }
+
+        await pool.execute('UPDATE instructors SET last_login = NOW() WHERE id = ?', [inst.id]);
+
+        const token = generateToken(inst.id, inst.email, 'instructor', {
+          firstName: inst.first_name,
+          lastName: inst.last_name,
+          fullName: inst.full_name,
+        });
+
+        const payload = { token, role: 'instructor', email: inst.email, fullName: inst.full_name || fullName };
+        if ((req.headers.accept || '').includes('application/json')) {
+          return res.json(payload);
+        }
+        return callbackRedirect(res, payload);
+      }
+    }
+
     // Student path: ensure record exists (id anchored to CAS netid)
     const studentId = `cas:${netid}`;
     const [students] = await pool.execute(

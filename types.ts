@@ -236,6 +236,7 @@ export interface Section {
     chat_model: string | null;
     super_model: string | null;
     accept_new_students?: boolean;
+    requires_enrollment_key?: boolean;
     enabled?: boolean;
     // Aggregated counts
     student_count?: number;

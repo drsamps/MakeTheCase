@@ -50,7 +50,7 @@ const ResultsHelp: React.FC = () => (
     </ul>
 
     <div className="help-callout">
-      <strong>Tip:</strong> Click on a section in the Courses - Sections list to jump directly to Results filtered for that section.
+      <strong>Tip:</strong> In Courses → Sections, use the chevron (→) or &quot;View Results&quot; on a section to open Results filtered for that section.
     </div>
   </>
 );

@@ -7,7 +7,7 @@
 
 # Welcome to Make The Case
 
-<img src="/MTC-student-256x256.jpg" alt="Make The Case" class="hidden sm:block float-right ml-4 mb-4 w-36 h-36 object-contain" />
+<img src="/MTC-student-256x256.jpg" alt="Make The Case" class="hidden sm:block float-right ml-4 mb-4 w-36 h-36 object-contain" title="Students learn to weigh the tradeoffs in making difficult decisions." />
 
 **Make The Case** facilitates enhanced student learning by allowing students to engage in AI-simulated conversations about relevant course topics as they apply to business situations. Students chat with AI-driven case protagonists (e.g., a CEO) and practice making and defending decisions in realistic scenarios.
 

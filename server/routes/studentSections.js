@@ -8,7 +8,7 @@ const router = express.Router();
 // Checks accept_new_students before allowing new enrollment
 router.post('/enroll', verifyToken, async (req, res) => {
   try {
-    const { student_id, section_id } = req.body;
+    const { student_id, section_id, enrollment_key } = req.body;
 
     if (!student_id || !section_id) {
       return res.status(400).json({ data: null, error: { message: 'student_id and section_id are required' } });
@@ -22,7 +22,7 @@ router.post('/enroll', verifyToken, async (req, res) => {
 
     // Check if section exists and get its accept_new_students status
     const [section] = await pool.execute(
-      'SELECT section_id, accept_new_students, enabled FROM sections WHERE section_id = ?',
+      'SELECT section_id, accept_new_students, enabled, enrollment_key FROM sections WHERE section_id = ?',
       [section_id]
     );
     if (section.length === 0) {
@@ -55,6 +55,18 @@ router.post('/enroll', verifyToken, async (req, res) => {
     // If not already enrolled, check if section accepts new students
     if (!section[0].accept_new_students) {
       return res.status(403).json({ data: null, error: { message: 'Section is not accepting new students' } });
+    }
+
+    // Enforce enrollment key for self-enrollments only. Instructor-added rows
+    // skip this check (they use POST /api/students/:id/sections instead).
+    if (section[0].enrollment_key) {
+      const provided = typeof enrollment_key === 'string' ? enrollment_key.trim() : '';
+      if (provided !== section[0].enrollment_key) {
+        return res.status(403).json({
+          data: null,
+          error: { code: 'ENROLLMENT_KEY_REQUIRED', message: 'Enrollment key is incorrect or missing.' }
+        });
+      }
     }
 
     // Check if student has any existing sections

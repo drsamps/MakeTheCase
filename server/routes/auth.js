@@ -58,7 +58,7 @@ router.post('/login', async (req, res) => {
 
     // Second, check instructors table (primary instructors and TAs)
     const [instructorRows] = await pool.execute(
-      'SELECT id, email, password_hash, first_name, last_name, full_name, active FROM instructors WHERE email = ?',
+      'SELECT id, email, password_hash, first_name, last_name, full_name, active, auth_method FROM instructors WHERE email = ?',
       [email]
     );
 
@@ -68,6 +68,11 @@ router.post('/login', async (req, res) => {
       // Check if account is active
       if (!instructor.active) {
         return res.status(401).json({ error: 'Account is disabled. Contact an administrator.' });
+      }
+
+      // CAS-only instructors must use the BYU NetID button, not email/password
+      if (instructor.auth_method === 'cas' || !instructor.password_hash) {
+        return res.status(403).json({ error: 'This account uses BYU CAS sign-in. Click "Sign in with BYU NetID" instead.' });
       }
 
       // Verify password

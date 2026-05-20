@@ -99,6 +99,7 @@ interface SectionStat {
   super_model: string | null;
   enabled?: boolean;
   accept_new_students?: boolean;
+  enrollment_key?: string | null;
   active_case_count?: number;
   active_case_titles?: string | null;
   primary_instructor_id?: string | null;
@@ -550,6 +551,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     super_model: string;
     enabled: boolean;
     accept_new_students: boolean;
+    enrollment_key: string;
     semester_id: number | null;
     course_id: number | null;
   }>({
@@ -560,6 +562,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     super_model: '',
     enabled: true,
     accept_new_students: false,
+    enrollment_key: '',
     semester_id: null,
     course_id: null
   });
@@ -808,6 +811,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             super_model: '',
             enabled: true,
             accept_new_students: false,
+            enrollment_key: '',
             semester_id: null,
             course_id: null
           });
@@ -3073,10 +3077,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     return (
       <tr
         key={section.section_id}
-        className={`hover:bg-gray-50 cursor-pointer transition-colors ${
+        className={`hover:bg-gray-50 transition-colors ${
           !section.enabled ? 'opacity-70' : ''
         }`}
-        onClick={() => handleSectionClick(section)}
       >
         <td className="px-4 py-3 whitespace-nowrap">
           <div className="flex items-center gap-2">
@@ -3165,19 +3168,30 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           )}
         </td>
         <td className="px-4 py-3 whitespace-nowrap">
-          {!isSynthetic ? (
-            <button
-              onClick={(e) => handleToggleAcceptNewStudents(section, e)}
-              className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
-                section.accept_new_students
-                  ? 'bg-pink-500 text-white hover:bg-pink-600'
-                  : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-              }`}
-              title={section.accept_new_students ? 'Accepting new students - click to lock' : 'Locked - click to accept new students'}
-            >
-              {section.accept_new_students ? 'Accept' : 'Locked'}
-            </button>
-          ) : (
+          {!isSynthetic ? (() => {
+            const hasKey = !!(section.enrollment_key && String(section.enrollment_key).trim() !== '');
+            const accepting = !!section.accept_new_students;
+            const label = !accepting ? 'Locked' : (hasKey ? 'Accept w/key' : 'Accept NO key');
+            const tooltip = !accepting
+              ? 'Locked — click to accept new students'
+              : hasKey
+                ? `Accepting new students. Enrollment key: ${section.enrollment_key} — share via syllabus. Click Edit to change.`
+                : 'Accepting new students with no enrollment key — any BYU CAS user can join. Click Edit to set an enrollment key (recommended).';
+            const cls = !accepting
+              ? 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+              : hasKey
+                ? 'bg-pink-500 text-white hover:bg-pink-600'
+                : 'bg-pink-200 text-pink-900 hover:bg-pink-300';
+            return (
+              <button
+                onClick={(e) => handleToggleAcceptNewStudents(section, e)}
+                className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${cls}`}
+                title={tooltip}
+              >
+                {label}
+              </button>
+            );
+          })() : (
             <span className="text-sm text-gray-400">-</span>
           )}
         </td>
@@ -3212,7 +3226,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </>
             )}
             <button
-              onClick={(e) => { e.stopPropagation(); handleSectionClick(section); }}
+              onClick={() => handleSectionClick(section)}
               className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
               title="View results"
             >
@@ -3564,6 +3578,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       super_model: '',
       enabled: true,
       accept_new_students: false,
+      enrollment_key: '',
       semester_id: null,
       course_id: null
     });
@@ -3582,6 +3597,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       super_model: section.super_model || '',
       enabled: !!section.enabled,
       accept_new_students: !!section.accept_new_students,
+      enrollment_key: section.enrollment_key || '',
       semester_id: section.semester_id ?? null,
       course_id: section.course_id_num ?? section.course_id ?? null
     });
@@ -3623,6 +3639,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             super_model: sectionForm.super_model || null,
             enabled: sectionForm.enabled,
             accept_new_students: sectionForm.accept_new_students,
+            enrollment_key: sectionForm.enrollment_key.trim() || null,
             course_id: sectionForm.course_id
           })
           .eq('section_id', sectionForm.section_id);
@@ -3639,6 +3656,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             super_model: sectionForm.super_model || null,
             enabled: sectionForm.enabled,
             accept_new_students: sectionForm.accept_new_students,
+            enrollment_key: sectionForm.enrollment_key.trim() || null,
             course_id: sectionForm.course_id
           });
 
@@ -9863,10 +9881,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 {filteredSections.map(section => (
                   <div
                     key={section.section_id}
-                    className={`bg-white rounded-xl shadow-sm border border-gray-200 p-5 hover:shadow-md transition-shadow cursor-pointer ${
+                    className={`bg-white rounded-xl shadow-sm border border-gray-200 p-5 hover:shadow-md transition-shadow ${
                       !section.enabled ? 'opacity-75' : ''
                     }`}
-                    onClick={() => handleSectionClick(section)}
                   >
                     {/* Card Header */}
                     <div className="flex justify-between items-start mb-3">
@@ -9953,12 +9970,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
                     {/* View Results Link */}
                     <div className="mt-4 pt-3 border-t border-gray-100">
-                      <span className="text-sm font-medium text-blue-600 hover:text-blue-800 flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleSectionClick(section)}
+                        className="text-sm font-medium text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                      >
                         View Results
                         <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
                           <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
                         </svg>
-                      </span>
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -10446,6 +10467,33 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 <label htmlFor="acceptNewStudents" className="text-sm font-medium text-gray-700">
                   Accept new student enrollments
                 </label>
+              </div>
+              <div>
+                <label htmlFor="sectionEnrollmentKey" className="block text-sm font-medium text-gray-700 mb-1">
+                  Enrollment key (optional)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    id="sectionEnrollmentKey"
+                    value={sectionForm.enrollment_key}
+                    onChange={(e) => setSectionForm({ ...sectionForm, enrollment_key: e.target.value })}
+                    placeholder="e.g. doit"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  {sectionForm.enrollment_key && (
+                    <button
+                      type="button"
+                      onClick={() => setSectionForm({ ...sectionForm, enrollment_key: '' })}
+                      className="px-3 py-2 text-sm text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  If set, new students must enter this code to self-enroll. Publish it in your syllabus. Leave blank to allow any BYU CAS user to join while "Accept" is on.
+                </p>
               </div>
             </div>
             <div className="flex justify-end gap-2 p-4 border-t bg-gray-50 rounded-b-xl">

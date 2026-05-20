@@ -16,12 +16,17 @@ const router = express.Router();
 router.get('/public', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
-      SELECT s.section_id, s.section_title, s.year_term, s.accept_new_students
+      SELECT s.section_id, s.section_title, s.year_term, s.accept_new_students,
+             (s.enrollment_key IS NOT NULL AND s.enrollment_key <> '') AS requires_enrollment_key
       FROM sections s
       WHERE s.enabled = 1
       ORDER BY s.year_term DESC, s.section_title ASC
     `);
-    res.json({ data: rows, error: null });
+    const data = rows.map(r => ({
+      ...r,
+      requires_enrollment_key: Boolean(r.requires_enrollment_key),
+    }));
+    res.json({ data, error: null });
   } catch (error) {
     console.error('Error fetching public sections:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
@@ -35,7 +40,7 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
     const { enabled } = req.query;
 
     let query = `
-      SELECT s.section_id, s.course_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model,
+      SELECT s.section_id, s.course_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.enrollment_key, s.chat_model, s.super_model,
              s.primary_instructor_id,
              co.course_name, co.id as course_id_num,
              sem.id as semester_id, sem.semester_name, sem.is_current as semester_is_current,
@@ -121,7 +126,7 @@ router.get('/orphaned', verifyToken, requireRole(['admin']), async (req, res) =>
 router.get('/:id', verifyToken, requireAdminOrInstructor, requireSectionAccess('id'), async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT s.section_id, s.course_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model,
+      `SELECT s.section_id, s.course_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.enrollment_key, s.chat_model, s.super_model,
               s.primary_instructor_id,
               co.course_name, co.id as course_id_num,
               i.full_name as primary_instructor_name,
@@ -133,7 +138,7 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, requireSectionAccess('
        LEFT JOIN section_cases sc ON s.section_id = sc.section_id AND sc.active = TRUE
        LEFT JOIN cases c ON sc.case_id = c.case_id
        WHERE s.section_id = ?
-       GROUP BY s.section_id, s.course_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.chat_model, s.super_model, s.primary_instructor_id, co.course_name, co.id, i.full_name`,
+       GROUP BY s.section_id, s.course_id, s.created_at, s.section_title, s.year_term, s.enabled, s.accept_new_students, s.enrollment_key, s.chat_model, s.super_model, s.primary_instructor_id, co.course_name, co.id, i.full_name`,
       [req.params.id]
     );
 
@@ -151,7 +156,7 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, requireSectionAccess('
 // POST /api/sections - Create new section (admin only, instructors use courses/:id/sections)
 router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
-    const { section_id, section_title, year_term, enabled, accept_new_students, chat_model, super_model, course_id } = req.body;
+    const { section_id, section_title, year_term, enabled, accept_new_students, enrollment_key, chat_model, super_model, course_id } = req.body;
 
     if (!section_id || !section_title) {
       return res.status(400).json({ data: null, error: { message: 'Section ID and title are required' } });
@@ -175,8 +180,9 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
       }
     }
 
+    const trimmedKey = typeof enrollment_key === 'string' ? enrollment_key.trim() : '';
     await pool.execute(
-      'INSERT INTO sections (section_id, course_id, section_title, year_term, enabled, accept_new_students, chat_model, super_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO sections (section_id, course_id, section_title, year_term, enabled, accept_new_students, enrollment_key, chat_model, super_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         section_id,
         course_id || null,
@@ -184,6 +190,7 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
         year_term || null,
         enabled !== false ? 1 : 0,
         accept_new_students ? 1 : 0,  // Default to locked (0) for new sections
+        trimmedKey || null,
         chat_model || null,
         super_model || null
       ]
@@ -191,7 +198,7 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
 
     // Return the created section
     const [rows] = await pool.execute(
-      'SELECT section_id, course_id, created_at, section_title, year_term, enabled, accept_new_students, chat_model, super_model FROM sections WHERE section_id = ?',
+      'SELECT section_id, course_id, created_at, section_title, year_term, enabled, accept_new_students, enrollment_key, chat_model, super_model FROM sections WHERE section_id = ?',
       [section_id]
     );
 
@@ -209,7 +216,7 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, requireSectionAccess
     const updates = req.body;
 
     // Build dynamic update query
-    const allowedFields = ['section_title', 'year_term', 'enabled', 'accept_new_students', 'chat_model', 'super_model', 'course_id'];
+    const allowedFields = ['section_title', 'year_term', 'enabled', 'accept_new_students', 'enrollment_key', 'chat_model', 'super_model', 'course_id'];
     // Per permissions matrix: only admins or the primary instructor may edit
     // model fields or reassign the course. TAs with section access can only
     // tune section_title/year_term/enabled/accept_new_students.
@@ -237,6 +244,9 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, requireSectionAccess
         } else if (key === 'course_id') {
           // course_id can be null to unassign from course
           params.push(value === null || value === '' ? null : value);
+        } else if (key === 'enrollment_key') {
+          const trimmed = typeof value === 'string' ? value.trim() : '';
+          params.push(trimmed === '' ? null : trimmed);
         } else {
           params.push(value === '' ? null : value);
         }
@@ -256,7 +266,7 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, requireSectionAccess
 
     // Return updated section
     const [rows] = await pool.execute(
-      'SELECT section_id, course_id, created_at, section_title, year_term, enabled, accept_new_students, chat_model, super_model FROM sections WHERE section_id = ?',
+      'SELECT section_id, course_id, created_at, section_title, year_term, enabled, accept_new_students, enrollment_key, chat_model, super_model FROM sections WHERE section_id = ?',
       [id]
     );
 

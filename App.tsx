@@ -187,6 +187,8 @@ const App: React.FC = () => {
   const [isLoadingAvailableCases, setIsLoadingAvailableCases] = useState(false);
   const [studentSavedSectionId, setStudentSavedSectionId] = useState<string | null>(null);
   const [enrolledSectionIds, setEnrolledSectionIds] = useState<string[]>([]);
+  const [enrollmentKeyInput, setEnrollmentKeyInput] = useState<string>('');
+  const [enrollmentKeyError, setEnrollmentKeyError] = useState<string | null>(null);
   // Enabled status per enrolled section, sourced from my-sections (students can't hit the admin section API)
   const [enrolledSectionEnabledMap, setEnrolledSectionEnabledMap] = useState<Record<string, boolean>>({});
   const [hasFetchedStudentSection, setHasFetchedStudentSection] = useState(false);
@@ -1444,6 +1446,8 @@ const App: React.FC = () => {
   const handleSectionChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
       const sectionId = e.target.value;
       setSelectedSection(sectionId);
+      setEnrollmentKeyInput('');
+      setEnrollmentKeyError(null);
       // Reset case selection when section changes
       setSelectedCaseId(null);
       setActiveCaseData(null);
@@ -1805,26 +1809,71 @@ const App: React.FC = () => {
             })()}
 
             {/* Remember Section Button - shown when section selected but not yet enrolled */}
-            {selectedSection && !enrolledSectionIds.includes(selectedSection) && !studentSavedSectionId && (
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    await api.post('/student-sections/enroll', {
-                      student_id: sessionUser?.id,
-                      section_id: selectedSection
-                    });
-                    setEnrolledSectionIds([...enrolledSectionIds, selectedSection]);
-                    setStudentSavedSectionId(selectedSection);
-                  } catch (err) {
-                    console.error('Error saving section:', err);
-                  }
-                }}
-                className="w-full px-4 py-3 text-white bg-pink-500 hover:bg-pink-600 rounded-lg font-medium transition-colors"
-              >
-                Click here to remember your course section
-              </button>
-            )}
+            {selectedSection && !enrolledSectionIds.includes(selectedSection) && !studentSavedSectionId && (() => {
+              const pendingSection = sections.find(sec => sec.section_id === selectedSection);
+              const needsKey = !!pendingSection?.requires_enrollment_key;
+              return (
+                <div className="space-y-2">
+                  {needsKey && (
+                    <div>
+                      <label htmlFor="enrollmentKey" className="block text-sm font-medium text-gray-700">
+                        Enrollment key
+                      </label>
+                      <p className="text-xs text-gray-500 mb-1">
+                        This section requires an enrollment key from your instructor (usually in the syllabus).
+                      </p>
+                      <input
+                        type="text"
+                        id="enrollmentKey"
+                        value={enrollmentKeyInput}
+                        onChange={(e) => {
+                          setEnrollmentKeyInput(e.target.value);
+                          if (enrollmentKeyError) setEnrollmentKeyError(null);
+                        }}
+                        placeholder="Enter the code from your instructor"
+                        className="w-full px-4 py-2 text-gray-900 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 bg-gray-100"
+                      />
+                      {enrollmentKeyError && (
+                        <p className="mt-1 text-xs text-red-600">{enrollmentKeyError}</p>
+                      )}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    disabled={needsKey && !enrollmentKeyInput.trim()}
+                    onClick={async () => {
+                      try {
+                        setEnrollmentKeyError(null);
+                        const { error: enrollError } = await api.post('/student-sections/enroll', {
+                          student_id: sessionUser?.id,
+                          section_id: selectedSection,
+                          enrollment_key: needsKey ? enrollmentKeyInput.trim() : undefined
+                        });
+                        if (enrollError) {
+                          const code = (enrollError as any)?.code;
+                          const msg = enrollError.message || 'Failed to enroll in section.';
+                          if (code === 'ENROLLMENT_KEY_REQUIRED' || /enrollment key/i.test(msg)) {
+                            setEnrollmentKeyError('Enrollment key is incorrect or missing. Check with your instructor.');
+                          } else {
+                            setEnrollmentKeyError(msg);
+                          }
+                          return;
+                        }
+                        setEnrolledSectionIds([...enrolledSectionIds, selectedSection]);
+                        setStudentSavedSectionId(selectedSection);
+                        setEnrollmentKeyInput('');
+                      } catch (err) {
+                        console.error('Error saving section:', err);
+                        setEnrollmentKeyError('Could not save section. Please try again.');
+                      }
+                    }}
+                    className="w-full px-4 py-3 text-white bg-pink-500 hover:bg-pink-600 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Click here to remember your course section
+                  </button>
+                </div>
+              );
+            })()}
 
             {/* Available Case Chats (Scenarios) for Section */}
             {isSectionValid && (

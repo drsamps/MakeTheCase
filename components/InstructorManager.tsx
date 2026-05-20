@@ -21,6 +21,8 @@ interface Admin {
 interface Instructor {
   id: string;
   email: string;
+  netid: string | null;
+  auth_method: 'password' | 'cas' | 'both';
   first_name: string | null;
   last_name: string | null;
   full_name: string;
@@ -31,6 +33,15 @@ interface Instructor {
   section_count?: number;
   semesters?: SemesterAssignment[];
   sections?: SectionAssignment[];
+}
+
+interface StudentLookupResult {
+  id: string;
+  first_name: string | null;
+  last_name: string | null;
+  full_name: string;
+  email: string | null;
+  netid: string | null;
 }
 
 interface SemesterAssignment {
@@ -111,11 +122,20 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
     first_name: '',
     last_name: '',
     full_name: '',
+    netid: '',
+    auth_method: 'password' as 'password' | 'cas' | 'both',
     active: true,
     use_system_key: false,
     can_publish: false,
     monthly_token_cap: '' as string,
   });
+
+  // Student-lookup typeahead state for the Add Instructor modal: lets an admin
+  // promote an existing CAS student to instructor without re-typing their info.
+  const [studentLookupQuery, setStudentLookupQuery] = useState('');
+  const [studentLookupResults, setStudentLookupResults] = useState<StudentLookupResult[]>([]);
+  const [studentLookupOpen, setStudentLookupOpen] = useState(false);
+  const [studentLookupLoading, setStudentLookupLoading] = useState(false);
 
   const [assignFormData, setAssignFormData] = useState({
     semester_id: '',
@@ -305,15 +325,64 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
     }
   };
 
+  // Debounced student lookup for the "Look up from students" typeahead
+  useEffect(() => {
+    if (!showInstructorModal || editingInstructor) return;
+    const q = studentLookupQuery.trim();
+    if (q.length < 2) {
+      setStudentLookupResults([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setStudentLookupLoading(true);
+      try {
+        const response = await api.get(`/students/lookup?q=${encodeURIComponent(q)}`);
+        if (!cancelled && !response.error) {
+          setStudentLookupResults(response.data || []);
+        }
+      } catch {
+        // Lookup is best-effort — silently ignore.
+      } finally {
+        if (!cancelled) setStudentLookupLoading(false);
+      }
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [studentLookupQuery, showInstructorModal, editingInstructor]);
+
+  const applyStudentLookupSelection = (s: StudentLookupResult) => {
+    setInstructorFormData(prev => ({
+      ...prev,
+      first_name: s.first_name || prev.first_name,
+      last_name: s.last_name || prev.last_name,
+      full_name: s.full_name || prev.full_name,
+      email: s.email || prev.email,
+      netid: s.netid || prev.netid,
+      // If we have a NetID, default to CAS sign-in
+      auth_method: s.netid ? 'cas' : prev.auth_method,
+    }));
+    setStudentLookupOpen(false);
+    setStudentLookupQuery('');
+    setStudentLookupResults([]);
+  };
+
   // Instructor handlers
   const handleCreateInstructor = () => {
     setEditingInstructor(null);
+    setStudentLookupQuery('');
+    setStudentLookupResults([]);
+    setStudentLookupOpen(false);
     setInstructorFormData({
       email: '',
       password: '',
       first_name: '',
       last_name: '',
       full_name: '',
+      netid: '',
+      auth_method: 'password',
       active: true,
       use_system_key: false,
       can_publish: false,
@@ -324,12 +393,17 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
 
   const handleEditInstructor = (instructor: Instructor) => {
     setEditingInstructor(instructor);
+    setStudentLookupQuery('');
+    setStudentLookupResults([]);
+    setStudentLookupOpen(false);
     setInstructorFormData({
       email: instructor.email,
       password: '',
       first_name: instructor.first_name || '',
       last_name: instructor.last_name || '',
       full_name: instructor.full_name,
+      netid: instructor.netid || '',
+      auth_method: instructor.auth_method || 'password',
       active: instructor.active,
       use_system_key: Boolean((instructor as any).use_system_key),
       can_publish: Boolean((instructor as any).can_publish),
@@ -344,6 +418,14 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
     e.preventDefault();
     setError(null);
 
+    const passwordRequired = instructorFormData.auth_method !== 'cas';
+    const trimmedNetid = instructorFormData.netid.trim().toLowerCase();
+
+    if (instructorFormData.auth_method === 'cas' && instructorFormData.password) {
+      setError('CAS-only instructors should not have a password.');
+      return;
+    }
+
     try {
       if (editingInstructor) {
         const updateData: any = {
@@ -351,6 +433,8 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
           last_name: instructorFormData.last_name,
           full_name: instructorFormData.full_name || `${instructorFormData.first_name} ${instructorFormData.last_name}`.trim(),
           email: instructorFormData.email,
+          netid: trimmedNetid === '' ? null : trimmedNetid,
+          auth_method: instructorFormData.auth_method,
           active: instructorFormData.active,
           use_system_key: instructorFormData.use_system_key,
           can_publish: instructorFormData.can_publish,
@@ -367,12 +451,13 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
           return;
         }
       } else {
-        if (!instructorFormData.password) {
-          setError('Password is required for new instructors');
+        if (passwordRequired && !instructorFormData.password) {
+          setError('Password is required for password-based sign-in.');
           return;
         }
         const response = await api.post('/instructors', {
           ...instructorFormData,
+          netid: trimmedNetid === '' ? null : trimmedNetid,
           full_name: instructorFormData.full_name || `${instructorFormData.first_name} ${instructorFormData.last_name}`.trim(),
         });
         if (response.error) {
@@ -691,6 +776,18 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm text-gray-600">{instructor.email}</div>
+                        <div className="text-xs text-gray-400 flex gap-2 items-center mt-0.5">
+                          {instructor.netid && <span title="BYU NetID">NetID: {instructor.netid}</span>}
+                          {instructor.auth_method === 'cas' && (
+                            <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[10px] uppercase tracking-wide" title="Signs in with BYU CAS only">CAS</span>
+                          )}
+                          {instructor.auth_method === 'both' && (
+                            <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px] uppercase tracking-wide" title="Signs in with CAS or password">CAS + Pwd</span>
+                          )}
+                          {instructor.auth_method === 'password' && (
+                            <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 text-[10px] uppercase tracking-wide" title="Email and password sign-in">Pwd</span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex flex-wrap gap-1 items-center">
@@ -950,6 +1047,89 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
             </h3>
 
             <form onSubmit={handleSubmitInstructor} className="space-y-4">
+              {!editingInstructor && (
+                <div className="border border-gray-200 rounded-lg bg-gray-50 p-3 relative">
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Look up from students
+                  </label>
+                  <p className="text-xs text-gray-500 mb-2">
+                    If this person has previously signed in as a student via BYU CAS, find them by name or email to auto-fill the form.
+                  </p>
+                  <input
+                    type="text"
+                    value={studentLookupQuery}
+                    onChange={(e) => { setStudentLookupQuery(e.target.value); setStudentLookupOpen(true); }}
+                    onFocus={() => setStudentLookupOpen(true)}
+                    placeholder="Search students…"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm"
+                  />
+                  {studentLookupOpen && studentLookupQuery.trim().length >= 2 && (
+                    <div className="absolute z-10 left-3 right-3 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-56 overflow-y-auto">
+                      {studentLookupLoading && (
+                        <div className="px-3 py-2 text-xs text-gray-500">Searching…</div>
+                      )}
+                      {!studentLookupLoading && studentLookupResults.length === 0 && (
+                        <div className="px-3 py-2 text-xs text-gray-500">No matches.</div>
+                      )}
+                      {studentLookupResults.map(s => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => applyStudentLookupSelection(s)}
+                          className="w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-gray-100 last:border-b-0"
+                        >
+                          <div className="text-sm font-medium text-gray-900">{s.full_name}</div>
+                          <div className="text-xs text-gray-500">
+                            {s.email || '(no email)'}{s.netid ? ` · NetID: ${s.netid}` : ''}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Sign-in method</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { value: 'cas', label: 'BYU CAS only', hint: 'Signs in with NetID' },
+                    { value: 'password', label: 'Password only', hint: 'Email + password' },
+                    { value: 'both', label: 'Both', hint: 'Either method' },
+                  ] as const).map(opt => (
+                    <label
+                      key={opt.value}
+                      className={`flex flex-col items-start border rounded-lg p-2 cursor-pointer text-xs ${
+                        instructorFormData.auth_method === opt.value
+                          ? 'border-blue-500 bg-blue-50'
+                          : 'border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="auth_method"
+                        value={opt.value}
+                        checked={instructorFormData.auth_method === opt.value}
+                        onChange={() => setInstructorFormData({
+                          ...instructorFormData,
+                          auth_method: opt.value,
+                          // Clear password when switching to CAS-only.
+                          password: opt.value === 'cas' ? '' : instructorFormData.password,
+                        })}
+                        className="mb-1"
+                      />
+                      <span className="font-medium text-gray-800">{opt.label}</span>
+                      <span className="text-gray-500">{opt.hint}</span>
+                    </label>
+                  ))}
+                </div>
+                {instructorFormData.auth_method !== 'password' && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    For CAS sign-in the instructor clicks <em>Sign in with BYU NetID</em> on the login screen — no invite email is sent.
+                  </p>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">First Name</label>
@@ -993,18 +1173,39 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Password {editingInstructor && <span className="text-gray-500">(leave blank to keep current)</span>}
-                </label>
-                <input
-                  type="password"
-                  value={instructorFormData.password}
-                  onChange={(e) => setInstructorFormData({ ...instructorFormData, password: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
-                  required={!editingInstructor}
-                />
-              </div>
+              {instructorFormData.auth_method !== 'password' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    BYU NetID {instructorFormData.auth_method === 'cas' && <span className="text-gray-500">(recommended)</span>}
+                  </label>
+                  <input
+                    type="text"
+                    value={instructorFormData.netid}
+                    onChange={(e) => setInstructorFormData({ ...instructorFormData, netid: e.target.value })}
+                    placeholder="e.g. jsmith21"
+                    autoComplete="off"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Optional but preferred for CAS match. If left blank, CAS sign-in falls back to matching by email.
+                  </p>
+                </div>
+              )}
+
+              {instructorFormData.auth_method !== 'cas' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Password {editingInstructor && <span className="text-gray-500">(leave blank to keep current)</span>}
+                  </label>
+                  <input
+                    type="password"
+                    value={instructorFormData.password}
+                    onChange={(e) => setInstructorFormData({ ...instructorFormData, password: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                    required={!editingInstructor}
+                  />
+                </div>
+              )}
 
               {editingInstructor && (
                 <>

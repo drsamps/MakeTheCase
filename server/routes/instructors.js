@@ -31,7 +31,8 @@ const router = express.Router();
 router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     let query = `
-      SELECT i.id, i.email, i.first_name, i.last_name, i.full_name,
+      SELECT i.id, i.email, i.netid, i.auth_method,
+             i.first_name, i.last_name, i.full_name,
              i.active, i.use_system_key, i.can_publish, i.monthly_token_cap, i.is_system_account,
              i.created_at, i.last_login,
              COUNT(DISTINCT isem.semester_id) as semester_count,
@@ -92,7 +93,8 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => {
 
     // Get instructor
     const [instructorRows] = await pool.execute(
-      `SELECT id, email, first_name, last_name, full_name, active,
+      `SELECT id, email, netid, auth_method,
+              first_name, last_name, full_name, active,
               use_system_key, can_publish, monthly_token_cap, is_system_account,
               created_at, last_login
        FROM instructors WHERE id = ?`,
@@ -160,9 +162,22 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => {
 router.post('/', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
   try {
     const { email, password, first_name, last_name, full_name } = req.body;
+    const auth_method = (req.body.auth_method || 'password').toLowerCase();
+    const netidRaw = (req.body.netid || '').trim().toLowerCase();
+    const netid = netidRaw || null;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    if (!['password', 'cas', 'both'].includes(auth_method)) {
+      return res.status(400).json({ error: "auth_method must be 'password', 'cas', or 'both'" });
+    }
+    const passwordRequired = auth_method !== 'cas';
+    if (passwordRequired && !password) {
+      return res.status(400).json({ error: 'Password is required for this sign-in method' });
+    }
+    if (auth_method === 'cas' && password) {
+      return res.status(400).json({ error: 'CAS-only instructors cannot have a password' });
     }
 
     // Check if email exists in admins table
@@ -183,20 +198,32 @@ router.post('/', verifyToken, requireRole(['admin']), requireSuperuser, async (r
       return res.status(409).json({ error: 'An instructor with this email already exists' });
     }
 
+    if (netid) {
+      const [netidConflict] = await pool.execute(
+        'SELECT id FROM instructors WHERE netid = ?',
+        [netid]
+      );
+      if (netidConflict.length > 0) {
+        return res.status(409).json({ error: 'An instructor with this NetID already exists' });
+      }
+    }
+
     const id = uuidv4();
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = password ? await bcrypt.hash(password, 10) : null;
     const displayName = full_name || `${first_name || ''} ${last_name || ''}`.trim() || email;
 
     await pool.execute(
-      `INSERT INTO instructors (id, email, password_hash, first_name, last_name, full_name)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, email, passwordHash, first_name || null, last_name || null, displayName]
+      `INSERT INTO instructors (id, email, netid, password_hash, first_name, last_name, full_name, auth_method)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, email, netid, passwordHash, first_name || null, last_name || null, displayName, auth_method]
     );
 
     res.status(201).json({
       data: {
         id,
         email,
+        netid,
+        auth_method,
         first_name: first_name || null,
         last_name: last_name || null,
         full_name: displayName,
@@ -236,7 +263,8 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
   try {
     const { id } = req.params;
     const { email, password, first_name, last_name, full_name, active,
-            use_system_key, can_publish, monthly_token_cap } = req.body;
+            use_system_key, can_publish, monthly_token_cap,
+            auth_method, netid } = req.body;
 
     // Non-superusers can only update themselves
     if (!req.user.superuser && req.user.id !== id) {
@@ -249,6 +277,32 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
     }
     if ((use_system_key !== undefined || can_publish !== undefined || monthly_token_cap !== undefined) && !req.user.superuser) {
       return res.status(403).json({ error: 'Only superusers can grant use_system_key, can_publish, or set monthly_token_cap' });
+    }
+    if ((auth_method !== undefined || netid !== undefined) && !req.user.superuser) {
+      return res.status(403).json({ error: 'Only superusers can change sign-in method or NetID' });
+    }
+
+    let normalizedAuthMethod;
+    if (auth_method !== undefined) {
+      normalizedAuthMethod = String(auth_method).toLowerCase();
+      if (!['password', 'cas', 'both'].includes(normalizedAuthMethod)) {
+        return res.status(400).json({ error: "auth_method must be 'password', 'cas', or 'both'" });
+      }
+    }
+
+    let normalizedNetid;
+    if (netid !== undefined) {
+      const trimmed = (netid || '').trim().toLowerCase();
+      normalizedNetid = trimmed === '' ? null : trimmed;
+      if (normalizedNetid) {
+        const [netidConflict] = await pool.execute(
+          'SELECT id FROM instructors WHERE netid = ? AND id != ?',
+          [normalizedNetid, id]
+        );
+        if (netidConflict.length > 0) {
+          return res.status(409).json({ error: 'NetID already in use' });
+        }
+      }
     }
 
     const updates = [];
@@ -278,6 +332,21 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
       const passwordHash = await bcrypt.hash(password, 10);
       updates.push('password_hash = ?');
       values.push(passwordHash);
+    }
+
+    if (normalizedAuthMethod !== undefined) {
+      updates.push('auth_method = ?');
+      values.push(normalizedAuthMethod);
+      // Switching to CAS-only clears any existing password.
+      if (normalizedAuthMethod === 'cas') {
+        updates.push('password_hash = ?');
+        values.push(null);
+      }
+    }
+
+    if (normalizedNetid !== undefined) {
+      updates.push('netid = ?');
+      values.push(normalizedNetid);
     }
 
     if (first_name !== undefined) {
@@ -343,7 +412,8 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
 
     // Fetch updated record
     const [rows] = await pool.execute(
-      `SELECT id, email, first_name, last_name, full_name, active,
+      `SELECT id, email, netid, auth_method,
+              first_name, last_name, full_name, active,
               use_system_key, can_publish, monthly_token_cap, created_at, last_login
        FROM instructors WHERE id = ?`,
       [id]

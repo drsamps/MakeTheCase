@@ -2,9 +2,10 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { pool } from '../db.js';
-import { verifyToken } from '../middleware/auth.js';
+import { verifyToken, requireRole } from '../middleware/auth.js';
 import {
   requireAdminOrInstructor,
+  requireSuperuser,
   getAccessibleSectionIds,
   isPrimaryInstructorForSection,
   getTAPermissions
@@ -116,6 +117,39 @@ router.get('/', requireAdminOrInstructor, async (req, res) => {
     res.json({ data, error: null });
   } catch (error) {
     console.error('Error fetching students:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/students/lookup?q=... - Search students for admin autofill (e.g. when
+// promoting a CAS student to an instructor). Returns up to 20 matches by name/email
+// with the netid derived from any `cas:{netid}` id prefix.
+router.get('/lookup', requireRole(['admin']), requireSuperuser, async (req, res) => {
+  try {
+    const q = (req.query.q || '').trim();
+    if (q.length < 2) {
+      return res.json({ data: [], error: null });
+    }
+    const like = `%${q}%`;
+    const [rows] = await pool.execute(
+      `SELECT id, first_name, last_name, full_name, email
+         FROM students
+        WHERE full_name LIKE ? OR email LIKE ? OR id LIKE ?
+        ORDER BY full_name ASC
+        LIMIT 20`,
+      [like, like, like]
+    );
+    const data = rows.map(r => ({
+      id: r.id,
+      first_name: r.first_name,
+      last_name: r.last_name,
+      full_name: r.full_name,
+      email: r.email,
+      netid: typeof r.id === 'string' && r.id.startsWith('cas:') ? r.id.slice(4) : null,
+    }));
+    res.json({ data, error: null });
+  } catch (error) {
+    console.error('Error in student lookup:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
