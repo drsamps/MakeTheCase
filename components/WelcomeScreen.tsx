@@ -19,6 +19,8 @@ const WelcomeScreen: React.FC = () => {
       {loaded ? (
         <MarkdownPreview
           markdown={markdown}
+          allowHtml="sanitized"
+          sanitizePreset="welcome"
           emptyText="Welcome content is not yet configured. Edit config/welcome.md to add an orientation message for instructors."
         />
       ) : (

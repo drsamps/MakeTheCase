@@ -188,6 +188,12 @@ Instructor-facing wizard that turns a teaching principle into a published case +
 - Student view: `http://localhost:3000/`
 - Instructor dashboard: `http://localhost:3000/#/admin` (or Ctrl+click header)
 
+### Instructor Welcome screen
+
+- Copy: `config/welcome.md` (Markdown + optional sanitized HTML for layout).
+- Served by `GET /api/content/welcome` (`server/routes/content.js`), rendered in `components/WelcomeScreen.tsx` with `MarkdownPreview` (`allowHtml="sanitized"`, `sanitizePreset="welcome"`).
+- Sanitize presets and `allowHtml` modes: `utils/markdownSanitizeSchemas.ts`, `components/caseWriter/MarkdownPreview.tsx`. Authoring guide: `docs/welcome-screen.md`.
+
 ### Dashboard primary tabs: Setup vs Admin
 
 The dashboard has two distinct admin-area primary tabs in `components/Dashboard.tsx`:
