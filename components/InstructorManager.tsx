@@ -356,16 +356,22 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
   }, [studentLookupQuery, showInstructorModal, editingInstructor]);
 
   const applyStudentLookupSelection = (s: StudentLookupResult) => {
-    setInstructorFormData(prev => ({
-      ...prev,
-      first_name: s.first_name || prev.first_name,
-      last_name: s.last_name || prev.last_name,
-      full_name: s.full_name || prev.full_name,
-      email: s.email || prev.email,
-      netid: s.netid || prev.netid,
-      // If we have a NetID, default to CAS sign-in
-      auth_method: s.netid ? 'cas' : prev.auth_method,
-    }));
+    setInstructorFormData(prev => {
+      const nextAuthMethod = s.netid ? 'cas' : prev.auth_method;
+      return {
+        ...prev,
+        first_name: s.first_name || prev.first_name,
+        last_name: s.last_name || prev.last_name,
+        full_name: s.full_name || prev.full_name,
+        email: s.email || prev.email,
+        netid: s.netid || prev.netid,
+        // If we have a NetID, default to CAS sign-in
+        auth_method: nextAuthMethod,
+        // Clear any stale password (incl. browser autofill) when defaulting to CAS,
+        // since the password field gets hidden and can't be cleared by the user.
+        password: nextAuthMethod === 'cas' ? '' : prev.password,
+      };
+    });
     setStudentLookupOpen(false);
     setStudentLookupQuery('');
     setStudentLookupResults([]);
@@ -430,11 +436,11 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
 
     const passwordRequired = instructorFormData.auth_method !== 'cas';
     const trimmedNetid = instructorFormData.netid.trim().toLowerCase();
-
-    if (instructorFormData.auth_method === 'cas' && instructorFormData.password) {
-      setError('CAS-only instructors should not have a password.');
-      return;
-    }
+    // When CAS-only, never send a password — the field is hidden in the UI, so any
+    // value in state is stale (browser autofill or a leftover from before the user
+    // switched auth_method). The server clears password_hash on switch to CAS.
+    const includePassword =
+      instructorFormData.auth_method !== 'cas' && Boolean(instructorFormData.password);
 
     try {
       if (editingInstructor) {
@@ -472,7 +478,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
           );
           if (!ok) return;
         }
-        if (instructorFormData.password) {
+        if (includePassword) {
           updateData.password = instructorFormData.password;
         }
         const response = await api.patch(`/instructors/${editingInstructor.id}`, updateData);
@@ -485,11 +491,16 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
           setError('Password is required for password-based sign-in.');
           return;
         }
-        const response = await api.post('/instructors', {
-          ...instructorFormData,
+        const { password: _pw, ...rest } = instructorFormData;
+        const createPayload: any = {
+          ...rest,
           netid: trimmedNetid === '' ? null : trimmedNetid,
           full_name: instructorFormData.full_name || `${instructorFormData.first_name} ${instructorFormData.last_name}`.trim(),
-        });
+        };
+        if (includePassword) {
+          createPayload.password = instructorFormData.password;
+        }
+        const response = await api.post('/instructors', createPayload);
         if (response.error) {
           setError(response.error.message || response.error);
           return;

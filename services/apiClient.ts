@@ -34,11 +34,12 @@ function getActiveToken(): string | null {
   return studentAuthToken;
 }
 
-export function setAuthToken(token: string | null, role?: 'admin' | 'student') {
+export function setAuthToken(token: string | null, role?: 'admin' | 'instructor' | 'student') {
   // Determine role from context if not specified
   const effectiveRole = role || (isAdminContext() ? 'admin' : 'student');
-  
-  if (effectiveRole === 'admin') {
+
+  // Admins and instructors share the admin token slot (matches isAdminContext()).
+  if (effectiveRole === 'admin' || effectiveRole === 'instructor') {
     adminAuthToken = token;
     if (token) {
       localStorage.setItem('admin_auth_token', token);
@@ -215,7 +216,7 @@ export const auth = {
   applyCasCallbackFromUrl() {
     const url = new URL(window.location.href);
     const token = url.searchParams.get('token');
-    const role = url.searchParams.get('role') as 'admin' | 'student' | null;
+    const role = url.searchParams.get('role') as 'admin' | 'instructor' | 'student' | null;
     const fullName = url.searchParams.get('fullName');
     const email = url.searchParams.get('email');
 

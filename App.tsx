@@ -234,12 +234,12 @@ const App: React.FC = () => {
         // If CAS delivered an admin token, immediately move to the admin view
         // even before the session fetch resolves. This avoids bouncing back to
         // the student login when the browser already holds a student token.
-        if (casResult?.role === 'admin') {
+        if (casResult?.role === 'admin' || casResult?.role === 'instructor') {
             setView('admin');
             setIsAdminAuthenticated(true);
             // Preserve whatever session user we have; fall back to CAS payload fields.
             setSessionUser(prev => prev || {
-              role: 'admin',
+              role: casResult.role,
               email: casResult.email || session?.user?.email,
               full_name: casResult.fullName || session?.user?.full_name,
             } as any);
