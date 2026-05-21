@@ -18,7 +18,7 @@ Access via **Admin > Logging** tab. Four settings control logging behavior:
 | `log_case_chat_prompts` | integer | 0 | Countdown of chat turns to log |
 | `log_evaluation_prompts` | integer | 0 | Countdown of evaluations to log |
 | `max_log_files` | integer | 100 | Maximum files before logging stops |
-| `log_with_full_case_context` | boolean | false | Include case content or hide it |
+| `log_with_full_case_context` | boolean | false | Include case content or hide it (chat/eval only — Case Writer always logs full data) |
 
 ### How Countdowns Work
 
@@ -35,6 +35,8 @@ Access via **Admin > Logging** tab. Four settings control logging behavior:
 ```
 
 Example: `2026-03-21_14-30-00_CHAT-cas_abc123-fed-ex-money-back-prompt.txt`
+
+Three TYPE values are recognized: `CHAT`, `EVAL`, and `CASEWRITER`. For Case Writer logs, the `studentId` slot holds the project ID (with dashes stripped so UUIDs survive the parsing regex) and the `caseId` slot holds the step name (e.g. `teaching_brief`).
 
 ### File Contents
 ```
@@ -80,12 +82,24 @@ This keeps logs smaller and avoids duplicating copyrighted case materials.
 The Logging tab provides:
 - **Settings panel**: Edit countdown values and toggle full context
 - **Refresh button**: Reload settings and file list
-- **Filter buttons**: Show All / Chat only / Eval only
+- **Filter buttons**: Show All / Chat / Eval / Case Writer
 - **File list**: Sortable table with timestamps, types, sizes
 - **Multi-select**: Checkbox to select multiple files
 - **Delete**: Remove selected log files
 - **View**: Click a file to see contents inline
 - **Download**: Save selected file to disk
+
+## Case Writer per-call logging (admin opt-in)
+
+Case Writer Generate prompts use a different mechanism from chat/eval — they are **not** countdown-driven. Instead, an admin checks "Log this prompt with data" inside the (i) prompt-viewer modal on a given step; the *next* Generate run for that step is logged, then the flag auto-clears.
+
+- **Trigger:** request body field `log_this_prompt: true`, set by the frontend from a per-`use` `localStorage` flag (`cw_log_prompt:<use>`). The frontend deletes the key in a `finally` block so the flag is consumed exactly once.
+- **Admin gate:** server-side check `req.user?.role === 'admin'` inside `maybeLogCaseWriterPrompt`. A forged request from a non-admin produces no log file.
+- **Data redaction:** `logCaseWriterPrompt` does **not** call `stripCaseContentIfNeeded` — the rendered prompt (with `{source_materials}`, `{learning_brief}`, etc. fully expanded) is logged verbatim. `max_log_files` is still honored.
+- **Coverage:** all six Generate endpoints — `/generate/brief`, `/generate/scenarios`, `/generate/blueprint`, `/generate/student-case`, `/generate/teaching-note`, `/extract-publish-fields`.
+- **Token usage:** populated for all four providers (openai, openrouter, anthropic, google) because `generateOutlineWithLLM` now returns `cacheMetrics` in its `meta`, matching what `callLLM` already did.
+
+See `docs/Case-Writer-Updates-2026-05-21.md` §7 for full design notes.
 
 ## File Location
 
@@ -111,7 +125,7 @@ For programmatic access (requires admin auth with 'settings' permission):
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/logs` | GET | List log files (query: `?filter=chat` or `?filter=eval`) |
+| `/api/logs` | GET | List log files (query: `?filter=chat`, `?filter=eval`, or `?filter=casewriter`) |
 | `/api/logs/settings` | GET | Get current logging settings |
 | `/api/logs/settings` | PATCH | Update logging settings |
 | `/api/logs/:filename` | GET | Read log file content |

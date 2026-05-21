@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import MarkdownPreview from './MarkdownPreview';
 import { useGenerationTimer } from './useGenerationTimer';
 import { useSaveState, saveButtonLabel, SaveStateApi } from './useSaveState';
-import PromptInfoButton from './PromptInfoButton';
+import PromptInfoButton, { logKeyFor } from './PromptInfoButton';
 import TweakDiffViewer from './TweakDiffViewer';
 import { caseWriterApi } from '../../services/caseWriter/api';
 
@@ -82,12 +82,36 @@ const MarkdownStepEditor: React.FC<Props> = ({
   const [hintText, setHintText] = useState('');
   const timerText = useGenerationTimer(generating);
 
-  function runGenerate() {
+  async function runGenerate() {
     if (!onGenerate) return;
     const opts: Record<string, string> = { ...optionValues };
     const trimmedHint = hintText.trim();
     if (trimmedHint) opts.revision_hint = trimmedHint;
-    onGenerate(overrideModelId || undefined, opts);
+
+    // One-shot "log this prompt with data" — set in PromptInfoButton modal.
+    // Cleared after the Generate call returns (success or failure) so the
+    // badge disappears and the next click won't log unless the admin re-checks.
+    const logKey = promptUse ? logKeyFor(promptUse) : null;
+    let logged = false;
+    try {
+      if (logKey && localStorage.getItem(logKey) === '1') {
+        opts.log_this_prompt = '1';
+        logged = true;
+      }
+    } catch { /* ignore */ }
+
+    try {
+      await onGenerate(overrideModelId || undefined, opts);
+    } finally {
+      if (logged && logKey) {
+        try {
+          localStorage.removeItem(logKey);
+          // Notify the PromptInfoButton in this tab (storage event only fires
+          // in *other* tabs); pass newValue=null to indicate removal.
+          window.dispatchEvent(new StorageEvent('storage', { key: logKey, newValue: null }));
+        } catch { /* ignore */ }
+      }
+    }
   }
 
   // ---- Tweak (free-form revise + diff preview) state ----

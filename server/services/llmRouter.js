@@ -600,6 +600,7 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
         provider,
         temperature: mergedParams.temperature ?? null,
         reasoning_effort: mergedParams.reasoning_effort ?? null,
+        cacheMetrics: legacyCacheMetrics(provider, rawUsage),
       },
     };
   }
@@ -641,7 +642,7 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
     const text = data?.choices?.[0]?.message?.content?.trim() || '';
     const rawUsage = data?.usage || null;
     trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
-    return { text, meta: appliedParams };
+    return { text, meta: { ...appliedParams, cacheMetrics: legacyCacheMetrics(provider, rawUsage) } };
   }
 
   if (provider === 'anthropic') {
@@ -668,7 +669,7 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
     const text = data?.content?.[0]?.text?.trim() || '';
     const rawUsage = data?.usage || null;
     trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
-    return { text, meta: { provider, temperature: temperature ?? null, reasoning_effort: null } };
+    return { text, meta: { provider, temperature: temperature ?? null, reasoning_effort: null, cacheMetrics: legacyCacheMetrics(provider, rawUsage) } };
   }
 
   // Google Gemini
@@ -697,5 +698,5 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
   const rawUsage = generation.usageMetadata || generation.response?.usageMetadata || null;
   trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
   const text = typeof candidate === 'string' ? candidate : String(candidate);
-  return { text, meta: { provider, temperature: temperature ?? null, reasoning_effort: null } };
+  return { text, meta: { provider, temperature: temperature ?? null, reasoning_effort: null, cacheMetrics: legacyCacheMetrics(provider, rawUsage) } };
 }

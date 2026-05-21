@@ -189,7 +189,7 @@ export const caseWriterApi = {
 
   // -------------------------- Generation --------------------------
 
-  generateBrief: (id: string, body: { model_id?: string } = {}) =>
+  generateBrief: (id: string, body: { model_id?: string; log_this_prompt?: boolean } = {}) =>
     req<{ markdown: string; meta: GenerateMeta }>(`/projects/${id}/generate/brief`, {
       method: 'POST',
       body: JSON.stringify(body)
@@ -197,14 +197,14 @@ export const caseWriterApi = {
 
   generateScenarios: (
     id: string,
-    body: { model_id?: string; count?: number; industry_preference?: string; revision_hint?: string } = {}
+    body: { model_id?: string; count?: number; industry_preference?: string; revision_hint?: string; log_this_prompt?: boolean } = {}
   ) =>
     req<{ scenarios: ScenarioCard[]; meta: GenerateMeta }>(`/projects/${id}/generate/scenarios`, {
       method: 'POST',
       body: JSON.stringify(body)
     }),
 
-  generateBlueprint: (id: string, body: { model_id?: string; revision_hint?: string } = {}) =>
+  generateBlueprint: (id: string, body: { model_id?: string; revision_hint?: string; log_this_prompt?: boolean } = {}) =>
     req<{ markdown: string; meta: GenerateMeta }>(`/projects/${id}/generate/blueprint`, {
       method: 'POST',
       body: JSON.stringify(body)
@@ -212,7 +212,7 @@ export const caseWriterApi = {
 
   generateStudentCase: (
     id: string,
-    body: { model_id?: string; length?: CaseSize; revision_hint?: string } = {}
+    body: { model_id?: string; length?: CaseSize; revision_hint?: string; log_this_prompt?: boolean } = {}
   ) =>
     req<{ markdown: string; meta: GenerateMeta }>(`/projects/${id}/generate/student-case`, {
       method: 'POST',
@@ -221,7 +221,7 @@ export const caseWriterApi = {
 
   generateTeachingNote: (
     id: string,
-    body: { model_id?: string; format?: 'brief' | 'standard' | 'detailed'; revision_hint?: string } = {}
+    body: { model_id?: string; format?: 'brief' | 'standard' | 'detailed'; revision_hint?: string; log_this_prompt?: boolean } = {}
   ) =>
     req<{ markdown: string; meta: GenerateMeta }>(`/projects/${id}/generate/teaching-note`, {
       method: 'POST',
@@ -314,7 +314,7 @@ export const caseWriterApi = {
       body: JSON.stringify(body)
     }),
 
-  extractPublishFields: (id: string, body: { model_id?: string } = {}) =>
+  extractPublishFields: (id: string, body: { model_id?: string; log_this_prompt?: boolean } = {}) =>
     req<PublishFields & { meta: GenerateMeta }>(`/projects/${id}/extract-publish-fields`, {
       method: 'POST',
       body: JSON.stringify(body)

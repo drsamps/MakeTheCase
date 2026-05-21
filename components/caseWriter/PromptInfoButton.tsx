@@ -17,11 +17,18 @@ interface PromptRow {
   active_version?: string | null;
 }
 
+// Per-(admin browser, prompt use) one-shot flag. Read by the Generate
+// callsites and cleared after the request completes.
+export const logKeyFor = (use: string) => `cw_log_prompt:${use}`;
+
 const PromptInfoButton: React.FC<Props> = ({ use, isAdmin }) => {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [prompt, setPrompt] = useState<PromptRow | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [logFlagged, setLogFlagged] = useState<boolean>(() => {
+    try { return localStorage.getItem(logKeyFor(use)) === '1'; } catch { return false; }
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -29,6 +36,19 @@ const PromptInfoButton: React.FC<Props> = ({ use, isAdmin }) => {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
+
+  // Keep the badge in sync if the key is cleared from another tab or by the
+  // Generate callsite's `finally` block.
+  useEffect(() => {
+    const key = logKeyFor(use);
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key === key) {
+        try { setLogFlagged(localStorage.getItem(key) === '1'); } catch { /* ignore */ }
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [use]);
 
   async function loadPrompt() {
     setLoading(true);
@@ -63,6 +83,15 @@ const PromptInfoButton: React.FC<Props> = ({ use, isAdmin }) => {
     loadPrompt();
   }
 
+  function toggleLogFlag(next: boolean) {
+    const key = logKeyFor(use);
+    try {
+      if (next) localStorage.setItem(key, '1');
+      else localStorage.removeItem(key);
+    } catch { /* ignore */ }
+    setLogFlagged(next);
+  }
+
   if (!isAdmin) return null;
 
   return (
@@ -76,6 +105,14 @@ const PromptInfoButton: React.FC<Props> = ({ use, isAdmin }) => {
       >
         ⓘ
       </button>
+      {logFlagged && (
+        <span
+          title="The next AI generation for this step will be logged. Click ⓘ to uncheck."
+          className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 border border-amber-400 bg-amber-100 text-amber-900 rounded font-semibold"
+        >
+          log
+        </span>
+      )}
       {open && (
         <div
           className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"
@@ -117,18 +154,34 @@ const PromptInfoButton: React.FC<Props> = ({ use, isAdmin }) => {
                 </>
               )}
             </div>
-            <div className="px-5 py-3 border-t flex items-center justify-between text-xs text-gray-500">
-              <span>
-                Admin users can edit prompts under{' '}
-                <a href="#/admin?tab=prompts" className="text-blue-600 hover:underline">Admin → Prompts</a>.
-              </span>
-              <button
-                type="button"
-                onClick={() => setOpen(false)}
-                className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
-              >
-                Close
-              </button>
+            <div className="px-5 py-3 border-t space-y-2">
+              <label className="flex items-start gap-2 text-sm text-gray-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={logFlagged}
+                  onChange={(e) => toggleLogFlag(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+                />
+                <span>
+                  <span className="font-medium">Log this prompt with data</span>
+                  <span className="block text-xs text-gray-500">
+                    The next AI generation for this step will be saved to the prompt log (Admin → Logging). Cleared after one generation; uncheck here to cancel.
+                  </span>
+                </span>
+              </label>
+              <div className="flex items-center justify-between text-xs text-gray-500">
+                <span>
+                  Admin users can edit prompts under{' '}
+                  <a href="#/admin?tab=prompts" className="text-blue-600 hover:underline">Admin → Prompts</a>.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -3,7 +3,7 @@ import { api } from '../services/apiClient';
 
 interface LogFile {
   filename: string;
-  type: 'chat' | 'eval';
+  type: 'chat' | 'eval' | 'casewriter';
   timestamp: string;
   studentId: string;
   caseId: string;
@@ -17,7 +17,7 @@ interface LoggingSettings {
   log_with_full_case_context: boolean;
 }
 
-type FilterType = 'all' | 'chat' | 'eval';
+type FilterType = 'all' | 'chat' | 'eval' | 'casewriter';
 
 export const LoggingManager: React.FC = () => {
   const [settings, setSettings] = useState<LoggingSettings>({
@@ -333,6 +333,14 @@ export const LoggingManager: React.FC = () => {
             >
               Eval
             </button>
+            <button
+              onClick={() => setFilter('casewriter')}
+              className={`px-3 py-1 text-sm rounded-lg ${
+                filter === 'casewriter' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              Case Writer
+            </button>
           </div>
         </div>
 
@@ -369,8 +377,8 @@ export const LoggingManager: React.FC = () => {
                     <th className="w-8 px-2 py-2"></th>
                     <th className="px-3 py-2 text-left font-medium text-gray-600">Type</th>
                     <th className="px-3 py-2 text-left font-medium text-gray-600">Timestamp</th>
-                    <th className="px-3 py-2 text-left font-medium text-gray-600">Student</th>
-                    <th className="px-3 py-2 text-left font-medium text-gray-600">Case</th>
+                    <th className="px-3 py-2 text-left font-medium text-gray-600">Student / Project</th>
+                    <th className="px-3 py-2 text-left font-medium text-gray-600">Case / Step</th>
                     <th className="px-3 py-2 text-right font-medium text-gray-600">Size</th>
                   </tr>
                 </thead>
@@ -393,9 +401,12 @@ export const LoggingManager: React.FC = () => {
                       </td>
                       <td className="px-3 py-2">
                         <span className={`px-2 py-0.5 text-xs rounded-full ${
-                          file.type === 'chat' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'
+                          file.type === 'chat' ? 'bg-blue-100 text-blue-700'
+                            : file.type === 'eval' ? 'bg-green-100 text-green-700'
+                            : file.type === 'casewriter' ? 'bg-amber-100 text-amber-800'
+                            : 'bg-gray-100 text-gray-700'
                         }`}>
-                          {file.type.toUpperCase()}
+                          {file.type === 'casewriter' ? 'CASE WRITER' : file.type.toUpperCase()}
                         </span>
                       </td>
                       <td className="px-3 py-2 text-gray-600">{formatTimestamp(file.timestamp)}</td>

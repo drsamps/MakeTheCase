@@ -91,7 +91,10 @@ function generateFilename(logType, studentId, caseId) {
     .replace(/T/, '_')
     .replace(/:/g, '-')
     .replace(/\..+/, '');
-  const typeLabel = logType === 'chat' ? 'CHAT' : 'EVAL';
+  const typeLabel = logType === 'chat' ? 'CHAT'
+                  : logType === 'eval' ? 'EVAL'
+                  : logType === 'casewriter' ? 'CASEWRITER'
+                  : String(logType).toUpperCase();
   // Sanitize and truncate IDs to prevent invalid filenames
   const shortStudentId = sanitizeForFilename(studentId).substring(0, 20);
   const shortCaseId = sanitizeForFilename(caseId).substring(0, 20);
@@ -482,8 +485,95 @@ export async function logPromptIfEnabled({ logType, studentId, caseId, modelId, 
 }
 
 /**
+ * Log a single Case Writer Generate prompt + response on demand.
+ *
+ * Unlike logPromptIfEnabled (which is countdown-driven), this fires per-call
+ * whenever an admin checked the "Log this prompt with data" box in the (i)
+ * modal. The rendered prompt is logged verbatim (full {source_materials} and
+ * other interpolated data) — log_with_full_case_context is NOT consulted,
+ * since the admin explicitly opted in. max_log_files IS honored.
+ *
+ * Errors are swallowed (written to error_log.txt) so a logging failure never
+ * breaks the Generate response.
+ *
+ * @param {Object} params
+ * @param {string} params.projectId
+ * @param {string|null} [params.projectTitle]
+ * @param {string} params.step - e.g. 'teaching_brief', 'scenarios', 'blueprint'
+ * @param {string} params.promptUse - e.g. 'case_writer.teaching_brief'
+ * @param {string} params.modelId
+ * @param {string} params.renderedPrompt
+ * @param {string} params.response
+ * @param {Object} [params.meta]
+ * @param {number} [params.durationMs]
+ */
+export async function logCaseWriterPrompt({
+  projectId,
+  projectTitle,
+  step,
+  promptUse,
+  modelId,
+  renderedPrompt,
+  response,
+  meta,
+  durationMs
+}) {
+  try {
+    // Honor max_log_files even for opt-in logs to prevent runaway.
+    const limitCheck = await checkFileLimit();
+    if (!limitCheck.ok) {
+      const error = new Error(`Too many log files (${limitCheck.count}/${limitCheck.max}) - delete old files to resume logging`);
+      await logError(error, { logType: 'casewriter', projectId, step });
+      console.warn(error.message);
+      return;
+    }
+
+    await ensureLogDir();
+
+    const pricing = meta ? await getModelPricing(modelId) : null;
+    // Strip dashes from projectId so UUIDs survive the listLogFiles regex
+    // (which uses [^-]+ for the studentId/projectId slot).
+    const projectIdForFilename = String(projectId || 'unknown').replace(/-/g, '');
+    const filename = generateFilename('casewriter', projectIdForFilename, String(step || 'unknown'));
+
+    const separator = '='.repeat(60);
+    const responseHeader = formatResponseHeader(modelId, meta);
+    const tokenUsageSection = meta ? `\n\n${formatTokenUsage(meta, durationMs, pricing)}` : '';
+    const titleLine = projectTitle ? `\nProject Title: ${projectTitle}` : '';
+
+    const content = `${separator}
+CASE WRITER LOG
+${separator}
+Project ID: ${projectId}${titleLine}
+Step: ${step}
+Prompt Use: ${promptUse}
+Model: ${modelId}
+Timestamp: ${new Date().toISOString()}
+${separator}
+
+=== RENDERED PROMPT ===
+
+${renderedPrompt || '(empty)'}
+
+${responseHeader}
+
+${response || '(empty)'}
+${tokenUsageSection}
+`;
+
+    const filePath = path.join(LOG_DIR, filename);
+    await fs.writeFile(filePath, content, 'utf-8');
+
+    console.log(`Logged casewriter prompt to ${filename}`);
+  } catch (error) {
+    console.warn('Failed to log casewriter prompt:', error.message);
+    await logError(error, { logType: 'casewriter', projectId, step, modelId });
+  }
+}
+
+/**
  * List log files in the logs directory
- * @param {'chat' | 'eval' | null} filter - Optional filter by type
+ * @param {'chat' | 'eval' | 'casewriter' | null} filter - Optional filter by type
  * @returns {Promise<Array<{filename: string, type: string, timestamp: string, studentId: string, caseId: string, size: number}>>}
  */
 export async function listLogFiles(filter = null) {
@@ -495,15 +585,19 @@ export async function listLogFiles(filter = null) {
     const results = [];
     for (const filename of logFiles) {
       // Parse filename: {timestamp}_CHAT-{studentId}-{caseId}-prompt.txt
-      const match = filename.match(/^(.+?)_(CHAT|EVAL)-([^-]+)-(.+)-prompt\.txt$/);
+      // CASEWRITER logs reuse the same pattern: studentId-slot = projectId, caseId-slot = step
+      const match = filename.match(/^(.+?)_(CHAT|EVAL|CASEWRITER)-([^-]+)-(.+)-prompt\.txt$/);
       if (!match) continue;
 
       const [, timestamp, type, studentId, caseId] = match;
 
       // Apply filter if specified
       if (filter) {
-        const typeToMatch = filter === 'chat' ? 'CHAT' : 'EVAL';
-        if (type !== typeToMatch) continue;
+        const typeToMatch = filter === 'chat' ? 'CHAT'
+                          : filter === 'eval' ? 'EVAL'
+                          : filter === 'casewriter' ? 'CASEWRITER'
+                          : null;
+        if (typeToMatch && type !== typeToMatch) continue;
       }
 
       // Get file stats

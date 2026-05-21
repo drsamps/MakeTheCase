@@ -2,7 +2,7 @@
 
 ## Summary
 
-Six changes layered on top of the May 14 release:
+Seven changes layered on top of the May 14 release:
 
 1. **Industries field on Scenarios** — optional `industries_preference` text input above Generate, wired to the previously-unused `{industry_preference}` slot in `case_writer.scenario_generation`. When the instructor selects a generated scenario, its `industry` is mirrored to `case_writer_projects.industry` for the home list.
 2. **Student-case prompt enforces narrative** — `case_writer.student_case_draft` rewritten to mandate paragraph prose in `opening_hook`, `company_background`, `market_context`, `problem_or_opportunity`, `stakeholders[].position`, and `decision_point`. Bullets and tables are now reserved for the Evidence and Exhibits section only.
@@ -10,8 +10,9 @@ Six changes layered on top of the May 14 release:
 4. **AI generation Hint** — wires up the previously-unused `{revision_hint}` slot on Scenarios, Blueprint, Student Case, and Teaching Note. A 💡 Hint button next to each Generate's model picker opens an amber textarea; the value is sent as `revision_hint` in the POST body. Ephemeral (component state — not persisted).
 5. **Project list upgrades** — Owner and Industry columns, all columns sortable with ▲/▼ indicators, client-side title/teaching-principle search, and an Owner filter dropdown (shows only when 2+ distinct owners are visible). Two-arrow refresh button matching the `FeedbackInbox.tsx` pattern.
 6. **Read-only-for-non-owners + Clone** — instructors who can *view* a project (team-shared / public / admin) but don't own it now see a single scrollable preview document with a "Read-only — Clone to edit" banner. `POST /projects/:id/clone` produces a private editable copy. Mutating routes are now gated on `'edit'` (or `'delete'`) access via `loadProject`'s HTTP-method inference.
+7. **Admin-controlled "Log this prompt with data"** — the (i) prompt-viewer modal on every Case Writer Generate step grows a checkbox that logs the *fully-rendered* prompt + response to `logs/` for the next Generate run only. One-shot, admin-only, surfaced as a "log" badge next to the (i) button. Files appear in **Admin → Logging** under a new `CASEWRITER` type with full token-usage stats.
 
-Pre-implementation plan: `.claude/plans/in-the-case-writer-rosy-wilkes.md`.
+Pre-implementation plan: `.claude/plans/in-the-case-writer-rosy-wilkes.md`. Plan for item 7: `.claude/plans/in-case-writer-the-deep-church.md`.
 
 ## 1. Industries field
 
@@ -142,20 +143,93 @@ Backend already accepted and forwarded `revision_hint` on all four generate rout
 - `CaseWriterHome.tsx` — Actions column shows **Clone** for everyone; **Delete** only when `p.can_edit`. After clone, the list is reloaded and the new project opens automatically.
 - `CaseWriterProject.tsx` — when `!project.can_edit`, the wizard is replaced with a single scrollable read-only document: top amber banner ("Read-only — owned by {owner_label}. Clone to edit.") with a Clone button, then Overview metadata + each markdown section (Brief, Selected Scenario, Blueprint, Student Case, Teaching Note) rendered via `MarkdownPreview`. No prop-threading into the existing editors — the wizard branch is untouched.
 
+## 7. Admin-controlled "Log this prompt with data"
+
+The existing prompt-logging system (`server/services/promptLogger.js`) wrote chat/eval logs via a countdown-driven `logPromptIfEnabled`. Case Writer generation was never wired in, so admins could see the prompt *template* via the (i) button but not the rendered prompt (with `{source_materials}`, `{learning_brief}`, etc. expanded) actually sent to the LLM, nor the response.
+
+### Design
+
+- **One-shot opt-in.** The flag is checked once and consumed by the *next* Generate call for that step. After Generate completes (success **or** error) the flag is cleared in `finally`. This is per-(admin browser, prompt `use`), keyed in `localStorage` under `cw_log_prompt:<use>` so it survives a page reload between checking the box and clicking Generate.
+- **Full data, always.** Unlike chat/eval logs, Case Writer logs do **not** honor `log_with_full_case_context` — the point of "Log this prompt **with data**" is to inspect what was actually sent. `max_log_files` is still honored.
+- **Admin-only at both layers.** Frontend gate (existing `isAdmin` check on the (i) button) + server-side gate (`req.user?.role === 'admin'` inside the logger helper). A forged `log_this_prompt: true` from a non-admin produces nothing.
+
+### Flow
+
+1. **UI — `PromptInfoButton.tsx`.** Modal grows a "Log this prompt with data" checkbox. Bound to `localStorage.getItem('cw_log_prompt:'+use)`. While set, a small amber "log" badge renders next to the (i) button with tooltip *"The next AI generation for this step will be logged."* A `storage`-event listener keeps the badge in sync across tabs; in-tab updates dispatch a synthetic `StorageEvent`.
+2. **Callsites — `MarkdownStepEditor.tsx` and `CaseWriterProject.tsx`.** Immediately before issuing the Generate fetch, the component reads the `localStorage` flag and includes `log_this_prompt: true` in the request body when set. The key is **always deleted in a `finally` block** so the badge clears regardless of success/error.
+3. **Backend — `server/routes/caseWriter.js`.** All six Generate endpoints (`/generate/brief`, `/generate/scenarios`, `/generate/blueprint`, `/generate/student-case`, `/generate/teaching-note`, `/extract-publish-fields`) now wrap `callOutline(...)` with `const start = Date.now()` and call `maybeLogCaseWriterPrompt(req, {...})` after the response. That helper short-circuits if `log_this_prompt !== true` or the caller isn't admin.
+4. **Logger — `server/services/promptLogger.js`.** New `logCaseWriterPrompt(...)` reuses the existing `ensureLogDir`/`checkFileLimit`/`getModelPricing`/`formatTokenUsage`/`formatResponseHeader` helpers. **Does not** call `stripCaseContentIfNeeded`. Filename pattern: `{ts}_CASEWRITER-{projectId}-{step}-prompt.txt`. Errors are written to `error_log.txt` so a logging failure never breaks the Generate response.
+5. **Listing — `LoggingManager.tsx`.** The filename-parsing regex is extended from `(CHAT|EVAL)` to `(CHAT|EVAL|CASEWRITER)`, a "Case Writer" filter button (amber styling) is added, and the column headers read "Student / Project" and "Case / Step" to fit both naming conventions.
+
+### UUID-projectId / regex compatibility
+
+`case_writer_projects.project_id` is a UUID containing dashes. The pre-existing `listLogFiles` regex `^(.+?)_(CHAT|EVAL|CASEWRITER)-([^-]+)-(.+)-prompt\.txt$` uses `[^-]+` for the studentId/projectId slot, so a raw UUID would split incorrectly and the file would silently drop out of the listing. The logger strips dashes before filename generation:
+
+```js
+const projectIdForFilename = String(projectId || 'unknown').replace(/-/g, '');
+const filename = generateFilename('casewriter', projectIdForFilename, String(step || 'unknown'));
+```
+
+### `cacheMetrics` on `generateOutlineWithLLM` returns
+
+The first end-to-end test produced a log file whose token-usage section read *"Token usage data not available"*. Root cause: `generateOutlineWithLLM` (the function Case Writer calls via `callOutline`) computes `rawUsage` and feeds it to `trackUsageAsync` in every provider branch, but the returned `meta` omitted the `cacheMetrics` field — unlike `callLLM`, which has always included `cacheMetrics: legacyCacheMetrics(provider, rawUsage)`. `formatTokenUsage` in `promptLogger.js` keys off `meta.cacheMetrics`, so the section degraded to the not-available fallback.
+
+Fix: add `cacheMetrics: legacyCacheMetrics(provider, rawUsage)` to all four branch meta returns (openrouter, openai, anthropic, google) in `generateOutlineWithLLM`. Purely additive — every existing caller only destructures `{ text, meta }` and forwards `meta`, so no shape contract is broken. Case Writer logs now show input/cached/output token counts, duration, and estimated cost just like chat/eval logs.
+
+### Log file format
+
+Filename: `2026-05-21_14-30-00_CASEWRITER-42ab3c0987d1-teaching_brief-prompt.txt`
+
+```
+============================================================
+CASE WRITER LOG
+============================================================
+Project ID: 42ab-3c09-87d1-...
+Project Title: FedEx Money-Back Guarantee
+Step: teaching_brief
+Prompt Use: case_writer.teaching_brief
+Model: gpt-5-mini
+Timestamp: 2026-05-21T14:30:00.000Z
+============================================================
+
+=== RENDERED PROMPT ===
+
+<verbatim, including expanded {source_materials}, {teaching_principle}, etc.>
+
+--------------------------------------------------------------------------------
+AI MODEL RESPONSE (gpt-5-mini - openai)
+--------------------------------------------------------------------------------
+
+<model output>
+
+--------------------------------------------------------------------------------
+TOKEN USAGE
+--------------------------------------------------------------------------------
+Input tokens:         12,345 (Cache hits: 0)
+Output tokens:         2,100
+Reasoning tokens:        N/A
+Duration:               0:08
+Estimated Cost:       $0.04
+```
+
 ## Files touched
 
 **Server**
-- `server/routes/caseWriter.js` — `industries_preference`/`industry` columns flow through list/GET/PATCH; selected-scenario branch propagates `industry`; scenarios route falls back to persisted `industries_preference`; list endpoint adds `owner_name` JOINs + SQL `can_edit`; GET `/:id` adds `can_edit` + `owner_label`; `loadProject` infers action from method; new `POST /:id/clone`.
+- `server/routes/caseWriter.js` — `industries_preference`/`industry` columns flow through list/GET/PATCH; selected-scenario branch propagates `industry`; scenarios route falls back to persisted `industries_preference`; list endpoint adds `owner_name` JOINs + SQL `can_edit`; GET `/:id` adds `can_edit` + `owner_label`; `loadProject` infers action from method; new `POST /:id/clone`. Six Generate routes also wrap `callOutline(...)` with `maybeLogCaseWriterPrompt(...)` for item 7.
+- `server/services/promptLogger.js` — new exported `logCaseWriterPrompt({ projectId, projectTitle, step, promptUse, modelId, renderedPrompt, response, meta, durationMs })`; `generateFilename` extended with the `casewriter → CASEWRITER` label; `listLogFiles` regex/filter widened to `(CHAT|EVAL|CASEWRITER)`.
+- `server/services/llmRouter.js` — all four provider branches of `generateOutlineWithLLM` now include `cacheMetrics: legacyCacheMetrics(provider, rawUsage)` in the returned meta (purely additive — was only present on `callLLM` before).
 - `server/migrations/061_case_writer_industry_columns.sql` *(new)*
 - `server/migrations/062_case_writer_student_case_narrative.sql` *(new)*
 - `server/migrations/063_case_writer_xml_wrap_prompts.sql` *(new)*
 
 **Client**
-- `services/caseWriter/api.ts` — `owner_name`, `industries_preference`, `industry`, `can_edit`, `owner_label` on the summary type; `revision_hint`/`industry_preference` on generate-call bodies; new `cloneProject(id)`.
+- `services/caseWriter/api.ts` — `owner_name`, `industries_preference`, `industry`, `can_edit`, `owner_label` on the summary type; `revision_hint`/`industry_preference` on generate-call bodies; new `cloneProject(id)`; optional `log_this_prompt?: boolean` on all six Generate bodies.
 - `components/caseWriter/ScenariosList.tsx` — Industries input, 💡 Hint button + panel, extended `onGenerate` signature.
-- `components/caseWriter/MarkdownStepEditor.tsx` — 💡 Hint button + panel; merges `revision_hint` into existing options bag.
-- `components/caseWriter/CaseWriterProject.tsx` — `industriesPreferenceDraft` state, generate-function wiring, read-only document branch.
+- `components/caseWriter/MarkdownStepEditor.tsx` — 💡 Hint button + panel; merges `revision_hint` into existing options bag; reads + clears the per-step `cw_log_prompt:<use>` flag around each Generate.
+- `components/caseWriter/CaseWriterProject.tsx` — `industriesPreferenceDraft` state, generate-function wiring, read-only document branch; new `consumeLogFlag(use)` helper called from the scenarios Generate and the publish-field extraction button.
+- `components/caseWriter/PromptInfoButton.tsx` — exports `logKeyFor(use)`; modal grows a "Log this prompt with data" checkbox; amber "log" badge next to the (i) button; cross-tab `storage` event sync.
 - `components/caseWriter/CaseWriterHome.tsx` — Owner/Industry columns, sortable headers, search + owner filter, refresh button, Clone vs Delete.
+- `components/LoggingManager.tsx` — adds `'casewriter'` to `LogFile`/`FilterType`; new amber "Case Writer" filter button; type-badge label/color logic extended; columns relabelled "Student / Project" and "Case / Step".
 
 ## Notable alternatives considered & rejected
 

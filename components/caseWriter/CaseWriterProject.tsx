@@ -17,7 +17,7 @@ import MarkdownPreview from './MarkdownPreview';
 import ScenariosList from './ScenariosList';
 import SourceMaterial from './SourceMaterial';
 import CaseVersionsPanel from './CaseVersionsPanel';
-import PromptInfoButton from './PromptInfoButton';
+import PromptInfoButton, { logKeyFor } from './PromptInfoButton';
 import { useGenerationTimer } from './useGenerationTimer';
 
 interface Props {
@@ -249,10 +249,30 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     return { ok: true };
   }
 
-  async function generateBrief(overrideModelId?: string) {
+  // Consume the one-shot "log this prompt" flag stored by PromptInfoButton.
+  // Returns true if the flag was set (and removes it so the next call won't
+  // log unless the admin re-checks). Notifies same-tab listeners via a
+  // synthetic storage event so the badge clears immediately.
+  function consumeLogFlag(use: string): boolean {
+    const key = logKeyFor(use);
+    try {
+      const v = localStorage.getItem(key);
+      if (v === '1') {
+        localStorage.removeItem(key);
+        window.dispatchEvent(new StorageEvent('storage', { key, newValue: null }));
+        return true;
+      }
+    } catch { /* ignore */ }
+    return false;
+  }
+
+  async function generateBrief(overrideModelId?: string, opts?: Record<string, string>) {
     if (!project?.teaching_principle) { setErr('Set a teaching principle in Overview first'); return; }
     setBusyFor('brief', true); setErr(null);
-    const { data, error } = await caseWriterApi.generateBrief(projectId, { model_id: overrideModelId });
+    const { data, error } = await caseWriterApi.generateBrief(projectId, {
+      model_id: overrideModelId,
+      log_this_prompt: opts?.log_this_prompt === '1'
+    });
     setBusyFor('brief', false);
     if (error || !data) { setErr(error?.message || 'Brief generation failed'); return; }
     setBriefDraft(data.markdown);
@@ -271,12 +291,14 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
       const r = await patchProject({ industries_preference: normalizedPref || null } as any);
       if (!r.ok) { setErr(r.message || 'Save industries failed'); return; }
     }
+    const logFlag = consumeLogFlag('case_writer.scenario_generation');
     setBusyFor('scenarios', true); setErr(null);
     const { data, error } = await caseWriterApi.generateScenarios(projectId, {
       model_id: overrideModelId,
       count,
       industry_preference: normalizedPref || undefined,
-      revision_hint: revisionHint
+      revision_hint: revisionHint,
+      log_this_prompt: logFlag
     });
     setBusyFor('scenarios', false);
     if (error || !data) { setErr(error?.message || 'Scenario generation failed'); return; }
@@ -289,7 +311,8 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     setBusyFor('blueprint', true); setErr(null);
     const { data, error } = await caseWriterApi.generateBlueprint(projectId, {
       model_id: overrideModelId,
-      revision_hint: opts?.revision_hint
+      revision_hint: opts?.revision_hint,
+      log_this_prompt: opts?.log_this_prompt === '1'
     });
     setBusyFor('blueprint', false);
     if (error || !data) { setErr(error?.message || 'Blueprint generation failed'); return; }
@@ -304,7 +327,8 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     const { data, error } = await caseWriterApi.generateStudentCase(projectId, {
       model_id: overrideModelId,
       length,
-      revision_hint: opts?.revision_hint
+      revision_hint: opts?.revision_hint,
+      log_this_prompt: opts?.log_this_prompt === '1'
     });
     setBusyFor('student', false);
     if (error || !data) { setErr(error?.message || 'Student case generation failed'); return; }
@@ -320,7 +344,8 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     const { data, error } = await caseWriterApi.generateTeachingNote(projectId, {
       model_id: overrideModelId,
       format,
-      revision_hint: opts?.revision_hint
+      revision_hint: opts?.revision_hint,
+      log_this_prompt: opts?.log_this_prompt === '1'
     });
     setBusyFor('teaching', false);
     if (error || !data) { setErr(error?.message || 'Teaching note generation failed'); return; }
@@ -346,9 +371,11 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
       setErr('Generate the student case and teaching note first');
       return;
     }
+    const logFlag = consumeLogFlag('case_writer.publish_field_extraction');
     setExtractingPublish(true); setErr(null);
     const { data, error } = await caseWriterApi.extractPublishFields(projectId, {
-      model_id: extractModelOverride || undefined
+      model_id: extractModelOverride || undefined,
+      log_this_prompt: logFlag
     });
     setExtractingPublish(false);
     if (error || !data) { setErr(error?.message || 'Extract failed'); return; }

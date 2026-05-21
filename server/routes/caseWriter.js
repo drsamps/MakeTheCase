@@ -10,6 +10,7 @@ import { verifyToken } from '../middleware/auth.js';
 import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
 import { getActivePrompt, renderPrompt } from '../services/promptService.js';
 import { generateOutlineWithLLM } from '../services/llmRouter.js';
+import { logCaseWriterPrompt } from '../services/promptLogger.js';
 import { getEffectiveInstructorId, buildVisibilityScope, canAccessResource, hasAdminVision } from '../services/resourceAccess.js';
 import { setVisibility } from '../services/visibilityWrites.js';
 import { markdownToDocxBuffer, markdownToPdfBuffer } from '../services/markdownExport.js';
@@ -93,6 +94,29 @@ function stripMarkdownFence(text) {
   const trimmed = text.trim();
   const fence = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i);
   return fence ? fence[1].trim() : trimmed;
+}
+
+// Optional per-Generate-call log. The admin opts in via a checkbox in the
+// PromptInfoButton modal ("Log this prompt with data"); the client sends
+// `log_this_prompt: true` in the body. We swallow logger errors so a logging
+// failure never breaks the Generate response.
+async function maybeLogCaseWriterPrompt(req, params) {
+  try {
+    if (req.body?.log_this_prompt !== true) return;
+    if (req.user?.role !== 'admin') return;
+    const projectId = req.params?.id || null;
+    let projectTitle = null;
+    try {
+      const [rows] = await pool.execute(
+        'SELECT title FROM case_writer_projects WHERE project_id = ?',
+        [projectId]
+      );
+      if (rows.length > 0) projectTitle = rows[0].title || null;
+    } catch { /* non-fatal */ }
+    await logCaseWriterPrompt({ projectId, projectTitle, ...params });
+  } catch (err) {
+    console.warn('[caseWriter] log this prompt failed:', err?.message);
+  }
 }
 
 async function recordRevision(projectId, step, snapshot, userId) {
@@ -1028,6 +1052,7 @@ router.post('/projects/:id/generate/brief', async (req, res) => {
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
+    const start = Date.now();
     const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
@@ -1037,6 +1062,15 @@ router.post('/projects/:id/generate/brief', async (req, res) => {
         reasoning_effort: model.reasoning_effort,
         maxTokens: 32000
       }
+    });
+    await maybeLogCaseWriterPrompt(req, {
+      step: 'teaching_brief',
+      promptUse: 'case_writer.teaching_brief',
+      modelId: model.model_id,
+      renderedPrompt,
+      response: text,
+      meta,
+      durationMs: Date.now() - start
     });
 
     const markdown = stripMarkdownFence(text);
@@ -1110,6 +1144,7 @@ router.post('/projects/:id/generate/scenarios', async (req, res) => {
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
+    const start = Date.now();
     const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
@@ -1119,6 +1154,15 @@ router.post('/projects/:id/generate/scenarios', async (req, res) => {
         reasoning_effort: model.reasoning_effort,
         maxTokens: 32000
       }
+    });
+    await maybeLogCaseWriterPrompt(req, {
+      step: 'scenarios',
+      promptUse: 'case_writer.scenario_generation',
+      modelId: model.model_id,
+      renderedPrompt,
+      response: text,
+      meta,
+      durationMs: Date.now() - start
     });
 
     let parsed;
@@ -1201,6 +1245,7 @@ router.post('/projects/:id/generate/blueprint', async (req, res) => {
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
+    const start = Date.now();
     const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
@@ -1210,6 +1255,15 @@ router.post('/projects/:id/generate/blueprint', async (req, res) => {
         reasoning_effort: model.reasoning_effort,
         maxTokens: 32000
       }
+    });
+    await maybeLogCaseWriterPrompt(req, {
+      step: 'blueprint',
+      promptUse: 'case_writer.case_blueprint',
+      modelId: model.model_id,
+      renderedPrompt,
+      response: text,
+      meta,
+      durationMs: Date.now() - start
     });
 
     const markdown = stripMarkdownFence(text);
@@ -1282,6 +1336,7 @@ router.post('/projects/:id/generate/student-case', async (req, res) => {
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
+    const start = Date.now();
     const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
@@ -1294,6 +1349,15 @@ router.post('/projects/:id/generate/student-case', async (req, res) => {
         // bug in V1).
         maxTokens: 32000
       }
+    });
+    await maybeLogCaseWriterPrompt(req, {
+      step: 'student_case',
+      promptUse: 'case_writer.student_case_draft',
+      modelId: model.model_id,
+      renderedPrompt,
+      response: text,
+      meta,
+      durationMs: Date.now() - start
     });
 
     const markdown = stripMarkdownFence(text);
@@ -1360,6 +1424,7 @@ router.post('/projects/:id/generate/teaching-note', async (req, res) => {
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
+    const start = Date.now();
     const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
@@ -1369,6 +1434,15 @@ router.post('/projects/:id/generate/teaching-note', async (req, res) => {
         reasoning_effort: model.reasoning_effort,
         maxTokens: 32000
       }
+    });
+    await maybeLogCaseWriterPrompt(req, {
+      step: 'teaching_note',
+      promptUse: 'case_writer.teaching_note',
+      modelId: model.model_id,
+      renderedPrompt,
+      response: text,
+      meta,
+      durationMs: Date.now() - start
     });
 
     const rawMarkdown = stripMarkdownFence(text);
@@ -1476,6 +1550,7 @@ router.post('/projects/:id/extract-publish-fields', async (req, res) => {
     });
 
     const model = await resolveModel(req.body?.model_id, project.default_model_id);
+    const start = Date.now();
     const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
@@ -1485,6 +1560,15 @@ router.post('/projects/:id/extract-publish-fields', async (req, res) => {
         reasoning_effort: model.reasoning_effort,
         maxTokens: 8000
       }
+    });
+    await maybeLogCaseWriterPrompt(req, {
+      step: 'publish_field_extraction',
+      promptUse: 'case_writer.publish_field_extraction',
+      modelId: model.model_id,
+      renderedPrompt,
+      response: text,
+      meta,
+      durationMs: Date.now() - start
     });
 
     let parsed;
