@@ -10,7 +10,7 @@ import { verifyToken } from '../middleware/auth.js';
 import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
 import { getActivePrompt, renderPrompt } from '../services/promptService.js';
 import { generateOutlineWithLLM } from '../services/llmRouter.js';
-import { getEffectiveInstructorId, buildVisibilityScope, canAccessResource } from '../services/resourceAccess.js';
+import { getEffectiveInstructorId, buildVisibilityScope, canAccessResource, hasAdminVision } from '../services/resourceAccess.js';
 import { setVisibility } from '../services/visibilityWrites.js';
 import { markdownToDocxBuffer, markdownToPdfBuffer } from '../services/markdownExport.js';
 import { convertFile } from '../services/fileConverter.js';
@@ -147,6 +147,7 @@ const PROJECT_COLUMNS = [
   'project_id', 'owner_id', 'owner_type', 'title', 'status',
   'visibility', 'created_by_type',
   'teaching_principle', 'audience', 'course_context', 'difficulty', 'case_type',
+  'industries_preference', 'industry',
   'learning_brief', 'scenario_options', 'selected_scenario', 'case_blueprint',
   'student_case', 'teaching_note',
   'publish_protagonist', 'publish_chat_question',
@@ -157,7 +158,8 @@ const PROJECT_COLUMNS = [
 
 const PATCHABLE_FIELDS = new Set([
   'title', 'status', 'teaching_principle', 'audience', 'course_context',
-  'difficulty', 'case_type', 'learning_brief', 'scenario_options',
+  'difficulty', 'case_type', 'industries_preference',
+  'learning_brief', 'scenario_options',
   'selected_scenario', 'case_blueprint', 'student_case', 'teaching_note',
   'publish_protagonist', 'publish_chat_question',
   'publish_arguments_for', 'publish_arguments_against',
@@ -187,11 +189,22 @@ function ownerScopeWhere(req) {
   return { sql: ' WHERE ' + scope.whereSql, params: scope.params };
 }
 
-async function loadProject(projectId, req) {
-  const access = await canAccessResource(req, 'case_writer_project', projectId, 'view');
+async function loadProject(projectId, req, action) {
+  // Infer action from the HTTP method when the caller doesn't pass one:
+  //   GET     -> 'view'   (read-only access is enough)
+  //   DELETE  -> 'delete' (owner-only)
+  //   POST/PATCH/PUT -> 'edit' (owner or team:edit)
+  // canAccessResource handles admin (no-impersonation) bypass internally.
+  if (!action) {
+    const m = (req.method || '').toUpperCase();
+    if (m === 'GET') action = 'view';
+    else if (m === 'DELETE') action = 'delete';
+    else action = 'edit';
+  }
+  const access = await canAccessResource(req, 'case_writer_project', projectId, action);
   if (!access.allowed) {
     if (access.reason === 'not_found') return { project: null, forbidden: false };
-    return { project: null, forbidden: true };
+    return { project: null, forbidden: true, reason: access.reason, ownerLabel: access.ownerLabel || null };
   }
   const [rows] = await pool.execute(
     `SELECT ${PROJECT_COLUMNS.join(', ')} FROM case_writer_projects WHERE project_id = ?`,
@@ -213,6 +226,33 @@ function asJson(value) {
   return value;
 }
 
+// The scenario_generation prompt emits structured fields per scenario but no
+// `markdown` body. The picker UI and the blueprint generator both consume
+// `card.markdown`, so we assemble a deterministic markdown rendering from the
+// structured fields here. If the LLM happens to return markdown, we keep it.
+function assembleScenarioMarkdown(s) {
+  if (!s || typeof s !== 'object') return '';
+  if (typeof s.markdown === 'string' && s.markdown.trim()) return s.markdown;
+  const lines = [];
+  if (s.protagonist) lines.push(`**Protagonist:** ${s.protagonist}`);
+  if (s.company_context) lines.push(`**Company context:** ${s.company_context}`);
+  if (s.central_tension) lines.push(`**Central tension:** ${s.central_tension}`);
+  if (s.decision_point) lines.push(`**Decision point:** ${s.decision_point}`);
+  if (Array.isArray(s.stakeholders) && s.stakeholders.length) {
+    lines.push('**Stakeholders:**');
+    for (const sh of s.stakeholders) lines.push(`- ${sh}`);
+  }
+  if (Array.isArray(s.possible_exhibits) && s.possible_exhibits.length) {
+    lines.push('**Possible exhibits:**');
+    for (const ex of s.possible_exhibits) lines.push(`- ${ex}`);
+  }
+  if (s.why_it_teaches_the_principle) {
+    lines.push(`**Why it teaches the principle:** ${s.why_it_teaches_the_principle}`);
+  }
+  if (s.estimated_difficulty) lines.push(`**Estimated difficulty:** ${s.estimated_difficulty}`);
+  return lines.join('\n\n');
+}
+
 // All Case Writer endpoints require an authenticated admin or instructor.
 router.use(verifyToken, requireAdminOrInstructor);
 
@@ -223,19 +263,58 @@ router.use(verifyToken, requireAdminOrInstructor);
 router.get('/projects', async (req, res) => {
   try {
     const { status } = req.query;
-    const scope = ownerScopeWhere(req);
+    // buildVisibilityScope() qualifies columns with `case_writer_projects.` —
+    // re-alias the table so its predicates still match after we add JOINs.
+    const scope = buildVisibilityScope(req, 'case_writer_project', 'case_writer_projects');
+    const adminVision = hasAdminVision(req);
+    const effectiveId = getEffectiveInstructorId(req);
+    // can_edit per row: admins always; otherwise owner OR team:edit share.
+    let canEditExpr;
+    const canEditParams = [];
+    if (adminVision) {
+      canEditExpr = '1';
+    } else if (!effectiveId) {
+      canEditExpr = '0';
+    } else {
+      canEditExpr = `
+        (CASE
+           WHEN case_writer_projects.owner_id = ? AND case_writer_projects.owner_type = 'instructor' THEN 1
+           WHEN EXISTS (
+             SELECT 1 FROM resource_team_shares rts
+             JOIN instructor_team_members itm ON itm.team_id = rts.team_id
+             WHERE rts.resource_type = 'case_writer_project'
+               AND rts.resource_id = case_writer_projects.project_id
+               AND itm.instructor_id = ?
+               AND rts.access_level = 'edit'
+           ) THEN 1
+           ELSE 0
+         END)`;
+      canEditParams.push(effectiveId, effectiveId);
+    }
     let sql =
-      `SELECT project_id, owner_id, owner_type, title, status, teaching_principle,
-              audience, course_context, difficulty, case_type, published_case_id,
-              default_model_id, created_at, updated_at
-       FROM case_writer_projects` + scope.sql;
-    const params = [...scope.params];
+      `SELECT case_writer_projects.project_id, case_writer_projects.owner_id, case_writer_projects.owner_type,
+              case_writer_projects.title, case_writer_projects.status, case_writer_projects.teaching_principle,
+              case_writer_projects.audience, case_writer_projects.course_context, case_writer_projects.difficulty,
+              case_writer_projects.case_type, case_writer_projects.industries_preference, case_writer_projects.industry,
+              case_writer_projects.published_case_id, case_writer_projects.default_model_id,
+              case_writer_projects.created_at, case_writer_projects.updated_at,
+              COALESCE(i.full_name, a.who, a.email, i.email) AS owner_name,
+              ${canEditExpr} AS can_edit
+       FROM case_writer_projects
+       LEFT JOIN instructors i
+         ON case_writer_projects.owner_type = 'instructor' AND case_writer_projects.owner_id = i.id
+       LEFT JOIN admins a
+         ON case_writer_projects.owner_type = 'admin' AND case_writer_projects.owner_id = a.id
+       WHERE ${scope.whereSql}`;
+    const params = [...canEditParams, ...scope.params];
     if (status) {
-      sql += scope.sql ? ' AND status = ?' : ' WHERE status = ?';
+      sql += ' AND case_writer_projects.status = ?';
       params.push(status);
     }
-    sql += ' ORDER BY updated_at DESC';
+    sql += ' ORDER BY case_writer_projects.updated_at DESC';
     const [rows] = await pool.execute(sql, params);
+    // Coerce can_edit from MySQL bit/int to a real boolean for the client.
+    for (const r of rows) r.can_edit = r.can_edit === 1 || r.can_edit === '1' || r.can_edit === true;
     ok(res, rows);
   } catch (err) {
     console.error('[caseWriter] list projects error:', err);
@@ -248,6 +327,36 @@ router.get('/projects/:id', async (req, res) => {
     const { project, forbidden } = await loadProject(req.params.id, req);
     if (forbidden) return fail(res, 403, 'Not authorized to access this project');
     if (!project) return fail(res, 404, 'Project not found');
+    // Backfill scenario markdown on read for projects generated before the
+    // assembleScenarioMarkdown enrichment was added. No DB write — just makes
+    // the UI's preview/edit and the blueprint route's selected.markdown lookup
+    // work for legacy rows.
+    try {
+      const opts = asJson(project.scenario_options);
+      if (Array.isArray(opts)) {
+        project.scenario_options = opts.map(sc => ({ ...sc, markdown: assembleScenarioMarkdown(sc) }));
+      }
+      const sel = asJson(project.selected_scenario);
+      if (sel && typeof sel === 'object') {
+        project.selected_scenario = { ...sel, markdown: assembleScenarioMarkdown(sel) };
+      }
+    } catch { /* non-fatal */ }
+    // Compute can_edit so the client can render read-only UI for non-owners.
+    const editAccess = await canAccessResource(req, 'case_writer_project', req.params.id, 'edit');
+    project.can_edit = editAccess.allowed;
+    project.owner_label = editAccess.ownerLabel || null;
+    // Resolve the owner's display name for the read-only banner.
+    if (!project.owner_label) {
+      try {
+        if (project.owner_type === 'instructor') {
+          const [r] = await pool.execute('SELECT full_name, email FROM instructors WHERE id = ? LIMIT 1', [project.owner_id]);
+          if (r[0]) project.owner_label = r[0].full_name || r[0].email || null;
+        } else if (project.owner_type === 'admin') {
+          const [r] = await pool.execute('SELECT email FROM admins WHERE id = ? LIMIT 1', [project.owner_id]);
+          if (r[0]) project.owner_label = r[0].email || null;
+        }
+      } catch { /* non-fatal */ }
+    }
     ok(res, project);
   } catch (err) {
     console.error('[caseWriter] get project error:', err);
@@ -299,6 +408,15 @@ router.patch('/projects/:id', async (req, res) => {
       } else {
         params.push(value);
       }
+      // When a scenario is selected, mirror its industry onto the project as
+      // case metadata for the home list. Clearing the scenario clears industry.
+      if (key === 'selected_scenario') {
+        sets.push('industry = ?');
+        const ind = (value && typeof value === 'object' && typeof value.industry === 'string')
+          ? value.industry.trim() || null
+          : null;
+        params.push(ind);
+      }
     }
     if (sets.length === 0) return fail(res, 400, 'No patchable fields provided');
 
@@ -342,12 +460,95 @@ router.patch('/projects/:id/visibility', async (req, res) => {
 router.delete('/projects/:id', async (req, res) => {
   try {
     const { project, forbidden } = await loadProject(req.params.id, req);
-    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (forbidden) return fail(res, 403, 'Not authorized to delete this project');
     if (!project) return fail(res, 404, 'Project not found');
     await pool.execute('DELETE FROM case_writer_projects WHERE project_id = ?', [req.params.id]);
     ok(res, { project_id: req.params.id, deleted: true });
   } catch (err) {
     console.error('[caseWriter] delete project error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
+// POST /api/case-writer/projects/:id/clone — Duplicate a project into the
+// caller's account. Requires only 'view' access to the source. The clone is
+// always private, owned by the caller, status='draft', published_case_id NULL.
+// Approved references are copied too so the new project has the same source
+// material starting point.
+router.post('/projects/:id/clone', async (req, res) => {
+  // Source-project access: 'view' is enough — anyone who can see it can clone.
+  try {
+    const sourceId = req.params.id;
+    const access = await canAccessResource(req, 'case_writer_project', sourceId, 'view');
+    if (!access.allowed) {
+      return fail(res, access.reason === 'not_found' ? 404 : 403, 'Not authorized to clone this project');
+    }
+    const [srcRows] = await pool.execute(
+      `SELECT ${PROJECT_COLUMNS.join(', ')} FROM case_writer_projects WHERE project_id = ?`,
+      [sourceId]
+    );
+    if (srcRows.length === 0) return fail(res, 404, 'Project not found');
+    const src = srcRows[0];
+
+    const newId = uuidv4();
+    const newTitle = `Copy of ${src.title || 'Untitled'}`;
+    await pool.execute(
+      `INSERT INTO case_writer_projects (
+         project_id, owner_id, owner_type, title, status, visibility,
+         teaching_principle, audience, course_context, difficulty, case_type,
+         industries_preference, industry,
+         learning_brief, scenario_options, selected_scenario,
+         case_blueprint, student_case, teaching_note,
+         publish_protagonist, publish_chat_question,
+         publish_arguments_for, publish_arguments_against,
+         default_model_id
+       ) VALUES (?, ?, ?, ?, 'draft', 'private',
+                 ?, ?, ?, ?, ?,
+                 ?, ?,
+                 ?, ?, ?,
+                 ?, ?, ?,
+                 ?, ?,
+                 ?, ?,
+                 ?)`,
+      [
+        newId, req.user.id, req.user.role, newTitle,
+        src.teaching_principle, src.audience, src.course_context, src.difficulty, src.case_type,
+        src.industries_preference, src.industry,
+        src.learning_brief, src.scenario_options, src.selected_scenario,
+        src.case_blueprint, src.student_case, src.teaching_note,
+        src.publish_protagonist, src.publish_chat_question,
+        src.publish_arguments_for, src.publish_arguments_against,
+        src.default_model_id
+      ]
+    );
+
+    // Copy references (with new ids) so the source materials carry over.
+    const [refRows] = await pool.execute(
+      `SELECT type, title, content, content_summary, approved_by_user,
+              source_notes, link_url, case_file_id
+       FROM case_writer_references WHERE project_id = ?`,
+      [sourceId]
+    );
+    for (const r of refRows) {
+      await pool.execute(
+        `INSERT INTO case_writer_references
+           (reference_id, project_id, type, title, content, content_summary,
+            approved_by_user, source_notes, link_url, case_file_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          uuidv4(), newId, r.type, r.title, r.content, r.content_summary,
+          r.approved_by_user, r.source_notes, r.link_url, r.case_file_id
+        ]
+      );
+    }
+
+    const [newRows] = await pool.execute(
+      `SELECT ${PROJECT_COLUMNS.join(', ')} FROM case_writer_projects WHERE project_id = ?`,
+      [newId]
+    );
+    ok(res, newRows[0]);
+  } catch (err) {
+    console.error('[caseWriter] clone project error:', err);
     fail(res, 500, err.message);
   }
 });
@@ -883,12 +1084,20 @@ router.post('/projects/:id/generate/scenarios', async (req, res) => {
     } = req.body || {};
 
     let count = Number.parseInt(requestedCount, 10);
-    if (!Number.isFinite(count)) count = 4;
+    if (!Number.isFinite(count)) count = 3;
     count = Math.max(1, Math.min(5, count));
 
     if (project.scenario_options) {
       await recordRevision(req.params.id, 'scenarios', asJson(project.scenario_options), req.user.id);
     }
+
+    // Fall back to the project's persisted industries_preference if the
+    // request didn't include one. This lets the value the instructor typed
+    // in the Scenarios pane survive page reloads.
+    const effectiveIndustryPref =
+      (typeof industry_preference === 'string' && industry_preference.trim())
+        ? industry_preference
+        : (project.industries_preference || '');
 
     const sourceMaterials = await loadSourceMaterials(req.params.id);
     const activePrompt = await getActivePrompt('case_writer.scenario_generation');
@@ -896,7 +1105,7 @@ router.post('/projects/:id/generate/scenarios', async (req, res) => {
       learning_brief: (project.learning_brief || ''),
       source_materials: sourceMaterials,
       count: String(count),
-      industry_preference: industry_preference || '',
+      industry_preference: effectiveIndustryPref,
       revision_hint: revision_hint || ''
     });
 
@@ -925,20 +1134,25 @@ router.post('/projects/:id/generate/scenarios', async (req, res) => {
       return fail(res, 502, 'LLM response missing scenarios array');
     }
 
+    const enriched = scenarios.map(sc => ({
+      ...sc,
+      markdown: assembleScenarioMarkdown(sc)
+    }));
+
     await pool.execute(
       'UPDATE case_writer_projects SET scenario_options = ? WHERE project_id = ?',
-      [JSON.stringify(scenarios), req.params.id]
+      [JSON.stringify(enriched), req.params.id]
     );
 
     ok(res, {
-      scenarios,
+      scenarios: enriched,
       meta: {
         model_id: model.model_id,
         vendor: model.vendor,
         prompt_version: activePrompt.version,
         provider: meta?.provider || null,
         requested_count: count,
-        returned_count: scenarios.length
+        returned_count: enriched.length
       }
     });
   } catch (err) {

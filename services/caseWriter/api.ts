@@ -46,6 +46,7 @@ export interface CaseWriterProjectSummary {
   project_id: string;
   owner_id: string;
   owner_type: 'admin' | 'instructor';
+  owner_name?: string | null;
   title: string | null;
   status: CaseWriterStatus;
   visibility?: 'private' | 'team' | 'public';
@@ -55,10 +56,14 @@ export interface CaseWriterProjectSummary {
   course_context: string | null;
   difficulty: string | null;
   case_type: string | null;
+  industries_preference?: string | null;
+  industry?: string | null;
   published_case_id: string | null;
   default_model_id: string | null;
   created_at: string;
   updated_at: string;
+  can_edit?: boolean;
+  owner_label?: string | null;
 }
 
 export interface ScenarioCard {
@@ -178,6 +183,9 @@ export const caseWriterApi = {
 
   deleteProject: (id: string) =>
     req<{ project_id: string; deleted: true }>(`/projects/${id}`, { method: 'DELETE' }),
+
+  cloneProject: (id: string) =>
+    req<CaseWriterProject>(`/projects/${id}/clone`, { method: 'POST' }),
 
   // -------------------------- Generation --------------------------
 

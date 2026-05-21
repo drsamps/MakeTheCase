@@ -27,10 +27,14 @@ interface Props {
   onTeamSharesChange: (shares: TeamShare[]) => void;
   canPublish: boolean;
   className?: string;
+  /** Use text-lg section title (e.g. Case Writer Overview) instead of a field label. */
+  sectionHeading?: boolean;
+  /** Rendered on the same row as the Private / Team / Public radios (e.g. Save visibility). */
+  radioTrailing?: React.ReactNode;
 }
 
 const VisibilityPicker: React.FC<Props> = ({
-  value, onChange, teamShares, onTeamSharesChange, canPublish, className
+  value, onChange, teamShares, onTeamSharesChange, canPublish, className, sectionHeading, radioTrailing
 }) => {
   const [teams, setTeams] = useState<TeamRow[]>([]);
 
@@ -53,8 +57,12 @@ const VisibilityPicker: React.FC<Props> = ({
 
   return (
     <div className={className}>
-      <label className="block text-sm font-medium text-gray-700 mb-1">Visibility</label>
-      <div className="flex gap-3 text-sm">
+      {sectionHeading ? (
+        <h2 className="text-lg font-semibold text-gray-900 mb-1">Visibility</h2>
+      ) : (
+        <label className="block text-sm font-medium text-gray-700 mb-1">Visibility</label>
+      )}
+      <div className="flex flex-wrap items-center gap-3 text-sm">
         <label className="flex items-center gap-1.5">
           <input
             type="radio"
@@ -81,6 +89,7 @@ const VisibilityPicker: React.FC<Props> = ({
             Public
           </label>
         )}
+        {radioTrailing}
       </div>
 
       {value === 'team' && (

@@ -13,6 +13,7 @@ import VisibilityPicker, { Visibility, TeamShare } from '../ui/VisibilityPicker'
 import ErrorBanner from './ErrorBanner';
 import StepRail, { RailItem, RailStatus } from './StepRail';
 import MarkdownStepEditor from './MarkdownStepEditor';
+import MarkdownPreview from './MarkdownPreview';
 import ScenariosList from './ScenariosList';
 import SourceMaterial from './SourceMaterial';
 import CaseVersionsPanel from './CaseVersionsPanel';
@@ -45,7 +46,7 @@ const PANE_LABELS: Record<PaneKey, string> = {
   source: 'Source Material',
   brief: '1. Learning Brief',
   scenarios: '2. Scenarios',
-  blueprint: '3. Blueprint',
+  blueprint: '3. Case Blueprint',
   student: '4. Student Case',
   teaching: '5. Teaching Note',
   publish: 'Publish',
@@ -82,6 +83,7 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
 
   const [titleDraft, setTitleDraft] = useState('');
   const [principleDraft, setPrincipleDraft] = useState('');
+  const [industriesPreferenceDraft, setIndustriesPreferenceDraft] = useState('');
   const [audienceDraft, setAudienceDraft] = useState('');
   const [courseContextDraft, setCourseContextDraft] = useState('');
   const [difficultyDraft, setDifficultyDraft] = useState('');
@@ -122,6 +124,7 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     setScenariosDraft(Array.isArray(data.scenario_options) ? data.scenario_options : []);
     setTitleDraft(data.title || '');
     setPrincipleDraft(data.teaching_principle || '');
+    setIndustriesPreferenceDraft(data.industries_preference || '');
     setAudienceDraft(data.audience || '');
     setCourseContextDraft(data.course_context || '');
     setDifficultyDraft(data.difficulty || '');
@@ -227,7 +230,7 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     { key: 'd1', label: '', divider: true },
     { key: 'brief', label: '1. Learning Brief', status: railStatusFor('brief') },
     { key: 'scenarios', label: '2. Scenarios', status: railStatusFor('scenarios') },
-    { key: 'blueprint', label: '3. Blueprint', status: railStatusFor('blueprint') },
+    { key: 'blueprint', label: '3. Case Blueprint', status: railStatusFor('blueprint') },
     { key: 'student', label: '4. Student Case', status: railStatusFor('student') },
     { key: 'teaching', label: '5. Teaching Note', status: railStatusFor('teaching') },
     { key: 'd2', label: '', divider: true },
@@ -256,20 +259,38 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     await reload();
   }
 
-  async function generateScenarios(overrideModelId?: string, count?: number) {
+  async function generateScenarios(
+    overrideModelId?: string,
+    count?: number,
+    industriesPreference?: string,
+    revisionHint?: string
+  ) {
     if (!project?.learning_brief) { setErr('Generate the learning brief first'); return; }
+    const normalizedPref = industriesPreference?.trim() || '';
+    if (normalizedPref !== (project.industries_preference || '')) {
+      const r = await patchProject({ industries_preference: normalizedPref || null } as any);
+      if (!r.ok) { setErr(r.message || 'Save industries failed'); return; }
+    }
     setBusyFor('scenarios', true); setErr(null);
-    const { data, error } = await caseWriterApi.generateScenarios(projectId, { model_id: overrideModelId, count });
+    const { data, error } = await caseWriterApi.generateScenarios(projectId, {
+      model_id: overrideModelId,
+      count,
+      industry_preference: normalizedPref || undefined,
+      revision_hint: revisionHint
+    });
     setBusyFor('scenarios', false);
     if (error || !data) { setErr(error?.message || 'Scenario generation failed'); return; }
     setScenariosDraft(data.scenarios);
     await reload();
   }
 
-  async function generateBlueprint(overrideModelId?: string) {
+  async function generateBlueprint(overrideModelId?: string, opts?: Record<string, string>) {
     if (!project?.selected_scenario) { setErr('Select a scenario first'); return; }
     setBusyFor('blueprint', true); setErr(null);
-    const { data, error } = await caseWriterApi.generateBlueprint(projectId, { model_id: overrideModelId });
+    const { data, error } = await caseWriterApi.generateBlueprint(projectId, {
+      model_id: overrideModelId,
+      revision_hint: opts?.revision_hint
+    });
     setBusyFor('blueprint', false);
     if (error || !data) { setErr(error?.message || 'Blueprint generation failed'); return; }
     setBlueprintDraft(data.markdown);
@@ -280,7 +301,11 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     if (!project?.case_blueprint) { setErr('Generate the blueprint first'); return; }
     const length = (opts?.length as CaseSize | undefined) || 'regular';
     setBusyFor('student', true); setErr(null);
-    const { data, error } = await caseWriterApi.generateStudentCase(projectId, { model_id: overrideModelId, length });
+    const { data, error } = await caseWriterApi.generateStudentCase(projectId, {
+      model_id: overrideModelId,
+      length,
+      revision_hint: opts?.revision_hint
+    });
     setBusyFor('student', false);
     if (error || !data) { setErr(error?.message || 'Student case generation failed'); return; }
     setStudentDraft(data.markdown);
@@ -292,7 +317,11 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     if (!project?.student_case) { setErr('Generate the student case first'); return; }
     const format = (opts?.format as 'brief' | 'standard' | 'detailed' | undefined) || 'standard';
     setBusyFor('teaching', true); setErr(null);
-    const { data, error } = await caseWriterApi.generateTeachingNote(projectId, { model_id: overrideModelId, format });
+    const { data, error } = await caseWriterApi.generateTeachingNote(projectId, {
+      model_id: overrideModelId,
+      format,
+      revision_hint: opts?.revision_hint
+    });
     setBusyFor('teaching', false);
     if (error || !data) { setErr(error?.message || 'Teaching note generation failed'); return; }
     setTeachingDraft(data.markdown);
@@ -380,6 +409,108 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     </div>
   );
 
+  // Non-owners see a single scrollable read-only document with a Clone banner.
+  // Cloning produces a private, editable copy owned by the current user.
+  if (project.can_edit === false) {
+    const ownerName = (project as any).owner_label || 'another instructor';
+    const selectedScenarioMd = project.selected_scenario
+      ? `## ${project.selected_scenario.title || 'Selected scenario'}\n\n*${project.selected_scenario.industry || ''}*\n\n${project.selected_scenario.markdown || ''}`
+      : '';
+    async function doClone() {
+      const { data, error } = await caseWriterApi.cloneProject(projectId);
+      if (error || !data) { setErr(error?.message || 'Clone failed'); return; }
+      alert(`Created "${data.title || 'Untitled'}" — find it in your project list.`);
+      onBack();
+    }
+    return (
+      <div>
+        <div className="px-6 py-3 border-b border-gray-200 bg-white flex items-center gap-4">
+          <button onClick={onBack} className="text-sm text-blue-600 hover:underline">← Projects</button>
+          <h2 className="text-lg font-semibold text-gray-900 flex-1 truncate">
+            {project.title || 'Untitled project'}
+            {project.teaching_principle && (
+              <span className="ml-2 text-sm font-normal text-gray-500">— {project.teaching_principle}</span>
+            )}
+          </h2>
+          <span className="text-xs text-gray-500">{project.status}</span>
+        </div>
+        <div className="max-w-4xl mx-auto p-6 space-y-6">
+          <ErrorBanner message={err} onDismiss={() => setErr(null)} />
+          {publishedBanner}
+          <div className="bg-amber-50 border border-amber-300 rounded-md p-4 flex items-start justify-between gap-4">
+            <div className="text-sm text-amber-900">
+              <div className="font-semibold">Read-only view</div>
+              <div>This project is owned by {ownerName}. Clone it to make a private copy you can edit.</div>
+            </div>
+            <button
+              onClick={doClone}
+              className="px-3 py-1.5 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-md whitespace-nowrap"
+            >
+              Clone to edit
+            </button>
+          </div>
+
+          <section>
+            <h3 className="text-xs uppercase tracking-wide text-gray-500 mb-1">Overview</h3>
+            <div className="bg-white border border-gray-200 rounded-md p-4 text-sm text-gray-800 space-y-1">
+              <div><strong>Teaching principle:</strong> {project.teaching_principle || '—'}</div>
+              <div><strong>Audience:</strong> {project.audience || '—'}</div>
+              <div><strong>Course context:</strong> {project.course_context || '—'}</div>
+              <div><strong>Difficulty:</strong> {project.difficulty || '—'}</div>
+              <div><strong>Case type:</strong> {project.case_type || '—'}</div>
+              <div><strong>Industry:</strong> {project.industry || '—'}</div>
+            </div>
+          </section>
+
+          {coerceMarkdown(project.learning_brief) && (
+            <section>
+              <h3 className="text-xs uppercase tracking-wide text-gray-500 mb-1">1. Learning Brief</h3>
+              <div className="bg-white border border-gray-200 rounded-md p-4">
+                <MarkdownPreview markdown={coerceMarkdown(project.learning_brief)} />
+              </div>
+            </section>
+          )}
+
+          {selectedScenarioMd && (
+            <section>
+              <h3 className="text-xs uppercase tracking-wide text-gray-500 mb-1">2. Selected Scenario</h3>
+              <div className="bg-white border border-gray-200 rounded-md p-4">
+                <MarkdownPreview markdown={selectedScenarioMd} />
+              </div>
+            </section>
+          )}
+
+          {coerceMarkdown(project.case_blueprint) && (
+            <section>
+              <h3 className="text-xs uppercase tracking-wide text-gray-500 mb-1">3. Case Blueprint</h3>
+              <div className="bg-white border border-gray-200 rounded-md p-4">
+                <MarkdownPreview markdown={coerceMarkdown(project.case_blueprint)} />
+              </div>
+            </section>
+          )}
+
+          {coerceMarkdown(project.student_case) && (
+            <section>
+              <h3 className="text-xs uppercase tracking-wide text-gray-500 mb-1">4. Student Case</h3>
+              <div className="bg-white border border-gray-200 rounded-md p-4">
+                <MarkdownPreview markdown={coerceMarkdown(project.student_case)} />
+              </div>
+            </section>
+          )}
+
+          {coerceMarkdown(project.teaching_note) && (
+            <section>
+              <h3 className="text-xs uppercase tracking-wide text-gray-500 mb-1">5. Teaching Note</h3>
+              <div className="bg-white border border-gray-200 rounded-md p-4">
+                <MarkdownPreview markdown={coerceMarkdown(project.teaching_note)} />
+              </div>
+            </section>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div>
       <div className="px-6 py-3 border-b border-gray-200 bg-white flex items-center gap-4">
@@ -432,10 +563,24 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
                 <h2 className="text-lg font-semibold text-gray-900">Overview</h2>
                 <p className="text-sm text-gray-600 mt-1">{STEP_DESCRIPTIONS.overview}</p>
               </div>
-              <Field label="Title">
+              <Field
+                label={
+                  <>
+                    Title{' '}
+                    <span className="font-normal text-gray-500">(arbitrary — does not influence case development)</span>
+                  </>
+                }
+              >
                 <input type="text" value={titleDraft} onChange={e => setTitleDraft(e.target.value)} className="cw-input" />
               </Field>
-              <Field label="Teaching principle">
+              <Field
+                label={
+                  <>
+                    Teaching principle{' '}
+                    <span className="font-normal text-gray-500">(what the case will generally be about, which you can hone in the next step)</span>
+                  </>
+                }
+              >
                 <textarea
                   value={principleDraft}
                   onChange={e => setPrincipleDraft(e.target.value)}
@@ -478,43 +623,6 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
                   </select>
                 </Field>
               </div>
-              <div className="border-t pt-4">
-                <VisibilityPicker
-                  value={visibilityDraft}
-                  onChange={setVisibilityDraft}
-                  teamShares={teamSharesDraft}
-                  onTeamSharesChange={setTeamSharesDraft}
-                  canPublish={isAdmin || Boolean((user as any)?.can_publish)}
-                />
-                <div className="mt-3">
-                  <button
-                    type="button"
-                    disabled={savingVisibility || (visibilityDraft === (project?.visibility || 'private') && teamSharesDraft.length === 0)}
-                    onClick={async () => {
-                      setSavingVisibility(true);
-                      try {
-                        const token = localStorage.getItem('admin_auth_token');
-                        const res = await fetch(`${getApiBaseUrl()}/case-writer/projects/${projectId}/visibility`, {
-                          method: 'PATCH',
-                          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-                          body: JSON.stringify({ visibility: visibilityDraft, team_ids: teamSharesDraft })
-                        });
-                        if (!res.ok) {
-                          const j = await res.json().catch(() => ({}));
-                          setErr(j?.error?.message || 'Failed to set visibility');
-                        } else {
-                          await reload();
-                        }
-                      } finally {
-                        setSavingVisibility(false);
-                      }
-                    }}
-                    className="px-3 py-1.5 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                  >
-                    {savingVisibility ? 'Saving…' : 'Save visibility'}
-                  </button>
-                </div>
-              </div>
               <div>
                 <button
                   type="button"
@@ -537,6 +645,44 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
                 >
                   {overviewDirty ? 'Save' : 'Saved'}
                 </button>
+              </div>
+              <div className="border-t pt-4">
+                <VisibilityPicker
+                  sectionHeading
+                  value={visibilityDraft}
+                  onChange={setVisibilityDraft}
+                  teamShares={teamSharesDraft}
+                  onTeamSharesChange={setTeamSharesDraft}
+                  canPublish={isAdmin || Boolean((user as any)?.can_publish)}
+                  radioTrailing={
+                    <button
+                      type="button"
+                      disabled={savingVisibility || (visibilityDraft === (project?.visibility || 'private') && teamSharesDraft.length === 0)}
+                      onClick={async () => {
+                        setSavingVisibility(true);
+                        try {
+                          const token = localStorage.getItem('admin_auth_token');
+                          const res = await fetch(`${getApiBaseUrl()}/case-writer/projects/${projectId}/visibility`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                            body: JSON.stringify({ visibility: visibilityDraft, team_ids: teamSharesDraft })
+                          });
+                          if (!res.ok) {
+                            const j = await res.json().catch(() => ({}));
+                            setErr(j?.error?.message || 'Failed to set visibility');
+                          } else {
+                            await reload();
+                          }
+                        } finally {
+                          setSavingVisibility(false);
+                        }
+                      }}
+                      className="px-3 py-1.5 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {savingVisibility ? 'Saving…' : 'Save visibility'}
+                    </button>
+                  }
+                />
               </div>
             </div>
           )}
@@ -604,13 +750,15 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
                 projectDefaultModelId={project.default_model_id}
                 dirty={scenariosDirty}
                 isAdmin={isAdmin}
+                industriesPreference={industriesPreferenceDraft}
+                onIndustriesPreferenceChange={setIndustriesPreferenceDraft}
               />
             </div>
           )}
 
           {activePane === 'blueprint' && (
             <MarkdownStepEditor
-              label="3. Blueprint"
+              label="3. Case Blueprint"
               description={STEP_DESCRIPTIONS.blueprint}
               loadedValue={coerceMarkdown(project.case_blueprint)}
               currentValue={blueprintDraft}
@@ -872,7 +1020,7 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
 };
 
 interface FieldProps {
-  label: string;
+  label: React.ReactNode;
   children: React.ReactNode;
 }
 const Field: React.FC<FieldProps> = ({ label, children }) => (

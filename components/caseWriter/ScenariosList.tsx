@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import MarkdownPreview from './MarkdownPreview';
 import { ScenarioCard } from '../../services/caseWriter/api';
 import { useGenerationTimer } from './useGenerationTimer';
@@ -15,13 +15,20 @@ interface Props {
   onScenariosChange: (next: ScenarioCard[]) => void;
   onSelectScenario: (card: ScenarioCard) => Promise<{ ok: boolean; message?: string }>;
   onSaveScenarios: () => Promise<{ ok: boolean; message?: string }>;
-  onGenerate: (overrideModelId?: string, count?: number) => Promise<void>;
+  onGenerate: (
+    overrideModelId?: string,
+    count?: number,
+    industriesPreference?: string,
+    revisionHint?: string
+  ) => Promise<void>;
   generating: boolean;
   generateDisabledReason: string | null;
   models?: ModelOption[];
   projectDefaultModelId?: string | null;
   dirty: boolean;
   isAdmin?: boolean;
+  industriesPreference: string;
+  onIndustriesPreferenceChange: (value: string) => void;
 }
 
 const ScenariosList: React.FC<Props> = ({
@@ -36,15 +43,29 @@ const ScenariosList: React.FC<Props> = ({
   models = [],
   projectDefaultModelId = null,
   dirty,
-  isAdmin = false
+  isAdmin = false,
+  industriesPreference,
+  onIndustriesPreferenceChange
 }) => {
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(0);
   const [overrideModelId, setOverrideModelId] = useState<string>('');
   const [showModelPicker, setShowModelPicker] = useState(false);
-  const [count, setCount] = useState<number>(4);
+  const [count, setCount] = useState<number>(3);
   const [savingIdx, setSavingIdx] = useState<number | null>(null);
+  const [hintOpen, setHintOpen] = useState(false);
+  const [hintText, setHintText] = useState('');
+  const [selectedExpanded, setSelectedExpanded] = useState(true);
+  const [selectedEditing, setSelectedEditing] = useState(false);
+  const [selectedDraft, setSelectedDraft] = useState<ScenarioCard | null>(selectedScenario);
+  const [selectedSaving, setSelectedSaving] = useState(false);
   const timerText = useGenerationTimer(generating);
+
+  // Hydrate the editable draft whenever the persisted selection changes (e.g.
+  // a different scenario is picked, or the project is reloaded).
+  useEffect(() => {
+    if (!selectedEditing) setSelectedDraft(selectedScenario);
+  }, [selectedScenario, selectedEditing]);
 
   const generateLabel = generating ? `Generating… ${timerText}` : 'Generate scenarios';
   const generateClasses = generating
@@ -63,11 +84,30 @@ const ScenariosList: React.FC<Props> = ({
 
   return (
     <div className="space-y-4">
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Industries (optional):
+        </label>
+        <input
+          type="text"
+          value={industriesPreference}
+          onChange={(e) => onIndustriesPreferenceChange(e.target.value)}
+          placeholder="optionally specify one or more industries for the scenarios"
+          className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm"
+        />
+      </div>
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           disabled={generating || !!generateDisabledReason}
-          onClick={() => onGenerate(overrideModelId || undefined, count)}
+          onClick={() =>
+            onGenerate(
+              overrideModelId || undefined,
+              count,
+              industriesPreference.trim() || undefined,
+              hintText.trim() || undefined
+            )
+          }
           title={generateDisabledReason || ''}
           className={`px-4 py-2 text-sm font-semibold rounded-md disabled:opacity-50 disabled:cursor-not-allowed ${generateClasses}`}
         >
@@ -80,7 +120,7 @@ const ScenariosList: React.FC<Props> = ({
             min={1}
             max={5}
             value={count}
-            onChange={(e) => setCount(Math.max(1, Math.min(5, Number(e.target.value) || 4)))}
+            onChange={(e) => setCount(Math.max(1, Math.min(5, Number(e.target.value) || 3)))}
             className="ml-1 w-14 px-1 py-0.5 border border-gray-300 rounded text-sm"
           />
         </label>
@@ -106,6 +146,14 @@ const ScenariosList: React.FC<Props> = ({
         <PromptInfoButton use="case_writer.scenario_generation" isAdmin={isAdmin} />
         <button
           type="button"
+          onClick={() => setHintOpen(o => !o)}
+          title="click to provide a hint for AI generation"
+          className="text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50"
+        >
+          💡 Hint{hintText.trim() ? ' •' : ''}
+        </button>
+        <button
+          type="button"
           disabled={!dirty}
           onClick={onSaveScenarios}
           className={`px-3 py-1.5 text-sm font-semibold rounded-md disabled:opacity-50 ${
@@ -116,12 +164,112 @@ const ScenariosList: React.FC<Props> = ({
         </button>
       </div>
 
+      {hintOpen && (
+        <div className="border border-amber-200 bg-amber-50 rounded-md p-3 space-y-2">
+          <div className="text-sm font-semibold text-amber-900">
+            Provide the AI model with hints for Generating this output
+          </div>
+          <textarea
+            value={hintText}
+            onChange={(e) => setHintText(e.target.value)}
+            placeholder="Use or nonuse of technical language, gender of protagonist, etc. Note that hints can also be added to the Learning Brief or Case Blueprint."
+            className="w-full min-h-[80px] p-2 text-sm border border-amber-300 rounded bg-white resize-y"
+          />
+        </div>
+      )}
+
       {selectedScenario && (
-        <div className="border-2 border-green-300 bg-green-50 rounded-md p-3">
-          <div className="text-xs font-semibold text-green-700 uppercase mb-1">Selected scenario</div>
-          <div className="text-base font-semibold text-gray-900">{selectedScenario.title}</div>
-          <div className="text-xs text-gray-600">{selectedScenario.industry}</div>
-          <MarkdownPreview markdown={selectedScenario.markdown || ''} className="mt-2" />
+        <div className="border-2 border-green-300 bg-green-50 rounded-md">
+          <div
+            className="flex items-start justify-between gap-2 p-3 cursor-pointer hover:bg-green-100/40"
+            onClick={() => setSelectedExpanded(e => !e)}
+          >
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-semibold text-green-700 uppercase mb-1">Selected scenario</div>
+              <div className="flex items-center gap-2">
+                <span className="text-gray-400 text-xs">{selectedExpanded ? '▼' : '▶'}</span>
+                <div className="text-base font-semibold text-gray-900">
+                  {(selectedEditing ? selectedDraft?.title : selectedScenario.title) || ''}
+                </div>
+              </div>
+              <div className="text-xs text-gray-600 ml-5">
+                {(selectedEditing ? selectedDraft?.industry : selectedScenario.industry) || ''}
+              </div>
+            </div>
+            <div className="flex items-center gap-1 flex-shrink-0" onClick={e => e.stopPropagation()}>
+              {selectedEditing ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={selectedSaving}
+                    onClick={async () => {
+                      if (!selectedDraft) return;
+                      setSelectedSaving(true);
+                      try {
+                        const r = await onSelectScenario(selectedDraft);
+                        if (r.ok) setSelectedEditing(false);
+                      } finally {
+                        setSelectedSaving(false);
+                      }
+                    }}
+                    className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
+                  >
+                    {selectedSaving ? 'Saving…' : 'Save'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={selectedSaving}
+                    onClick={() => {
+                      setSelectedDraft(selectedScenario);
+                      setSelectedEditing(false);
+                    }}
+                    className="text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedDraft(selectedScenario);
+                    setSelectedEditing(true);
+                    setSelectedExpanded(true);
+                  }}
+                  className="text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+          </div>
+          {selectedExpanded && (
+            <div className="border-t border-green-200 p-3 bg-white">
+              {selectedEditing && selectedDraft ? (
+                <div className="space-y-2">
+                  <input
+                    value={selectedDraft.title}
+                    onChange={(e) => setSelectedDraft({ ...selectedDraft, title: e.target.value })}
+                    placeholder="Title"
+                    className="w-full px-2 py-1 border border-gray-300 rounded text-sm font-semibold"
+                  />
+                  <input
+                    value={selectedDraft.industry}
+                    onChange={(e) => setSelectedDraft({ ...selectedDraft, industry: e.target.value })}
+                    placeholder="Industry"
+                    className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                  />
+                  <textarea
+                    value={selectedDraft.markdown || ''}
+                    onChange={(e) => setSelectedDraft({ ...selectedDraft, markdown: e.target.value })}
+                    className="w-full min-h-[240px] p-2 font-mono text-sm border border-gray-300 rounded"
+                  />
+                </div>
+              ) : (
+                <MarkdownPreview markdown={selectedScenario.markdown || ''} />
+              )}
+            </div>
+          )}
         </div>
       )}
 

@@ -1,5 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { caseWriterApi, CaseWriterProjectSummary, PrincipleCandidate } from '../../services/caseWriter/api';
+
+type SortKey = 'title' | 'teaching_principle' | 'industry' | 'owner_name' | 'status' | 'updated_at';
+type SortDir = 'asc' | 'desc';
 
 interface Props {
   onOpenProject: (projectId: string) => void;
@@ -25,6 +28,10 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject }) => {
   const [suggestText, setSuggestText] = useState('');
   const [suggesting, setSuggesting] = useState(false);
   const [suggestions, setSuggestions] = useState<PrincipleCandidate[]>([]);
+  const [searchText, setSearchText] = useState('');
+  const [ownerFilter, setOwnerFilter] = useState('');
+  const [sortKey, setSortKey] = useState<SortKey>('updated_at');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
   const reload = async () => {
     setLoading(true);
@@ -53,6 +60,55 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject }) => {
     onOpenProject(data.project_id);
   };
 
+  const distinctOwners = useMemo(() => {
+    const set = new Set<string>();
+    projects.forEach(p => { if (p.owner_name) set.add(p.owner_name); });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [projects]);
+
+  const filteredSortedProjects = useMemo(() => {
+    const q = searchText.trim().toLowerCase();
+    let out = projects.filter(p => {
+      if (ownerFilter && (p.owner_name || '') !== ownerFilter) return false;
+      if (q) {
+        const t = (p.title || '').toLowerCase();
+        const tp = (p.teaching_principle || '').toLowerCase();
+        if (!t.includes(q) && !tp.includes(q)) return false;
+      }
+      return true;
+    });
+    const dir = sortDir === 'asc' ? 1 : -1;
+    out = [...out].sort((a, b) => {
+      let va: any;
+      let vb: any;
+      if (sortKey === 'updated_at') {
+        va = new Date(a.updated_at).getTime();
+        vb = new Date(b.updated_at).getTime();
+      } else {
+        va = (a[sortKey] || '').toString().toLowerCase();
+        vb = (b[sortKey] || '').toString().toLowerCase();
+      }
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    });
+    return out;
+  }, [projects, searchText, ownerFilter, sortKey, sortDir]);
+
+  function toggleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'updated_at' ? 'desc' : 'asc');
+    }
+  }
+
+  function sortIndicator(key: SortKey): string {
+    if (sortKey !== key) return '';
+    return sortDir === 'asc' ? ' ▲' : ' ▼';
+  }
+
   const handleDelete = async (projectId: string) => {
     if (!confirm('Delete this project? This cannot be undone.')) return;
     const { error } = await caseWriterApi.deleteProject(projectId);
@@ -60,19 +116,40 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject }) => {
     setProjects(prev => prev.filter(p => p.project_id !== projectId));
   };
 
+  const handleClone = async (projectId: string) => {
+    setErr(null);
+    const { data, error } = await caseWriterApi.cloneProject(projectId);
+    if (error || !data) { setErr(error?.message || 'Clone failed'); return; }
+    await reload();
+    onOpenProject(data.project_id);
+  };
+
   return (
-    <div className="max-w-5xl mx-auto p-6">
+    <div className="max-w-7xl mx-auto p-6">
       <div className="flex justify-between items-center mb-6">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Case Writer</h2>
           <p className="text-sm text-gray-600 mt-1">AI-assisted business case authoring. Wizard-driven from teaching principle to publishable case.</p>
         </div>
-        <button
-          onClick={() => setShowNew(s => !s)}
-          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-        >
-          {showNew ? 'Cancel' : 'New Project'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={reload}
+            disabled={loading}
+            aria-label="Refresh projects"
+            title="Refresh projects"
+            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${loading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+          <button
+            onClick={() => setShowNew(s => !s)}
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+          >
+            {showNew ? 'Cancel' : 'New Project'}
+          </button>
+        </div>
       </div>
 
       {err && (
@@ -201,49 +278,100 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject }) => {
           No projects yet. Click <span className="font-semibold">New Project</span> to start one.
         </div>
       ) : (
-        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-gray-700">
-              <tr>
-                <th className="text-left px-4 py-2 font-semibold">Title</th>
-                <th className="text-left px-4 py-2 font-semibold">Teaching Principle</th>
-                <th className="text-left px-4 py-2 font-semibold">Status</th>
-                <th className="text-left px-4 py-2 font-semibold">Updated</th>
-                <th className="text-right px-4 py-2 font-semibold">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {projects.map(p => (
-                <tr key={p.project_id} className="border-t border-gray-100 hover:bg-gray-50">
-                  <td className="px-4 py-2">
-                    <button
-                      onClick={() => onOpenProject(p.project_id)}
-                      className="text-blue-600 hover:underline font-medium"
-                    >
-                      {p.title || <span className="text-gray-500 italic">Untitled</span>}
-                    </button>
-                  </td>
-                  <td className="px-4 py-2 text-gray-700">{p.teaching_principle || '—'}</td>
-                  <td className="px-4 py-2">
-                    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${STATUS_BADGE[p.status] || 'bg-gray-100 text-gray-700'}`}>
-                      {p.status}
-                    </span>
-                    {p.published_case_id && (
-                      <span className="ml-2 text-xs text-gray-500">→ {p.published_case_id}</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2 text-gray-500">{new Date(p.updated_at).toLocaleString()}</td>
-                  <td className="px-4 py-2 text-right">
-                    <button
-                      onClick={() => handleDelete(p.project_id)}
-                      className="text-xs text-red-600 hover:text-red-800 hover:underline"
-                    >Delete</button>
-                  </td>
+        <>
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <input
+              type="text"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder="Search title or teaching principle…"
+              className="flex-1 min-w-[220px] border border-gray-300 rounded px-3 py-1.5 text-sm"
+            />
+            {distinctOwners.length > 1 && (
+              <select
+                value={ownerFilter}
+                onChange={(e) => setOwnerFilter(e.target.value)}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+              >
+                <option value="">All owners</option>
+                {distinctOwners.map(o => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
+              </select>
+            )}
+            <span className="text-xs text-gray-500">
+              {filteredSortedProjects.length} of {projects.length}
+            </span>
+          </div>
+          <div className="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-gray-700">
+                <tr>
+                  <th className="text-left px-4 py-2 font-semibold cursor-pointer select-none" onClick={() => toggleSort('title')}>
+                    Title{sortIndicator('title')}
+                  </th>
+                  <th className="text-left px-4 py-2 font-semibold cursor-pointer select-none" onClick={() => toggleSort('teaching_principle')}>
+                    Teaching Principle{sortIndicator('teaching_principle')}
+                  </th>
+                  <th className="text-left px-4 py-2 font-semibold cursor-pointer select-none" onClick={() => toggleSort('industry')}>
+                    Industry{sortIndicator('industry')}
+                  </th>
+                  <th className="text-left px-4 py-2 font-semibold cursor-pointer select-none" onClick={() => toggleSort('owner_name')}>
+                    Owner{sortIndicator('owner_name')}
+                  </th>
+                  <th className="text-left px-4 py-2 font-semibold cursor-pointer select-none" onClick={() => toggleSort('status')}>
+                    Status{sortIndicator('status')}
+                  </th>
+                  <th className="text-left px-4 py-2 font-semibold cursor-pointer select-none" onClick={() => toggleSort('updated_at')}>
+                    Updated{sortIndicator('updated_at')}
+                  </th>
+                  <th className="text-right px-4 py-2 font-semibold">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {filteredSortedProjects.map(p => (
+                  <tr key={p.project_id} className="border-t border-gray-100 hover:bg-gray-50">
+                    <td className="px-4 py-2">
+                      <button
+                        onClick={() => onOpenProject(p.project_id)}
+                        className="text-blue-600 hover:underline font-medium"
+                      >
+                        {p.title || <span className="text-gray-500 italic">Untitled</span>}
+                      </button>
+                    </td>
+                    <td className="px-4 py-2 text-gray-700">{p.teaching_principle || '—'}</td>
+                    <td className="px-4 py-2 text-gray-700">{p.industry || '—'}</td>
+                    <td className="px-4 py-2 text-gray-700">
+                      <span title={p.owner_type}>{p.owner_name || '—'}</span>
+                    </td>
+                    <td className="px-4 py-2">
+                      <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${STATUS_BADGE[p.status] || 'bg-gray-100 text-gray-700'}`}>
+                        {p.status}
+                      </span>
+                      {p.published_case_id && (
+                        <span className="ml-2 text-xs text-gray-500">→ {p.published_case_id}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-gray-500">{new Date(p.updated_at).toLocaleString()}</td>
+                    <td className="px-4 py-2 text-right">
+                      <button
+                        onClick={() => handleClone(p.project_id)}
+                        title="Make a private copy you can edit"
+                        className="text-xs text-blue-600 hover:text-blue-800 hover:underline mr-3"
+                      >Clone</button>
+                      {p.can_edit && (
+                        <button
+                          onClick={() => handleDelete(p.project_id)}
+                          className="text-xs text-red-600 hover:text-red-800 hover:underline"
+                        >Delete</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );

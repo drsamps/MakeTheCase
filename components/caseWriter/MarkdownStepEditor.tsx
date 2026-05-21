@@ -78,7 +78,17 @@ const MarkdownStepEditor: React.FC<Props> = ({
     (generateOptions || []).forEach(o => { init[o.key] = o.defaultValue; });
     return init;
   });
+  const [hintOpen, setHintOpen] = useState(false);
+  const [hintText, setHintText] = useState('');
   const timerText = useGenerationTimer(generating);
+
+  function runGenerate() {
+    if (!onGenerate) return;
+    const opts: Record<string, string> = { ...optionValues };
+    const trimmedHint = hintText.trim();
+    if (trimmedHint) opts.revision_hint = trimmedHint;
+    onGenerate(overrideModelId || undefined, opts);
+  }
 
   // ---- Tweak (free-form revise + diff preview) state ----
   const tweakEnabled = !!tweakStep && !!projectId;
@@ -150,7 +160,7 @@ const MarkdownStepEditor: React.FC<Props> = ({
             <button
               type="button"
               disabled={generating || !!generateDisabledReason}
-              onClick={() => onGenerate(overrideModelId || undefined, optionValues)}
+              onClick={runGenerate}
               title={generateDisabledReason || ''}
               className={`px-4 py-2 text-sm font-semibold rounded-md disabled:opacity-50 disabled:cursor-not-allowed ${generateClasses}`}
             >
@@ -197,6 +207,14 @@ const MarkdownStepEditor: React.FC<Props> = ({
             {promptUse && isAdmin && (
               <PromptInfoButton use={promptUse} isAdmin={isAdmin} />
             )}
+            <button
+              type="button"
+              onClick={() => setHintOpen(o => !o)}
+              title="click to provide a hint for AI generation"
+              className="text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50"
+            >
+              💡 Hint{hintText.trim() ? ' •' : ''}
+            </button>
           </>
         )}
 
@@ -233,6 +251,20 @@ const MarkdownStepEditor: React.FC<Props> = ({
           <PromptInfoButton use="case_writer.content_tweak" isAdmin={isAdmin} />
         )}
       </div>
+
+      {onGenerate && hintOpen && (
+        <div className="border border-amber-200 bg-amber-50 rounded-md p-3 space-y-2">
+          <div className="text-sm font-semibold text-amber-900">
+            Provide the AI model with hints for Generating this output
+          </div>
+          <textarea
+            value={hintText}
+            onChange={(e) => setHintText(e.target.value)}
+            placeholder="Use or nonuse of technical language, gender of protagonist, etc. Note that hints can also be added to the Learning Brief or Case Blueprint."
+            className="w-full min-h-[80px] p-2 text-sm border border-amber-300 rounded bg-white resize-y"
+          />
+        </div>
+      )}
 
       {tweakEnabled && tweakOpen && !tweakResult && (
         <div className="border border-purple-200 bg-purple-50 rounded-md p-3 space-y-2">
