@@ -26,12 +26,21 @@ const router = express.Router();
 // ----------------------------------------------------------------------------
 
 // Wrap generateOutlineWithLLM so every case-writer call threads the caller's
-// instructor identity (so per-instructor API keys actually fire).
+// instructor identity (so per-instructor API keys actually fire) plus the
+// project context that model_usage tracking writes to the row.
 async function callOutline(req, params) {
   const instructorId = getEffectiveInstructorId(req);
+  // All case-writer LLM call sites are scoped to /projects/:id; lift the
+  // project id off the route so model_usage rows carry it automatically.
+  const projectId = (params.config && params.config.projectId) || params.projectId || req.params?.id || null;
   return generateOutlineWithLLM({
     ...params,
-    config: { ...(params.config || {}), instructorId }
+    config: {
+      ...(params.config || {}),
+      instructorId,
+      purpose: (params.config && params.config.purpose) || 'case_writer',
+      projectId,
+    }
   });
 }
 

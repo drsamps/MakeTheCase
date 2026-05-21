@@ -168,6 +168,9 @@ Provider auto-detected from model_id prefix in `server/services/llmRouter.js`:
 - `gpt-*` or `o*` → OpenAI
 - `claude-*` → Anthropic
 
+### AI Usage Tracking
+Every LLM call is logged to the `model_usage` table with dollar cost, scope (instructor/section/case), and cache-hit flag via `server/services/modelUsageWriter.js`. Per-instructor weekly dollar caps (Mon 00:00 America/Denver) are enforced by `server/services/usageGuard.js` before student chats and AI features run. `allowed_vendors` on `instructors` (defaults to `["openrouter"]` for new rows) restricts which providers an instructor can pick. Reporting is served by `/api/usage*` (`server/routes/usage.js`) and shown in the **Monitor → AI Usage** panel (`components/AiUsagePanel.tsx`) plus a sticky warning banner. Raw token payloads in `raw_usage` are pruned after 90 days. See `docs/ai-usage-tracking.md` for full details.
+
 ### System Prompt Construction
 Cache-optimized: static content (case, teaching note) placed first for LLM prompt caching. Three components: case document, teaching note (hidden from students), argument framework.
 

@@ -146,6 +146,10 @@ export const CacheMetrics: React.FC = () => {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
+      <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+        <strong>Sunset notice:</strong> Cache Analytics is being replaced by the new <strong>AI Usage</strong> tab, which reports actual dollar spend (including cache savings) instead of raw token counts. Cache metrics will continue to populate for historical comparison, but new dashboards and warning banners are driven by AI Usage.
+      </div>
+
       {/* Header */}
       <div className="mb-6 flex justify-between items-center">
         <div>

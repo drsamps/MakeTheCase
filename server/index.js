@@ -46,6 +46,8 @@ import apiKeysRoutes from './routes/apiKeys.js';
 import teamsRoutes from './routes/teams.js';
 import feedbackRoutes from './routes/feedback.js';
 import contentRoutes from './routes/content.js';
+import usageRoutes from './routes/usage.js';
+import { startTruncateOldRawUsageJob } from './jobs/truncateOldRawUsage.js';
 
 // Load environment variables
 // Use absolute path to ensure .env.local is found regardless of working directory
@@ -107,6 +109,7 @@ app.use('/api/api-keys', apiKeysRoutes); // Per-instructor encrypted API key sto
 app.use('/api/teams', teamsRoutes); // Instructor teams + sharing
 app.use('/api/feedback', feedbackRoutes); // In-app user feedback system
 app.use('/api/content', contentRoutes); // Static markdown content (e.g. instructor welcome screen)
+app.use('/api/usage', usageRoutes); // AI cost-first usage reporting (model_usage table)
 console.log('✓ Rubrics routes mounted');
 console.log('✓ Case Writer routes mounted at /api/case-writer');
 
@@ -136,6 +139,7 @@ app.use((err, req, res, next) => {
 // Start server
 async function start() {
   await testConnection();
+  startTruncateOldRawUsageJob();
   app.listen(PORT, () => {
     console.log(`✓ API server running on http://localhost:${PORT}`);
   });

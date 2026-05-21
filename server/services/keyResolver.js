@@ -150,6 +150,42 @@ export async function resolveInstructorForStudentCase(studentId, caseId) {
 }
 
 /**
+ * Resolve the section_id for a student/case pair (same lookup logic as
+ * resolveInstructorForStudentCase). Used to stamp section_id on model_usage
+ * rows for student-facing LLM calls.
+ *
+ * @returns {Promise<string|null>}
+ */
+export async function resolveSectionForStudentCase(studentId, caseId) {
+  if (!studentId || !caseId) return null;
+  const [rows] = await pool.execute(
+    `SELECT s.section_id
+       FROM student_sections ss
+       JOIN sections s ON ss.section_id = s.section_id
+       JOIN section_cases sc ON sc.section_id = s.section_id
+      WHERE ss.student_id = ? AND sc.case_id = ?
+      ORDER BY ss.is_primary DESC, ss.enrolled_at DESC
+      LIMIT 1`,
+    [studentId, caseId]
+  );
+  return rows[0]?.section_id || null;
+}
+
+/**
+ * Resolve the section_id for a given case_chat row.
+ *
+ * @returns {Promise<string|null>}
+ */
+export async function resolveSectionForCaseChat(caseChatId) {
+  if (!caseChatId) return null;
+  const [rows] = await pool.execute(
+    'SELECT section_id FROM case_chats WHERE id = ? LIMIT 1',
+    [caseChatId]
+  );
+  return rows[0]?.section_id || null;
+}
+
+/**
  * Lightweight readiness probe used by the student chat-start gate.
  * Returns true if `resolveProviderKey` would succeed for every required
  * provider. Never throws — callers want a boolean.

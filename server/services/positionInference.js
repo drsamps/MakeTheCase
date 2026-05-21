@@ -9,7 +9,7 @@
 
 import { pool } from '../db.js';
 import { chatWithLLM } from './llmRouter.js';
-import { resolveInstructorForCaseChat } from './keyResolver.js';
+import { resolveInstructorForCaseChat, resolveSectionForCaseChat } from './keyResolver.js';
 
 /**
  * Build the system prompt for position inference
@@ -153,12 +153,19 @@ export async function inferPositionsFromChat(caseChatId, modelId = 'gemini-1.5-f
   const userMessage = `CONVERSATION TRANSCRIPT:\n\n${chat.transcript}\n\nAnalyze this conversation and provide your position inference as JSON.`;
 
   const instructorId = await resolveInstructorForCaseChat(caseChatId);
+  const sectionId = await resolveSectionForCaseChat(caseChatId);
   const response = await chatWithLLM({
     modelId,
     systemPrompt,
     history: [],
     message: userMessage,
-    config: { temperature: 0.3, instructorId } // Lower temperature for more consistent analysis
+    config: {
+      temperature: 0.3,
+      instructorId,
+      sectionId,
+      caseId: chat.case_id || null,
+      purpose: 'position_inference',
+    }
   });
 
   // Parse the response
@@ -298,7 +305,12 @@ Respond ONLY with valid JSON:
       systemPrompt: 'You are an expert at analyzing conversations and determining a person\'s stance on issues. Respond only with valid JSON.',
       history: [],
       message: prompt,
-      config: { temperature: 0.3, instructorId }
+      config: {
+        temperature: 0.3,
+        instructorId,
+        caseId: caseData?.case_id || null,
+        purpose: 'position_inference',
+      }
     });
 
     // Parse the JSON response

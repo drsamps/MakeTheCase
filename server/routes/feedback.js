@@ -477,7 +477,7 @@ router.post('/summarize', requirePermission('feedback_admin'), async (req, res) 
       modelId: model.model_id,
       vendor: model.vendor,
       prompt,
-      config: { maxTokens: 4000 },
+      config: { maxTokens: 4000, purpose: 'feedback_summary', instructorId: req.user?.id || null },
     });
 
     const summaryText = (llmResult?.text || '').trim() || '_The model returned an empty summary._';

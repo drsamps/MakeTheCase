@@ -16,7 +16,38 @@ import {
   isPrimaryInstructorForSection
 } from '../middleware/instructorAccess.js';
 import { writeAudit } from '../services/auditLog.js';
-import { getMonthlyUsage } from '../services/usageGuard.js';
+import { getWeeklyUsage } from '../services/usageGuard.js';
+
+const VALID_VENDORS = ['openai', 'anthropic', 'google', 'openrouter'];
+
+function parseJsonField(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(value);
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function normalizeAllowedVendors(input) {
+  if (input == null) return null;
+  if (!Array.isArray(input)) {
+    throw new Error('allowed_vendors must be an array of vendor strings');
+  }
+  const cleaned = [];
+  for (const v of input) {
+    if (typeof v !== 'string') {
+      throw new Error('allowed_vendors entries must be strings');
+    }
+    const lower = v.toLowerCase().trim();
+    if (!VALID_VENDORS.includes(lower)) {
+      throw new Error(`Invalid vendor "${v}". Must be one of: ${VALID_VENDORS.join(', ')}`);
+    }
+    if (!cleaned.includes(lower)) cleaned.push(lower);
+  }
+  return cleaned;
+}
 
 const router = express.Router();
 
@@ -33,7 +64,8 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
     let query = `
       SELECT i.id, i.email, i.netid, i.auth_method,
              i.first_name, i.last_name, i.full_name,
-             i.active, i.use_system_key, i.can_publish, i.monthly_token_cap, i.is_system_account,
+             i.active, i.use_system_key, i.can_publish, i.is_system_account,
+             i.weekly_ai_usage_cap, i.weekly_ai_usage_warning_pct, i.allowed_vendors,
              i.created_at, i.last_login,
              COUNT(DISTINCT isem.semester_id) as semester_count,
              COUNT(DISTINCT isec.section_id) as section_count
@@ -74,7 +106,9 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
       use_system_key: Boolean(row.use_system_key),
       can_publish: Boolean(row.can_publish),
       is_system_account: Boolean(row.is_system_account),
-      monthly_token_cap: row.monthly_token_cap == null ? null : Number(row.monthly_token_cap),
+      weekly_ai_usage_cap: row.weekly_ai_usage_cap == null ? null : Number(row.weekly_ai_usage_cap),
+      weekly_ai_usage_warning_pct: row.weekly_ai_usage_warning_pct == null ? null : Number(row.weekly_ai_usage_warning_pct),
+      allowed_vendors: parseJsonField(row.allowed_vendors, null),
     }));
 
     res.json({ data: instructors, error: null });
@@ -95,7 +129,8 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => {
     const [instructorRows] = await pool.execute(
       `SELECT id, email, netid, auth_method,
               first_name, last_name, full_name, active,
-              use_system_key, can_publish, monthly_token_cap, is_system_account,
+              use_system_key, can_publish, is_system_account,
+              weekly_ai_usage_cap, weekly_ai_usage_warning_pct, allowed_vendors,
               created_at, last_login
        FROM instructors WHERE id = ?`,
       [id]
@@ -111,7 +146,9 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => {
       use_system_key: Boolean(instructorRows[0].use_system_key),
       can_publish: Boolean(instructorRows[0].can_publish),
       is_system_account: Boolean(instructorRows[0].is_system_account),
-      monthly_token_cap: instructorRows[0].monthly_token_cap == null ? null : Number(instructorRows[0].monthly_token_cap),
+      weekly_ai_usage_cap: instructorRows[0].weekly_ai_usage_cap == null ? null : Number(instructorRows[0].weekly_ai_usage_cap),
+      weekly_ai_usage_warning_pct: instructorRows[0].weekly_ai_usage_warning_pct == null ? null : Number(instructorRows[0].weekly_ai_usage_warning_pct),
+      allowed_vendors: parseJsonField(instructorRows[0].allowed_vendors, null),
     };
 
     // Get semester assignments
@@ -212,10 +249,11 @@ router.post('/', verifyToken, requireRole(['admin']), requireSuperuser, async (r
     const passwordHash = password ? await bcrypt.hash(password, 10) : null;
     const displayName = full_name || `${first_name || ''} ${last_name || ''}`.trim() || email;
 
+    const defaultAllowedVendors = JSON.stringify(['openrouter']);
     await pool.execute(
-      `INSERT INTO instructors (id, email, netid, password_hash, first_name, last_name, full_name, auth_method)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, email, netid, passwordHash, first_name || null, last_name || null, displayName, auth_method]
+      `INSERT INTO instructors (id, email, netid, password_hash, first_name, last_name, full_name, auth_method, allowed_vendors)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, email, netid, passwordHash, first_name || null, last_name || null, displayName, auth_method, defaultAllowedVendors]
     );
 
     res.status(201).json({
@@ -227,7 +265,8 @@ router.post('/', verifyToken, requireRole(['admin']), requireSuperuser, async (r
         first_name: first_name || null,
         last_name: last_name || null,
         full_name: displayName,
-        active: true
+        active: true,
+        allowed_vendors: ['openrouter']
       },
       error: null
     });
@@ -238,7 +277,7 @@ router.post('/', verifyToken, requireRole(['admin']), requireSuperuser, async (r
 });
 
 /**
- * GET /api/instructors/:id/usage - current-month token usage + cap status
+ * GET /api/instructors/:id/usage - current-week dollar usage + cap status
  * Visible to: the instructor themselves, any admin.
  */
 router.get('/:id/usage', verifyToken, requireAdminOrInstructor, async (req, res) => {
@@ -247,7 +286,7 @@ router.get('/:id/usage', verifyToken, requireAdminOrInstructor, async (req, res)
     if (req.user.role === 'instructor' && req.user.id !== id) {
       return res.status(403).json({ error: 'You can only view your own usage' });
     }
-    const usage = await getMonthlyUsage(id);
+    const usage = await getWeeklyUsage(id);
     res.json({ data: usage, error: null });
   } catch (error) {
     console.error('Error fetching instructor usage:', error);
@@ -263,7 +302,8 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
   try {
     const { id } = req.params;
     const { email, password, first_name, last_name, full_name, active,
-            use_system_key, can_publish, monthly_token_cap,
+            use_system_key, can_publish,
+            weekly_ai_usage_cap, weekly_ai_usage_warning_pct, allowed_vendors,
             auth_method, netid } = req.body;
 
     // Non-superusers can only update themselves
@@ -275,8 +315,8 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
     if (active !== undefined && !req.user.superuser) {
       return res.status(403).json({ error: 'Only superusers can change active status' });
     }
-    if ((use_system_key !== undefined || can_publish !== undefined || monthly_token_cap !== undefined) && !req.user.superuser) {
-      return res.status(403).json({ error: 'Only superusers can grant use_system_key, can_publish, or set monthly_token_cap' });
+    if ((use_system_key !== undefined || can_publish !== undefined || weekly_ai_usage_cap !== undefined || allowed_vendors !== undefined) && !req.user.superuser) {
+      return res.status(403).json({ error: 'Only superusers can grant use_system_key, can_publish, set weekly_ai_usage_cap, or change allowed_vendors' });
     }
     if ((auth_method !== undefined || netid !== undefined) && !req.user.superuser) {
       return res.status(403).json({ error: 'Only superusers can change sign-in method or NetID' });
@@ -381,14 +421,34 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
       values.push(can_publish ? 1 : 0);
       auditDetails = { ...(auditDetails || {}), can_publish: Boolean(can_publish) };
     }
-    if (monthly_token_cap !== undefined) {
-      const cap = monthly_token_cap === null || monthly_token_cap === '' ? null : Number(monthly_token_cap);
+    if (weekly_ai_usage_cap !== undefined) {
+      const cap = weekly_ai_usage_cap === null || weekly_ai_usage_cap === '' ? null : Number(weekly_ai_usage_cap);
       if (cap !== null && (!Number.isFinite(cap) || cap < 0)) {
-        return res.status(400).json({ error: 'monthly_token_cap must be a non-negative number or null' });
+        return res.status(400).json({ error: 'weekly_ai_usage_cap must be a non-negative dollar amount or null' });
       }
-      updates.push('monthly_token_cap = ?');
+      updates.push('weekly_ai_usage_cap = ?');
       values.push(cap);
-      auditDetails = { ...(auditDetails || {}), monthly_token_cap: cap };
+      auditDetails = { ...(auditDetails || {}), weekly_ai_usage_cap: cap };
+    }
+    if (weekly_ai_usage_warning_pct !== undefined) {
+      const pct = weekly_ai_usage_warning_pct === null || weekly_ai_usage_warning_pct === '' ? null : Number(weekly_ai_usage_warning_pct);
+      if (pct !== null && (!Number.isFinite(pct) || pct < 0 || pct > 100)) {
+        return res.status(400).json({ error: 'weekly_ai_usage_warning_pct must be between 0 and 100, or null' });
+      }
+      updates.push('weekly_ai_usage_warning_pct = ?');
+      values.push(pct);
+      auditDetails = { ...(auditDetails || {}), weekly_ai_usage_warning_pct: pct };
+    }
+    if (allowed_vendors !== undefined) {
+      let normalizedVendors;
+      try {
+        normalizedVendors = allowed_vendors === null ? null : normalizeAllowedVendors(allowed_vendors);
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+      updates.push('allowed_vendors = ?');
+      values.push(normalizedVendors == null ? null : JSON.stringify(normalizedVendors));
+      auditDetails = { ...(auditDetails || {}), allowed_vendors: normalizedVendors };
     }
 
     if (updates.length === 0) {
@@ -414,7 +474,9 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
     const [rows] = await pool.execute(
       `SELECT id, email, netid, auth_method,
               first_name, last_name, full_name, active,
-              use_system_key, can_publish, monthly_token_cap, created_at, last_login
+              use_system_key, can_publish,
+              weekly_ai_usage_cap, weekly_ai_usage_warning_pct, allowed_vendors,
+              created_at, last_login
        FROM instructors WHERE id = ?`,
       [id]
     );
@@ -429,7 +491,9 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => 
         active: Boolean(rows[0].active),
         use_system_key: Boolean(rows[0].use_system_key),
         can_publish: Boolean(rows[0].can_publish),
-        monthly_token_cap: rows[0].monthly_token_cap == null ? null : Number(rows[0].monthly_token_cap),
+        weekly_ai_usage_cap: rows[0].weekly_ai_usage_cap == null ? null : Number(rows[0].weekly_ai_usage_cap),
+        weekly_ai_usage_warning_pct: rows[0].weekly_ai_usage_warning_pct == null ? null : Number(rows[0].weekly_ai_usage_warning_pct),
+        allowed_vendors: parseJsonField(rows[0].allowed_vendors, null),
       },
       error: null
     });

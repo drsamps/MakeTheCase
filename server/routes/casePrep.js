@@ -227,7 +227,9 @@ router.post('/:caseId/process', verifyToken, requireAdminOrInstructor, requireCa
       const modelConfig = {
         temperature: models[0].temperature,
         reasoning_effort: models[0].reasoning_effort,
-        instructorId: getEffectiveInstructorId(req)
+        instructorId: getEffectiveInstructorId(req),
+        caseId,
+        purpose: 'case_prep',
       };
       console.log('[CasePrep] Model config:', modelConfig);
 

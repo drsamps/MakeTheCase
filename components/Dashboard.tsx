@@ -10,6 +10,8 @@ import { LoggingManager } from './LoggingManager';
 import { CasePrepManager } from './CasePrepManager';
 import { CaseFilesManager } from './CaseFilesManager';
 import { CacheMetrics } from './CacheMetrics';
+import AiUsagePanel from './AiUsagePanel';
+import AiUsageWarningBanner from './AiUsageWarningBanner';
 import { ScenarioManager } from './ScenarioManager';
 import InstructorManager from './InstructorManager';
 import ShadowOwnershipManager from './ShadowOwnershipManager';
@@ -70,7 +72,7 @@ type HomeSubTab = 'welcome' | 'dashboard';
 type AssignmentsSubTab = 'assignments' | 'chat-options';
 type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
-type MonitorSubTab = 'chats' | 'cache' | 'live';
+type MonitorSubTab = 'chats' | 'cache' | 'live' | 'ai-usage';
 type ResultsSubTab = 'responses' | 'positions' | 'section-results';
 type SetupSubTab = 'personas' | 'apikeys' | 'teams' | 'rubrics';
 type AdminSubTab = 'instructors' | 'settings' | 'models' | 'prompts' | 'admins' | 'logging' | 'shadow';
@@ -336,7 +338,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     const ASSIGNMENTS: Record<AssignmentsSubTab, string> = {
       assignments: 'Assignments', 'chat-options': 'Chat Options',
     };
-    const MONITOR: Record<MonitorSubTab, string> = { chats: 'Chats', cache: 'Cache', live: 'Live' };
+    const MONITOR: Record<MonitorSubTab, string> = { chats: 'Chats', cache: 'Cache', live: 'Live', 'ai-usage': 'AI Usage' };
     const RESULTS: Record<ResultsSubTab, string> = {
       responses: 'Student Results', positions: 'Position Analytics', 'section-results': 'Section Results',
     };
@@ -7843,9 +7845,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           <button
             onClick={fetchLiveSession}
             disabled={isLoadingLiveSession || !liveSessionSection || !liveSessionCase}
-            className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+            aria-label="Refresh results"
+            title="Refresh results"
+            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
           >
-            {isLoadingLiveSession ? 'Refreshing...' : 'Refresh Now'}
+            <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ${isLoadingLiveSession ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
           </button>
         </div>
       </div>
@@ -8031,9 +8037,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           <button
             onClick={fetchCaseChats}
             disabled={isLoadingCaseChats}
-            className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+            aria-label="Refresh results"
+            title="Refresh results"
+            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
           >
-            {isLoadingCaseChats ? 'Refreshing...' : 'Refresh Now'}
+            <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ${isLoadingCaseChats ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
           </button>
         </div>
       </div>
@@ -8293,6 +8303,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       )}
 
+      <AiUsageWarningBanner onNavigate={() => { setPrimaryTab('monitor'); setMonitorSubTab('ai-usage'); }} />
+
       {/* Header */}
       <header className="flex-shrink-0 flex justify-between items-center px-6 py-3 bg-white border-b border-gray-200 shadow-sm">
         <div className="flex items-center gap-3">
@@ -8411,7 +8423,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </button>
             )}
 
-            {/* Chats (formerly Monitor) */}
+            {/* Monitor (chats, AI usage, cache, live session) */}
             {hasAccess(user, 'chats') && (
               <button
                 onClick={() => setPrimaryTab('monitor')}
@@ -8426,7 +8438,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     <path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z" />
                     <path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z" />
                   </svg>
-                  Chats
+                  Monitor
                   {stats.activeChats > 0 && (
                     <span className="px-1.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
                       {stats.activeChats}
@@ -8749,6 +8761,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 Latest Chats
               </button>
               <button
+                onClick={() => setMonitorSubTab('ai-usage')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  monitorSubTab === 'ai-usage'
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                AI Usage
+              </button>
+              <button
                 onClick={() => setMonitorSubTab('cache')}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   monitorSubTab === 'cache'
@@ -9055,6 +9077,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             renderLiveSession()
           ) : monitorSubTab === 'cache' ? (
             <CacheMetrics />
+          ) : monitorSubTab === 'ai-usage' ? (
+            <AiUsagePanel />
           ) : (
             renderChatsTab()
           )

@@ -127,7 +127,9 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
     active: true,
     use_system_key: false,
     can_publish: false,
-    monthly_token_cap: '' as string,
+    weekly_ai_usage_cap: '' as string,
+    weekly_ai_usage_warning_pct: '80' as string,
+    allowed_vendors: ['openrouter'] as string[],
   });
 
   // Student-lookup typeahead state for the Add Instructor modal: lets an admin
@@ -386,7 +388,9 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
       active: true,
       use_system_key: false,
       can_publish: false,
-      monthly_token_cap: '',
+      weekly_ai_usage_cap: '',
+      weekly_ai_usage_warning_pct: '80',
+      allowed_vendors: ['openrouter'],
     });
     setShowInstructorModal(true);
   };
@@ -407,9 +411,15 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
       active: instructor.active,
       use_system_key: Boolean((instructor as any).use_system_key),
       can_publish: Boolean((instructor as any).can_publish),
-      monthly_token_cap: (instructor as any).monthly_token_cap == null
+      weekly_ai_usage_cap: (instructor as any).weekly_ai_usage_cap == null
         ? ''
-        : String((instructor as any).monthly_token_cap),
+        : String((instructor as any).weekly_ai_usage_cap),
+      weekly_ai_usage_warning_pct: (instructor as any).weekly_ai_usage_warning_pct == null
+        ? '80'
+        : String((instructor as any).weekly_ai_usage_warning_pct),
+      allowed_vendors: Array.isArray((instructor as any).allowed_vendors)
+        ? [...(instructor as any).allowed_vendors]
+        : ['openrouter'],
     });
     setShowInstructorModal(true);
   };
@@ -438,10 +448,30 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
           active: instructorFormData.active,
           use_system_key: instructorFormData.use_system_key,
           can_publish: instructorFormData.can_publish,
-          monthly_token_cap: instructorFormData.monthly_token_cap === ''
+          weekly_ai_usage_cap: instructorFormData.weekly_ai_usage_cap === ''
             ? null
-            : Number(instructorFormData.monthly_token_cap),
+            : Number(instructorFormData.weekly_ai_usage_cap),
+          weekly_ai_usage_warning_pct: instructorFormData.weekly_ai_usage_warning_pct === ''
+            ? null
+            : Number(instructorFormData.weekly_ai_usage_warning_pct),
+          allowed_vendors: instructorFormData.allowed_vendors,
         };
+
+        const originalVendors: string[] = Array.isArray((editingInstructor as any).allowed_vendors)
+          ? (editingInstructor as any).allowed_vendors
+          : [];
+        const removedVendors = originalVendors.filter(
+          v => !instructorFormData.allowed_vendors.includes(v)
+        );
+        if (removedVendors.length > 0) {
+          const ok = window.confirm(
+            `Removing vendor access: ${removedVendors.join(', ')}\n\n` +
+            `This instructor will no longer be able to select models from ${removedVendors.length === 1 ? 'this vendor' : 'these vendors'}. ` +
+            `Any saved API keys for ${removedVendors.length === 1 ? 'it' : 'them'} will be hidden in the instructor's API Keys screen until access is restored.\n\n` +
+            `Continue?`
+          );
+          if (!ok) return;
+        }
         if (instructorFormData.password) {
           updateData.password = instructorFormData.password;
         }
@@ -799,12 +829,20 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
                           {(instructor as any).use_system_key && (
                             <span className="px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-800" title="Uses system API key">sys-key</span>
                           )}
-                          {(instructor as any).use_system_key && (instructor as any).monthly_token_cap != null && (
+                          {(instructor as any).use_system_key && (instructor as any).weekly_ai_usage_cap != null && (
                             <span
                               className="px-2 py-0.5 text-xs rounded bg-amber-50 text-amber-700 border border-amber-200"
-                              title="Monthly token cap (input + cached + output)"
+                              title="Weekly AI spend cap (Mon 00:00 America/Denver)"
                             >
-                              cap: {Number((instructor as any).monthly_token_cap).toLocaleString()}
+                              ${Number((instructor as any).weekly_ai_usage_cap).toFixed(2)}/wk
+                            </span>
+                          )}
+                          {Array.isArray((instructor as any).allowed_vendors) && (instructor as any).allowed_vendors.length > 0 && (instructor as any).allowed_vendors.length < 4 && (
+                            <span
+                              className="px-2 py-0.5 text-xs rounded bg-indigo-50 text-indigo-700 border border-indigo-200"
+                              title="Vendors this instructor can use"
+                            >
+                              {(instructor as any).allowed_vendors.join(', ')}
                             </span>
                           )}
                           {(instructor as any).can_publish && (
@@ -1251,21 +1289,71 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
                       </label>
                     </div>
                     <div>
-                      <label htmlFor="monthly_token_cap" className="block text-sm font-medium text-gray-700">
-                        Monthly token cap
+                      <label htmlFor="weekly_ai_usage_cap" className="block text-sm font-medium text-gray-700">
+                        Weekly AI spend cap (USD)
+                      </label>
+                      <div className="mt-1 flex items-center">
+                        <span className="text-gray-500 mr-1">$</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          id="weekly_ai_usage_cap"
+                          value={instructorFormData.weekly_ai_usage_cap}
+                          onChange={(e) => setInstructorFormData({ ...instructorFormData, weekly_ai_usage_cap: e.target.value })}
+                          placeholder="(no cap)"
+                          className="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                        />
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Only enforced when "Use system API key" is on. Window: Monday 00:00 – Sunday 23:59 America/Denver. Leave blank for no cap.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label htmlFor="weekly_ai_usage_warning_pct" className="block text-sm font-medium text-gray-700">
+                        Warning threshold (% of cap)
                       </label>
                       <input
                         type="number"
                         min="0"
+                        max="100"
                         step="1"
-                        id="monthly_token_cap"
-                        value={instructorFormData.monthly_token_cap}
-                        onChange={(e) => setInstructorFormData({ ...instructorFormData, monthly_token_cap: e.target.value })}
-                        placeholder="(no cap)"
+                        id="weekly_ai_usage_warning_pct"
+                        value={instructorFormData.weekly_ai_usage_warning_pct}
+                        onChange={(e) => setInstructorFormData({ ...instructorFormData, weekly_ai_usage_warning_pct: e.target.value })}
                         className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
                       />
                       <p className="text-xs text-gray-500 mt-1">
-                        Only enforced when "Use system API key" is on. Total tokens (input + cached + output) per calendar month. Leave blank for no cap.
+                        Dashboard shows a yellow warning banner once weekly cost reaches this percentage of the cap. Instructor can change their own threshold.
+                      </p>
+                    </div>
+
+                    <div>
+                      <div className="block text-sm font-medium text-gray-700 mb-1">Allowed vendors</div>
+                      <div className="space-y-1.5">
+                        {(['openrouter', 'openai', 'anthropic', 'google'] as const).map(v => (
+                          <label key={v} className="flex items-center text-sm">
+                            <input
+                              type="checkbox"
+                              checked={instructorFormData.allowed_vendors.includes(v)}
+                              onChange={(e) => {
+                                const next = e.target.checked
+                                  ? [...instructorFormData.allowed_vendors, v].filter((x, i, a) => a.indexOf(x) === i)
+                                  : instructorFormData.allowed_vendors.filter(x => x !== v);
+                                setInstructorFormData({ ...instructorFormData, allowed_vendors: next });
+                              }}
+                              className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                            />
+                            <span className="ml-2 capitalize">{v}</span>
+                            {v === 'openrouter' && (
+                              <span className="ml-2 text-xs text-gray-500">(recommended — single key covers all models)</span>
+                            )}
+                          </label>
+                        ))}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Controls which providers show in this instructor's Model dropdown. New instructors default to OpenRouter only. Removing a vendor here will hide any saved key for it (instructor can ask to restore access).
                       </p>
                     </div>
                   </div>

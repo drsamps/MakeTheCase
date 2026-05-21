@@ -77,10 +77,20 @@ router.get('/', async (req, res) => {
 
     // Best-effort: only annotate when we can read instructor identity.
     let availableSet = null;
+    let allowedVendors = null; // null = no restriction (admin not impersonating)
     try {
       const instructorId = getEffectiveInstructorId(req);
-      if (instructorId !== undefined) {
+      if (instructorId) {
         availableSet = await getAvailableProviders(instructorId);
+        const [iRows] = await pool.execute(
+          'SELECT allowed_vendors FROM instructors WHERE id = ? LIMIT 1',
+          [instructorId]
+        );
+        const raw = iRows[0]?.allowed_vendors;
+        const parsed = parseJsonField(raw, null);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          allowedVendors = new Set(parsed);
+        }
       }
     } catch (_) { /* swallow — annotation is optional */ }
 
@@ -88,6 +98,11 @@ router.get('/', async (req, res) => {
       ...r,
       available: availableSet ? availableSet.has(r.vendor) : true,
     }));
+    // Per-instructor vendor restriction: hide models from vendors the
+    // instructor isn't allowed to use. Admins not impersonating bypass this.
+    if (allowedVendors) {
+      data = data.filter(r => allowedVendors.has(r.vendor));
+    }
     if (available_only === 'true' && availableSet) {
       data = data.filter(r => r.available);
     }
@@ -420,7 +435,7 @@ router.post(
           systemPrompt,
           history: [],
           message: prompt,
-          config: { temperature: 0.2, instructorId: getEffectiveInstructorId(req) },
+          config: { temperature: 0.2, instructorId: getEffectiveInstructorId(req), purpose: 'model_test' },
         });
         const text = (result?.text ?? '').trim();
         const passed = Boolean(text) && text.toLowerCase().includes('paris');

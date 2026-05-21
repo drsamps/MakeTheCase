@@ -15,11 +15,13 @@ import { api } from '../services/apiClient';
 
 type Provider = 'openai' | 'anthropic' | 'google' | 'openrouter';
 
+const PROVIDER_ORDER: Provider[] = ['openrouter', 'openai', 'anthropic', 'google'];
+
 const PROVIDER_LABELS: Record<Provider, string> = {
+  openrouter: 'OpenRouter (multi-provider — recommended)',
   openai: 'OpenAI (GPT, o-series)',
   anthropic: 'Anthropic (Claude)',
-  google: 'Google (Gemini)',
-  openrouter: 'OpenRouter (multi-provider)'
+  google: 'Google (Gemini)'
 };
 
 interface StoredKey {
@@ -35,6 +37,7 @@ interface StoredKey {
 interface ListResponse {
   instructorId: string;
   useSystemKey: boolean;
+  allowedVendors: Provider[] | null;
   keys: StoredKey[];
 }
 
@@ -152,14 +155,25 @@ const ApiKeysManager: React.FC = () => {
         <div className="text-sm text-gray-500 py-8 text-center">Loading…</div>
       ) : (
         <div className="space-y-4">
-          {(Object.keys(PROVIDER_LABELS) as Provider[]).map(p => {
+          {PROVIDER_ORDER.map(p => {
             const stored = getStored(p);
+            const allowed = data?.allowedVendors == null || data.allowedVendors.includes(p);
             return (
-              <div key={p} className="bg-white border border-gray-200 rounded-lg p-4">
+              <div
+                key={p}
+                className={`border rounded-lg p-4 ${allowed ? 'bg-white border-gray-200' : 'bg-gray-50 border-gray-200 opacity-75'}`}
+              >
                 <div className="flex items-center justify-between mb-3">
                   <div>
-                    <div className="font-medium text-gray-900">{PROVIDER_LABELS[p]}</div>
-                    {stored ? (
+                    <div className="font-medium text-gray-900 flex items-center gap-2">
+                      {PROVIDER_LABELS[p]}
+                      {!allowed && (
+                        <span className="px-2 py-0.5 text-xs bg-gray-200 text-gray-700 rounded">
+                          Removed by admin
+                        </span>
+                      )}
+                    </div>
+                    {allowed && stored && (
                       <div className="text-xs text-gray-500 mt-0.5">
                         Stored — ends in <code className="px-1 bg-gray-100 rounded">…{stored.key_hint}</code>
                         {stored.last_validated_at && (
@@ -169,11 +183,17 @@ const ApiKeysManager: React.FC = () => {
                           <span className="ml-2 px-1.5 py-0.5 text-xs bg-yellow-100 text-yellow-800 rounded">disabled</span>
                         )}
                       </div>
-                    ) : (
+                    )}
+                    {allowed && !stored && (
                       <div className="text-xs text-gray-400 mt-0.5">No key configured</div>
                     )}
+                    {!allowed && (
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        Your account is not permitted to use this vendor. Contact an admin to request access.
+                      </div>
+                    )}
                   </div>
-                  {stored && (
+                  {allowed && stored && (
                     <div className="flex gap-2 text-xs">
                       <button
                         onClick={() => handleToggleEnabled(p, !stored.enabled)}
@@ -193,23 +213,25 @@ const ApiKeysManager: React.FC = () => {
                   )}
                 </div>
 
-                <div className="flex gap-2">
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    placeholder={stored ? 'Paste new key to rotate' : 'Paste API key'}
-                    value={drafts[p]}
-                    onChange={e => setDrafts(prev => ({ ...prev, [p]: e.target.value }))}
-                    className="flex-1 text-sm border border-gray-300 rounded px-3 py-1.5 font-mono"
-                  />
-                  <button
-                    onClick={() => handleSave(p)}
-                    disabled={busy === p || drafts[p].trim().length === 0}
-                    className="px-3 py-1.5 text-sm bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
-                  >
-                    {busy === p ? '…' : stored ? 'Rotate' : 'Save'}
-                  </button>
-                </div>
+                {allowed && (
+                  <div className="flex gap-2">
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      placeholder={stored ? 'Paste new key to rotate' : 'Paste API key'}
+                      value={drafts[p]}
+                      onChange={e => setDrafts(prev => ({ ...prev, [p]: e.target.value }))}
+                      className="flex-1 text-sm border border-gray-300 rounded px-3 py-1.5 font-mono"
+                    />
+                    <button
+                      onClick={() => handleSave(p)}
+                      disabled={busy === p || drafts[p].trim().length === 0}
+                      className="px-3 py-1.5 text-sm bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
+                    >
+                      {busy === p ? '…' : stored ? 'Rotate' : 'Save'}
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}

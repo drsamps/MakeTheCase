@@ -26,6 +26,9 @@ export default defineConfig(({ mode }) => {
         __APP_BUILD_SHA__: JSON.stringify(process.env.GIT_COMMIT || env.GIT_COMMIT || 'dev'),
       },
       resolve: {
+        // May 2026: keep Vite on the OneDriveBYU junction path on Windows (avoids
+        // resolving through "OneDrive - Brigham Young University" and breaking dev).
+        preserveSymlinks: true,
         alias: {
           '@': path.resolve(__dirname, '.'),
         }

@@ -1,10 +1,15 @@
-// LLM Router - Updated with increased token limits for complete outlines (8K-16K)
-// Preview now supports styled headings and print functionality
-// Now includes prompt caching support for Anthropic and cache metrics tracking
+// LLM Router
+// All LLM calls go through chatWithLLM / evaluateWithLLM / generateOutlineWithLLM.
+// After each call returns, raw provider usage + computed est_cost_usd is
+// recorded in model_usage via writeModelUsage (fire-and-forget).
+// Weekly cost cap (assertWithinCostCap) is enforced for student_chat,
+// case_writer outlines, and case_prep outlines; evaluations always proceed
+// (but log EVAL_OVER_CAP when over cap so admins can audit after the fact).
 import { GoogleGenAI, Type } from '@google/genai';
 import { pool } from '../db.js';
 import { resolveProviderKey } from './keyResolver.js';
-import { assertWithinUsageCap } from './usageGuard.js';
+import { assertWithinCostCap, getWeeklyUsage } from './usageGuard.js';
+import { writeModelUsage, computeEstCost, getModelPricing } from './modelUsageWriter.js';
 
 const OPENROUTER_HTTP_REFERER = process.env.OPENROUTER_HTTP_REFERER;
 const OPENROUTER_X_TITLE = process.env.OPENROUTER_X_TITLE;
@@ -55,30 +60,98 @@ export async function resolveModelRuntimeConfiguration(modelId) {
   }
 }
 
-// Track cache metrics in database
-async function trackCacheMetrics(caseId, provider, modelId, cacheMetrics, requestType = 'chat', instructorId = null) {
-  if (!caseId || !cacheMetrics) return;
+// ---------------------------------------------------------------------------
+// Usage tracking helpers
+// ---------------------------------------------------------------------------
+
+async function lookupUseSystemKey(instructorId) {
+  if (!instructorId) return false;
   try {
-    await pool.execute(
-      `INSERT INTO llm_cache_metrics (case_id, instructor_id, provider, model_id, cache_hit, input_tokens, cached_tokens, output_tokens, request_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        caseId,
-        instructorId || null,
-        provider,
-        modelId,
-        cacheMetrics.cache_hit ? 1 : 0,
-        cacheMetrics.input_tokens || null,
-        cacheMetrics.cached_tokens || null,
-        cacheMetrics.output_tokens || null,
-        requestType
-      ]
+    const [rows] = await pool.execute(
+      'SELECT use_system_key FROM instructors WHERE id = ? LIMIT 1',
+      [instructorId]
     );
-  } catch (e) {
-    // Don't fail the request if metrics tracking fails
-    console.warn('[LLMRouter] Failed to track cache metrics:', e.message);
+    return rows[0]?.use_system_key === 1;
+  } catch {
+    return false;
   }
 }
+
+function deriveCacheHit(provider, raw) {
+  if (!raw) return false;
+  if (provider === 'anthropic') return (raw.cache_read_input_tokens || 0) > 0;
+  if (provider === 'google') return (raw.cachedContentTokenCount || 0) > 0;
+  // openai + openrouter
+  return ((raw.prompt_tokens_details?.cached_tokens ?? raw.cached_tokens) || 0) > 0;
+}
+
+/**
+ * Fire-and-forget: look up pricing, compute est_cost, insert model_usage row.
+ * Caller does not await. Errors are logged inside writeModelUsage.
+ */
+function trackUsageAsync({
+  purpose, caseId = null, projectId = null, sectionId = null,
+  modelId, provider, instructorId = null, rawUsage = null,
+}) {
+  (async () => {
+    const useSystemKey = await lookupUseSystemKey(instructorId);
+    const pricing = await getModelPricing(modelId);
+    const estCost = computeEstCost(provider, rawUsage, pricing);
+    const cacheHit = deriveCacheHit(provider, rawUsage);
+    await writeModelUsage({
+      purpose, caseId, projectId, sectionId,
+      modelId, provider, instructorId, useSystemKey,
+      cacheHit, estCostUsd: estCost, rawUsage,
+    });
+  })().catch(e => console.error('[MODEL_USAGE_TRACK_FAILED]', e.message));
+}
+
+/**
+ * Build the {purpose, caseId, ...} context object from a call's `config` arg.
+ * Defaults purpose to a per-function fallback when the caller didn't set it.
+ */
+function usageContext(config, defaultPurpose) {
+  return {
+    purpose: config.purpose || defaultPurpose,
+    caseId: config.caseId || null,
+    projectId: config.projectId || null,
+    sectionId: config.sectionId || null,
+    instructorId: config.instructorId || null,
+  };
+}
+
+// Backwards-compatible cacheMetrics object for callers that still read meta.cacheMetrics
+function legacyCacheMetrics(provider, raw) {
+  if (!raw) return { cache_hit: false, input_tokens: 0, cached_tokens: 0, output_tokens: 0 };
+  if (provider === 'anthropic') {
+    return {
+      cache_hit: (raw.cache_read_input_tokens || 0) > 0,
+      input_tokens: raw.input_tokens || 0,
+      cached_tokens: (raw.cache_creation_input_tokens || 0) + (raw.cache_read_input_tokens || 0),
+      output_tokens: raw.output_tokens || 0,
+    };
+  }
+  if (provider === 'google') {
+    return {
+      cache_hit: (raw.cachedContentTokenCount || 0) > 0,
+      input_tokens: raw.promptTokenCount || 0,
+      cached_tokens: raw.cachedContentTokenCount || 0,
+      output_tokens: raw.candidatesTokenCount || 0,
+    };
+  }
+  // openai + openrouter
+  const cached = raw.prompt_tokens_details?.cached_tokens ?? raw.cached_tokens ?? 0;
+  return {
+    cache_hit: cached > 0,
+    input_tokens: raw.prompt_tokens || 0,
+    cached_tokens: cached,
+    output_tokens: raw.completion_tokens || 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Provider detection + helpers
+// ---------------------------------------------------------------------------
 
 const detectProvider = (modelId = '', vendor = null) => {
   if (vendor && typeof vendor === 'string') {
@@ -99,6 +172,8 @@ async function callOpenRouter({ modelId, messages, runtimeParams = {}, maxTokens
     model: modelId,
     messages,
     ...runtimeParams,
+    // Required to populate data.usage.cost (authoritative USD cost from OpenRouter).
+    usage: { include: true },
   };
   if (maxTokens !== undefined) payload.max_tokens = maxTokens;
   if (responseFormat) payload.response_format = responseFormat;
@@ -114,13 +189,7 @@ async function callOpenRouter({ modelId, messages, runtimeParams = {}, maxTokens
   }
   const data = await response.json();
   const text = data?.choices?.[0]?.message?.content?.trim() || '';
-  const cacheMetrics = {
-    cache_hit: (data.usage?.cached_tokens || data.usage?.prompt_tokens_details?.cached_tokens || 0) > 0,
-    input_tokens: data.usage?.prompt_tokens || 0,
-    cached_tokens: data.usage?.cached_tokens || data.usage?.prompt_tokens_details?.cached_tokens || 0,
-    output_tokens: data.usage?.completion_tokens || 0,
-  };
-  return { text, cacheMetrics, raw: data };
+  return { text, raw: data, rawUsage: data?.usage || null };
 }
 
 const mapHistoryForOpenAI = (history = []) =>
@@ -140,13 +209,18 @@ const isOpenAIReasoning = (modelId = '') => {
   return id.startsWith('o1') || id.startsWith('gpt-5');
 };
 
+// ---------------------------------------------------------------------------
+// chatWithLLM
+// ---------------------------------------------------------------------------
+
 export async function chatWithLLM({ modelId, vendor = null, systemPrompt, history = [], message, config = {} }) {
   const provider = detectProvider(modelId, vendor);
-  // A1 usage cap (only enforced for use_system_key=1 instructors with a cap set)
-  await assertWithinUsageCap(config.instructorId);
+  // Weekly cost cap (no-op unless instructor uses system key + has a cap set)
+  await assertWithinCostCap(config.instructorId, modelId);
   const runtimeParams = await resolveModelRuntimeConfiguration(modelId);
   const temperature = runtimeParams.temperature ?? config.temperature ?? null;
   const reasoningEffort = runtimeParams.reasoning_effort ?? config.reasoning_effort ?? null;
+  const ctx = usageContext(config, 'student_chat');
 
   if (provider === 'openrouter') {
     const apiKey = await resolveProviderKey('openrouter', config.instructorId);
@@ -159,21 +233,21 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
       ...mapHistoryForOpenAI(history),
       { role: 'user', content: message },
     ];
-    const { text, cacheMetrics } = await callOpenRouter({
+    const { text, rawUsage } = await callOpenRouter({
       modelId,
       messages,
       runtimeParams: mergedParams,
       maxTokens: config.maxTokens,
       apiKey,
     });
-    if (config.caseId) trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat', config.instructorId || null);
+    trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
     return {
       text,
       meta: {
         provider,
         temperature: mergedParams.temperature ?? null,
         reasoning_effort: mergedParams.reasoning_effort ?? null,
-        cacheMetrics,
+        cacheMetrics: legacyCacheMetrics(provider, rawUsage),
       },
     };
   }
@@ -208,50 +282,33 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
       },
       body: JSON.stringify(payload),
     });
-
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`OpenAI error: ${text}`);
     }
     const data = await response.json();
     const text = data?.choices?.[0]?.message?.content?.trim() || '';
-
-    // OpenAI automatic caching metrics (available in newer API versions)
-    const cacheMetrics = {
-      cache_hit: (data.usage?.cached_tokens || 0) > 0,
-      input_tokens: data.usage?.prompt_tokens || 0,
-      cached_tokens: data.usage?.cached_tokens || 0,
-      output_tokens: data.usage?.completion_tokens || 0,
-    };
-
-    // Track metrics if caseId is provided
-    if (config.caseId) {
-      trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat', config.instructorId || null);
-    }
-
-    return { text, meta: { ...appliedParams, cacheMetrics } };
+    const rawUsage = data?.usage || null;
+    trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
+    return { text, meta: { ...appliedParams, cacheMetrics: legacyCacheMetrics(provider, rawUsage) } };
   }
 
   if (provider === 'anthropic') {
     const apiKey = await resolveProviderKey('anthropic', config.instructorId);
-
-    // Use prompt caching for Anthropic
-    // Structure system prompt with cache_control for static content
     const systemContent = [
       {
         type: 'text',
         text: systemPrompt,
-        cache_control: { type: 'ephemeral' } // Cache the system prompt
-      }
+        cache_control: { type: 'ephemeral' },
+      },
     ];
-
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'prompt-caching-2024-07-31', // Enable prompt caching
+        'anthropic-beta': 'prompt-caching-2024-07-31',
       },
       body: JSON.stringify({
         model: modelId,
@@ -270,31 +327,20 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
     }
     const data = await response.json();
     const text = data?.content?.[0]?.text?.trim() || '';
-
-    // Extract cache metrics from response
-    const cacheMetrics = {
-      cache_hit: (data.usage?.cache_read_input_tokens || 0) > 0,
-      input_tokens: data.usage?.input_tokens || 0,
-      cached_tokens: (data.usage?.cache_creation_input_tokens || 0) + (data.usage?.cache_read_input_tokens || 0),
-      output_tokens: data.usage?.output_tokens || 0,
-    };
-
-    // Track metrics if caseId is provided in config
-    if (config.caseId) {
-      trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat', config.instructorId || null);
-    }
-
+    const rawUsage = data?.usage || null;
+    trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
     return {
       text,
       meta: {
         provider,
         temperature: temperature ?? null,
         reasoning_effort: null,
-        cacheMetrics
-      }
+        cacheMetrics: legacyCacheMetrics(provider, rawUsage),
+      },
     };
   }
 
+  // Google Gemini
   const apiKey = await resolveProviderKey('google', config.instructorId);
   const ai = new GoogleGenAI({ apiKey });
   const formattedHistory = history.map((msg) => ({
@@ -311,41 +357,47 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
     },
   });
   const response = await chat.sendMessage({ message });
-
-  // Extract usage metrics from Gemini response
-  // Gemini provides usageMetadata with promptTokenCount, candidatesTokenCount, totalTokenCount
-  const usageMetadata = response.usageMetadata || response.response?.usageMetadata || {};
-  const cacheMetrics = {
-    cache_hit: false, // Gemini context caching requires explicit setup, standard calls don't cache
-    input_tokens: usageMetadata.promptTokenCount || 0,
-    cached_tokens: usageMetadata.cachedContentTokenCount || 0, // If context caching is enabled
-    output_tokens: usageMetadata.candidatesTokenCount || 0,
-  };
-
-  // Track metrics if caseId is provided
-  if (config.caseId) {
-    trackCacheMetrics(config.caseId, provider, modelId, cacheMetrics, 'chat', config.instructorId || null);
-  }
-
+  const rawUsage = response.usageMetadata || response.response?.usageMetadata || null;
+  trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
   return {
     text: response.text,
     meta: {
       provider,
       temperature: temperature ?? null,
       reasoning_effort: null,
-      cacheMetrics
-    }
+      cacheMetrics: legacyCacheMetrics(provider, rawUsage),
+    },
   };
+}
+
+// ---------------------------------------------------------------------------
+// evaluateWithLLM — always proceeds; logs EVAL_OVER_CAP for audit when over cap
+// ---------------------------------------------------------------------------
+
+async function logEvalOverCapIfNeeded(config) {
+  if (!config.instructorId) return;
+  try {
+    const { overCap, costUsed, cap } = await getWeeklyUsage(config.instructorId);
+    if (overCap) {
+      console.warn(
+        `[EVAL_OVER_CAP] instructor=${config.instructorId} case=${config.caseId || ''} cost=$${costUsed.toFixed(4)}/$${(cap || 0).toFixed(2)}`
+      );
+    }
+  } catch (e) {
+    console.warn('[EVAL_OVER_CAP check failed]', e.message);
+  }
 }
 
 export async function evaluateWithLLM({ modelId, vendor = null, prompt, config = {} }) {
   const provider = detectProvider(modelId, vendor);
-  // A1 usage cap (only enforced for use_system_key=1 instructors with a cap set)
-  await assertWithinUsageCap(config.instructorId);
+  // Evaluations are NEVER blocked by the cap — a student finishing a case
+  // shouldn't fail because earlier calls blew the budget. But we log if over.
+  await logEvalOverCapIfNeeded(config);
   const runtimeParams = await resolveModelRuntimeConfiguration(modelId);
   const temperature = runtimeParams.temperature ?? config.temperature ?? null;
   const reasoningEffort = runtimeParams.reasoning_effort ?? config.reasoning_effort ?? null;
   const reasoningModel = isOpenAIReasoning(modelId);
+  const ctx = usageContext(config, 'evaluation');
 
   if (provider === 'openrouter') {
     const apiKey = await resolveProviderKey('openrouter', config.instructorId);
@@ -357,20 +409,21 @@ export async function evaluateWithLLM({ modelId, vendor = null, prompt, config =
       { role: 'system', content: 'Return only JSON matching the expected evaluation schema.' },
       { role: 'user', content: prompt },
     ];
-    const { text, cacheMetrics } = await callOpenRouter({
+    const { text, rawUsage } = await callOpenRouter({
       modelId,
       messages,
       runtimeParams: mergedParams,
       responseFormat: { type: 'json_object' },
       apiKey,
     });
+    trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
     return {
       text: text || '{}',
       meta: {
         provider,
         temperature: mergedParams.temperature ?? null,
         reasoning_effort: mergedParams.reasoning_effort ?? null,
-        cacheMetrics,
+        cacheMetrics: legacyCacheMetrics(provider, rawUsage),
       },
     };
   }
@@ -405,23 +458,16 @@ export async function evaluateWithLLM({ modelId, vendor = null, prompt, config =
     }
     const data = await response.json();
     const text = data?.choices?.[0]?.message?.content || '{}';
-
-    // Extract token usage
-    const cacheMetrics = {
-      cache_hit: (data.usage?.cached_tokens || 0) > 0,
-      input_tokens: data.usage?.prompt_tokens || 0,
-      cached_tokens: data.usage?.cached_tokens || 0,
-      output_tokens: data.usage?.completion_tokens || 0,
-    };
-
+    const rawUsage = data?.usage || null;
+    trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
     return {
       text,
       meta: {
         provider,
         temperature: payload.temperature ?? null,
         reasoning_effort: payload.reasoning_effort ?? null,
-        cacheMetrics
-      }
+        cacheMetrics: legacyCacheMetrics(provider, rawUsage),
+      },
     };
   }
 
@@ -448,26 +494,20 @@ export async function evaluateWithLLM({ modelId, vendor = null, prompt, config =
     }
     const data = await response.json();
     const text = data?.content?.[0]?.text || '{}';
-
-    // Extract token usage
-    const cacheMetrics = {
-      cache_hit: (data.usage?.cache_read_input_tokens || 0) > 0,
-      input_tokens: data.usage?.input_tokens || 0,
-      cached_tokens: (data.usage?.cache_creation_input_tokens || 0) + (data.usage?.cache_read_input_tokens || 0),
-      output_tokens: data.usage?.output_tokens || 0,
-    };
-
+    const rawUsage = data?.usage || null;
+    trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
     return {
       text,
       meta: {
         provider,
         temperature: temperature ?? null,
         reasoning_effort: null,
-        cacheMetrics
-      }
+        cacheMetrics: legacyCacheMetrics(provider, rawUsage),
+      },
     };
   }
 
+  // Google Gemini
   const apiKey = await resolveProviderKey('google', config.instructorId);
   const ai = new GoogleGenAI({ apiKey });
   const generation = await ai.models.generateContent({
@@ -500,8 +540,6 @@ export async function evaluateWithLLM({ modelId, vendor = null, prompt, config =
       ...(temperature !== null && temperature !== undefined ? { temperature: Number(temperature) } : {}),
     },
   });
-
-  // Normalize across SDK shapes.
   const candidate =
     typeof generation?.response?.text === 'function'
       ? generation.response.text()
@@ -510,47 +548,36 @@ export async function evaluateWithLLM({ modelId, vendor = null, prompt, config =
         : generation?.response?.candidates?.[0]?.content?.parts?.[0]?.text
           || (typeof generation?.text === 'function' ? generation.text() : generation?.text)
           || '';
-
   if (!candidate) {
     throw new Error('Gemini returned an empty evaluation response');
   }
-
-  // Extract token usage from Gemini response
-  const usageMetadata = generation.usageMetadata || generation.response?.usageMetadata || {};
-  const cacheMetrics = {
-    cache_hit: false,
-    input_tokens: usageMetadata.promptTokenCount || 0,
-    cached_tokens: usageMetadata.cachedContentTokenCount || 0,
-    output_tokens: usageMetadata.candidatesTokenCount || 0,
-  };
-
-  // Ensure we always return a string (text() may already be a string).
+  const rawUsage = generation.usageMetadata || generation.response?.usageMetadata || null;
+  trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
   const text = typeof candidate === 'string' ? candidate : String(candidate);
-
   return {
     text,
     meta: {
       provider,
       temperature: temperature ?? null,
       reasoning_effort: null,
-      cacheMetrics
-    }
+      cacheMetrics: legacyCacheMetrics(provider, rawUsage),
+    },
   };
 }
 
-/**
- * Generate a detailed outline using an LLM
- * Similar to chatWithLLM but optimized for outline generation with higher token limits
- * @param {Object} params - {modelId, prompt, config}
- * @returns {Promise<{text: string, meta: Object}>} - Generated outline and metadata
- */
+// ---------------------------------------------------------------------------
+// generateOutlineWithLLM
+// ---------------------------------------------------------------------------
+
 export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, config = {} }) {
   const provider = detectProvider(modelId, vendor);
+  await assertWithinCostCap(config.instructorId, modelId);
   const runtimeParams = await resolveModelRuntimeConfiguration(modelId);
   const temperature = runtimeParams.temperature ?? config.temperature ?? null;
   const reasoningEffort = runtimeParams.reasoning_effort ?? config.reasoning_effort ?? null;
   const reasoningModel = isOpenAIReasoning(modelId);
   const overrideMaxTokens = Number.isFinite(config.maxTokens) ? Number(config.maxTokens) : null;
+  const ctx = usageContext(config, 'case_writer');
 
   if (provider === 'openrouter') {
     const apiKey = await resolveProviderKey('openrouter', config.instructorId);
@@ -559,13 +586,14 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
       mergedParams.temperature = Number(temperature);
     }
     const messages = [{ role: 'user', content: prompt }];
-    const { text } = await callOpenRouter({
+    const { text, rawUsage } = await callOpenRouter({
       modelId,
       messages,
       runtimeParams: mergedParams,
       maxTokens: overrideMaxTokens ?? 16000,
       apiKey,
     });
+    trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
     return {
       text,
       meta: {
@@ -581,10 +609,7 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
     const tokenCap = overrideMaxTokens ?? 16000;
     const payload = {
       model: modelId,
-      messages: [
-        { role: 'user', content: prompt },
-      ],
-      // gpt-5 / o-series reasoning models reject `max_tokens` and require `max_completion_tokens`.
+      messages: [{ role: 'user', content: prompt }],
       ...(reasoningModel
         ? { max_completion_tokens: tokenCap }
         : { max_tokens: tokenCap }),
@@ -608,13 +633,14 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
       },
       body: JSON.stringify(payload),
     });
-
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`OpenAI error: ${text}`);
     }
     const data = await response.json();
     const text = data?.choices?.[0]?.message?.content?.trim() || '';
+    const rawUsage = data?.usage || null;
+    trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
     return { text, meta: appliedParams };
   }
 
@@ -629,10 +655,8 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
       },
       body: JSON.stringify({
         model: modelId,
-        max_tokens: overrideMaxTokens ?? 8192, // Claude supports up to 8192 by default
-        messages: [
-          { role: 'user', content: [{ type: 'text', text: prompt }] },
-        ],
+        max_tokens: overrideMaxTokens ?? 8192,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
         ...(temperature !== null && temperature !== undefined ? { temperature: Number(temperature) } : {}),
       }),
     });
@@ -642,6 +666,8 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
     }
     const data = await response.json();
     const text = data?.content?.[0]?.text?.trim() || '';
+    const rawUsage = data?.usage || null;
+    trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
     return { text, meta: { provider, temperature: temperature ?? null, reasoning_effort: null } };
   }
 
@@ -657,7 +683,6 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
       topP: 0.9,
     },
   });
-
   const candidate =
     typeof generation?.response?.text === 'function'
       ? generation.response.text()
@@ -666,12 +691,11 @@ export async function generateOutlineWithLLM({ modelId, vendor = null, prompt, c
         : generation?.response?.candidates?.[0]?.content?.parts?.[0]?.text
           || (typeof generation?.text === 'function' ? generation.text() : generation?.text)
           || '';
-
   if (!candidate) {
     throw new Error('Gemini returned an empty outline');
   }
-
+  const rawUsage = generation.usageMetadata || generation.response?.usageMetadata || null;
+  trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
   const text = typeof candidate === 'string' ? candidate : String(candidate);
   return { text, meta: { provider, temperature: temperature ?? null, reasoning_effort: null } };
 }
-

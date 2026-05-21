@@ -56,12 +56,18 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
       [instructorId]
     );
     const [iRows] = await pool.execute(
-      'SELECT use_system_key FROM instructors WHERE id = ? LIMIT 1',
+      'SELECT use_system_key, allowed_vendors FROM instructors WHERE id = ? LIMIT 1',
       [instructorId]
     );
+    let allowedVendors = null;
+    const av = iRows[0]?.allowed_vendors;
+    if (av != null) {
+      try { allowedVendors = typeof av === 'object' ? av : JSON.parse(av); } catch (_) { allowedVendors = null; }
+    }
     res.json({
       instructorId,
       useSystemKey: iRows[0]?.use_system_key === 1,
+      allowedVendors,
       keys: rows
     });
   } catch (err) {
