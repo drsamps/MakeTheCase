@@ -964,7 +964,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     const authToken = localStorage.getItem('admin_auth_token');
     if (!authToken) return;
     try {
-      const response = await fetch(`${getApiBaseUrl()}/models/${modelId}`, {
+      const response = await fetch(`${getApiBaseUrl()}/models/${encodeURIComponent(modelId)}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -3957,7 +3957,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
     setIsSavingModel(true);
     try {
-      const response = await fetch(editingModel ? `${getApiBaseUrl()}/models/${editingModel.model_id}` : `${getApiBaseUrl()}/models`, {
+      const response = await fetch(editingModel ? `${getApiBaseUrl()}/models/${encodeURIComponent(editingModel.model_id)}` : `${getApiBaseUrl()}/models`, {
         method: editingModel ? 'PATCH' : 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -3990,7 +3990,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       return;
     }
     try {
-      const response = await fetch(`${getApiBaseUrl()}/models/${model.model_id}`, {
+      const response = await fetch(`${getApiBaseUrl()}/models/${encodeURIComponent(model.model_id)}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -4017,7 +4017,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       return;
     }
     try {
-      const response = await fetch(`${getApiBaseUrl()}/models/${model.model_id}`, {
+      const response = await fetch(`${getApiBaseUrl()}/models/${encodeURIComponent(model.model_id)}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -4086,7 +4086,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       return;
     }
     try {
-      const response = await fetch(`${getApiBaseUrl()}/models/${model.model_id}`, {
+      const response = await fetch(`${getApiBaseUrl()}/models/${encodeURIComponent(model.model_id)}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${authToken}`,
@@ -10147,7 +10147,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   <label className="block text-sm font-medium text-gray-700">Model ID</label>
                   {isOpenRouterImport && (
                     <a
-                      href="https://openrouter.ai/models"
+                      href="https://openrouter.ai/models?output_modalities=text"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-xs font-medium text-purple-700 hover:text-purple-900 hover:underline"

@@ -64,7 +64,7 @@ const CaseWriterShell: React.FC<Props> = ({ onLogout, user }) => {
         {projectId ? (
           <CaseWriterProject projectId={projectId} onBack={backToList} user={user} />
         ) : (
-          <CaseWriterHome onOpenProject={openProject} />
+          <CaseWriterHome onOpenProject={openProject} user={user} />
         )}
       </main>
     </div>

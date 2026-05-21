@@ -1,11 +1,21 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { caseWriterApi, CaseWriterProjectSummary, PrincipleCandidate } from '../../services/caseWriter/api';
+import { getApiBaseUrl } from '../../services/apiClient';
+import { useGenerationTimer } from './useGenerationTimer';
+import PromptInfoButton from './PromptInfoButton';
 
 type SortKey = 'title' | 'teaching_principle' | 'industry' | 'owner_name' | 'status' | 'updated_at';
 type SortDir = 'asc' | 'desc';
 
+interface ModelOption {
+  model_id: string;
+  display_name?: string;
+  vendor?: string;
+}
+
 interface Props {
   onOpenProject: (projectId: string) => void;
+  user?: { full_name?: string; email?: string; role?: string } | null;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -16,7 +26,8 @@ const STATUS_BADGE: Record<string, string> = {
   archived: 'bg-yellow-100 text-yellow-700'
 };
 
-const CaseWriterHome: React.FC<Props> = ({ onOpenProject }) => {
+const CaseWriterHome: React.FC<Props> = ({ onOpenProject, user }) => {
+  const isAdmin = user?.role === 'admin';
   const [projects, setProjects] = useState<CaseWriterProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -28,10 +39,33 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject }) => {
   const [suggestText, setSuggestText] = useState('');
   const [suggesting, setSuggesting] = useState(false);
   const [suggestions, setSuggestions] = useState<PrincipleCandidate[]>([]);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [suggestModelOverride, setSuggestModelOverride] = useState<string>('');
+  const [showSuggestModelPicker, setShowSuggestModelPicker] = useState(false);
+  const suggestTimerText = useGenerationTimer(suggesting);
   const [searchText, setSearchText] = useState('');
   const [ownerFilter, setOwnerFilter] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('updated_at');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const t = localStorage.getItem('admin_auth_token');
+        const res = await fetch(`${getApiBaseUrl()}/models?enabled=true`, {
+          headers: t ? { Authorization: `Bearer ${t}` } : {}
+        });
+        if (!res.ok) return;
+        const json = await res.json();
+        const list: any[] = json?.data || json || [];
+        setModels(list.map(m => ({
+          model_id: m.model_id,
+          display_name: m.model_name || m.display_name || m.model_id,
+          vendor: m.vendor
+        })));
+      } catch { /* non-fatal */ }
+    })();
+  }, []);
 
   const reload = async () => {
     setLoading(true);
@@ -183,7 +217,19 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject }) => {
             />
             <p className="text-xs text-gray-500 mt-1">The single concept this case should teach. The brief and scenarios are generated from this.</p>
           </div>
-          <div className="mb-3 border-t border-gray-100 pt-3">
+          <div className="flex gap-2 justify-end mb-3">
+            <button
+              type="button"
+              onClick={() => setShowNew(false)}
+              className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded"
+            >Cancel</button>
+            <button
+              type="submit"
+              disabled={creating}
+              className="bg-blue-600 text-white px-4 py-2 text-sm rounded hover:bg-blue-700 disabled:opacity-50"
+            >{creating ? 'Creating…' : 'Create'}</button>
+          </div>
+          <div className="border-t border-gray-100 pt-3">
             <button
               type="button"
               onClick={() => setSuggestOpen(o => !o)}
@@ -206,18 +252,29 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject }) => {
                     onClick={async () => {
                       setSuggesting(true);
                       setErr(null);
-                      const { data, error } = await caseWriterApi.extractPrinciples({ content: suggestText });
+                      const { data, error } = await caseWriterApi.extractPrinciples({
+                        content: suggestText,
+                        model_id: suggestModelOverride || undefined
+                      });
                       setSuggesting(false);
                       if (error || !data) { setErr(error?.message || 'Could not extract principles'); return; }
                       setSuggestions(data.principles || []);
                     }}
-                    className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
+                    className={`px-3 py-1.5 text-sm rounded disabled:opacity-50 ${
+                      suggesting
+                        ? 'bg-green-500 text-white animate-pulse cursor-wait'
+                        : 'bg-blue-600 hover:bg-blue-700 text-white'
+                    }`}
                   >
-                    {suggesting ? 'Thinking…' : 'Suggest principles from text'}
+                    {suggesting ? `Thinking… ${suggestTimerText}` : 'Suggest principles from text'}
                   </button>
                   <span className="text-xs text-gray-500">or</span>
-                  <label className={`px-3 py-1.5 text-sm rounded cursor-pointer ${suggesting ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}>
-                    {suggesting ? 'Thinking…' : 'Upload PDF / DOCX'}
+                  <label className={`px-3 py-1.5 text-sm rounded cursor-pointer ${
+                    suggesting
+                      ? 'bg-green-500 text-white animate-pulse cursor-wait'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  }`}>
+                    {suggesting ? `Thinking… ${suggestTimerText}` : 'Upload PDF / DOCX'}
                     <input
                       type="file"
                       accept=".pdf,.docx,.doc,.md,.txt"
@@ -228,7 +285,9 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject }) => {
                         if (!file) return;
                         setSuggesting(true);
                         setErr(null);
-                        const { data, error } = await caseWriterApi.extractPrinciplesFromFile(file);
+                        const { data, error } = await caseWriterApi.extractPrinciplesFromFile(file, {
+                          model_id: suggestModelOverride || undefined
+                        });
                         setSuggesting(false);
                         if (error || !data) { setErr(error?.message || 'Could not extract principles'); return; }
                         setSuggestions(data.principles || []);
@@ -236,6 +295,31 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject }) => {
                       className="hidden"
                     />
                   </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowSuggestModelPicker(s => !s)}
+                    title="Choose a different model for this generation"
+                    className="text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50"
+                  >
+                    ⚙ {suggestModelOverride ? suggestModelOverride : 'model'}
+                  </button>
+                  {showSuggestModelPicker && models.length > 0 && (
+                    <select
+                      value={suggestModelOverride}
+                      onChange={(e) => setSuggestModelOverride(e.target.value)}
+                      className="text-xs px-2 py-1 border border-gray-300 rounded"
+                    >
+                      <option value="">(use default)</option>
+                      {models.map(m => (
+                        <option key={m.model_id} value={m.model_id}>
+                          {m.display_name || m.model_id}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {isAdmin && (
+                    <PromptInfoButton use="case_writer.principle_extraction" isAdmin={isAdmin} />
+                  )}
                 </div>
                 {suggestions.length > 0 && (
                   <ul className="space-y-1 mt-2">
@@ -255,18 +339,6 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject }) => {
                 )}
               </div>
             )}
-          </div>
-          <div className="flex gap-2 justify-end">
-            <button
-              type="button"
-              onClick={() => setShowNew(false)}
-              className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded"
-            >Cancel</button>
-            <button
-              type="submit"
-              disabled={creating}
-              className="bg-blue-600 text-white px-4 py-2 text-sm rounded hover:bg-blue-700 disabled:opacity-50"
-            >{creating ? 'Creating…' : 'Create'}</button>
           </div>
         </form>
       )}
@@ -339,7 +411,13 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject }) => {
                         {p.title || <span className="text-gray-500 italic">Untitled</span>}
                       </button>
                     </td>
-                    <td className="px-4 py-2 text-gray-700">{p.teaching_principle || '—'}</td>
+                    <td className="px-4 py-2 text-gray-700">
+                      {p.teaching_principle
+                        ? (p.teaching_principle.length > 50
+                            ? <span title={p.teaching_principle}>{p.teaching_principle.slice(0, 50)}…</span>
+                            : p.teaching_principle)
+                        : '—'}
+                    </td>
                     <td className="px-4 py-2 text-gray-700">{p.industry || '—'}</td>
                     <td className="px-4 py-2 text-gray-700">
                       <span title={p.owner_type}>{p.owner_name || '—'}</span>

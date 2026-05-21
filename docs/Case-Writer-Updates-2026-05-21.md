@@ -44,6 +44,18 @@ Rewrites `case_writer.student_case_draft` (version `default`):
 - All other boundary rules (the MUST / MUST NOT list) preserved.
 - This migration also XML-wraps `{learning_brief}`, `{case_blueprint}`, and `{revision_hint}` — see §3.
 
+> **Follow-up fix (Migration 064, same day).** Migrations 062 and 063, in
+> rewriting the prompt templates to add the XML wrappers documented below,
+> accidentally reverted the *output format* instruction on `teaching_brief`,
+> `case_blueprint`, `student_case_draft`, and `teaching_note` from
+> "Return ONLY a markdown document" back to "Return ONLY a JSON object". The
+> four `/generate/*` routes only run the LLM output through
+> `stripMarkdownFence()` (they do not JSON-parse), so instructors saw raw JSON
+> rendered in `MarkdownPreview`. Migration 064 restores the markdown-first
+> contract while keeping the XML-wrapped inputs from 062/063 and the
+> narrative-prose requirements from 062. See CLAUDE.md → Case Writer →
+> Markdown-first outputs for the rule to preserve in future migrations.
+
 ## 3. XML-wrapped injected variables (Migration 063)
 
 Wraps every injected user-supplied variable in named XML tags with an explicit anti-injection note. Affected prompts:
@@ -56,6 +68,8 @@ Wraps every injected user-supplied variable in named XML tags with an explicit a
 | `case_writer.student_case_draft`          | `{learning_brief}`, `{case_blueprint}`, `{revision_hint}` *(in 062)* |
 | `case_writer.teaching_note`               | `{learning_brief}`, `{case_blueprint}`, `{student_case}`, `{source_materials}`, `{revision_hint}` |
 | `case_writer.publish_field_extraction`    | `{student_case}`, `{teaching_note}` |
+| `case_writer.reference_summary` *(in 065)* | `{content}`, `{title}`, `{source_notes}` |
+| `case_writer.principle_extraction` *(in 066)* | `{content}`, `{title}`, `{type}` |
 
 Pattern:
 ```

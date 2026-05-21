@@ -150,6 +150,8 @@ sudo systemctl reload apache2
 
 **Note:** Adjust the destination path if your Apache configuration structure is different.
 
+**Encoded slashes in URLs (don't remove these directives):** The config includes `AllowEncodedSlashes NoDecode` and the `nocanon` option on `ProxyPass`. Both are required together so that path params containing a literal `/` (e.g. OpenRouter model IDs like `deepseek/deepseek-v4-flash`) reach the Node backend intact. Without `AllowEncodedSlashes NoDecode`, Apache returns 404 on any URL containing `%2F`. Without `nocanon`, `mod_proxy` decodes `%2F` back to `/` before forwarding, which causes routes like `POST /api/models/:id/test` to mismatch and return "Model not found".
+
 ### 11. Verify Deployment
 
 ```bash
