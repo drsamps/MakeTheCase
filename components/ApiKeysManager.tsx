@@ -143,6 +143,13 @@ const ApiKeysManager: React.FC = () => {
         </div>
       )}
 
+      {Array.isArray(data?.allowedVendors) && data.allowedVendors.length < PROVIDER_ORDER.length && (
+        <div className="mb-4 p-3 bg-amber-50 text-amber-800 text-sm rounded border border-amber-200">
+          <strong>Your account is restricted to: {data.allowedVendors.map(v => PROVIDER_LABELS[v].split(' (')[0]).join(', ')}.</strong>{' '}
+          Other vendors below are shown for reference but are not available to you. Contact an admin to request access.
+        </div>
+      )}
+
       {data?.useSystemKey && (
         <div className="mb-4 p-3 bg-blue-50 text-blue-800 text-sm rounded border border-blue-200">
           An admin has granted you permission to use the shared system key.
@@ -218,7 +225,7 @@ const ApiKeysManager: React.FC = () => {
                     <input
                       type="password"
                       autoComplete="off"
-                      placeholder={stored ? 'Paste new key to rotate' : 'Paste API key'}
+                      placeholder={stored ? `…${stored.key_hint} — paste new key to rotate` : 'Paste API key'}
                       value={drafts[p]}
                       onChange={e => setDrafts(prev => ({ ...prev, [p]: e.target.value }))}
                       className="flex-1 text-sm border border-gray-300 rounded px-3 py-1.5 font-mono"

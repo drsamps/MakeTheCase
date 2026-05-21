@@ -78,10 +78,10 @@ All paths are under `/api/api-keys` (`server/routes/apiKeys.js`). All require `v
 
 | Method | Path | Body / Effect |
 |---|---|---|
-| `GET` | `/api/api-keys` | List caller's keys: `{instructorId, useSystemKey, keys: [{provider, key_hint, enabled, last_validated_at, last_validation_error, created_at, updated_at}]}` |
-| `POST` | `/api/api-keys` | `{provider, apiKey}` — encrypts and upserts. `apiKey` must be a string ≥ 8 chars. Re-POSTing overwrites the existing row and clears `last_validated_at`. |
+| `GET` | `/api/api-keys` | List caller's keys, wrapped as `{data: {instructorId, useSystemKey, allowedVendors, keys: [...]}, error: null}` to match the rest of the API. `allowedVendors` is `null` when unrestricted, otherwise the array set by an admin. |
+| `POST` | `/api/api-keys` | `{provider, apiKey}` — encrypts and upserts. `apiKey` must be a string ≥ 8 chars. **Rejects with 403** if `provider` is not in the caller's `allowed_vendors`. Re-POSTing overwrites the existing row and clears `last_validated_at`. |
 | `DELETE` | `/api/api-keys/:provider` | Removes the row. |
-| `PATCH` | `/api/api-keys/:provider/enabled` | `{enabled: boolean}` — toggle without deleting the blob. Disabled keys are skipped by `resolveProviderKey`. |
+| `PATCH` | `/api/api-keys/:provider/enabled` | `{enabled: boolean}` — toggle without deleting the blob. **Re-enabling rejects with 403** if the provider isn't in `allowed_vendors`; disabling is always allowed so a revoked key can still be turned off. Disabled keys are skipped by `resolveProviderKey`. |
 | `POST` | `/api/api-keys/:provider/test` | Optional smoke test against the provider. |
 | `POST` | `/api/api-keys/admin/use-system-key/:instructorId` | **Superuser only.** `{enable: boolean}` — flips `instructors.use_system_key`. Refuses system accounts. |
 
@@ -92,6 +92,16 @@ Every mutating route writes an `audit_log` entry: `apikey.set`, `apikey.delete`,
 Defined in two places (kept in sync):
 - `instructor_api_keys.provider` ENUM (migration 050).
 - `ENV_KEY_BY_PROVIDER` in `keyResolver.js` — maps provider → env var name (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`). Note: `google` falls back to the legacy `API_KEY` env var if `GEMINI_API_KEY` is missing.
+
+### Allowed vendors per instructor
+
+`instructors.allowed_vendors` (JSON array, nullable) restricts which providers an instructor can choose. `NULL` means "no restriction" — legacy rows behave as before. New instructors default to `["openrouter"]`. Only superusers can change this field (via the PATCH `/api/instructors/:id` route).
+
+Enforcement happens in three layers, all reading the same column:
+
+1. **Model dropdown** (`server/routes/models.js`): models for disallowed vendors are filtered out of the GET response when an instructor identity is in scope.
+2. **API Keys UI** (`components/ApiKeysManager.tsx`): renders a top-of-screen amber banner listing the allowed vendors, hides the input on disallowed-vendor cards, and shows a "Removed by admin" badge so the instructor sees what's restricted. Already-stored keys for now-disallowed vendors stay in the DB but are not editable until access is re-granted.
+3. **API Keys backend** (`server/routes/apiKeys.js`): defense in depth via `getAllowedVendors(instructorId)`. POST `/` and PATCH `/:provider/enabled` (when enabling) both 403 if the provider isn't in the list — so a curl bypass or stale client can't write a forbidden key.
 
 ## How LLM calls pick up the right key
 

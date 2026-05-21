@@ -25,6 +25,17 @@ const router = express.Router();
 
 const ALLOWED_PROVIDERS = ['openai', 'anthropic', 'google', 'openrouter'];
 
+// Returns the instructor's allowed_vendors as an array, or null if unrestricted.
+async function getAllowedVendors(instructorId) {
+  const [rows] = await pool.execute(
+    'SELECT allowed_vendors FROM instructors WHERE id = ? LIMIT 1',
+    [instructorId]
+  );
+  const av = rows[0]?.allowed_vendors;
+  if (av == null) return null;
+  try { return typeof av === 'object' ? av : JSON.parse(av); } catch (_) { return null; }
+}
+
 function callerInstructorId(req) {
   // Admin acting as themselves doesn't own keys directly; they manage them via
   // impersonation (X-Act-As-Instructor) which sets req.effectiveInstructorId.
@@ -65,10 +76,13 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
       try { allowedVendors = typeof av === 'object' ? av : JSON.parse(av); } catch (_) { allowedVendors = null; }
     }
     res.json({
-      instructorId,
-      useSystemKey: iRows[0]?.use_system_key === 1,
-      allowedVendors,
-      keys: rows
+      data: {
+        instructorId,
+        useSystemKey: iRows[0]?.use_system_key === 1,
+        allowedVendors,
+        keys: rows
+      },
+      error: null
     });
   } catch (err) {
     console.error('[apiKeys/list]', err);
@@ -94,6 +108,13 @@ router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   }
 
   try {
+    const allowedVendors = await getAllowedVendors(instructorId);
+    if (Array.isArray(allowedVendors) && !allowedVendors.includes(provider)) {
+      return res.status(403).json({
+        error: `Your account is not permitted to store a key for "${provider}". Allowed vendors: ${allowedVendors.join(', ')}.`
+      });
+    }
+
     const blob = encryptKey(apiKey.trim());
     const hint = keyHint(apiKey.trim());
 
@@ -173,6 +194,14 @@ router.patch('/:provider/enabled', verifyToken, requireAdminOrInstructor, async 
   }
   const enabled = req.body?.enabled ? 1 : 0;
   try {
+    if (enabled === 1) {
+      const allowedVendors = await getAllowedVendors(instructorId);
+      if (Array.isArray(allowedVendors) && !allowedVendors.includes(provider)) {
+        return res.status(403).json({
+          error: `Your account is not permitted to enable "${provider}". Allowed vendors: ${allowedVendors.join(', ')}.`
+        });
+      }
+    }
     await pool.execute(
       'UPDATE instructor_api_keys SET enabled = ? WHERE instructor_id = ? AND provider = ?',
       [enabled, instructorId, provider]
