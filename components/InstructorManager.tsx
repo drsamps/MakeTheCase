@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/apiClient';
 import { AdminUser } from '../types';
+import { personLabel } from '../utils/confirmLabels';
 
 interface InstructorManagerProps {
   user: AdminUser | null | undefined;
@@ -310,13 +311,14 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
     }
   };
 
-  const handleDeleteAdmin = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this admin? This action cannot be undone.')) {
+  const handleDeleteAdmin = async (admin: Admin) => {
+    const label = personLabel({ name: admin.who, email: admin.email });
+    if (!confirm(`Delete admin ${label}? This cannot be undone.`)) {
       return;
     }
 
     try {
-      const response = await api.delete(`/admins/${id}`);
+      const response = await api.delete(`/admins/${admin.id}`);
       if (response.error) {
         setError(response.error.message || response.error);
       } else {
@@ -514,13 +516,17 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
     }
   };
 
-  const handleDeleteInstructor = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this instructor? This will also remove all their semester and section assignments.')) {
+  const instructorDeleteLabel = (instructor: Instructor): string =>
+    personLabel({ name: instructor.full_name, email: instructor.email });
+
+  const handleDeleteInstructor = async (instructor: Instructor) => {
+    const label = instructorDeleteLabel(instructor);
+    if (!confirm(`Are you sure you want to delete instructor ${label}? This will also remove all their semester and section assignments.`)) {
       return;
     }
 
     try {
-      const response = await api.delete(`/instructors/${id}`);
+      const response = await api.delete(`/instructors/${instructor.id}`);
       if (response.error) {
         setError(response.error.message || response.error);
       } else {
@@ -588,18 +594,23 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
     }
   };
 
-  const handleRemoveSemester = async (instructorId: string, semesterId: number) => {
-    if (!confirm('Remove this semester assignment?')) return;
+  const handleRemoveSemester = async (
+    instructor: Instructor,
+    semesterId: number,
+    semesterName: string
+  ) => {
+    const label = instructorDeleteLabel(instructor);
+    if (!confirm(`Remove semester assignment "${semesterName}" for instructor ${label}?`)) return;
 
     try {
-      const response = await api.delete(`/instructors/${instructorId}/semesters/${semesterId}`);
+      const response = await api.delete(`/instructors/${instructor.id}/semesters/${semesterId}`);
       if (response.error) {
         setError(response.error.message);
       } else {
         fetchInstructors();
         // Refresh expanded details if this instructor is expanded
-        if (expandedInstructorId === instructorId) {
-          fetchInstructorDetails(instructorId);
+        if (expandedInstructorId === instructor.id) {
+          fetchInstructorDetails(instructor.id);
         }
       }
     } catch (err: any) {
@@ -607,18 +618,25 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
     }
   };
 
-  const handleRemoveSection = async (instructorId: string, sectionId: string) => {
-    if (!confirm('Remove this section assignment?')) return;
+  const handleRemoveSection = async (
+    instructor: Instructor,
+    sectionId: string,
+    sectionTitle: string,
+    courseName?: string | null
+  ) => {
+    const label = instructorDeleteLabel(instructor);
+    const titleWithCourse = courseName ? `"${sectionTitle}" (${courseName})` : `"${sectionTitle}"`;
+    if (!confirm(`Remove section assignment ${titleWithCourse} for instructor ${label}?`)) return;
 
     try {
-      const response = await api.delete(`/instructors/${instructorId}/sections/${sectionId}`);
+      const response = await api.delete(`/instructors/${instructor.id}/sections/${sectionId}`);
       if (response.error) {
         setError(response.error.message);
       } else {
         fetchInstructors();
         // Refresh expanded details if this instructor is expanded
-        if (expandedInstructorId === instructorId) {
-          fetchInstructorDetails(instructorId);
+        if (expandedInstructorId === instructor.id) {
+          fetchInstructorDetails(instructor.id);
         }
       }
     } catch (err: any) {
@@ -742,7 +760,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <button onClick={() => handleEditAdmin(admin)} className="text-blue-600 hover:text-blue-900 mr-4">Edit</button>
                         {admin.id !== user?.id && (
-                          <button onClick={() => handleDeleteAdmin(admin.id)} className="text-red-600 hover:text-red-900">Delete</button>
+                          <button onClick={() => handleDeleteAdmin(admin)} className="text-red-600 hover:text-red-900">Delete</button>
                         )}
                       </td>
                     </tr>
@@ -907,7 +925,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
                           +Sec
                         </button>
                         <button onClick={() => handleEditInstructor(instructor)} className="text-gray-600 hover:text-gray-900 mr-2">Edit</button>
-                        <button onClick={() => handleDeleteInstructor(instructor.id)} className="text-red-600 hover:text-red-900">Delete</button>
+                        <button onClick={() => handleDeleteInstructor(instructor)} className="text-red-600 hover:text-red-900">Delete</button>
                       </td>
                     </tr>
                     {/* Expanded Assignment Details */}
@@ -932,7 +950,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
                                           )}
                                         </div>
                                         <button
-                                          onClick={() => handleRemoveSemester(instructor.id, sem.semester_id)}
+                                          onClick={() => handleRemoveSemester(instructor, sem.semester_id, sem.semester_name)}
                                           className="text-red-500 hover:text-red-700 text-sm"
                                         >
                                           Remove
@@ -966,7 +984,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
                                           </div>
                                         </div>
                                         <button
-                                          onClick={() => handleRemoveSection(instructor.id, sec.section_id)}
+                                          onClick={() => handleRemoveSection(instructor, sec.section_id, sec.section_title, sec.course_name)}
                                           className="text-red-500 hover:text-red-700 text-sm"
                                         >
                                           Remove

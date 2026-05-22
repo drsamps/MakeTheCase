@@ -277,13 +277,14 @@ export const CaseFilesManager: React.FC = () => {
     }
   };
 
-  const handleDelete = async (fileId: number) => {
-    if (!confirm('Are you sure you want to delete this file?')) {
+  const handleDelete = async (file: CaseFile) => {
+    const name = file.original_filename || file.filename || '(unnamed)';
+    if (!confirm(`Delete file "${name}"?`)) {
       return;
     }
 
     try {
-      const response = await api.delete(`/case-files/${fileId}`);
+      const response = await api.delete(`/case-files/${file.id}`);
       if (response.error) {
         throw new Error(response.error.message);
       }
@@ -813,7 +814,7 @@ export const CaseFilesManager: React.FC = () => {
                             )}
                             <span className="text-gray-300">|</span>
                             <button
-                              onClick={() => handleDelete(file.id)}
+                              onClick={() => handleDelete(file)}
                               className="text-red-600 hover:text-red-800 text-xs"
                             >
                               Delete

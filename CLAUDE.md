@@ -265,6 +265,16 @@ import { SomeFeatureHelp } from '../help/dashboard';
 </HelpTooltip>
 ```
 
+### Destructive-action confirm() labels
+
+When adding a `window.confirm()` for a destructive row action (Delete, Remove, Kill, Revoke, Deactivate), quote the human-readable label the row displays — not "this X". Pass the entity object into the handler, not a bare ID. Use the helpers in `utils/confirmLabels.ts`:
+
+- `quote(s, max=60)` — wraps a string in `"..."` and truncates with `…` past 60 chars.
+- `personLabel({ name, email })` — `"Jane Doe" (jane@byu.edu)` / `"Jane Doe"` / `"jane@byu.edu"`.
+- `caseLabel(title, caseId)` — quotes the title; falls back to `caseId` only when the title is missing.
+
+Bulk operations stay count-based (`Delete 5 log files?`). Non-destructive confirms (unsaved edits, copy/push, SQL export) are out of scope. Reference impls: `InstructorManager.handleDeleteInstructor`, `Dashboard.handleDeleteCase`.
+
 ### Help Content Files
 Location: `help/dashboard/`
 

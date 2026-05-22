@@ -155,7 +155,7 @@ export const LoggingManager: React.FC = () => {
     if (selectedFiles.size === 0) return;
 
     const confirmMsg = selectedFiles.size === 1
-      ? 'Delete this log file?'
+      ? `Delete log file "${Array.from(selectedFiles)[0]}"?`
       : `Delete ${selectedFiles.size} log files?`;
 
     if (!window.confirm(confirmMsg)) return;

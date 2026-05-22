@@ -102,9 +102,9 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
     reload();
   }
 
-  async function remove(refId: string) {
-    if (!confirm('Delete this reference?')) return;
-    const { error } = await caseWriterApi.deleteReference(projectId, refId);
+  async function remove(r: { reference_id: string; title?: string | null }) {
+    if (!confirm(`Delete reference "${r.title || '(untitled)'}"?`)) return;
+    const { error } = await caseWriterApi.deleteReference(projectId, r.reference_id);
     if (error) { onError(error.message); return; }
     reload();
   }
@@ -229,7 +229,7 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
                       : (r.content_summary ? 'Re-summarize' : 'Summarize')}
                   </button>
                   <button
-                    onClick={() => remove(r.reference_id)}
+                    onClick={() => remove(r)}
                     className="text-xs px-2 py-1 text-red-600 border border-red-200 rounded hover:bg-red-50"
                   >
                     Delete

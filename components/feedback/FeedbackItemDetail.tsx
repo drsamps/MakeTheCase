@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { getApiBaseUrl } from '../../services/apiClient';
+import { personLabel, quote } from '../../utils/confirmLabels';
 
 interface Item {
   id: number;
@@ -81,7 +82,12 @@ const FeedbackItemDetail: React.FC<Props> = ({ itemId, isAdmin = false, onClose,
   const remove = async () => {
     const token = getActiveToken();
     if (!token) return;
-    const ok = window.confirm('Permanently delete this feedback item? This cannot be undone.');
+    const who = item
+      ? personLabel({ name: item.submitter_name, email: item.submitter_email })
+      : 'this submitter';
+    const stripped = (item?.body ?? '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+    const excerpt = quote(stripped || item?.category_name || '(no body)', 60);
+    const ok = window.confirm(`Permanently delete feedback from ${who} (${excerpt})? This cannot be undone.`);
     if (!ok) return;
     setSaving(true);
     try {

@@ -77,8 +77,8 @@ const ScenariosList: React.FC<Props> = ({
     onScenariosChange(next);
   }
 
-  function deleteCard(idx: number) {
-    if (!confirm('Delete this scenario card?')) return;
+  function deleteCard(idx: number, card: ScenarioCard) {
+    if (!confirm(`Delete scenario "${card.title || 'Untitled'}"?`)) return;
     onScenariosChange(scenarios.filter((_, i) => i !== idx));
   }
 
@@ -347,7 +347,7 @@ const ScenariosList: React.FC<Props> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => deleteCard(idx)}
+                    onClick={() => deleteCard(idx, card)}
                     className="text-xs px-2 py-1 text-red-600 border border-red-200 rounded hover:bg-red-50"
                   >
                     Delete

@@ -157,9 +157,9 @@ const TeamsManager: React.FC = () => {
     await loadDetail(selectedTeamId);
   };
 
-  const handleRevokeInvite = async (invId: number) => {
-    if (!confirm('Revoke this invitation?')) return;
-    const { error } = await api.post(`/teams/invitations/${invId}/revoke`);
+  const handleRevokeInvite = async (inv: InvitationRow) => {
+    if (!confirm(`Revoke invitation for ${inv.invited_email} (${inv.proposed_role})?`)) return;
+    const { error } = await api.post(`/teams/invitations/${inv.id}/revoke`);
     if (error) { setError(apiErrorMessage(error.message)); return; }
     if (selectedTeamId) await loadDetail(selectedTeamId);
   };
@@ -365,7 +365,7 @@ const TeamsManager: React.FC = () => {
                         <span>{inv.invited_email} <span className="text-xs text-gray-500">({inv.proposed_role})</span></span>
                         {isOwner && (
                           <button
-                            onClick={() => handleRevokeInvite(inv.id)}
+                            onClick={() => handleRevokeInvite(inv)}
                             className="text-xs text-red-700 hover:underline"
                           >
                             Revoke

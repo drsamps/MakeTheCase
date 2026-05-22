@@ -143,11 +143,11 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject, user }) => {
     return sortDir === 'asc' ? ' ▲' : ' ▼';
   }
 
-  const handleDelete = async (projectId: string) => {
-    if (!confirm('Delete this project? This cannot be undone.')) return;
-    const { error } = await caseWriterApi.deleteProject(projectId);
+  const handleDelete = async (project: { project_id: string; title?: string | null }) => {
+    if (!confirm(`Delete project "${project.title || 'Untitled'}"? This cannot be undone.`)) return;
+    const { error } = await caseWriterApi.deleteProject(project.project_id);
     if (error) { setErr(error.message); return; }
-    setProjects(prev => prev.filter(p => p.project_id !== projectId));
+    setProjects(prev => prev.filter(p => p.project_id !== project.project_id));
   };
 
   const handleClone = async (projectId: string) => {
@@ -439,7 +439,7 @@ const CaseWriterHome: React.FC<Props> = ({ onOpenProject, user }) => {
                       >Clone</button>
                       {p.can_edit && (
                         <button
-                          onClick={() => handleDelete(p.project_id)}
+                          onClick={() => handleDelete(p)}
                           className="text-xs text-red-600 hover:text-red-800 hover:underline"
                         >Delete</button>
                       )}

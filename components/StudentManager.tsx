@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/apiClient';
+import { personLabel } from '../utils/confirmLabels';
 
 interface Student {
   id: string;
@@ -342,13 +343,14 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this student? This action cannot be undone.')) {
+  const handleDelete = async (student: Student) => {
+    const label = personLabel({ name: student.full_name, email: student.email });
+    if (!confirm(`Delete student ${label}? This cannot be undone.`)) {
       return;
     }
 
     try {
-      const response = await api.delete(`/students/${id}`);
+      const response = await api.delete(`/students/${student.id}`);
       if (response.error) {
         setError(response.error.message || response.error);
       } else {
@@ -639,7 +641,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
                       Reset Password
                     </button>
                     <button
-                      onClick={() => handleDelete(student.id)}
+                      onClick={() => handleDelete(student)}
                       className="text-red-600 hover:text-red-900"
                     >
                       Delete

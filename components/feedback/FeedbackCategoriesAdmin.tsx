@@ -75,11 +75,11 @@ const FeedbackCategoriesAdmin: React.FC = () => {
     load();
   };
 
-  const softDelete = async (id: number) => {
-    if (!window.confirm('Deactivate this category? Existing submissions keep their label.')) return;
+  const softDelete = async (c: { id: number; name?: string | null }) => {
+    if (!window.confirm(`Deactivate category "${c.name ?? '(unnamed)'}"? Existing submissions keep their label.`)) return;
     const token = getActiveToken();
     if (!token) return;
-    const response = await fetch(`${getApiBaseUrl()}/feedback/categories/${id}`, {
+    const response = await fetch(`${getApiBaseUrl()}/feedback/categories/${c.id}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -133,7 +133,7 @@ const FeedbackCategoriesAdmin: React.FC = () => {
               Active
             </label>
             <button
-              onClick={() => softDelete(c.id)}
+              onClick={() => softDelete(c)}
               className="text-xs text-red-600 hover:text-red-800"
               disabled={!c.active}
               title={c.active ? 'Soft-delete' : 'Already inactive'}

@@ -32,6 +32,7 @@ import SectionResultsSummary from './SectionResultsSummary';
 import HelpTooltip from './ui/HelpTooltip';
 import { ChatOptionsHelp, PersonasHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
+import { personLabel, caseLabel } from '../utils/confirmLabels';
 import {
   canDeletePersona,
   canEditPersona,
@@ -1124,10 +1125,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   // Remove instructor from semester
-  const handleRemoveInstructorFromSemester = async (instructorId: string, semesterId: number) => {
-    if (!confirm('Remove this instructor from the semester?')) return;
+  const handleRemoveInstructorFromSemester = async (
+    instructor: { id: string; full_name?: string | null; email?: string | null },
+    semesterId: number,
+    semesterName: string
+  ) => {
+    const label = personLabel({ name: instructor.full_name, email: instructor.email });
+    if (!confirm(`Remove instructor ${label} from semester "${semesterName}"?`)) return;
     try {
-      const response = await fetch(`${getApiBaseUrl()}/instructors/${instructorId}/semesters/${semesterId}`, {
+      const response = await fetch(`${getApiBaseUrl()}/instructors/${instructor.id}/semesters/${semesterId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
       });
@@ -1635,11 +1641,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
-  const handleDeleteCriterion = async (criteriaId: string) => {
-    if (!confirm('Are you sure you want to delete this criterion?')) return;
+  const handleDeleteCriterion = async (criterion: { criteria_id: string; name?: string | null }) => {
+    if (!confirm(`Delete criterion "${criterion.name ?? '(unnamed)'}"?`)) return;
     try {
       const token = localStorage.getItem('admin_auth_token');
-      const response = await fetch(`${getApiBaseUrl()}/rubric-criteria/${criteriaId}`, {
+      const response = await fetch(`${getApiBaseUrl()}/rubric-criteria/${criterion.criteria_id}`, {
         method: 'DELETE',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -1734,11 +1740,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
-  const handleDeleteRubric = async (rubricId: number) => {
-    if (!confirm('Are you sure you want to delete this rubric?')) return;
+  const handleDeleteRubric = async (rubric: { rubric_id: number; rubric_name?: string | null }) => {
+    if (!confirm(`Delete rubric "${rubric.rubric_name ?? '(unnamed)'}"?`)) return;
     try {
       const token = localStorage.getItem('admin_auth_token');
-      const response = await fetch(`${getApiBaseUrl()}/rubrics/${rubricId}`, {
+      const response = await fetch(`${getApiBaseUrl()}/rubrics/${rubric.rubric_id}`, {
         method: 'DELETE',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -2024,12 +2030,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
-  const handleDeletePersona = async (personaId: string) => {
-    if (!confirm(`Are you sure you want to delete persona "${personaId}"? This cannot be undone.`)) return;
+  const handleDeletePersona = async (persona: { persona_id: string; persona_name?: string | null }) => {
+    const name = persona.persona_name ?? persona.persona_id;
+    if (!confirm(`Delete persona "${name}" (${persona.persona_id})? This cannot be undone.`)) return;
     setPersonaListError(null);
     try {
       const token = localStorage.getItem('admin_auth_token');
-      const response = await fetch(`${getApiBaseUrl()}/personas/${personaId}`, {
+      const response = await fetch(`${getApiBaseUrl()}/personas/${persona.persona_id}`, {
         method: 'DELETE',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -2294,10 +2301,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
-  const handleDeleteCase = async (caseId: string) => {
-    if (!confirm(`Are you sure you want to delete case "${caseId}"? This cannot be undone.`)) return;
+  const handleDeleteCase = async (caseItem: { case_id: string; case_title?: string | null }) => {
+    if (!confirm(`Delete case ${caseLabel(caseItem.case_title, caseItem.case_id)}? This cannot be undone.`)) return;
     try {
-      const { error } = await api.from('cases').delete().eq('case_id', caseId);
+      const { error } = await api.from('cases').delete().eq('case_id', caseItem.case_id);
       if (error) throw new Error(error.message);
       fetchCases();
     } catch (err: any) {
@@ -2378,8 +2385,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
-  const handleRemoveCaseFromSection = async (sectionId: string, caseId: string) => {
-    if (!confirm('Remove this case from the section?')) return;
+  const handleRemoveCaseFromSection = async (
+    sectionId: string,
+    caseId: string,
+    sectionTitle?: string | null,
+    caseTitle?: string | null
+  ) => {
+    const caseLbl = caseLabel(caseTitle, caseId);
+    const message = sectionTitle
+      ? `Remove case ${caseLbl} from section "${sectionTitle}"?`
+      : `Remove case ${caseLbl} from this section?`;
+    if (!confirm(message)) return;
     try {
       const { error } = await api.from(`sections/${sectionId}/cases/${caseId}`).delete();
       if (error) throw new Error(error.message);
@@ -4537,7 +4553,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         Scenarios
                       </button>
                       <button
-                        onClick={() => handleDeleteCase(caseItem.case_id)}
+                        onClick={() => handleDeleteCase(caseItem)}
                         className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
                       >
                         Delete
@@ -4737,10 +4753,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   // Handle deleting semester
-  const handleDeleteSemester = async (semesterId: number) => {
-    if (!confirm('Are you sure you want to delete this semester? This cannot be undone.')) return;
+  const handleDeleteSemester = async (semester: { id: number; semester_name?: string | null }) => {
+    if (!confirm(`Delete semester "${semester.semester_name ?? '(unnamed)'}"? This cannot be undone.`)) return;
     try {
-      const response = await fetch(`${getApiBaseUrl()}/semesters/${semesterId}`, {
+      const response = await fetch(`${getApiBaseUrl()}/semesters/${semester.id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
       });
@@ -5037,7 +5053,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       Edit
                     </button>
                     <button
-                      onClick={() => handleDeleteSemester(semester.id)}
+                      onClick={() => handleDeleteSemester(semester)}
                       className="px-3 py-1.5 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded"
                     >
                       Delete
@@ -5234,7 +5250,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         <span className="ml-2 text-sm text-gray-500">{instructor.email}</span>
                       </div>
                       <button
-                        onClick={() => handleRemoveInstructorFromSemester(instructor.id, selectedSemesterForInstructors.id)}
+                        onClick={() => handleRemoveInstructorFromSemester(instructor, selectedSemesterForInstructors.id, selectedSemesterForInstructors.semester_name)}
                         className="text-red-600 hover:text-red-700 text-sm"
                       >
                         Remove
@@ -5776,7 +5792,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                               {sc.active ? 'Active' : 'Inactive'}
                             </button>
                             <button
-                              onClick={() => handleRemoveCaseFromSection(selectedAssignmentSection!, sc.case_id)}
+                              onClick={() => handleRemoveCaseFromSection(selectedAssignmentSection!, sc.case_id, getSelectedSection()?.section_title, sc.case_title)}
                               className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-50 text-red-600 border border-gray-200 hover:bg-red-50 hover:border-red-200"
                             >
                               Remove
@@ -7237,7 +7253,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   {isEditingDefault === 'section' && (
                     <button
                       onClick={async () => {
-                        if (!confirm('Delete this section default? The section will revert to using global defaults.')) {
+                        const sectionTitle = assignmentsSectionsList.find((s: any) => s.section_id === chatOptionsSection)?.section_title || chatOptionsSection || '(unknown section)';
+                        if (!confirm(`Delete chat-options default for section "${sectionTitle}"? The section will revert to global defaults.`)) {
                           return;
                         }
                         try {
@@ -7539,7 +7556,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       </button>
                       {deletable && (
                         <button
-                          onClick={() => handleDeletePersona(persona.persona_id)}
+                          onClick={() => handleDeletePersona(persona)}
                           className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
                         >
                           Delete
@@ -7735,11 +7752,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   }, [primaryTab, monitorSubTab, chatsAutoRefresh, fetchCaseChats]);
 
   // Kill a chat session
-  const handleKillChat = async (chatId: string) => {
-    if (!confirm('Are you sure you want to kill this chat session? The student will not be able to continue.')) return;
+  const handleKillChat = async (chat: { id: string; student_name?: string | null; case_title?: string | null; case_id?: string | null; section_title?: string | null }) => {
+    const who = personLabel({ name: chat.student_name });
+    const caseLbl = caseLabel(chat.case_title, chat.case_id);
+    const section = chat.section_title || 'no section';
+    if (!confirm(`Kill chat for ${who} on case ${caseLbl} (${section})? The student will not be able to continue.`)) return;
 
     try {
-      const response = await fetch(`${getApiBaseUrl()}/case-chats/${chatId}/kill`, {
+      const response = await fetch(`${getApiBaseUrl()}/case-chats/${chat.id}/kill`, {
         method: 'PATCH',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
@@ -7759,11 +7779,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   // Delete a chat session (allows student to try again)
-  const handleDeleteChat = async (chatId: string) => {
-    if (!confirm('Are you sure you want to delete this chat session? This will allow the student to start a new chat for this case. This action cannot be undone.')) return;
+  const handleDeleteChat = async (chat: { id: string; student_name?: string | null; case_title?: string | null; case_id?: string | null; section_title?: string | null }) => {
+    const who = personLabel({ name: chat.student_name });
+    const caseLbl = caseLabel(chat.case_title, chat.case_id);
+    const section = chat.section_title || 'no section';
+    if (!confirm(`Delete chat for ${who} on case ${caseLbl} (${section})? This will allow the student to start a new chat for this case. This action cannot be undone.`)) return;
 
     try {
-      const response = await fetch(`${getApiBaseUrl()}/case-chats/${chatId}`, {
+      const response = await fetch(`${getApiBaseUrl()}/case-chats/${chat.id}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
@@ -8194,14 +8217,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       )}
                       {['started', 'in_progress'].includes(chat.status) && (
                         <button
-                          onClick={() => handleKillChat(chat.id)}
+                          onClick={() => handleKillChat(chat)}
                           className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
                         >
                           Kill
                         </button>
                       )}
                       <button
-                        onClick={() => handleDeleteChat(chat.id)}
+                        onClick={() => handleDeleteChat(chat)}
                         className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-700 border-red-300 hover:bg-red-100"
                         title="Delete this chat session to allow student to try again"
                       >
@@ -9229,7 +9252,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                             </button>
                             {!rubric.is_system_default && (
                               <button
-                                onClick={() => handleDeleteRubric(rubric.rubric_id)}
+                                onClick={() => handleDeleteRubric(rubric)}
                                 className="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200"
                               >
                                 Delete
@@ -9332,7 +9355,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                 Edit
                               </button>
                               <button
-                                onClick={() => handleDeleteCriterion(criterion.criteria_id)}
+                                onClick={() => handleDeleteCriterion(criterion)}
                                 className="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200"
                               >
                                 Delete
@@ -10641,7 +10664,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                               {sc.active ? 'Active' : 'Inactive'}
                             </button>
                             <button
-                              onClick={() => handleRemoveCaseFromSection(managingSectionCases.section_id, sc.case_id)}
+                              onClick={() => handleRemoveCaseFromSection(managingSectionCases.section_id, sc.case_id, managingSectionCases.section_title, sc.case_title)}
                               className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-50 text-red-600 border border-gray-200 hover:bg-red-50 hover:border-red-200"
                             >
                               Remove
