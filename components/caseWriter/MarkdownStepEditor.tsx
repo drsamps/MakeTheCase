@@ -50,6 +50,10 @@ interface Props {
   // POST /projects/:id/tweak. The diff viewer renders below the editor.
   tweakStep?: 'brief' | 'blueprint' | 'student_case' | 'teaching_note';
   projectId?: string;
+  // Appended to the preview pane's classes. The source-material detail screen
+  // uses it to tag the preview as the print region (see `cw-print-region` in
+  // admin.css) — printing needs a handle on the rendered output specifically.
+  previewClassName?: string;
 }
 
 const MarkdownStepEditor: React.FC<Props> = ({
@@ -71,7 +75,8 @@ const MarkdownStepEditor: React.FC<Props> = ({
   promptUse,
   isAdmin = false,
   tweakStep,
-  projectId
+  projectId,
+  previewClassName
 }) => {
   const localSaveState = useSaveState(loadedValue, currentValue);
   const saveState = saveStateOverride ?? localSaveState;
@@ -368,7 +373,7 @@ const MarkdownStepEditor: React.FC<Props> = ({
           {showPreview && (
             <MarkdownPreview
               markdown={currentValue}
-              className="min-h-[420px] p-3 border border-gray-200 rounded-md bg-white overflow-y-auto"
+              className={`min-h-[420px] p-3 border border-gray-200 rounded-md bg-white overflow-y-auto${previewClassName ? ` ${previewClassName}` : ''}`}
             />
           )}
         </div>

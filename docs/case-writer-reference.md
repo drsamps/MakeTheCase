@@ -111,6 +111,8 @@ PDFs go through `pdf-parse` + `cleanPdfText()`, which carries no headings and st
 - `GET /projects/:id/references/:refId/content` — full text + outline. **The only route that ships `content` to the browser**; the list routes return `CHAR_LENGTH(content)` and a compact selection summary (`withSelectionSummary()`) instead.
 - `POST /projects/:id/references/:refId/rebuild-outline` — force re-detection; clears the selection.
 - `POST /projects/:id/references/:refId/fetch` — download a `link`'s page into `content`. Flag-gated; see *Fetching a link's page text* below.
+- `GET /projects/:id/references/:refId/download-original` — stream the file an upload came from; see *Viewing and editing a reference* below.
+- `GET /reference-library` and `POST /projects/:id/references/import` — cross-project reuse; see *Copying source material between projects* below.
 - `GET /config` — `{ url_fetch_enabled }`. Deliberately its own route rather than a field on the reference list, which is about references.
 - `POST /projects/:id/references/:refId/suggest-sections` — `case_writer.reference_section_select`. Sends **only the outline** (id, title, char count, 120-char snippet) plus the teaching principle, never the document body. Returns a suggestion and **persists nothing**; unknown section ids are dropped server-side. The picker pre-checks the boxes and the instructor saves.
 
@@ -154,6 +156,33 @@ HTML returns `format: 'text'` deliberately: Readability's `textContent` carries 
 When extraction yields under 200 characters the raw `<body>` text is stored instead and `fetch_degraded` is returned so the UI warns — a JS-rendered SPA shell whose `<nav>` yields 40 characters must not quietly become source material. If nothing at all is extractable the route 422s.
 
 **Error messages are the whole product here.** Paywalls, bot blocks, and JS-rendered pages are the common failures and none are fixable server-side, so every thrown message ends by telling the instructor to open the page and paste the text instead.
+
+#### Viewing and editing a reference (migration 075)
+
+`components/caseWriter/ReferenceDetail.tsx` is a **drill-in pane**, not a modal: `SourceMaterial` renders it in place of the list when `detailRefId` is set, so the step rail and project header stay put and the side-by-side editor gets the full pane width. Back out with *‹ Back to Source Material*.
+
+Two tabs, both `MarkdownStepEditor` (which was already built to work without `onGenerate` — omitting it collapses the control row to Save + the preview toggle):
+
+- **Text** — loaded via `getReferenceContent`, saved via `PATCH { content }`. Because the server calls `refreshReferenceOutline()` on any `content` write, saving **clears the section selection and every per-step override**; the tab says so up front when a selection exists rather than letting it vanish silently.
+- **Summary** — `onGenerate` is wired to the summarize route, so the Generate button, model override, and timer come for free. `formatSummaryForEditing()` renders the stored `{summary, key_facts, …}` JSON as markdown; saving writes it back as a plain string, which `formatReferenceSummary()` has always accepted. Hand-editing therefore flattens the JSON, and Generate restores it — stated in the UI.
+
+> **`summary_scope_hash` is written on the PATCH path too.** It used to be set only by the summarize route, so a hand-edited summary would keep a stale hash — or NULL, which `summaryMatchesScope()` treats as untrusted — and be **silently withheld from every generation step**. The PATCH handler now recomputes `selectionScopeKey(row, null)` whenever `content_summary` changes, and NULLs it when the summary is cleared. This is the same rule as everywhere else: *write `summary_scope_hash` whenever you write `content_summary`.*
+
+**Print.** A **Print** button calls `window.print()`, and Ctrl+P works identically. The rules live in a scoped `<style>` block in `ReferenceDetail.tsx` rather than in `admin.css` — **`admin.css` is not imported anywhere**, so its rules are dormant and adding to it would have done nothing. (The precedent is the `.cw-input` block in `CaseWriterProject.tsx`.) Everything is hidden except `.cw-print-region`, which `MarkdownStepEditor` puts on the preview via its `previewClassName` prop; `max-height: none; overflow: visible` is the load-bearing part, without which the browser prints only the scrolled viewport.
+
+**Download.** Text and Summary save client-side as `.md` (`components/caseWriter/download.ts`, extracted from the export pane). **Original file** streams from `GET .../download-original`, which resolves `upload_stored_path` against `case_files/` and refuses anything that escapes that root — `/`, `\`, absolute, and drive-qualified forms are all rejected. Only uploads made after migration 075 have the path recorded, so the option is hidden when `upload_original_name` is NULL; older uploads were deliberately not backfilled, since a wrong name+size match would hand an instructor someone else's document.
+
+#### Copying source material between projects
+
+`GET /reference-library?q=&exclude_project_id=` lists references across every project in `buildVisibilityScope(req, 'case_writer_project', 'p')` — own, team-shared, and public. This exposes nothing new: the reference routes already require only `view`, so those rows were reachable, just not browsable. It returns `CHAR_LENGTH(content)` and never `content`; the picker's Preview reuses `GET /projects/:sourceId/references/:refId/content`, keeping the one-route invariant intact.
+
+`POST /projects/:id/references/import` takes `{ items: [{project_id, reference_id}] }`. Destination `edit` comes from `loadProject` (POST infers it); each source is separately checked for `view`, the bar `/clone` uses. An unreadable item is reported in `skipped` rather than sinking the batch.
+
+> **Do not call `refreshReferenceOutline()` on import.** The copy is byte-identical, so `outline`, `outline_hash`, `selection`, and `selection_overrides` stay valid and come across verbatim — preserving the section picking that makes copying worth doing. Rebuilding would clear the selection and throw exactly that away. `/clone` skips it for the same reason.
+
+Copies arrive `approved_by_user = 0`, matching `/fetch` and `/summarize`, and carry a `Copied from project "…" on <date>` line in `source_notes`. `/clone` was fixed at the same time to carry the `fetched_*` and `upload_*` columns, which it had been dropping.
+
+Because the picker makes cross-project reading concrete, `VisibilityPicker` gained an optional `disclosures` prop and the Case Writer passes wording that states plainly what team/public sharing exposes — including the full text of every reference. Callers that pass nothing (personas, rubrics, cases) render unchanged.
 
 ##### UI
 

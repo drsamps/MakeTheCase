@@ -22,6 +22,7 @@ import StepSourceScope from './StepSourceScope';
 import CaseVersionsPanel from './CaseVersionsPanel';
 import PromptInfoButton, { logKeyFor } from './PromptInfoButton';
 import { useGenerationTimer } from './useGenerationTimer';
+import { saveBlob } from './download';
 
 interface Props {
   projectId: string;
@@ -66,6 +67,39 @@ const STEP_DESCRIPTIONS: Record<PaneKey, string> = {
   teaching: 'Instructor-only analysis, recommended approach, and grading materials.',
   publish: 'Set the four publish-time fields (protagonist, opening question, arguments) and publish to the chat tool.',
   export: 'Download case + teaching note as Markdown, Word, or PDF.'
+};
+
+/**
+ * What each visibility level actually exposes on a Case Writer project.
+ *
+ * Worth stating plainly, because a project carries more than its five artifacts:
+ * anyone with view access can also read every reference's full stored text
+ * (GET .../references/:refId/content requires only 'view'), which is the thing an
+ * instructor is least likely to expect when they tick "Public".
+ *
+ * The one thing view access does NOT include is the original uploaded PDF/DOCX:
+ * .../download-original requires 'edit', and /references/import drops the file
+ * linkage when the copier could only view the source. Extracted text is what this
+ * platform generates from and what these disclosures promise; the untouched file
+ * may be licensed material the instructor cannot redistribute.
+ */
+const VISIBILITY_DISCLOSURES: Partial<Record<Visibility, React.ReactNode>> = {
+  private: <>Only you and platform admins can open this project.</>,
+  team: (
+    <>
+      Members of the selected team(s) can open this project and read <strong>everything in it</strong>:
+      your source material — the full text of every uploaded, pasted, or fetched reference — plus the
+      Learning Brief, Blueprint, Student Case, and Teaching Note. Members granted <em>edit</em> can
+      also change them, and can download the original uploaded files.
+    </>
+  ),
+  public: (
+    <>
+      Every signed-in instructor and admin on this platform can open this project and read{' '}
+      <strong>everything in it</strong>, including the full text of your source material. This does{' '}
+      <strong>not</strong> publish anything to the open internet.
+    </>
+  )
 };
 
 const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
@@ -430,14 +464,7 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
   async function doExport(format: 'md' | 'docx' | 'pdf', doc: 'case' | 'teaching_note' | 'combined') {
     const { blob, filename, error } = await caseWriterApi.export(projectId, { format, doc });
     if (error || !blob) { setErr(error || 'Export failed'); return; }
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename || `case-writer-${doc}.${format}`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    saveBlob(blob, filename || `case-writer-${doc}.${format}`);
   }
 
   if (loading) return <div className="p-6 text-gray-500">Loading project…</div>;
@@ -701,6 +728,7 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
                   teamShares={teamSharesDraft}
                   onTeamSharesChange={setTeamSharesDraft}
                   canPublish={isAdmin || Boolean((user as any)?.can_publish)}
+                  disclosures={VISIBILITY_DISCLOSURES}
                   radioTrailing={
                     <button
                       type="button"

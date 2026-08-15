@@ -276,6 +276,7 @@ const REFERENCE_ROW_COLUMNS = `
   CHAR_LENGTH(content) AS content_length, outline, outline_hash, selection, selection_overrides,
   approved_by_user, source_notes, link_url,
   fetched_at, fetched_content_type, fetched_final_url,
+  upload_original_name,
   case_file_id, created_at, updated_at`;
 
 function parseJsonColumn(value) {
@@ -484,8 +485,14 @@ export async function loadSourceMaterials(projectId, step) {
     if (parts.length === 0 && r.link_url) parts.push(`URL: ${r.link_url}`);
     if (parts.length === 0) continue;
 
+    // A link added without a title stores NULL so that a later fetch can adopt
+    // the page's own <title>. Until that happens the URL is the only name this
+    // source has — mirrors displayTitle() in components/caseWriter/referenceDisplay.tsx.
+    const heading = r.title?.trim()
+      || (r.type === 'link' && r.link_url ? `URL: ${r.link_url}` : '(untitled)');
+
     blocks.push(
-      `### Source: ${r.title || '(untitled)'} (${r.type})`
+      `### Source: ${heading} (${r.type})`
       + (r.source_notes ? `\nNotes: ${r.source_notes}` : '')
       + `\n\n${parts.join('\n\n')}`
     );
@@ -906,7 +913,9 @@ router.post('/projects/:id/clone', async (req, res) => {
     const [refRows] = await pool.execute(
       `SELECT type, title, content, content_summary, summary_scope_hash, use_mode,
               outline, outline_hash, selection, selection_overrides, approved_by_user,
-              source_notes, link_url, case_file_id
+              source_notes, link_url,
+              fetched_at, fetched_content_type, fetched_final_url,
+              upload_original_name, upload_stored_path, case_file_id
        FROM case_writer_references WHERE project_id = ?`,
       [sourceId]
     );
@@ -918,15 +927,21 @@ router.post('/projects/:id/clone', async (req, res) => {
         `INSERT INTO case_writer_references
            (reference_id, project_id, type, title, content, content_summary, summary_scope_hash, use_mode,
             outline, outline_hash, selection, selection_overrides,
-            approved_by_user, source_notes, link_url, case_file_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            approved_by_user, source_notes, link_url,
+            fetched_at, fetched_content_type, fetched_final_url,
+            upload_original_name, upload_stored_path, case_file_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           uuidv4(), newId, r.type, r.title, r.content, r.content_summary, r.summary_scope_hash, r.use_mode,
           r.outline ? JSON.stringify(parseJsonColumn(r.outline)) : null,
           r.outline_hash,
           r.selection ? JSON.stringify(parseJsonColumn(r.selection)) : null,
           r.selection_overrides ? JSON.stringify(parseJsonColumn(r.selection_overrides)) : null,
-          r.approved_by_user, r.source_notes, r.link_url, r.case_file_id
+          r.approved_by_user, r.source_notes, r.link_url,
+          // Fetch and upload provenance used to be dropped here, so a cloned
+          // link looked never-fetched and a cloned upload lost its original file.
+          r.fetched_at, r.fetched_content_type, r.fetched_final_url,
+          r.upload_original_name, r.upload_stored_path, r.case_file_id
         ]
       );
     }
@@ -938,6 +953,73 @@ router.post('/projects/:id/clone', async (req, res) => {
     ok(res, newRows[0]);
   } catch (err) {
     console.error('[caseWriter] clone project error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Reference library — source material on OTHER projects this instructor can see
+// ----------------------------------------------------------------------------
+
+/**
+ * Every reference on every project in the caller's visibility scope, so a
+ * curated document can be reused instead of re-uploaded and re-sectioned.
+ *
+ * This exposes nothing new: `GET /projects/:id/references` already requires only
+ * 'view', so these rows were reachable to this caller before — they were just not
+ * browsable. Because the picker makes that concrete, the visibility control now
+ * spells out what team/public sharing publishes (VISIBILITY_DISCLOSURES).
+ *
+ * `content` is deliberately absent: the browser still gets a reference body from
+ * exactly one route, and the picker's Preview reuses it.
+ */
+router.get('/reference-library', async (req, res) => {
+  try {
+    const scope = buildVisibilityScope(req, 'case_writer_project', 'p');
+    const excludeId = req.query.exclude_project_id || '';
+    const q = String(req.query.q || '').trim();
+
+    // "Mine" follows the impersonated identity when an admin is acting as an
+    // instructor, and falls back to the caller's own id — getEffectiveInstructorId
+    // returns null for a plain admin, which would label their own projects as
+    // someone else's.
+    const meId = getEffectiveInstructorId(req) || req.user?.id || '';
+    const params = [meId, ...scope.params];
+    let sql =
+      `SELECT r.reference_id, r.project_id, r.type, r.title, r.link_url,
+              CHAR_LENGTH(r.content) AS content_length,
+              (r.content_summary IS NOT NULL) AS has_summary,
+              r.use_mode, r.updated_at,
+              p.title AS project_title, p.visibility,
+              (p.owner_id = ?) AS is_own,
+              COALESCE(i.full_name, a.who, a.email, i.email) AS owner_name
+       FROM case_writer_references r
+       JOIN case_writer_projects p ON p.project_id = r.project_id
+       LEFT JOIN instructors i ON p.owner_type = 'instructor' AND p.owner_id = i.id
+       LEFT JOIN admins      a ON p.owner_type = 'admin'      AND p.owner_id = a.id
+       WHERE ${scope.whereSql}`;
+
+    if (excludeId) { sql += ' AND r.project_id <> ?'; params.push(excludeId); }
+    if (q) {
+      // Must cover the same four fields the picker filters on client-side.
+      // owner_name is repeated as its COALESCE rather than its alias: MySQL does
+      // not accept a SELECT alias in WHERE.
+      sql +=
+        ` AND (r.title LIKE ? OR p.title LIKE ? OR r.link_url LIKE ?
+               OR COALESCE(i.full_name, a.who, a.email, i.email) LIKE ?)`;
+      const like = `%${q}%`;
+      params.push(like, like, like, like);
+    }
+    sql += ' ORDER BY p.updated_at DESC, r.created_at ASC LIMIT 500';
+
+    const [rows] = await pool.execute(sql, params);
+    ok(res, rows.map(r => ({
+      ...r,
+      has_summary: !!r.has_summary,
+      is_own: !!r.is_own
+    })));
+  } catch (err) {
+    console.error('[caseWriter] reference library error:', err);
     fail(res, 500, err.message);
   }
 });
@@ -1008,6 +1090,66 @@ router.get('/projects/:id/references/:refId/content', async (req, res) => {
     });
   } catch (err) {
     console.error('[caseWriter] reference content error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
+/**
+ * Stream back the file an `uploaded_file` reference was created from.
+ *
+ * Only works for uploads made after migration 075 — earlier rows recorded the
+ * extracted text but never the path, so there is nothing to serve and the UI
+ * hides the option (`upload_original_name` is NULL).
+ *
+ * Requires 'edit', not 'view' — the one reference route that does. Everything
+ * else about a shared project is text this platform generated or extracted, and
+ * the visibility disclosure says so; the original PDF/DOCX is the instructor's
+ * unaltered file, which may be licensed material they can read but not
+ * redistribute. Costs nothing in the UI: view-only callers get the read-only
+ * document view (`can_edit === false` in CaseWriterProject) and never see the
+ * Source Material pane this button lives in. `/references/import` deliberately
+ * drops the file linkage for the same reason — see there.
+ */
+router.get('/projects/:id/references/:refId/download-original', async (req, res) => {
+  try {
+    const { project, forbidden } = await loadProject(req.params.id, req, 'edit');
+    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (!project) return fail(res, 404, 'Project not found');
+
+    const [rows] = await pool.execute(
+      `SELECT upload_original_name, upload_stored_path FROM case_writer_references
+       WHERE reference_id = ? AND project_id = ?`,
+      [req.params.refId, req.params.id]
+    );
+    if (rows.length === 0) return fail(res, 404, 'Reference not found');
+    const { upload_original_name: name, upload_stored_path: stored } = rows[0];
+    if (!stored) {
+      return fail(res, 404, 'No original file was recorded for this reference. Only files uploaded after this feature shipped can be downloaded.');
+    }
+
+    // `upload_stored_path` is written by the upload route, but treat it as
+    // untrusted anyway: resolve it and refuse anything that climbs out of
+    // case_files/, so a tampered row cannot become an arbitrary file read.
+    const absolute = path.resolve(CASE_FILES_DIR, stored);
+    const root = path.resolve(CASE_FILES_DIR);
+    if (absolute !== root && !absolute.startsWith(root + path.sep)) {
+      console.error('[caseWriter] download-original path escaped case_files:', stored);
+      return fail(res, 400, 'Stored file path is not valid');
+    }
+
+    try {
+      await fs.access(absolute);
+    } catch {
+      return fail(res, 404, 'The original file is no longer on the server.');
+    }
+
+    res.download(absolute, name || path.basename(absolute), (err) => {
+      // Headers are already sent by the time res.download can fail, so all that
+      // is left is to log it.
+      if (err) console.error('[caseWriter] download-original send error:', err.message);
+    });
+  } catch (err) {
+    console.error('[caseWriter] download original error:', err);
     fail(res, 500, err.message);
   }
 });
@@ -1164,6 +1306,150 @@ router.post('/projects/:id/references', async (req, res) => {
   }
 });
 
+/**
+ * Copy references from other projects into this one.
+ *
+ * Permission: POST infers 'edit' on the destination via loadProject; each source
+ * is separately checked for 'view', the same bar /clone uses for reading a
+ * project it is about to duplicate.
+ *
+ * The copy is byte-identical, which is the whole point — `outline`, `outline_hash`,
+ * `selection`, and `selection_overrides` come across untouched and stay valid, so
+ * an instructor who picked three chapters out of a textbook keeps that work.
+ * `refreshReferenceOutline()` must therefore NOT be called here; it would clear
+ * the selection and quietly throw away the curation that motivates copying.
+ *
+ * One field deliberately does not come across byte-identically: the upload file
+ * linkage. See the INSERT below.
+ *
+ * Inserts run in a transaction. A partial batch is the bad outcome here — the
+ * client shows "Copy failed" and does not reload, so already-inserted rows stay
+ * invisible until the next refresh and a retry produces duplicates with doubled
+ * provenance lines.
+ */
+router.post('/projects/:id/references/import', async (req, res) => {
+  let conn;
+  try {
+    const { project, forbidden } = await loadProject(req.params.id, req);
+    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (!project) return fail(res, 404, 'Project not found');
+
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (items.length === 0) return fail(res, 400, 'No references selected');
+    if (items.length > 50) return fail(res, 400, 'Copy at most 50 references at a time');
+
+    const imported = [];
+    const skipped = [];
+    const stamp = new Date().toISOString().slice(0, 10);
+
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+
+    for (const item of items) {
+      const sourceProjectId = item?.project_id;
+      const sourceRefId = item?.reference_id;
+      if (!sourceProjectId || !sourceRefId) {
+        skipped.push({ reference_id: sourceRefId || null, reason: 'Malformed request item' });
+        continue;
+      }
+      if (sourceProjectId === req.params.id) {
+        skipped.push({ reference_id: sourceRefId, reason: 'Already in this project' });
+        continue;
+      }
+
+      const access = await canAccessResource(req, 'case_writer_project', sourceProjectId, 'view');
+      if (!access.allowed) {
+        // One unreadable item should not sink the rest of the batch; report it.
+        skipped.push({ reference_id: sourceRefId, reason: 'Not authorized to read the source project' });
+        continue;
+      }
+      // Whether this caller could have downloaded the original file from the
+      // source project directly (see /download-original, which requires 'edit').
+      const canEditSource =
+        (await canAccessResource(req, 'case_writer_project', sourceProjectId, 'edit')).allowed;
+
+      const [srcRows] = await conn.execute(
+        `SELECT r.type, r.title, r.content, r.content_summary, r.summary_scope_hash, r.use_mode,
+                r.outline, r.outline_hash, r.selection, r.selection_overrides,
+                r.source_notes, r.link_url,
+                r.fetched_at, r.fetched_content_type, r.fetched_final_url,
+                r.upload_original_name, r.upload_stored_path, r.case_file_id,
+                p.title AS project_title
+         FROM case_writer_references r
+         JOIN case_writer_projects p ON p.project_id = r.project_id
+         WHERE r.reference_id = ? AND r.project_id = ?`,
+        [sourceRefId, sourceProjectId]
+      );
+      if (srcRows.length === 0) {
+        skipped.push({ reference_id: sourceRefId, reason: 'Reference not found' });
+        continue;
+      }
+      const s = srcRows[0];
+
+      const provenance = [s.source_notes, `Copied from project "${s.project_title || 'Untitled'}" on ${stamp}`]
+        .filter(Boolean).join('\n');
+
+      const newId = uuidv4();
+      await conn.execute(
+        `INSERT INTO case_writer_references
+           (reference_id, project_id, type, title, content, content_summary, summary_scope_hash, use_mode,
+            outline, outline_hash, selection, selection_overrides,
+            approved_by_user, source_notes, link_url,
+            fetched_at, fetched_content_type, fetched_final_url,
+            upload_original_name, upload_stored_path, case_file_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          newId, req.params.id, s.type, s.title, s.content, s.content_summary,
+          s.summary_scope_hash, s.use_mode,
+          // mysql2 hands JSON columns back parsed, so they need re-stringifying.
+          s.outline ? JSON.stringify(parseJsonColumn(s.outline)) : null,
+          s.outline_hash,
+          s.selection ? JSON.stringify(parseJsonColumn(s.selection)) : null,
+          s.selection_overrides ? JSON.stringify(parseJsonColumn(s.selection_overrides)) : null,
+          // approved_by_user is 0 above, deliberately: copied material would
+          // otherwise enter {source_materials} for five generators unreviewed,
+          // which is the same reason /fetch and /summarize reset it.
+          provenance, s.link_url,
+          s.fetched_at, s.fetched_content_type, s.fetched_final_url,
+          // Copying a reference out of a project you can only *view* must not
+          // hand you the original upload: you would own the copy, and
+          // /download-original on your own project would then serve the file
+          // that route just refused you. The extracted text still comes across —
+          // that is what generation uses and what the visibility disclosure
+          // promises. `case_file_id` is left alone: it is a legacy pointer into
+          // `case_files`, which /download-original never reads, and the
+          // summarize route falls back to its converted_text.
+          canEditSource ? s.upload_original_name : null,
+          canEditSource ? s.upload_stored_path : null,
+          s.case_file_id
+        ]
+      );
+      imported.push(newId);
+    }
+
+    if (imported.length === 0) {
+      await conn.rollback();
+      return fail(res, 400, skipped[0]?.reason || 'Nothing could be copied');
+    }
+
+    await conn.commit();
+
+    const placeholders = imported.map(() => '?').join(', ');
+    const [rows] = await conn.execute(
+      `SELECT ${REFERENCE_ROW_COLUMNS}
+       FROM case_writer_references WHERE reference_id IN (${placeholders})`,
+      imported
+    );
+    ok(res, { imported: rows.map(withSelectionSummary), skipped });
+  } catch (err) {
+    if (conn) await conn.rollback().catch(() => {});
+    console.error('[caseWriter] import references error:', err);
+    fail(res, 500, err.message);
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
 router.patch('/projects/:id/references/:refId', async (req, res) => {
   try {
     const { project, forbidden } = await loadProject(req.params.id, req);
@@ -1210,6 +1496,29 @@ router.patch('/projects/:id/references/:refId', async (req, res) => {
     // UPDATE keeps it correct even when content and selection arrive together.
     if (Object.prototype.hasOwnProperty.call(req.body || {}, 'content')) {
       await refreshReferenceOutline(req.params.refId, req.body.content, 'text');
+    }
+
+    // A hand-edited summary needs its scope recorded, exactly like the one the
+    // summarize route writes. Without this the row keeps whatever hash it had —
+    // NULL for a summary written by hand, or a stale one after an edit — and
+    // summaryMatchesScope() then withholds the summary from every generation step
+    // with no visible signal. Runs after the UPDATE so the hash is derived from
+    // the selection as it now stands.
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'content_summary')) {
+      const [cur] = await pool.execute(
+        `SELECT content_summary, outline_hash, selection, selection_overrides
+           FROM case_writer_references WHERE reference_id = ?`,
+        [req.params.refId]
+      );
+      if (cur.length > 0) {
+        // Clearing the summary clears its scope too, so an empty row never looks
+        // like a summary whose scope simply failed to match.
+        const scope = cur[0].content_summary ? selectionScopeKey(cur[0], null) : null;
+        await pool.execute(
+          'UPDATE case_writer_references SET summary_scope_hash = ? WHERE reference_id = ?',
+          [scope, req.params.refId]
+        );
+      }
     }
 
     const [rows] = await pool.execute(
@@ -1338,16 +1647,26 @@ router.post('/projects/:id/references/upload',
       const noteParts = [];
       if (source_notes) noteParts.push(source_notes);
       noteParts.push(`Uploaded file: ${req.file.originalname} (${req.file.size} bytes)`);
+
+      // Record where the file actually landed (migration 075) so the instructor
+      // can download the original later. Stored relative to CASE_FILES_DIR and
+      // with forward slashes, so the value means the same thing on either OS and
+      // the download route has a single root to validate against.
+      const storedPath = path.relative(CASE_FILES_DIR, req.file.path).split(path.sep).join('/');
+
       await pool.execute(
         `INSERT INTO case_writer_references
-           (reference_id, project_id, type, title, content, source_notes)
-         VALUES (?, ?, 'uploaded_file', ?, ?, ?)`,
+           (reference_id, project_id, type, title, content, source_notes,
+            upload_original_name, upload_stored_path)
+         VALUES (?, ?, 'uploaded_file', ?, ?, ?, ?, ?)`,
         [
           referenceId,
           req.params.id,
           title || req.file.originalname,
           convertedText,
-          noteParts.join('\n')
+          noteParts.join('\n'),
+          req.file.originalname,
+          storedPath
         ]
       );
 
@@ -2577,10 +2896,15 @@ router.post('/projects/:id/references/:refId/summarize', async (req, res) => {
       type: ref.type,
       source_notes: ref.source_notes || '',
       scope_note: scopeNote,
-      content: sourceText
+      content: sourceText,
+      // The summary editor is a MarkdownStepEditor, so it renders 💡 Hint like
+      // the five step generators. Migration 076 added the matching placeholder;
+      // all three layers have to be wired or the button does nothing.
+      revision_hint: req.body?.revision_hint || ''
     });
 
     const model = await resolveModel(req.body?.model_id, project.default_model_id);
+    const start = Date.now();
     const { text, meta } = await callOutline(req, {
       modelId: model.model_id,
       vendor: model.vendor,
@@ -2589,6 +2913,15 @@ router.post('/projects/:id/references/:refId/summarize', async (req, res) => {
         temperature: model.temperature,
         reasoning_effort: model.reasoning_effort
       }
+    });
+    await maybeLogCaseWriterPrompt(req, {
+      step: 'reference_summary',
+      promptUse: 'case_writer.reference_summary',
+      modelId: model.model_id,
+      renderedPrompt,
+      response: text,
+      meta,
+      durationMs: Date.now() - start
     });
 
     let summary;

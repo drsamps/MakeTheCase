@@ -6,13 +6,24 @@
  *
  * Threat model: the URL comes from an authenticated instructor, but the *server* is
  * the one making the request, so it can reach anything this host can reach —
- * localhost, the private network, and the cloud metadata endpoint. The defense is
- * DNS resolution + address classification before every connection, repeated on
- * every redirect hop because the origin controls the `Location` header.
+ * localhost, the private network, and the cloud metadata endpoint. The defense has
+ * two halves and needs both:
+ *
+ *   1. DNS resolution + address classification before every connection, repeated
+ *      on every redirect hop because the origin controls the `Location` header.
+ *   2. The *checked addresses* are what the socket connects to. Handing the
+ *      hostname back to an HTTP client would resolve it a second time, and a host
+ *      serving a short-TTL record can answer "public IP" to step 1 and
+ *      "169.254.169.254" to the connection. See `pinnedLookup()`.
+ *
+ * That second half is why this uses node:http/node:https rather than fetch(): the
+ * `lookup` option is the only way to tell the connection which address to use.
  */
 
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import http from 'node:http';
+import https from 'node:https';
 import fsp from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -144,10 +155,10 @@ export function isBlockedAddress(ip) {
 /**
  * Validate one URL immediately before it is contacted.
  *
- * Throws with a user-safe message. Returns the resolved addresses on success.
- * Every address the hostname resolves to is checked, not just the first — a host
- * publishing both a public and a 127.0.0.1 A record must be refused outright,
- * since we do not control which one the socket ends up using.
+ * Throws with a user-safe message. Returns the resolved addresses on success —
+ * the caller MUST connect to those, not re-resolve the hostname (see
+ * `pinnedLookup`). Every address the hostname resolves to is checked, not just
+ * the first, because we do not control which one the socket ends up using.
  */
 export async function assertUrlAllowed(urlString) {
   let url;
@@ -207,88 +218,183 @@ function charsetFrom(header) {
 }
 
 /**
- * Read a response body with a hard byte ceiling, aborting the transfer rather than
- * buffering whatever the origin decides to send. A `Content-Length` that lies is the
- * normal case here, so the running total is what actually enforces the limit.
+ * A `lookup` implementation that hands back only the addresses `assertUrlAllowed`
+ * already cleared for this hop, instead of consulting DNS again.
+ *
+ * This is what makes the address check binding. Without it the sequence is
+ * "resolve, classify, throw the result away, resolve again inside the HTTP
+ * client" — and a hostname whose record has a one-second TTL can answer with a
+ * public address the first time and 127.0.0.1 or 169.254.169.254 the second.
+ * Classifying an address the socket never uses proves nothing.
+ *
+ * Bare IP literals never reach here: node:net connects to them directly, and
+ * `assertUrlAllowed` classifies them before the request is built.
  */
-async function readBodyCapped(response) {
-  const declared = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > MAX_BYTES) {
-    throw new Error(`That page is ${Math.round(declared / 1048576)} MB, over the ${MAX_BYTES / 1048576} MB limit. ${PASTE_INSTEAD}`);
-  }
-
-  if (!response.body) return Buffer.alloc(0);
-
-  const chunks = [];
-  let total = 0;
-  const reader = response.body.getReader();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_BYTES) {
-        await reader.cancel().catch(() => {});
-        throw new Error(`That page is larger than the ${MAX_BYTES / 1048576} MB limit. ${PASTE_INSTEAD}`);
-      }
-      chunks.push(Buffer.from(value));
+function pinnedLookup(addresses) {
+  return function lookup(hostname, options, callback) {
+    if (typeof options === 'function') {
+      callback = options;
+      options = {};
     }
-  } finally {
-    reader.releaseLock?.();
-  }
-  return Buffer.concat(chunks, total);
+    const family = options?.family;
+    const entries = addresses
+      .map(address => ({ address, family: net.isIPv6(address) ? 6 : 4 }))
+      .filter(e => !family || family === 0 || e.family === family);
+
+    if (entries.length === 0) {
+      // Only reachable if the caller asked for a family the validated set does
+      // not contain. Failing closed is the point — never fall back to DNS.
+      callback(new Error(`No validated address for ${hostname}`));
+      return;
+    }
+    if (options?.all) callback(null, entries);
+    else callback(null, entries[0].address, entries[0].family);
+  };
 }
 
 /**
- * Follow redirects by hand so `assertUrlAllowed` runs on every hop.
+ * Issue one GET, connecting only to `addresses`.
  *
- * `redirect: 'follow'` would hand the whole chain to undici and the DNS check would
- * only ever have covered the first URL — which is exactly the hole an open redirector
- * (or a DNS-rebinding host) walks through.
+ * Resolves with the IncomingMessage once headers arrive. The total-response
+ * deadline covers the header phase; `readBodyCapped` installs its own inactivity
+ * timeout for the body, so a slow trickle cannot hold the socket open forever.
  */
-async function fetchFollowingRedirects(startUrl) {
-  let current = startUrl;
+function httpGet(urlString, addresses) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlString);
+    const transport = url.protocol === 'https:' ? https : http;
+    let deadline;
 
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    await assertUrlAllowed(current);
-
-    let response;
-    try {
-      response = await fetch(current, {
-        redirect: 'manual',
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    const req = transport.request(
+      url,
+      {
+        method: 'GET',
+        // Not a hostname override: SNI and certificate validation still use the
+        // hostname from the URL. Only the address selection is pinned.
+        lookup: pinnedLookup(addresses),
         headers: {
           'User-Agent': USER_AGENT,
           'Accept': 'text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.9'
         }
-      });
-    } catch (err) {
-      if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
-        throw new Error(`The page did not respond within ${FETCH_TIMEOUT_MS / 1000} seconds. ${PASTE_INSTEAD}`);
+      },
+      (res) => {
+        clearTimeout(deadline);
+        resolve(res);
       }
-      throw new Error(`Could not reach the page (${err?.cause?.code || err.message}). ${PASTE_INSTEAD}`);
+    );
+
+    deadline = setTimeout(() => {
+      req.destroy(Object.assign(new Error('response timed out'), { code: 'ETIMEDOUT' }));
+    }, FETCH_TIMEOUT_MS);
+
+    req.on('error', (err) => {
+      clearTimeout(deadline);
+      reject(err);
+    });
+    req.end();
+  });
+}
+
+/**
+ * Read a response body with a hard byte ceiling, aborting the transfer rather than
+ * buffering whatever the origin decides to send. A `Content-Length` that lies is the
+ * normal case here, so the running total is what actually enforces the limit.
+ */
+function readBodyCapped(res) {
+  return new Promise((resolve, reject) => {
+    const declared = Number(res.headers['content-length']);
+    if (Number.isFinite(declared) && declared > MAX_BYTES) {
+      res.destroy();
+      reject(new Error(`That page is ${Math.round(declared / 1048576)} MB, over the ${MAX_BYTES / 1048576} MB limit. ${PASTE_INSTEAD}`));
+      return;
     }
 
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location');
-      await response.body?.cancel().catch(() => {});
+    const chunks = [];
+    let total = 0;
+    let settled = false;
+    let idle;
+    const done = (err, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(idle);
+      if (err) reject(err); else resolve(value);
+    };
+
+    // Inactivity timer rather than res.setTimeout: the socket is already detached
+    // by the time 'end' fires, and touching it there throws.
+    const arm = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => {
+        res.destroy();
+        done(new Error(`The page stopped sending data partway through. ${PASTE_INSTEAD}`));
+      }, FETCH_TIMEOUT_MS);
+    };
+    arm();
+
+    res.on('data', (chunk) => {
+      arm();
+      total += chunk.length;
+      if (total > MAX_BYTES) {
+        res.destroy();
+        done(new Error(`That page is larger than the ${MAX_BYTES / 1048576} MB limit. ${PASTE_INSTEAD}`));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    res.on('end', () => done(null, Buffer.concat(chunks, total)));
+    res.on('error', (err) => done(new Error(`The connection dropped while reading the page (${err.code || err.message}). ${PASTE_INSTEAD}`)));
+  });
+}
+
+/**
+ * Follow redirects by hand so `assertUrlAllowed` runs on every hop, and connect to
+ * the addresses it returned.
+ *
+ * An automatic redirect follower would hand the whole chain to the HTTP client and
+ * the address check would only ever have covered the first URL — which is exactly
+ * the hole an open redirector walks through. The per-hop `pinnedLookup` closes the
+ * companion hole, DNS rebinding between the check and the connection.
+ */
+async function fetchFollowingRedirects(startUrl) {
+  let current = startUrl;
+
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const addresses = await assertUrlAllowed(current);
+
+    let response;
+    try {
+      response = await httpGet(current, addresses);
+    } catch (err) {
+      // Both our own deadline and a kernel-level connect timeout land as ETIMEDOUT.
+      if (err?.code === 'ETIMEDOUT') {
+        throw new Error(`The page did not respond within ${FETCH_TIMEOUT_MS / 1000} seconds. ${PASTE_INSTEAD}`);
+      }
+      throw new Error(`Could not reach the page (${err?.code || err?.cause?.code || err.message}). ${PASTE_INSTEAD}`);
+    }
+
+    const status = response.statusCode;
+
+    if (status >= 300 && status < 400) {
+      const location = response.headers.location;
+      response.resume();   // drain so the socket can be reused/closed
       if (!location) {
-        throw new Error(`The page returned HTTP ${response.status} with no redirect target. ${PASTE_INSTEAD}`);
+        throw new Error(`The page returned HTTP ${status} with no redirect target. ${PASTE_INSTEAD}`);
       }
       current = new URL(location, current).toString();
       continue;
     }
 
-    if (!response.ok) {
-      const hint = response.status === 403 || response.status === 401
+    if (status < 200 || status >= 300) {
+      response.resume();
+      const hint = status === 403 || status === 401
         ? ' The site is blocking automated requests or requires a login.'
-        : response.status === 429
+        : status === 429
           ? ' The site is rate-limiting this server.'
-          : response.status === 404
+          : status === 404
             ? ' Check that the URL is still valid.'
             : '';
-      throw new Error(`The page returned HTTP ${response.status}.${hint} ${PASTE_INSTEAD}`);
+      throw new Error(`The page returned HTTP ${status}.${hint} ${PASTE_INSTEAD}`);
     }
 
     return { response, finalUrl: current };
@@ -378,7 +484,7 @@ async function extractBinary(buffer, extWithDot) {
  */
 export async function fetchUrlAsText(urlString) {
   const { response, finalUrl } = await fetchFollowingRedirects(urlString);
-  const contentTypeHeader = response.headers.get('content-type') || '';
+  const contentTypeHeader = response.headers['content-type'] || '';
   const type = baseContentType(contentTypeHeader);
   const buffer = await readBodyCapped(response);
 

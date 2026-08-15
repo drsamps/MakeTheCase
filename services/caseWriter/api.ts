@@ -141,6 +141,12 @@ export interface CaseWriterReference {
   fetched_content_type: string | null;
   /** URL actually read, after redirects. Differs from link_url when the origin redirected. */
   fetched_final_url: string | null;
+  /**
+   * Original filename of an uploaded reference. Null for uploads made before
+   * migration 075 — "Download original" is hidden for those, since the file on
+   * disk cannot be located.
+   */
+  upload_original_name: string | null;
   case_file_id: number | null;
   created_at: string;
   updated_at: string;
@@ -160,6 +166,27 @@ export interface CaseWriterReference {
    * than the current selection, so it will not be sent until re-summarized.
    */
   summary_stale: boolean;
+}
+
+/**
+ * A reference on some other project the instructor can see, as listed by the
+ * copy-from-another-project picker. Carries no `content` — Preview fetches the
+ * body through the normal per-reference content route.
+ */
+export interface ReferenceLibraryItem {
+  reference_id: string;
+  project_id: string;
+  project_title: string | null;
+  owner_name: string | null;
+  visibility: 'private' | 'team' | 'public';
+  is_own: boolean;
+  type: CaseWriterReference['type'];
+  title: string | null;
+  link_url: string | null;
+  content_length: number | null;
+  has_summary: boolean;
+  use_mode: ReferenceUseMode;
+  updated_at: string;
 }
 
 export interface OutlineSection {
@@ -371,6 +398,23 @@ export const caseWriterApi = {
 
   listReferences: (id: string) => req<CaseWriterReference[]>(`/projects/${id}/references`),
 
+  /** Source material on every other project this instructor can see. */
+  listReferenceLibrary: (excludeProjectId: string, q = '') => {
+    const params = new URLSearchParams({ exclude_project_id: excludeProjectId });
+    if (q) params.set('q', q);
+    return req<ReferenceLibraryItem[]>(`/reference-library?${params.toString()}`);
+  },
+
+  /**
+   * Copy references from other projects into this one. Copied rows arrive
+   * unapproved; their section selection is preserved because the text is identical.
+   */
+  importReferences: (id: string, items: { project_id: string; reference_id: string }[]) =>
+    req<{ imported: CaseWriterReference[]; skipped: { reference_id: string | null; reason: string }[] }>(
+      `/projects/${id}/references/import`,
+      { method: 'POST', body: JSON.stringify({ items }) }
+    ),
+
   createReference: (
     id: string,
     body: { type: 'pasted_text' | 'link' | 'saved_framework'; title?: string; content?: string; link_url?: string; source_notes?: string }
@@ -413,6 +457,32 @@ export const caseWriterApi = {
       { method: 'POST' }
     ),
 
+  /**
+   * Stream back the file an `uploaded_file` reference came from. Only available
+   * when `upload_original_name` is set (migration 075 onward).
+   */
+  downloadReferenceOriginal: async (
+    id: string,
+    refId: string
+  ): Promise<{ blob: Blob | null; filename: string | null; error: string | null }> => {
+    try {
+      const res = await fetch(`${CW_BASE()}/projects/${id}/references/${refId}/download-original`, {
+        headers: authHeaders()
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        let message = txt || `HTTP ${res.status}`;
+        try { message = JSON.parse(txt)?.error?.message || message; } catch { /* plain-text body */ }
+        return { blob: null, filename: null, error: message };
+      }
+      const blob = await res.blob();
+      const m = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/);
+      return { blob, filename: m ? m[1] : null, error: null };
+    } catch (err) {
+      return { blob: null, filename: null, error: (err as Error).message };
+    }
+  },
+
   rebuildReferenceOutline: (id: string, refId: string) =>
     req<{ reference_id: string; outline: ReferenceOutline | null }>(
       `/projects/${id}/references/${refId}/rebuild-outline`,
@@ -422,7 +492,16 @@ export const caseWriterApi = {
   deleteReference: (id: string, refId: string) =>
     req<{ reference_id: string; deleted: true }>(`/projects/${id}/references/${refId}`, { method: 'DELETE' }),
 
-  summarizeReference: (id: string, refId: string, body: { model_id?: string } = {}) =>
+  /**
+   * Re-summarize a reference. Takes `revision_hint` and `log_this_prompt` like the
+   * five step generators: the summary editor is a MarkdownStepEditor, so it renders
+   * the 💡 Hint button and the admin log checkbox whether or not this accepts them.
+   */
+  summarizeReference: (
+    id: string,
+    refId: string,
+    body: { model_id?: string; revision_hint?: string; log_this_prompt?: boolean } = {}
+  ) =>
     req<{ reference_id: string; summary: any; meta: GenerateMeta }>(`/projects/${id}/references/${refId}/summarize`, {
       method: 'POST',
       body: JSON.stringify(body)

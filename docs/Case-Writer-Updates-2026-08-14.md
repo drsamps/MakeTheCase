@@ -153,3 +153,55 @@ Setting `case_writer_url_fetch_enabled`, **`'0'` by default**. With the flag off
 ### Verified
 
 Both real dev-database link references fetch clean article prose — 18,276 chars from the Gladly service-recovery post, 21,585 from the Pickleheads guide, no nav menus — and `loadSourceMaterials()` puts that prose inside `<source_materials>` in place of the old one-line URL stub. Every entry in the block table above returns 422 and stores nothing. A refetch over a planted selection cleared `selection` and `selection_overrides` and reported `summary_stale: true`, so a summary predating the refetch is withheld from generation rather than described as current. `https://www.irs.gov/pub/irs-pdf/fw9.pdf` extracts 37,466 chars through `convertFile` and leaves no temp file behind; a PNG is refused by name.
+
+---
+
+## Migration 075 — Source Material: readable rows, a real editor, cross-project reuse
+
+*Added 2026-08-15.*
+
+Migration 074 gave links a **Fetch page text** action, and that pushed an already crowded row past its limit. One `<li>` was carrying seven controls in a single non-wrapping flex row — Approved, Fetch, Use-in-generation, model picker, Summarize, Select portions, Delete — inside a pane capped at `max-w-3xl`, opposite a title with `min-w-0` and no `truncate`. Nothing was labelled, so the numbers it did show had no headings to hang on.
+
+### The row
+
+Three bands in a card with a more prominent border: an identity strip (name + inline rename + **Approved**), a labelled `<dl>` of facts, and a wrapping action strip. Only applicable fields render, so a pasted-text row stays two lines while a fetched link shows five. A link's URL is an anchor that opens in a new tab, and `fetched_final_url` gets its own **Final URL** row when a redirect moved it. The summarization model picker moved behind a `⚙` toggle, the way `MarkdownStepEditor` hides its own.
+
+### The link add-flow bug
+
+`addLink()` sent `title: linkTitle || linkUrl`, so the title column was never empty — which meant the fetch route's `title = COALESCE(NULLIF(title,''), <page title>)` could never fire. **The title-inference logic shipped dead in 074.** The form now sends no title when the field is blank, and `displayTitle()` shows `URL: <url>` until a fetch supplies the real one. Verified: creating a link with no title stores NULL, and fetching turns it into *"How to Play Pickleball - 7 Simple Rules for Beginners"*.
+
+Clearing the title in the UI stores NULL again and the row reverts to the URL. That exposed a smaller regression of the same shape — `loadSourceMaterials()` renders `r.title || '(untitled)'`, so an untitled link reached the model as `### Source: (untitled) (link)`, losing its attribution entirely. It now mirrors `displayTitle()`.
+
+Adding a link also offers **Fetch page text now** (default on, only when the flag is enabled), so the text and the real title arrive in one step.
+
+### Viewing and editing
+
+`ReferenceDetail.tsx` is a drill-in pane rather than a modal — the step rail stays, the editor gets full width, and there is no overlay to fight when printing. **Text** and **Summary** tabs both reuse `MarkdownStepEditor`, which was already designed for this (omitting `onGenerate` collapses its control row to Save + preview toggle). The Summary tab wires `onGenerate` to the summarize route and inherits the model override and timer for free.
+
+**The one change that would have failed silently.** `summary_scope_hash` was written only by the summarize route. A summary edited by hand through PATCH would keep a stale hash — or NULL, which `summaryMatchesScope()` treats as untrusted — and be dropped from all five generators with nothing to show for it. The PATCH handler now recomputes `selectionScopeKey(row, null)` whenever `content_summary` changes and NULLs it when the summary is cleared. Verified against the derivation migration 071 uses for its backfill, and end-to-end: a hand-written summary now appears inside `<source_materials>`, where before the fix it would have been withheld.
+
+Saving new text still clears the section selection — `refreshReferenceOutline()` has to, since the offsets no longer line up — but the tab now says so before you save instead of after.
+
+**Print** was easy, with one wrinkle: `admin.css` is not imported anywhere in the app, so its rules have never applied and adding to it would have done nothing. The print rules live in a component-scoped `<style>` block instead, following `.cw-input` in `CaseWriterProject.tsx`. `max-height: none; overflow: visible` on the print region is what stops the browser printing only the scrolled viewport.
+
+**Download** offers Text and Summary as `.md` client-side. *Original file* needed migration 075: uploads land in `case_files/cw-<id>/uploads/<name>-<timestamp><ext>` but nothing recorded the path, so `upload_original_name` and `upload_stored_path` now capture it. Older uploads were deliberately not backfilled — a wrong name+size match hands an instructor someone else's document, and does it silently. The download route resolves the stored path against `case_files/` and refuses anything that escapes; `/`, `\`, absolute, and drive-qualified traversal all return 400.
+
+### Copying between projects
+
+`GET /reference-library` lists source material across every project in the caller's visibility scope; `POST .../references/import` copies a selection of it. Verified on the dev database: an instructor sees their own private projects plus one public project belonging to an admin, and **not** that admin's two private ones. A batch mixing an allowed and a forbidden source copies the allowed row and reports the other in `skipped` rather than failing wholesale.
+
+**The copy must not rebuild the outline.** Content is byte-identical, so `outline`, `outline_hash`, `selection`, and `selection_overrides` come across verbatim and stay valid — verified with an 11-section, 109,942-char PDF whose 2-section / 22,336-char selection survived intact with `outline_hash === md5(content)`. Calling `refreshReferenceOutline()` would clear exactly the curation that motivates copying. `/clone` has always skipped it for this reason; it was fixed here to also carry the `fetched_*` and `upload_*` columns it had been dropping.
+
+Copies arrive unapproved, like everything else that materially changes what a reference contributes.
+
+### Visibility disclosure
+
+Worth stating in full, because it prompted the feature. Anyone who can *view* a project can already read every reference's full text — `GET .../references/:refId/content` requires only `view` — along with the Brief, Blueprint, Student Case, and Teaching Note. Setting a project to **team** or **public** therefore publishes all of it. "Public" means every signed-in instructor and admin on this platform, **not** the open internet.
+
+That exposure was real but unsurfaced: the read-only project view renders the five artifacts and no source material. The library picker surfaces it deliberately, so `VisibilityPicker` gained an optional `disclosures` prop and the Case Writer passes wording that spells it out. Callers that pass nothing — personas, rubrics, cases — render exactly as before.
+
+## Notes for future work
+
+- The section/excerpt picker is still the `ReferenceContentViewer` modal, launched from the row and from the detail pane's action bar. Folding it in as a third tab means extracting its body into a shared `ReferenceSectionPicker` so `StepSourceScope`'s per-step override modal keeps working.
+- `admin.css` is dead weight: it is imported nowhere, so every rule in it — including the `.help-tooltip-*` block that `HelpTooltip` is documented against — has no effect. Either wire it up (and check nothing shifts) or delete it.
+- Hand-editing a summary flattens `{summary, key_facts, useful_for, cautions}` to markdown. The server has always tolerated a plain string, and Re-summarize restores the structure, but a round trip through the editor loses the field boundaries.

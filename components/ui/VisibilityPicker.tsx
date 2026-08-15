@@ -31,10 +31,19 @@ interface Props {
   sectionHeading?: boolean;
   /** Rendered on the same row as the Private / Team / Public radios (e.g. Save visibility). */
   radioTrailing?: React.ReactNode;
+  /**
+   * Per-level note spelling out what the selected visibility actually exposes.
+   * Optional and resource-specific: "everything in it" means different things for
+   * a persona and for a Case Writer project (whose source material carries the
+   * full text of every uploaded document). Callers that pass nothing render as
+   * before.
+   */
+  disclosures?: Partial<Record<Visibility, React.ReactNode>>;
 }
 
 const VisibilityPicker: React.FC<Props> = ({
-  value, onChange, teamShares, onTeamSharesChange, canPublish, className, sectionHeading, radioTrailing
+  value, onChange, teamShares, onTeamSharesChange, canPublish, className, sectionHeading, radioTrailing,
+  disclosures
 }) => {
   const [teams, setTeams] = useState<TeamRow[]>([]);
 
@@ -91,6 +100,12 @@ const VisibilityPicker: React.FC<Props> = ({
         )}
         {radioTrailing}
       </div>
+
+      {disclosures?.[value] && (
+        <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+          {disclosures[value]}
+        </div>
+      )}
 
       {value === 'team' && (
         <div className="mt-2 p-2 border border-gray-200 rounded bg-gray-50">

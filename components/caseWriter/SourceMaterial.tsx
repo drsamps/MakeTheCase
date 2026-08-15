@@ -8,6 +8,20 @@ import {
 import { useGenerationTimer } from './useGenerationTimer';
 import PromptInfoButton from './PromptInfoButton';
 import ReferenceContentViewer from './ReferenceContentViewer';
+import ReferenceDetail from './ReferenceDetail';
+import ReferenceLibraryPicker from './ReferenceLibraryPicker';
+import {
+  USE_MODE_LABEL,
+  USE_MODE_LABEL_SELECTED,
+  ApprovedToggle,
+  InlineTitleEditor,
+  ReferenceFieldGrid,
+  describeContribution,
+  displayTitle,
+  hasSelection,
+  hasText,
+  fmt
+} from './referenceDisplay';
 
 interface ModelOption {
   model_id: string;
@@ -23,90 +37,6 @@ interface Props {
   isAdmin?: boolean;
 }
 
-const TYPE_LABEL: Record<string, string> = {
-  pasted_text: 'Pasted text',
-  uploaded_file: 'Uploaded file',
-  link: 'Link',
-  saved_framework: 'Saved framework'
-};
-
-// `use_mode` chooses how much detail; the selection chooses which part of the
-// document. Labels track whether a selection exists so the two read as one
-// coherent statement rather than two unrelated controls.
-const USE_MODE_LABEL: Record<ReferenceUseMode, string> = {
-  full_text: 'Full text',
-  summary: 'Summary only',
-  summary_and_full_text: 'Summary + full text'
-};
-
-const USE_MODE_LABEL_SELECTED: Record<ReferenceUseMode, string> = {
-  full_text: 'Selected text',
-  summary: 'Summary of selection',
-  summary_and_full_text: 'Summary + selected text'
-};
-
-const hasSelection = (r: CaseWriterReference) =>
-  (r.selected_section_count || 0) > 0 || (r.excerpt_count || 0) > 0;
-
-// The disable condition for the selection/summary/use-mode controls. A link whose
-// page has been fetched has text like any other reference and gets the full set;
-// what disables them is having no stored text, not being a link.
-const hasText = (r: CaseWriterReference) => !!r.content_length;
-
-const fmt = (n: number) => n.toLocaleString('en-US');
-
-const fmtDate = (iso: string | null) => {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-};
-
-// One line describing exactly what this reference will contribute to the next
-// generation, so "approved" never again means "silently sends nothing".
-function describeContribution(r: CaseWriterReference): string {
-  const mode = r.use_mode || 'full_text';
-
-  // An unfetched link really does send nothing but its URL. A fetched one falls
-  // through to the ordinary text/summary/selection description below.
-  if (r.type === 'link' && !hasText(r)) {
-    return 'Sends the URL only — click Fetch page text to use the page contents';
-  }
-  const fetchedSuffix = r.type === 'link' && r.fetched_at ? ` · fetched ${fmtDate(r.fetched_at)}` : '';
-
-  // A saved section/excerpt selection replaces the whole document.
-  const selected = hasSelection(r);
-  const chars = selected ? (r.selected_chars || 0) : (r.content_length || 0);
-
-  const scope = selected
-    ? [
-        r.selected_section_count ? `${r.selected_section_count} of ${r.section_count} sections` : '',
-        r.excerpt_count ? `${r.excerpt_count} excerpt${r.excerpt_count === 1 ? '' : 's'}` : ''
-      ].filter(Boolean).join(' + ')
-    : 'the whole document';
-
-  const textPhrase = chars
-    ? `${scope} — ${fmt(chars)} chars${chars > REFERENCE_TEXT_CHAR_CAP ? ` (truncated to ${fmt(REFERENCE_TEXT_CHAR_CAP)})` : ''}`
-    : 'the whole document — but no text is stored for this reference';
-
-  // A summary only counts when it was built from the same portion the text
-  // channel would send; otherwise the server drops it and sends the text.
-  const summaryUsable = !!r.content_summary && !r.summary_stale;
-
-  if (mode === 'summary') {
-    if (summaryUsable) return `Sends the AI summary of ${scope}${fetchedSuffix}`;
-    return (r.content_summary
-      ? `Summary is out of date with the selection — sends ${textPhrase} until you re-summarize`
-      : `Not summarized yet — sends ${textPhrase}`) + fetchedSuffix;
-  }
-  if (mode === 'summary_and_full_text') {
-    if (summaryUsable) return `Sends the AI summary, then the text — both covering ${textPhrase}${fetchedSuffix}`;
-    return (r.content_summary
-      ? `Summary is out of date with the selection — sends ${textPhrase} until you re-summarize`
-      : `Not summarized yet — sends ${textPhrase}`) + fetchedSuffix;
-  }
-  return `Sends ${textPhrase}${fetchedSuffix}`;
-}
-
 const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models = [], projectDefaultModelId = null, isAdmin = false }) => {
   const [refs, setRefs] = useState<CaseWriterReference[]>([]);
   const [loading, setLoading] = useState(false);
@@ -117,16 +47,21 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
   const [linking, setLinking] = useState(false);
   const [linkTitle, setLinkTitle] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
+  const [linkFetchNow, setLinkFetchNow] = useState(true);
+  const [addingLink, setAddingLink] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [summarizingId, setSummarizingId] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [summarizeModelByRef, setSummarizeModelByRef] = useState<Record<string, string>>({});
+  const [modelOpenId, setModelOpenId] = useState<string | null>(null);
   const [justSummarizedId, setJustSummarizedId] = useState<string | null>(null);
   const [pickerRefId, setPickerRefId] = useState<string | null>(null);
+  const [detailRefId, setDetailRefId] = useState<string | null>(null);
   const [fetchingId, setFetchingId] = useState<string | null>(null);
   const [justFetchedId, setJustFetchedId] = useState<string | null>(null);
   const [fetchDegradedId, setFetchDegradedId] = useState<string | null>(null);
   const [urlFetchEnabled, setUrlFetchEnabled] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
   const summarizeTimer = useGenerationTimer(!!summarizingId);
   const fetchTimer = useGenerationTimer(!!fetchingId);
 
@@ -155,7 +90,7 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
     if (!pasteContent.trim()) return;
     const { error } = await caseWriterApi.createReference(projectId, {
       type: 'pasted_text',
-      title: pasteTitle || undefined,
+      title: pasteTitle.trim() || undefined,
       content: pasteContent
     });
     if (error) { onError(error.message); return; }
@@ -165,12 +100,29 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
 
   async function addLink() {
     if (!linkUrl.trim()) return;
-    const { error } = await caseWriterApi.createReference(projectId, {
+    setAddingLink(true);
+    // Deliberately send no title when the instructor left it blank: the row then
+    // stores NULL, which is the only way the fetch route's
+    // `COALESCE(NULLIF(title,''), <page title>)` can adopt the page's own title.
+    const { data, error } = await caseWriterApi.createReference(projectId, {
       type: 'link',
-      title: linkTitle || linkUrl,
-      link_url: linkUrl
+      title: linkTitle.trim() || undefined,
+      link_url: linkUrl.trim()
     });
-    if (error) { onError(error.message); return; }
+    if (error) { setAddingLink(false); onError(error.message); return; }
+
+    const newId = data?.reference_id;
+    if (newId && linkFetchNow && urlFetchEnabled) {
+      setFetchingId(newId);
+      const fetched = await caseWriterApi.fetchReferenceUrl(projectId, newId);
+      setFetchingId(null);
+      // Keep the reference on failure — the instructor may want to retry or paste
+      // the text manually. Deleting it would throw away the URL they just typed.
+      if (fetched.error) onError(fetched.error.message);
+      else if (fetched.data?.fetch_degraded) setFetchDegradedId(newId);
+    }
+
+    setAddingLink(false);
     setLinkTitle(''); setLinkUrl(''); setLinking(false); setAddMenuOpen(false);
     reload();
   }
@@ -230,24 +182,51 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
     reload();
   }
 
-  async function remove(r: { reference_id: string; title?: string | null }) {
-    if (!confirm(`Delete reference "${r.title || '(untitled)'}"?`)) return;
-    const { error } = await caseWriterApi.deleteReference(projectId, r.reference_id);
+  // A null title stores NULL rather than '', so displayTitle() falls back to
+  // `URL: <url>` for links instead of showing a blank name.
+  async function saveTitle(refId: string, title: string | null) {
+    const { error } = await caseWriterApi.updateReference(projectId, refId, { title });
     if (error) { onError(error.message); return; }
     reload();
   }
 
-  function parseSummary(s: string | null): { summary?: string; key_facts?: string[]; useful_for?: string[]; cautions?: string[] } | null {
-    if (!s) return null;
-    try { return JSON.parse(s); } catch { return { summary: s }; }
+  async function remove(r: CaseWriterReference) {
+    if (!confirm(`Delete reference "${displayTitle(r)}"?`)) return;
+    const { error } = await caseWriterApi.deleteReference(projectId, r.reference_id);
+    if (error) { onError(error.message); return; }
+    if (detailRefId === r.reference_id) setDetailRefId(null);
+    reload();
   }
+
+  // The drill-in replaces the list inside the Source Material pane, so the step
+  // rail and project header stay put and the editor gets the full pane width.
+  if (detailRefId) {
+    const detailRef = refs.find(r => r.reference_id === detailRefId);
+    if (detailRef) {
+      return (
+        <ReferenceDetail
+          projectId={projectId}
+          reference={detailRef}
+          models={models}
+          projectDefaultModelId={projectDefaultModelId}
+          urlFetchEnabled={urlFetchEnabled}
+          isAdmin={isAdmin}
+          onBack={() => setDetailRefId(null)}
+          onChanged={reload}
+          onError={onError}
+        />
+      );
+    }
+  }
+
+  const btn = 'text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50';
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-sm text-gray-600">
           Optional. Every <strong>Approved</strong> reference is sent to every generation step, using the
-          text selected in its <strong>Use in generation</strong> setting.
+          text selected in its <strong>Sends in generation</strong> setting.
         </p>
         <div className="flex items-center gap-2">
           <PromptInfoButton use="case_writer.reference_summary" isAdmin={isAdmin} />
@@ -260,13 +239,15 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
             + Add reference
           </button>
           {addMenuOpen && (
-            <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-md z-10 min-w-[180px]">
+            <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-md z-10 min-w-[200px]">
               <button onClick={() => { setPasting(true); setAddMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-50">Paste text</button>
-              <button onClick={() => { setLinking(true); setAddMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-50">Paste link</button>
+              <button onClick={() => { setLinking(true); setAddMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-50">Web page link</button>
               <label className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer">
                 Upload file
                 <input type="file" accept=".pdf,.docx,.doc,.md,.txt" onChange={onUploadFile} className="hidden" />
               </label>
+              <div className="border-t border-gray-200" />
+              <button onClick={() => { setLibraryOpen(true); setAddMenuOpen(false); }} className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-50">Copy from another project</button>
             </div>
           )}
           </div>
@@ -275,8 +256,15 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
 
       {uploading && <div className="text-sm text-blue-700">Uploading…</div>}
 
+      {importNotice && (
+        <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2 flex items-start justify-between gap-3">
+          <span>{importNotice}</span>
+          <button onClick={() => setImportNotice(null)} className="text-amber-700 hover:text-amber-900">×</button>
+        </div>
+      )}
+
       {pasting && (
-        <div className="border border-gray-200 rounded-md p-3 space-y-2">
+        <div className="border border-gray-300 rounded-lg p-3 space-y-2 bg-white">
           <input
             placeholder="Title (optional)"
             value={pasteTitle}
@@ -297,12 +285,34 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
       )}
 
       {linking && (
-        <div className="border border-gray-200 rounded-md p-3 space-y-2">
-          <input placeholder="Title (optional)" value={linkTitle} onChange={(e) => setLinkTitle(e.target.value)} className="w-full px-2 py-1 border border-gray-300 rounded text-sm" />
-          <input placeholder="https://…" value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)} className="w-full px-2 py-1 border border-gray-300 rounded text-sm" />
-          <div className="flex gap-2">
-            <button onClick={addLink} className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded">Add</button>
-            <button onClick={() => setLinking(false)} className="px-3 py-1.5 text-sm border border-gray-300 rounded">Cancel</button>
+        <div className="border border-gray-300 rounded-lg p-3 space-y-2 bg-white">
+          <input
+            placeholder="Title (optional — taken from the page when fetched)"
+            value={linkTitle}
+            onChange={(e) => setLinkTitle(e.target.value)}
+            className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+          />
+          <input
+            placeholder="https://…"
+            value={linkUrl}
+            onChange={(e) => setLinkUrl(e.target.value)}
+            className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+          />
+          {urlFetchEnabled && (
+            <label className="flex items-center gap-1.5 text-xs text-gray-700">
+              <input type="checkbox" checked={linkFetchNow} onChange={(e) => setLinkFetchNow(e.target.checked)} />
+              Fetch page text now
+            </label>
+          )}
+          <div className="flex gap-2 items-center">
+            <button
+              onClick={addLink}
+              disabled={addingLink || !linkUrl.trim()}
+              className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
+            >
+              {addingLink ? (fetchingId ? `Fetching… ${fetchTimer}` : 'Adding…') : 'Add'}
+            </button>
+            <button onClick={() => setLinking(false)} disabled={addingLink} className="px-3 py-1.5 text-sm border border-gray-300 rounded disabled:opacity-50">Cancel</button>
           </div>
         </div>
       )}
@@ -313,64 +323,89 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
         <div className="text-sm text-gray-500 italic">No source material attached.</div>
       )}
 
-      <ul className="space-y-2">
+      <ul className="space-y-3">
         {refs.map(r => {
-          const summary = parseSummary(r.content_summary);
-          const expanded = expandedId === r.reference_id;
+          const busy = fetchingId === r.reference_id || summarizingId === r.reference_id;
           return (
-            <li key={r.reference_id} className="border border-gray-200 rounded-md p-3 bg-white">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-gray-900">{r.title || '(untitled)'}</div>
-                  <div className="text-xs text-gray-500">{TYPE_LABEL[r.type] || r.type}</div>
-                  {/* A redirect to a login page or a consent wall should be visible
-                      rather than mysterious, so show where we actually ended up. */}
-                  {r.fetched_final_url && r.fetched_final_url !== r.link_url && (
-                    <div className="text-xs text-gray-500 truncate max-w-md" title={r.fetched_final_url}>
-                      Redirected to {r.fetched_final_url}
-                    </div>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-700 flex items-center gap-1">
-                    <input
-                      type="checkbox"
-                      checked={!!r.approved_by_user}
-                      onChange={(e) => setApproved(r.reference_id, e.target.checked)}
-                    />
-                    Approved
-                  </label>
-                  {r.type === 'link' && urlFetchEnabled && (
-                    <button
-                      onClick={() => fetchPage(r.reference_id)}
-                      disabled={fetchingId === r.reference_id}
-                      className={`text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 ${
-                        fetchingId === r.reference_id ? 'bg-green-500 text-white animate-pulse border-green-500' : ''
-                      }`}
-                      title={hasText(r) ? 'Download the page again, replacing the stored text' : 'Download the page text so it can be used in generation'}
+            <li key={r.reference_id} className="border border-gray-300 rounded-lg bg-white shadow-sm overflow-hidden">
+
+              {/* Identity band — the name and the one decision that matters most. */}
+              <div className="flex items-start justify-between gap-3 px-3 py-2 bg-gray-50 border-b border-gray-200">
+                <InlineTitleEditor reference={r} onSave={(t) => saveTitle(r.reference_id, t)} />
+                <ApprovedToggle
+                  approved={!!r.approved_by_user}
+                  onChange={(approved) => setApproved(r.reference_id, approved)}
+                />
+              </div>
+
+              {/* Facts band. */}
+              <div className="px-3 py-2 space-y-2">
+                <ReferenceFieldGrid
+                  r={r}
+                  useModeControl={
+                    <select
+                      value={r.use_mode || 'full_text'}
+                      onChange={(e) => setUseMode(r.reference_id, e.target.value as ReferenceUseMode)}
+                      disabled={!hasText(r)}
+                      className="text-xs px-1 py-0.5 border border-gray-300 rounded disabled:opacity-50"
                     >
-                      {fetchingId === r.reference_id
-                        ? `Fetching… ${fetchTimer}`
-                        : (hasText(r) ? 'Re-fetch' : 'Fetch page text')}
-                    </button>
-                  )}
-                  <select
-                    value={r.use_mode || 'full_text'}
-                    onChange={(e) => setUseMode(r.reference_id, e.target.value as ReferenceUseMode)}
-                    disabled={!hasText(r)}
-                    className="text-xs px-1 py-0.5 border border-gray-300 rounded disabled:opacity-50"
-                    title="Use in generation"
-                  >
-                    {(Object.keys(USE_MODE_LABEL) as ReferenceUseMode[]).map(m => (
-                      <option key={m} value={m}>
-                        {(hasSelection(r) ? USE_MODE_LABEL_SELECTED : USE_MODE_LABEL)[m]}
-                      </option>
-                    ))}
-                  </select>
+                      {(Object.keys(USE_MODE_LABEL) as ReferenceUseMode[]).map(m => (
+                        <option key={m} value={m}>
+                          {(hasSelection(r) ? USE_MODE_LABEL_SELECTED : USE_MODE_LABEL)[m]}
+                        </option>
+                      ))}
+                    </select>
+                  }
+                />
+                <div className={`text-xs ${r.approved_by_user ? 'text-gray-600' : 'text-gray-400 italic'}`}>
+                  {r.approved_by_user
+                    ? describeContribution(r)
+                    : 'Not approved — nothing from this reference is sent to any generation step'}
+                </div>
+              </div>
+
+              {/* Action band — wraps, so it never collides with anything above. */}
+              <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-gray-50 border-t border-gray-200">
+                <button
+                  onClick={() => setDetailRefId(r.reference_id)}
+                  className="text-xs px-2 py-1 border border-blue-300 text-blue-700 rounded hover:bg-blue-50"
+                >
+                  View / Edit
+                </button>
+                <button
+                  onClick={() => setPickerRefId(r.reference_id)}
+                  disabled={!hasText(r)}
+                  className={btn}
+                  title={hasText(r) ? 'Choose which portions of this document to use' : 'No stored text to select from'}
+                >
+                  Select portions
+                </button>
+                <button
+                  onClick={() => summarize(r.reference_id)}
+                  disabled={busy || !hasText(r)}
+                  className={`${btn} ${summarizingId === r.reference_id ? 'bg-green-500 text-white animate-pulse border-green-500' : ''}`}
+                  title={hasText(r) ? '' : 'No stored text to summarize'}
+                >
+                  {summarizingId === r.reference_id
+                    ? `Summarizing… ${summarizeTimer}`
+                    : (r.content_summary ? 'Re-summarize' : 'Summarize')}
+                </button>
+                {/* The model override is hidden behind a toggle, the way
+                    MarkdownStepEditor does it — a permanently visible <select>
+                    on every row is noise the instructor rarely touches. */}
+                <button
+                  onClick={() => setModelOpenId(id => (id === r.reference_id ? null : r.reference_id))}
+                  disabled={!hasText(r)}
+                  className={btn}
+                  title="Choose the model used for summarization"
+                >
+                  ⚙
+                </button>
+                {modelOpenId === r.reference_id && (
                   <select
                     value={summarizeModelByRef[r.reference_id] || ''}
                     onChange={(e) => setSummarizeModelByRef(s => ({ ...s, [r.reference_id]: e.target.value }))}
-                    disabled={summarizingId === r.reference_id || !hasText(r)}
+                    disabled={summarizingId === r.reference_id}
                     className="text-xs px-1 py-0.5 border border-gray-300 rounded disabled:opacity-50"
                     title="Model for summarization"
                   >
@@ -379,90 +414,61 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
                       <option key={m.model_id} value={m.model_id}>{m.display_name || m.model_id}</option>
                     ))}
                   </select>
+                )}
+                {r.type === 'link' && urlFetchEnabled && (
                   <button
-                    onClick={() => summarize(r.reference_id)}
-                    disabled={summarizingId === r.reference_id || !hasText(r)}
-                    className={`text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 ${
-                      summarizingId === r.reference_id ? 'bg-green-500 text-white animate-pulse border-green-500' : ''
-                    }`}
-                    title={hasText(r) ? '' : 'No stored text to summarize'}
+                    onClick={() => fetchPage(r.reference_id)}
+                    disabled={busy}
+                    className={`${btn} ${fetchingId === r.reference_id ? 'bg-green-500 text-white animate-pulse border-green-500' : ''}`}
+                    title={hasText(r) ? 'Download the page again, replacing the stored text' : 'Download the page text so it can be used in generation'}
                   >
-                    {summarizingId === r.reference_id
-                      ? `Summarizing… ${summarizeTimer}`
-                      : (r.content_summary ? 'Re-summarize' : 'Summarize')}
+                    {fetchingId === r.reference_id
+                      ? `Fetching… ${fetchTimer}`
+                      : (hasText(r) ? 'Re-fetch' : 'Fetch page text')}
                   </button>
-                  <button
-                    onClick={() => setPickerRefId(r.reference_id)}
-                    disabled={!hasText(r)}
-                    className="text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
-                    title={r.content_length ? 'Choose which portions of this document to use' : 'No stored text to select from'}
-                  >
-                    Select portions
-                  </button>
-                  <button
-                    onClick={() => remove(r)}
-                    className="text-xs px-2 py-1 text-red-600 border border-red-200 rounded hover:bg-red-50"
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-              <div className={`mt-1 text-xs ${r.approved_by_user ? 'text-gray-600' : 'text-gray-400 italic'}`}>
-                {r.approved_by_user
-                  ? describeContribution(r)
-                  : 'Not approved — nothing from this reference is sent to any generation step'}
+                )}
+                <button
+                  onClick={() => remove(r)}
+                  className="text-xs px-2 py-1 text-red-600 border border-red-200 rounded hover:bg-red-50 ml-auto"
+                >
+                  Delete
+                </button>
               </div>
 
-              {r.summary_stale && (
-                <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
-                  This summary was made from a different portion of the document than the current
-                  selection, so it is <strong>not</strong> being sent. Click <strong>Re-summarize</strong> to
-                  summarize what you have selected.
-                </div>
-              )}
+              {/* Notices sit below the actions so they never push the controls around. */}
+              {(r.summary_stale
+                || (justFetchedId === r.reference_id && !r.approved_by_user)
+                || fetchDegradedId === r.reference_id
+                || (justSummarizedId === r.reference_id && !r.approved_by_user)) && (
+                <div className="px-3 pb-3 pt-2 space-y-2">
+                  {r.summary_stale && (
+                    <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                      This summary was made from a different portion of the document than the current
+                      selection, so it is <strong>not</strong> being sent. Click <strong>Re-summarize</strong> to
+                      summarize what you have selected.
+                    </div>
+                  )}
 
-              {justFetchedId === r.reference_id && !r.approved_by_user && (
-                <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
-                  Page text fetched{r.content_length ? ` (${fmt(r.content_length)} chars)` : ''}, and{' '}
-                  <strong>Approved</strong> was cleared so you can review it. Re-check{' '}
-                  <strong>Approved</strong> to include this reference in generation.
-                </div>
-              )}
+                  {justFetchedId === r.reference_id && !r.approved_by_user && (
+                    <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                      Page text fetched{r.content_length ? ` (${fmt(r.content_length)} chars)` : ''}, and{' '}
+                      <strong>Approved</strong> was cleared so you can review it. Re-check{' '}
+                      <strong>Approved</strong> to include this reference in generation.
+                    </div>
+                  )}
 
-              {fetchDegradedId === r.reference_id && (
-                <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
-                  Reader-mode extraction found little article text, so the raw page text was stored —
-                  it may include navigation and boilerplate, or the page may be rendered by JavaScript.
-                  Open <strong>Select portions</strong> to check what was captured.
-                </div>
-              )}
+                  {fetchDegradedId === r.reference_id && (
+                    <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                      Reader-mode extraction found little article text, so the raw page text was stored —
+                      it may include navigation and boilerplate, or the page may be rendered by JavaScript.
+                      Open <strong>View / Edit</strong> to check what was captured.
+                    </div>
+                  )}
 
-              {justSummarizedId === r.reference_id && !r.approved_by_user && (
-                <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
-                  New summary generated, and <strong>Approved</strong> was cleared so you can review it.
-                  Re-check <strong>Approved</strong> to include this reference in generation.
-                </div>
-              )}
-
-              {r.content_summary && (
-                <div className="mt-2">
-                  <button
-                    onClick={() => setExpandedId(expanded ? null : r.reference_id)}
-                    className="text-xs text-blue-600 hover:underline"
-                  >
-                    {expanded ? 'Hide summary' : 'Show summary'}
-                  </button>
-                  {expanded && summary && (
-                    <div className="mt-2 text-sm text-gray-700 space-y-1">
-                      {summary.summary && <p>{summary.summary}</p>}
-                      {Array.isArray(summary.key_facts) && summary.key_facts.length > 0 && (
-                        <>
-                          <div className="text-xs font-semibold text-gray-600">Key facts</div>
-                          <ul className="list-disc list-inside text-xs">
-                            {summary.key_facts.map((f, i) => <li key={i}>{f}</li>)}
-                          </ul>
-                        </>
-                      )}
+                  {justSummarizedId === r.reference_id && !r.approved_by_user && (
+                    <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                      New summary generated, and <strong>Approved</strong> was cleared so you can review it.
+                      Re-check <strong>Approved</strong> to include this reference in generation.
                     </div>
                   )}
                 </div>
@@ -479,6 +485,21 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
           charCap={REFERENCE_TEXT_CHAR_CAP}
           onClose={() => setPickerRefId(null)}
           onSaved={reload}
+          onError={onError}
+        />
+      )}
+
+      {libraryOpen && (
+        <ReferenceLibraryPicker
+          projectId={projectId}
+          onClose={() => setLibraryOpen(false)}
+          onImported={(count) => {
+            setImportNotice(
+              `${count} reference${count === 1 ? '' : 's'} copied. Approved was cleared so you can review `
+              + `${count === 1 ? 'it' : 'them'} before generating.`
+            );
+            reload();
+          }}
           onError={onError}
         />
       )}
