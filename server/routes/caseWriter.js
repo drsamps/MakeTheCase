@@ -15,6 +15,7 @@ import { getEffectiveInstructorId, buildVisibilityScope, canAccessResource, hasA
 import { setVisibility } from '../services/visibilityWrites.js';
 import { markdownToDocxBuffer, markdownToPdfBuffer } from '../services/markdownExport.js';
 import { convertFile } from '../services/fileConverter.js';
+import { fetchUrlAsText } from '../services/urlFetcher.js';
 import { detectOutline, mergeRanges } from '../services/referenceOutline.js';
 import crypto from 'crypto';
 
@@ -266,6 +267,16 @@ function withSelectionSummary(row) {
     override_steps: Object.keys(overrides)
   };
 }
+
+// The column list every route that returns a reference row selects. `content` is
+// deliberately absent — the list routes send CHAR_LENGTH instead, and the body goes
+// to the browser from exactly one route (GET .../references/:refId/content).
+const REFERENCE_ROW_COLUMNS = `
+  reference_id, project_id, type, title, content_summary, summary_scope_hash, use_mode,
+  CHAR_LENGTH(content) AS content_length, outline, outline_hash, selection, selection_overrides,
+  approved_by_user, source_notes, link_url,
+  fetched_at, fetched_content_type, fetched_final_url,
+  case_file_id, created_at, updated_at`;
 
 function parseJsonColumn(value) {
   if (value == null) return null;
@@ -526,6 +537,19 @@ function fail(res, status, message) {
   res.status(status).json({ data: null, error: { message } });
 }
 
+/**
+ * Whether this server is allowed to make outbound requests to instructor-supplied
+ * URLs. Ships off (migration 074) — turning it on lets any instructor point this
+ * host at any public address, so it is an admin decision, not a per-project one.
+ */
+async function isUrlFetchEnabled() {
+  const [rows] = await pool.execute(
+    'SELECT setting_value FROM settings WHERE setting_key = ?',
+    ['case_writer_url_fetch_enabled']
+  );
+  return rows.length > 0 && String(rows[0].setting_value).trim() === '1';
+}
+
 function ownerScopeWhere(req) {
   // Visibility-aware list scope (owner + team-shared + public, with admin
   // vision when not impersonating).
@@ -599,6 +623,18 @@ function assembleScenarioMarkdown(s) {
 
 // All Case Writer endpoints require an authenticated admin or instructor.
 router.use(verifyToken, requireAdminOrInstructor);
+
+// Server-side switches the Case Writer UI needs to know about before it can render
+// the right controls. Kept off the reference list payload deliberately — that route
+// is about references, and this is one small read the client makes once.
+router.get('/config', async (_req, res) => {
+  try {
+    ok(res, { url_fetch_enabled: await isUrlFetchEnabled() });
+  } catch (err) {
+    console.error('[caseWriter] config error:', err);
+    fail(res, 500, err.message);
+  }
+});
 
 // ----------------------------------------------------------------------------
 // Project CRUD
@@ -916,10 +952,7 @@ router.get('/projects/:id/references', async (req, res) => {
     if (forbidden) return fail(res, 403, 'Not authorized to access this project');
     if (!project) return fail(res, 404, 'Project not found');
     const [rows] = await pool.execute(
-      `SELECT reference_id, project_id, type, title, content_summary, summary_scope_hash, use_mode,
-              CHAR_LENGTH(content) AS content_length, outline, outline_hash, selection, selection_overrides,
-              approved_by_user,
-              source_notes, link_url, case_file_id, created_at, updated_at
+      `SELECT ${REFERENCE_ROW_COLUMNS}
        FROM case_writer_references WHERE project_id = ? ORDER BY created_at ASC`,
       [req.params.id]
     );
@@ -1006,6 +1039,90 @@ router.post('/projects/:id/references/:refId/rebuild-outline', async (req, res) 
   }
 });
 
+/**
+ * Download a `link` reference's page and store its text in `content`.
+ *
+ * After this runs the link is an ordinary reference: outline detection, section and
+ * excerpt selection, per-step overrides, `use_mode`, and summarization all work
+ * against the fetched text with no special-casing anywhere downstream.
+ *
+ * Re-fetching is this same route called again. It overwrites `content`, and
+ * refreshReferenceOutline() clears the selection because the stored character
+ * offsets no longer point at the same words. Nothing auto-refetches — `fetched_at`
+ * is surfaced in the UI so staleness is the instructor's call.
+ */
+router.post('/projects/:id/references/:refId/fetch', async (req, res) => {
+  try {
+    if (!(await isUrlFetchEnabled())) {
+      return fail(res, 403, 'URL fetching is disabled. An admin can enable it in Settings.');
+    }
+
+    // POST → loadProject requires edit permission, same as every other mutation here.
+    const { project, forbidden } = await loadProject(req.params.id, req);
+    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (!project) return fail(res, 404, 'Project not found');
+
+    const [rows] = await pool.execute(
+      `SELECT reference_id, type, title, link_url FROM case_writer_references
+       WHERE reference_id = ? AND project_id = ?`,
+      [req.params.refId, req.params.id]
+    );
+    if (rows.length === 0) return fail(res, 404, 'Reference not found');
+    const ref = rows[0];
+    if (ref.type !== 'link') {
+      return fail(res, 400, 'Only link references can be fetched');
+    }
+    if (!ref.link_url) {
+      return fail(res, 400, 'This reference has no URL to fetch');
+    }
+
+    let fetched;
+    try {
+      fetched = await fetchUrlAsText(ref.link_url);
+    } catch (err) {
+      // Paywalls, bot blocks, and JS-rendered pages all land here and none of them
+      // are fixable server-side, so the thrown message is the whole answer.
+      console.warn('[caseWriter] url fetch failed:', ref.link_url, err.message);
+      return fail(res, 422, err.message);
+    }
+
+    await pool.execute(
+      `UPDATE case_writer_references
+          SET content = ?, fetched_at = NOW(), fetched_content_type = ?, fetched_final_url = ?,
+              title = COALESCE(NULLIF(title, ''), ?),
+              approved_by_user = 0
+        WHERE reference_id = ? AND project_id = ?`,
+      [
+        fetched.text,
+        fetched.contentType,
+        fetched.finalUrl,
+        // Adopt the page's own title only when the instructor never gave one.
+        fetched.title || ref.link_url,
+        req.params.refId,
+        req.params.id
+      ]
+    );
+
+    // Mandatory on every write to `content` — see refreshReferenceOutline().
+    await refreshReferenceOutline(req.params.refId, fetched.text, fetched.format);
+
+    const [after] = await pool.execute(
+      `SELECT ${REFERENCE_ROW_COLUMNS}
+       FROM case_writer_references WHERE reference_id = ?`,
+      [req.params.refId]
+    );
+    ok(res, {
+      ...withSelectionSummary(after[0]),
+      // Readability found little or nothing and we stored raw body text instead.
+      // Almost always a JS-rendered page; the instructor needs to look at it.
+      fetch_degraded: fetched.degraded
+    });
+  } catch (err) {
+    console.error('[caseWriter] fetch reference url error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
 router.post('/projects/:id/references', async (req, res) => {
   try {
     const { project, forbidden } = await loadProject(req.params.id, req);
@@ -1036,10 +1153,7 @@ router.post('/projects/:id/references', async (req, res) => {
     if (content) await refreshReferenceOutline(referenceId, content, 'text');
 
     const [rows] = await pool.execute(
-      `SELECT reference_id, project_id, type, title, content_summary, summary_scope_hash, use_mode,
-              CHAR_LENGTH(content) AS content_length, outline, outline_hash, selection, selection_overrides,
-              approved_by_user,
-              source_notes, link_url, case_file_id, created_at, updated_at
+      `SELECT ${REFERENCE_ROW_COLUMNS}
        FROM case_writer_references WHERE reference_id = ?`,
       [referenceId]
     );
@@ -1099,10 +1213,7 @@ router.patch('/projects/:id/references/:refId', async (req, res) => {
     }
 
     const [rows] = await pool.execute(
-      `SELECT reference_id, project_id, type, title, content_summary, summary_scope_hash, use_mode,
-              CHAR_LENGTH(content) AS content_length, outline, outline_hash, selection, selection_overrides,
-              approved_by_user,
-              source_notes, link_url, case_file_id, created_at, updated_at
+      `SELECT ${REFERENCE_ROW_COLUMNS}
        FROM case_writer_references WHERE reference_id = ?`,
       [req.params.refId]
     );
@@ -1243,10 +1354,7 @@ router.post('/projects/:id/references/upload',
       await refreshReferenceOutline(referenceId, convertedText, convertedFormat);
 
       const [rows] = await pool.execute(
-        `SELECT reference_id, project_id, type, title, content_summary, summary_scope_hash, use_mode,
-                CHAR_LENGTH(content) AS content_length, outline, outline_hash, selection, selection_overrides,
-              approved_by_user,
-                source_notes, link_url, case_file_id, created_at, updated_at
+        `SELECT ${REFERENCE_ROW_COLUMNS}
          FROM case_writer_references WHERE reference_id = ?`,
         [referenceId]
       );
@@ -2424,8 +2532,13 @@ router.post('/projects/:id/references/:refId/summarize', async (req, res) => {
     if (ref.type === 'pasted_text') sourceText = ref.content || '';
     else if (ref.type === 'uploaded_file') sourceText = ref.content || ref.file_text || '';
     else if (ref.type === 'saved_framework') sourceText = ref.content || '';
+    // A link is summarizable once its page has been fetched into `content`; before
+    // that there is nothing but a URL to work with.
     else if (ref.type === 'link') {
-      return fail(res, 400, 'Link references are not yet supported by summarization (V2)');
+      sourceText = ref.content || '';
+      if (!sourceText.trim()) {
+        return fail(res, 400, 'This link has no page text yet — click "Fetch page text" first.');
+      }
     }
 
     if (!sourceText.trim()) {

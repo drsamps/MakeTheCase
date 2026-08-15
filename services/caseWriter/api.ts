@@ -42,6 +42,11 @@ async function req<T = any>(
 
 export type CaseWriterStatus = 'draft' | 'reviewed' | 'exported' | 'published' | 'archived';
 
+export interface CaseWriterConfig {
+  /** Admin setting `case_writer_url_fetch_enabled`. Off by default; gates "Fetch page text". */
+  url_fetch_enabled: boolean;
+}
+
 export interface CaseWriterProjectSummary {
   project_id: string;
   owner_id: string;
@@ -131,6 +136,11 @@ export interface CaseWriterReference {
   approved_by_user: 0 | 1;
   source_notes: string | null;
   link_url: string | null;
+  /** When link_url was last fetched into `content`. Null on a link that has never been fetched. */
+  fetched_at: string | null;
+  fetched_content_type: string | null;
+  /** URL actually read, after redirects. Differs from link_url when the origin redirected. */
+  fetched_final_url: string | null;
   case_file_id: number | null;
   created_at: string;
   updated_at: string;
@@ -266,6 +276,9 @@ export function coerceMarkdown(value: unknown): string {
 // ---------------------------------------------------------------------------
 
 export const caseWriterApi = {
+  /** Server-side switches the UI needs before it can decide which controls to render. */
+  getConfig: () => req<CaseWriterConfig>('/config'),
+
   listProjects: () => req<CaseWriterProjectSummary[]>('/projects'),
 
   getProject: (id: string) => req<CaseWriterProject>(`/projects/${id}`),
@@ -389,6 +402,16 @@ export const caseWriterApi = {
       method: 'POST',
       body: JSON.stringify(body)
     }),
+
+  /**
+   * Download a link reference's page into `content`. Clears approved_by_user and the
+   * stored selection server-side, so the returned row replaces local state wholesale.
+   */
+  fetchReferenceUrl: (id: string, refId: string) =>
+    req<CaseWriterReference & { fetch_degraded?: boolean }>(
+      `/projects/${id}/references/${refId}/fetch`,
+      { method: 'POST' }
+    ),
 
   rebuildReferenceOutline: (id: string, refId: string) =>
     req<{ reference_id: string; outline: ReferenceOutline | null }>(

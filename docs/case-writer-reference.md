@@ -110,7 +110,50 @@ PDFs go through `pdf-parse` + `cleanPdfText()`, which carries no headings and st
 
 - `GET /projects/:id/references/:refId/content` — full text + outline. **The only route that ships `content` to the browser**; the list routes return `CHAR_LENGTH(content)` and a compact selection summary (`withSelectionSummary()`) instead.
 - `POST /projects/:id/references/:refId/rebuild-outline` — force re-detection; clears the selection.
+- `POST /projects/:id/references/:refId/fetch` — download a `link`'s page into `content`. Flag-gated; see *Fetching a link's page text* below.
+- `GET /config` — `{ url_fetch_enabled }`. Deliberately its own route rather than a field on the reference list, which is about references.
 - `POST /projects/:id/references/:refId/suggest-sections` — `case_writer.reference_section_select`. Sends **only the outline** (id, title, char count, 120-char snippet) plus the teaching principle, never the document body. Returns a suggestion and **persists nothing**; unknown section ids are dropped server-side. The picker pre-checks the boxes and the instructor saves.
+
+#### Fetching a link's page text (migration 074)
+
+A `link` reference used to store only `link_url`, leaving `content` NULL — so an approved link contributed a single `URL: https://…` line to every generation prompt and nothing else. `POST /projects/:id/references/:refId/fetch` downloads the page, extracts its text into `content`, and calls `refreshReferenceOutline()`.
+
+**After a fetch, a link is indistinguishable from pasted text downstream.** Outline detection, section/excerpt selection, per-step overrides, `use_mode`, and summarization all work against `content` and needed no changes — the only thing that changed elsewhere is that the disable condition for those controls is now "has no stored text", not "is a link".
+
+Provenance columns: `fetched_at`, `fetched_content_type`, `fetched_final_url`. The final URL is stored *separately* rather than overwriting `link_url` — the instructor typed `link_url` and it should stay as typed, while the final URL is what was actually read, so a redirect to a login or consent wall is visible rather than mysterious.
+
+Like `POST .../summarize`, the route sets `approved_by_user = 0`: the reference's contribution just went from a URL to several thousand words that will feed five generation steps, and that deserves a look. The UI says so (the amber `justFetchedId` notice) rather than silently unchecking the box.
+
+**Refetching** is the same route called again. It overwrites `content`, and `refreshReferenceOutline()` clears `selection` and `selection_overrides` because the stored character offsets no longer point at the same words. Nothing auto-refetches; `fetched_at` is surfaced in the row so staleness is the instructor's call.
+
+##### Feature flag
+
+Setting `case_writer_url_fetch_enabled`, **`'0'` by default**. Off: the route returns 403 and the button is absent (the client reads `GET /api/case-writer/config`). Enabling it lets any instructor cause this server to make outbound requests, which is an admin decision.
+
+##### SSRF policy — `server/services/urlFetcher.js`
+
+The URL comes from an authenticated instructor, but the *server* makes the request, so it can reach whatever this host can reach. The module is kept free of Express and DB imports so the policy is testable on its own.
+
+- `assertUrlAllowed(url)` rejects non-`http(s)` schemes and embedded credentials, then `dns.lookup(…, {all: true})` and refuses if **any** returned address is blocked — a host publishing both a public and a `127.0.0.1` A record is refused outright, since we do not control which one the socket picks.
+- `isBlockedAddress(ip)` refuses loopback, `0.0.0.0/8`, RFC1918, `169.254.0.0/16` (**cloud metadata**), CGNAT `100.64/10`, multicast, `::`, `::1`, `fe80::/10`, `fc00::/7`, `ff00::/8`. IPv6 is parsed into its eight groups rather than matched textually, because `new URL()` normalizes `::ffff:127.0.0.1` to `::ffff:7f00:1` and a dotted-quad regex sails straight past it; mapped, IPv4-compatible, and NAT64 (`64:ff9b::/96`) forms are all unwrapped and re-checked against the v4 rules.
+- **The redirect loop is manual (`redirect: 'manual'`) and re-validates on every hop.** This is the load-bearing part: the origin controls the `Location` header, so a pre-flight-only check is defeated by any open redirector. Max 5 hops.
+- 20 s timeout, 10 MB ceiling enforced on the running byte total (a lying `Content-Length` is the normal case), `MakeTheCase-CaseWriter/1.0` User-Agent.
+
+##### Content-type branching
+
+| Type | Handling | `format` |
+|---|---|---|
+| `text/html`, `application/xhtml+xml`, none | `jsdom` + `@mozilla/readability` (Firefox Reader Mode); `article.textContent` | `text` |
+| `application/pdf` | temp file under `case_files/_cw-tmp/` → existing `convertFile()`, unlinked in a `finally` | `pdf` |
+| `…wordprocessingml.document`, `application/msword` | same, via `convertFile(…, '.docx')` | `docx-markdown` |
+| `text/plain` / `text/markdown` | decoded, honouring `charset=` | `text` / `markdown` |
+| anything else | refused, naming the type and suggesting **Upload file** | — |
+
+HTML returns `format: 'text'` deliberately: Readability's `textContent` carries no `#` headings, so the outline detector's plain-text tier (usually falling through to `chunks`) is the right one.
+
+When extraction yields under 200 characters the raw `<body>` text is stored instead and `fetch_degraded` is returned so the UI warns — a JS-rendered SPA shell whose `<nav>` yields 40 characters must not quietly become source material. If nothing at all is extractable the route 422s.
+
+**Error messages are the whole product here.** Paywalls, bot blocks, and JS-rendered pages are the common failures and none are fixable server-side, so every thrown message ends by telling the instructor to open the page and paste the text instead.
 
 ##### UI
 

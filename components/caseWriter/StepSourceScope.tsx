@@ -54,11 +54,15 @@ const StepSourceScope: React.FC<Props> = ({
         {approved.map(r => {
           const isOverridden = (r.override_steps || []).includes(step);
           const hasDefaultSelection = (r.selected_section_count || 0) > 0 || (r.excerpt_count || 0) > 0;
-          const scope = isOverridden
-            ? 'custom selection for this step'
-            : hasDefaultSelection
-              ? `${r.selected_section_count} of ${r.section_count} sections · ${fmt(r.selected_chars || 0)} chars`
-              : `whole document · ${fmt(r.content_length || 0)} chars`;
+          // An unfetched link has no document to scope; saying "whole document ·
+          // 0 chars" would describe an empty contribution as a complete one.
+          const scope = !r.content_length
+            ? (r.type === 'link' ? 'URL only — not fetched' : 'no stored text')
+            : isOverridden
+              ? 'custom selection for this step'
+              : hasDefaultSelection
+                ? `${r.selected_section_count} of ${r.section_count} sections · ${fmt(r.selected_chars || 0)} chars`
+                : `whole document · ${fmt(r.content_length || 0)} chars`;
 
           return (
             <li key={r.reference_id} className="flex items-center gap-2">
@@ -69,7 +73,9 @@ const StepSourceScope: React.FC<Props> = ({
                 {r.title || '(untitled)'}
               </span>
               <span className="text-gray-400">— {scope}</span>
-              {r.type !== 'link' && !!r.content_length && (
+              {/* Fetched links have text like any other reference, so the guard is
+                  "has stored text", not "is not a link". */}
+              {!!r.content_length && (
                 <button
                   onClick={() => setEditingRefId(r.reference_id)}
                   className="text-blue-600 hover:underline"

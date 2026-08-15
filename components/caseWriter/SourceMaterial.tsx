@@ -48,14 +48,30 @@ const USE_MODE_LABEL_SELECTED: Record<ReferenceUseMode, string> = {
 const hasSelection = (r: CaseWriterReference) =>
   (r.selected_section_count || 0) > 0 || (r.excerpt_count || 0) > 0;
 
+// The disable condition for the selection/summary/use-mode controls. A link whose
+// page has been fetched has text like any other reference and gets the full set;
+// what disables them is having no stored text, not being a link.
+const hasText = (r: CaseWriterReference) => !!r.content_length;
+
 const fmt = (n: number) => n.toLocaleString('en-US');
+
+const fmtDate = (iso: string | null) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
 
 // One line describing exactly what this reference will contribute to the next
 // generation, so "approved" never again means "silently sends nothing".
 function describeContribution(r: CaseWriterReference): string {
   const mode = r.use_mode || 'full_text';
 
-  if (r.type === 'link') return 'Sends the URL only — link contents are not fetched yet';
+  // An unfetched link really does send nothing but its URL. A fetched one falls
+  // through to the ordinary text/summary/selection description below.
+  if (r.type === 'link' && !hasText(r)) {
+    return 'Sends the URL only — click Fetch page text to use the page contents';
+  }
+  const fetchedSuffix = r.type === 'link' && r.fetched_at ? ` · fetched ${fmtDate(r.fetched_at)}` : '';
 
   // A saved section/excerpt selection replaces the whole document.
   const selected = hasSelection(r);
@@ -77,18 +93,18 @@ function describeContribution(r: CaseWriterReference): string {
   const summaryUsable = !!r.content_summary && !r.summary_stale;
 
   if (mode === 'summary') {
-    if (summaryUsable) return `Sends the AI summary of ${scope}`;
-    return r.content_summary
+    if (summaryUsable) return `Sends the AI summary of ${scope}${fetchedSuffix}`;
+    return (r.content_summary
       ? `Summary is out of date with the selection — sends ${textPhrase} until you re-summarize`
-      : `Not summarized yet — sends ${textPhrase}`;
+      : `Not summarized yet — sends ${textPhrase}`) + fetchedSuffix;
   }
   if (mode === 'summary_and_full_text') {
-    if (summaryUsable) return `Sends the AI summary, then the text — both covering ${textPhrase}`;
-    return r.content_summary
+    if (summaryUsable) return `Sends the AI summary, then the text — both covering ${textPhrase}${fetchedSuffix}`;
+    return (r.content_summary
       ? `Summary is out of date with the selection — sends ${textPhrase} until you re-summarize`
-      : `Not summarized yet — sends ${textPhrase}`;
+      : `Not summarized yet — sends ${textPhrase}`) + fetchedSuffix;
   }
-  return `Sends ${textPhrase}`;
+  return `Sends ${textPhrase}${fetchedSuffix}`;
 }
 
 const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models = [], projectDefaultModelId = null, isAdmin = false }) => {
@@ -107,7 +123,12 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
   const [summarizeModelByRef, setSummarizeModelByRef] = useState<Record<string, string>>({});
   const [justSummarizedId, setJustSummarizedId] = useState<string | null>(null);
   const [pickerRefId, setPickerRefId] = useState<string | null>(null);
+  const [fetchingId, setFetchingId] = useState<string | null>(null);
+  const [justFetchedId, setJustFetchedId] = useState<string | null>(null);
+  const [fetchDegradedId, setFetchDegradedId] = useState<string | null>(null);
+  const [urlFetchEnabled, setUrlFetchEnabled] = useState(false);
   const summarizeTimer = useGenerationTimer(!!summarizingId);
+  const fetchTimer = useGenerationTimer(!!fetchingId);
 
   async function reload() {
     setLoading(true);
@@ -119,6 +140,16 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
   }
 
   useEffect(() => { reload(); }, [projectId]);
+
+  // URL fetching is admin-gated and ships off, so the button is absent rather than
+  // present-and-failing when the setting is disabled.
+  useEffect(() => {
+    let cancelled = false;
+    caseWriterApi.getConfig().then(({ data }) => {
+      if (!cancelled) setUrlFetchEnabled(!!data?.url_fetch_enabled);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   async function addPaste() {
     if (!pasteContent.trim()) return;
@@ -169,10 +200,27 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
     reload();
   }
 
+  async function fetchPage(refId: string) {
+    setFetchingId(refId);
+    setFetchDegradedId(id => (id === refId ? null : id));
+    const { data, error } = await caseWriterApi.fetchReferenceUrl(projectId, refId);
+    setFetchingId(null);
+    if (error) { onError(error.message); return; }
+    // Same contract as summarize: the server clears approved_by_user because the
+    // reference just went from "a URL" to thousands of words that will feed five
+    // generation steps. Say it out loud rather than silently unchecking the box.
+    setJustFetchedId(refId);
+    if (data?.fetch_degraded) setFetchDegradedId(refId);
+    reload();
+  }
+
   async function setApproved(refId: string, approved: boolean) {
     const { error } = await caseWriterApi.updateReference(projectId, refId, { approved_by_user: approved ? 1 : 0 });
     if (error) { onError(error.message); return; }
-    if (approved) setJustSummarizedId(id => (id === refId ? null : id));
+    if (approved) {
+      setJustSummarizedId(id => (id === refId ? null : id));
+      setJustFetchedId(id => (id === refId ? null : id));
+    }
     reload();
   }
 
@@ -272,9 +320,16 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
           return (
             <li key={r.reference_id} className="border border-gray-200 rounded-md p-3 bg-white">
               <div className="flex items-start justify-between gap-2">
-                <div>
+                <div className="min-w-0">
                   <div className="text-sm font-semibold text-gray-900">{r.title || '(untitled)'}</div>
                   <div className="text-xs text-gray-500">{TYPE_LABEL[r.type] || r.type}</div>
+                  {/* A redirect to a login page or a consent wall should be visible
+                      rather than mysterious, so show where we actually ended up. */}
+                  {r.fetched_final_url && r.fetched_final_url !== r.link_url && (
+                    <div className="text-xs text-gray-500 truncate max-w-md" title={r.fetched_final_url}>
+                      Redirected to {r.fetched_final_url}
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <label className="text-xs text-gray-700 flex items-center gap-1">
@@ -285,10 +340,24 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
                     />
                     Approved
                   </label>
+                  {r.type === 'link' && urlFetchEnabled && (
+                    <button
+                      onClick={() => fetchPage(r.reference_id)}
+                      disabled={fetchingId === r.reference_id}
+                      className={`text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 ${
+                        fetchingId === r.reference_id ? 'bg-green-500 text-white animate-pulse border-green-500' : ''
+                      }`}
+                      title={hasText(r) ? 'Download the page again, replacing the stored text' : 'Download the page text so it can be used in generation'}
+                    >
+                      {fetchingId === r.reference_id
+                        ? `Fetching… ${fetchTimer}`
+                        : (hasText(r) ? 'Re-fetch' : 'Fetch page text')}
+                    </button>
+                  )}
                   <select
                     value={r.use_mode || 'full_text'}
                     onChange={(e) => setUseMode(r.reference_id, e.target.value as ReferenceUseMode)}
-                    disabled={r.type === 'link'}
+                    disabled={!hasText(r)}
                     className="text-xs px-1 py-0.5 border border-gray-300 rounded disabled:opacity-50"
                     title="Use in generation"
                   >
@@ -301,7 +370,7 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
                   <select
                     value={summarizeModelByRef[r.reference_id] || ''}
                     onChange={(e) => setSummarizeModelByRef(s => ({ ...s, [r.reference_id]: e.target.value }))}
-                    disabled={summarizingId === r.reference_id || r.type === 'link'}
+                    disabled={summarizingId === r.reference_id || !hasText(r)}
                     className="text-xs px-1 py-0.5 border border-gray-300 rounded disabled:opacity-50"
                     title="Model for summarization"
                   >
@@ -312,11 +381,11 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
                   </select>
                   <button
                     onClick={() => summarize(r.reference_id)}
-                    disabled={summarizingId === r.reference_id || r.type === 'link'}
+                    disabled={summarizingId === r.reference_id || !hasText(r)}
                     className={`text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 ${
                       summarizingId === r.reference_id ? 'bg-green-500 text-white animate-pulse border-green-500' : ''
                     }`}
-                    title={r.type === 'link' ? 'Links not yet supported' : ''}
+                    title={hasText(r) ? '' : 'No stored text to summarize'}
                   >
                     {summarizingId === r.reference_id
                       ? `Summarizing… ${summarizeTimer}`
@@ -324,7 +393,7 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
                   </button>
                   <button
                     onClick={() => setPickerRefId(r.reference_id)}
-                    disabled={r.type === 'link' || !r.content_length}
+                    disabled={!hasText(r)}
                     className="text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
                     title={r.content_length ? 'Choose which portions of this document to use' : 'No stored text to select from'}
                   >
@@ -349,6 +418,22 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
                   This summary was made from a different portion of the document than the current
                   selection, so it is <strong>not</strong> being sent. Click <strong>Re-summarize</strong> to
                   summarize what you have selected.
+                </div>
+              )}
+
+              {justFetchedId === r.reference_id && !r.approved_by_user && (
+                <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                  Page text fetched{r.content_length ? ` (${fmt(r.content_length)} chars)` : ''}, and{' '}
+                  <strong>Approved</strong> was cleared so you can review it. Re-check{' '}
+                  <strong>Approved</strong> to include this reference in generation.
+                </div>
+              )}
+
+              {fetchDegradedId === r.reference_id && (
+                <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                  Reader-mode extraction found little article text, so the raw page text was stored —
+                  it may include navigation and boilerplate, or the page may be rendered by JavaScript.
+                  Open <strong>Select portions</strong> to check what was captured.
                 </div>
               )}
 

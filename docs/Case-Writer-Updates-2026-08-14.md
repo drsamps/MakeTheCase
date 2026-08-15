@@ -88,6 +88,68 @@ Verified end-to-end: generating a brief with the hint *"set the case in a rural 
 
 - The prompt-injection convention was extended to the new prompt: `{teaching_principle}`, `{case_context}`, `{document_title}`, and `{outline}` are XML-wrapped and marked as data. Section titles come from uploaded documents and are adversary-influenced.
 - Reference `content` crosses to the browser from exactly one route, `GET .../references/:refId/content`. The list routes return `CHAR_LENGTH(content)` and compact counts; do not add `content` or the raw `outline` to them.
-- Link references still send only their URL. Fetching link contents remains unimplemented.
+- ~~Link references still send only their URL. Fetching link contents remains unimplemented.~~ Implemented — see *Migration 074* below.
 - The 💡 Hint button renders for any step with a Generate action, whether or not the route or prompt handles `revision_hint`. Wire the client handler, the route's `req.body` destructure, and the prompt placeholder together, or the control will look live and do nothing.
 - `summary_scope_hash` must be written on every path that writes `content_summary`; a NULL hash is treated as untrusted and the summary will not be sent. Its derivation is duplicated in migration 071's SQL backfill, and the two must stay in sync.
+
+---
+
+## Migration 074 — fetching a link's page text
+
+*Added 2026-08-15.*
+
+The last instance of the pattern this whole document is about: a control that looked live and contributed nothing. An instructor could add source material by **Paste link**, check **Approved**, and the reference would send this to all six generators:
+
+```
+### Source: How to play pickleball (link)
+
+URL: https://www.pickleheads.com/guides/how-to-play-pickleball
+```
+
+Two such rows existed on real projects in the dev database. The UI was at least honest about it — the row read *"Sends the URL only — link contents are not fetched yet"* — but honesty is not the same as working, and **Use in generation**, **Summarize**, and **Select portions** were all disabled for links.
+
+### What changed
+
+`POST /projects/:id/references/:refId/fetch` downloads the page, extracts its text into `content`, and rebuilds the outline. The whole downstream pipeline already keys off `content`, so **nothing else needed to change**: outline detection, section and excerpt selection, per-step overrides, `use_mode`, and summarization all work against a fetched link exactly as they do against pasted text. In the UI, the disable condition for those three controls stopped being `type === 'link'` and became a single derived predicate:
+
+```ts
+// A link with no fetched text has nothing to select, summarize, or scope.
+const hasText = (r: CaseWriterReference) => !!r.content_length;
+```
+
+New columns record what was actually read: `fetched_at`, `fetched_content_type`, `fetched_final_url`. The final URL is stored separately rather than overwriting `link_url` — the instructor typed `link_url` and it should stay as typed, and showing *"Redirected to …"* makes a bounce to a login or consent wall visible rather than mysterious.
+
+Like `POST .../summarize`, the route clears `approved_by_user`, for the same reason: the reference's contribution just went from a URL to 18,000 words about to feed five generation steps. The amber notice says so out loud — silently unchecking the box would drop the reference from every prompt with no visible signal, which is the failure mode this document exists to prevent.
+
+Refetching is the same route called again. It overwrites `content`, so `refreshReferenceOutline()` clears the selection and the per-step overrides; the stored character offsets no longer point at the same words. Nothing auto-refetches — `fetched_at` is shown in the row and staleness is the instructor's call.
+
+### The security part
+
+The URL comes from an authenticated instructor, but the **server** makes the request, so it can reach whatever this host can reach: localhost, the private network, and the cloud metadata endpoint. `server/services/urlFetcher.js` is deliberately free of Express and DB imports so the policy can be exercised on its own.
+
+Blocked: loopback, `0.0.0.0/8`, RFC1918, `169.254.0.0/16` (**including `169.254.169.254`**), CGNAT `100.64/10`, multicast, `::`, `::1`, `fe80::/10`, `fc00::/7`, `ff00::/8`. Non-`http(s)` schemes and embedded credentials are refused before any lookup. Every address a hostname resolves to is checked, not just the first — a host publishing both a public and a `127.0.0.1` A record is refused outright, since we do not control which one the socket picks.
+
+Two details that a naive implementation gets wrong, and both were found by testing rather than by reading:
+
+1. **IPv6 must be parsed, not pattern-matched.** `new URL()` normalizes `http://[::ffff:127.0.0.1]/` to `::ffff:7f00:1`, so a regex looking for a dotted quad inside a v6 literal sails right past it — the first version of `isBlockedAddress` allowed it. The address is now expanded into its eight 16-bit groups, and mapped, IPv4-compatible, and NAT64 (`64:ff9b::/96`) forms are unwrapped and re-checked against the v4 rules.
+2. **The redirect loop is manual and re-validates on every hop.** The origin controls the `Location` header, so a pre-flight-only check is defeated by any open redirector. Verified against two real public ones: `https://postman-echo.com/redirect-to?url=http://127.0.0.1:3001/` and the same on `nghttp2.org` both return 422 *"Refusing to fetch 127.0.0.1:3001: loopback address"* — blocked at the second hop, before a connection is attempted.
+
+Also: 20 s timeout, a 10 MB ceiling enforced on the running byte total rather than on `Content-Length` (which lies), and a maximum of 5 redirects.
+
+### Extraction
+
+HTML goes through `jsdom` + `@mozilla/readability` — the Firefox Reader Mode engine — which is what gets article prose instead of navigation menus. PDF and DOCX bodies are written to a temp file under `case_files/_cw-tmp/` and handed to the existing `convertFile()`, unlinked in a `finally`. `text/plain` and `text/markdown` are decoded directly. Anything else is refused with a message naming the type and pointing at **Upload file**.
+
+HTML stores `format: 'text'` on purpose: Readability's `textContent` carries no `#` headings, so the plain-text heuristics tier is the right one for outline detection (in practice both test pages fell through to `chunks`).
+
+When extraction yields under 200 characters the raw `<body>` text is stored instead and the row warns. The first version flagged this only when the fallback *won*, which meant a SPA shell whose `<nav>` yielded exactly 10 characters was stored silently — the flag now keys off the final length, which is the thing that actually matters.
+
+**The error messages are most of the product.** Paywalls, bot blocks, and JS-rendered pages are the common failures, none are fixable server-side, and every thrown message therefore ends by telling the instructor to open the page and paste the text instead.
+
+### Roll-out
+
+Setting `case_writer_url_fetch_enabled`, **`'0'` by default**. With the flag off the route returns 403 and the button is absent; the client learns which from `GET /api/case-writer/config`, kept as its own route rather than a field bolted onto the reference list.
+
+### Verified
+
+Both real dev-database link references fetch clean article prose — 18,276 chars from the Gladly service-recovery post, 21,585 from the Pickleheads guide, no nav menus — and `loadSourceMaterials()` puts that prose inside `<source_materials>` in place of the old one-line URL stub. Every entry in the block table above returns 422 and stores nothing. A refetch over a planted selection cleared `selection` and `selection_overrides` and reported `summary_stale: true`, so a summary predating the refetch is withheld from generation rather than described as current. `https://www.irs.gov/pub/irs-pdf/fw9.pdf` extracts 37,466 chars through `convertFile` and leaves no temp file behind; a PNG is refused by name.
