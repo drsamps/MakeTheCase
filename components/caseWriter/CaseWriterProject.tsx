@@ -6,6 +6,8 @@ import {
   BoundaryValidationResult,
   CaseVersion,
   CaseSize,
+  CaseWriterReference,
+  REFERENCE_TEXT_CHAR_CAP,
   coerceMarkdown
 } from '../../services/caseWriter/api';
 import { getApiBaseUrl } from '../../services/apiClient';
@@ -16,6 +18,7 @@ import MarkdownStepEditor from './MarkdownStepEditor';
 import MarkdownPreview from './MarkdownPreview';
 import ScenariosList from './ScenariosList';
 import SourceMaterial from './SourceMaterial';
+import StepSourceScope from './StepSourceScope';
 import CaseVersionsPanel from './CaseVersionsPanel';
 import PromptInfoButton, { logKeyFor } from './PromptInfoButton';
 import { useGenerationTimer } from './useGenerationTimer';
@@ -107,6 +110,14 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
   const [publishing, setPublishing] = useState(false);
 
   const [versions, setVersions] = useState<CaseVersion[]>([]);
+  // References live here, not only in the SourceMaterial pane: they drive the
+  // rail dot and the per-step source scope line under each Generate row, both
+  // of which must be right before that pane is ever opened.
+  const [refs, setRefs] = useState<CaseWriterReference[]>([]);
+  const refCounts = useMemo(
+    () => ({ total: refs.length, approved: refs.filter(r => !!r.approved_by_user).length }),
+    [refs]
+  );
   // The most recent size used when generating the student case. Defaults to
   // 'regular'; pre-fills the "Save as version" modal.
   const [lastStudentSize, setLastStudentSize] = useState<CaseSize>('regular');
@@ -139,7 +150,12 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     setPubAgainst(data.publish_arguments_against || '');
   }
 
-  useEffect(() => { reload(); reloadVersions(); }, [projectId]);
+  async function reloadRefs() {
+    const { data } = await caseWriterApi.listReferences(projectId);
+    if (data) setRefs(data);
+  }
+
+  useEffect(() => { reload(); reloadVersions(); reloadRefs(); }, [projectId]);
 
   useEffect(() => {
     (async () => {
@@ -209,7 +225,10 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     if (!project) return 'empty';
     switch (p) {
       case 'overview': return project.teaching_principle ? 'approved' : 'empty';
-      case 'source': return 'empty';
+      case 'source':
+        if (refCounts.approved > 0) return 'approved';
+        if (refCounts.total > 0) return 'draft';
+        return 'empty';
       case 'brief': return project.learning_brief ? 'approved' : 'empty';
       case 'scenarios':
         if (project.selected_scenario) return 'approved';
@@ -271,6 +290,7 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
     setBusyFor('brief', true); setErr(null);
     const { data, error } = await caseWriterApi.generateBrief(projectId, {
       model_id: overrideModelId,
+      revision_hint: opts?.revision_hint,
       log_this_prompt: opts?.log_this_prompt === '1'
     });
     setBusyFor('brief', false);
@@ -723,6 +743,7 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
               <SourceMaterial
                 projectId={projectId}
                 onError={setErr}
+                onChange={setRefs}
                 models={models}
                 projectDefaultModelId={project.default_model_id}
                 isAdmin={isAdmin}
@@ -744,6 +765,16 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
               models={models}
               projectDefaultModelId={project.default_model_id}
               promptUse="case_writer.teaching_brief"
+              sourceAccessory={
+                <StepSourceScope
+                  projectId={projectId}
+                  step="brief"
+                  references={refs}
+                  charCap={REFERENCE_TEXT_CHAR_CAP}
+                  onChanged={reloadRefs}
+                  onError={setErr}
+                />
+              }
               isAdmin={isAdmin}
               tweakStep="brief"
               projectId={projectId}
@@ -755,6 +786,16 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
               <div className="mb-3">
                 <h2 className="text-lg font-semibold text-gray-900">2. Scenarios</h2>
                 <p className="text-sm text-gray-600 mt-1">{STEP_DESCRIPTIONS.scenarios}</p>
+              </div>
+              <div className="mb-3">
+                <StepSourceScope
+                  projectId={projectId}
+                  step="scenarios"
+                  references={refs}
+                  charCap={REFERENCE_TEXT_CHAR_CAP}
+                  onChanged={reloadRefs}
+                  onError={setErr}
+                />
               </div>
               <ScenariosList
                 scenarios={scenariosDraft}
@@ -797,6 +838,16 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
               models={models}
               projectDefaultModelId={project.default_model_id}
               promptUse="case_writer.case_blueprint"
+              sourceAccessory={
+                <StepSourceScope
+                  projectId={projectId}
+                  step="blueprint"
+                  references={refs}
+                  charCap={REFERENCE_TEXT_CHAR_CAP}
+                  onChanged={reloadRefs}
+                  onError={setErr}
+                />
+              }
               isAdmin={isAdmin}
               tweakStep="blueprint"
               projectId={projectId}
@@ -829,6 +880,16 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
                 ]
               }]}
               promptUse="case_writer.student_case_draft"
+              sourceAccessory={
+                <StepSourceScope
+                  projectId={projectId}
+                  step="student_case"
+                  references={refs}
+                  charCap={REFERENCE_TEXT_CHAR_CAP}
+                  onChanged={reloadRefs}
+                  onError={setErr}
+                />
+              }
               isAdmin={isAdmin}
               tweakStep="student_case"
               projectId={projectId}
@@ -869,6 +930,16 @@ const CaseWriterProject: React.FC<Props> = ({ projectId, onBack, user }) => {
                 ]
               }]}
               promptUse="case_writer.teaching_note"
+              sourceAccessory={
+                <StepSourceScope
+                  projectId={projectId}
+                  step="teaching_note"
+                  references={refs}
+                  charCap={REFERENCE_TEXT_CHAR_CAP}
+                  onChanged={reloadRefs}
+                  onError={setErr}
+                />
+              }
               isAdmin={isAdmin}
               tweakStep="teaching_note"
               projectId={projectId}

@@ -39,6 +39,10 @@ interface Props {
   generateOptions?: GenerateOption[];
   // Optional content that renders above the editor (e.g. CaseVersionsPanel on Step 4).
   topAccessory?: React.ReactNode;
+  // One-line note rendered directly under the Generate row, describing which
+  // source material this step will use. Keeps a per-step override visible at
+  // the point of generation instead of buried in the Source Material pane.
+  sourceAccessory?: React.ReactNode;
   // Admin-only ⓘ icon shows the live prompt template for this step.
   promptUse?: string;
   isAdmin?: boolean;
@@ -63,6 +67,7 @@ const MarkdownStepEditor: React.FC<Props> = ({
   saveStateOverride,
   generateOptions,
   topAccessory,
+  sourceAccessory,
   promptUse,
   isAdmin = false,
   tweakStep,
@@ -275,6 +280,8 @@ const MarkdownStepEditor: React.FC<Props> = ({
           <PromptInfoButton use="case_writer.content_tweak" isAdmin={isAdmin} />
         )}
       </div>
+
+      {onGenerate && sourceAccessory && <div>{sourceAccessory}</div>}
 
       {onGenerate && hintOpen && (
         <div className="border border-amber-200 bg-amber-50 rounded-md p-3 space-y-2">

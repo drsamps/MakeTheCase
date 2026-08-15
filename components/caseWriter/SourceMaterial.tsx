@@ -1,7 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { caseWriterApi, CaseWriterReference } from '../../services/caseWriter/api';
+import {
+  caseWriterApi,
+  CaseWriterReference,
+  ReferenceUseMode,
+  REFERENCE_TEXT_CHAR_CAP
+} from '../../services/caseWriter/api';
 import { useGenerationTimer } from './useGenerationTimer';
 import PromptInfoButton from './PromptInfoButton';
+import ReferenceContentViewer from './ReferenceContentViewer';
 
 interface ModelOption {
   model_id: string;
@@ -11,7 +17,7 @@ interface ModelOption {
 interface Props {
   projectId: string;
   onError: (message: string) => void;
-  onChange?: () => void;
+  onChange?: (refs: CaseWriterReference[]) => void;
   models?: ModelOption[];
   projectDefaultModelId?: string | null;
   isAdmin?: boolean;
@@ -23,6 +29,67 @@ const TYPE_LABEL: Record<string, string> = {
   link: 'Link',
   saved_framework: 'Saved framework'
 };
+
+// `use_mode` chooses how much detail; the selection chooses which part of the
+// document. Labels track whether a selection exists so the two read as one
+// coherent statement rather than two unrelated controls.
+const USE_MODE_LABEL: Record<ReferenceUseMode, string> = {
+  full_text: 'Full text',
+  summary: 'Summary only',
+  summary_and_full_text: 'Summary + full text'
+};
+
+const USE_MODE_LABEL_SELECTED: Record<ReferenceUseMode, string> = {
+  full_text: 'Selected text',
+  summary: 'Summary of selection',
+  summary_and_full_text: 'Summary + selected text'
+};
+
+const hasSelection = (r: CaseWriterReference) =>
+  (r.selected_section_count || 0) > 0 || (r.excerpt_count || 0) > 0;
+
+const fmt = (n: number) => n.toLocaleString('en-US');
+
+// One line describing exactly what this reference will contribute to the next
+// generation, so "approved" never again means "silently sends nothing".
+function describeContribution(r: CaseWriterReference): string {
+  const mode = r.use_mode || 'full_text';
+
+  if (r.type === 'link') return 'Sends the URL only — link contents are not fetched yet';
+
+  // A saved section/excerpt selection replaces the whole document.
+  const selected = hasSelection(r);
+  const chars = selected ? (r.selected_chars || 0) : (r.content_length || 0);
+
+  const scope = selected
+    ? [
+        r.selected_section_count ? `${r.selected_section_count} of ${r.section_count} sections` : '',
+        r.excerpt_count ? `${r.excerpt_count} excerpt${r.excerpt_count === 1 ? '' : 's'}` : ''
+      ].filter(Boolean).join(' + ')
+    : 'the whole document';
+
+  const textPhrase = chars
+    ? `${scope} — ${fmt(chars)} chars${chars > REFERENCE_TEXT_CHAR_CAP ? ` (truncated to ${fmt(REFERENCE_TEXT_CHAR_CAP)})` : ''}`
+    : 'the whole document — but no text is stored for this reference';
+
+  // A summary only counts when it was built from the same portion the text
+  // channel would send; otherwise the server drops it and sends the text.
+  const summaryUsable = !!r.content_summary && !r.summary_stale;
+
+  if (mode === 'summary') {
+    if (summaryUsable) return `Sends the AI summary of ${scope}`;
+    return r.content_summary
+      ? `Summary is out of date with the selection — sends ${textPhrase} until you re-summarize`
+      : `Not summarized yet — sends ${textPhrase}`;
+  }
+  if (mode === 'summary_and_full_text') {
+    if (summaryUsable) return `Sends the AI summary, then the text — both covering ${textPhrase}`;
+    return r.content_summary
+      ? `Summary is out of date with the selection — sends ${textPhrase} until you re-summarize`
+      : `Not summarized yet — sends ${textPhrase}`;
+  }
+  return `Sends ${textPhrase}`;
+}
 
 const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models = [], projectDefaultModelId = null, isAdmin = false }) => {
   const [refs, setRefs] = useState<CaseWriterReference[]>([]);
@@ -38,6 +105,8 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
   const [summarizingId, setSummarizingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [summarizeModelByRef, setSummarizeModelByRef] = useState<Record<string, string>>({});
+  const [justSummarizedId, setJustSummarizedId] = useState<string | null>(null);
+  const [pickerRefId, setPickerRefId] = useState<string | null>(null);
   const summarizeTimer = useGenerationTimer(!!summarizingId);
 
   async function reload() {
@@ -46,7 +115,7 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
     setLoading(false);
     if (error) { onError(error.message); return; }
     setRefs(data || []);
-    onChange?.();
+    onChange?.(data || []);
   }
 
   useEffect(() => { reload(); }, [projectId]);
@@ -93,11 +162,22 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
     const { error } = await caseWriterApi.summarizeReference(projectId, refId, modelOverride ? { model_id: modelOverride } : {});
     setSummarizingId(null);
     if (error) { onError(error.message); return; }
+    // The server clears approved_by_user on every new summary so the instructor
+    // has to review it. Say so out loud — silently unchecking the box drops the
+    // reference out of every generation prompt with no visible signal.
+    setJustSummarizedId(refId);
     reload();
   }
 
   async function setApproved(refId: string, approved: boolean) {
     const { error } = await caseWriterApi.updateReference(projectId, refId, { approved_by_user: approved ? 1 : 0 });
+    if (error) { onError(error.message); return; }
+    if (approved) setJustSummarizedId(id => (id === refId ? null : id));
+    reload();
+  }
+
+  async function setUseMode(refId: string, useMode: ReferenceUseMode) {
+    const { error } = await caseWriterApi.updateReference(projectId, refId, { use_mode: useMode });
     if (error) { onError(error.message); return; }
     reload();
   }
@@ -118,7 +198,8 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-sm text-gray-600">
-          Optional. Approved references are passed to every step's prompt to ground the generated content.
+          Optional. Every <strong>Approved</strong> reference is sent to every generation step, using the
+          text selected in its <strong>Use in generation</strong> setting.
         </p>
         <div className="flex items-center gap-2">
           <PromptInfoButton use="case_writer.reference_summary" isAdmin={isAdmin} />
@@ -205,6 +286,19 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
                     Approved
                   </label>
                   <select
+                    value={r.use_mode || 'full_text'}
+                    onChange={(e) => setUseMode(r.reference_id, e.target.value as ReferenceUseMode)}
+                    disabled={r.type === 'link'}
+                    className="text-xs px-1 py-0.5 border border-gray-300 rounded disabled:opacity-50"
+                    title="Use in generation"
+                  >
+                    {(Object.keys(USE_MODE_LABEL) as ReferenceUseMode[]).map(m => (
+                      <option key={m} value={m}>
+                        {(hasSelection(r) ? USE_MODE_LABEL_SELECTED : USE_MODE_LABEL)[m]}
+                      </option>
+                    ))}
+                  </select>
+                  <select
                     value={summarizeModelByRef[r.reference_id] || ''}
                     onChange={(e) => setSummarizeModelByRef(s => ({ ...s, [r.reference_id]: e.target.value }))}
                     disabled={summarizingId === r.reference_id || r.type === 'link'}
@@ -229,6 +323,14 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
                       : (r.content_summary ? 'Re-summarize' : 'Summarize')}
                   </button>
                   <button
+                    onClick={() => setPickerRefId(r.reference_id)}
+                    disabled={r.type === 'link' || !r.content_length}
+                    className="text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+                    title={r.content_length ? 'Choose which portions of this document to use' : 'No stored text to select from'}
+                  >
+                    Select portions
+                  </button>
+                  <button
                     onClick={() => remove(r)}
                     className="text-xs px-2 py-1 text-red-600 border border-red-200 rounded hover:bg-red-50"
                   >
@@ -236,6 +338,27 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
                   </button>
                 </div>
               </div>
+              <div className={`mt-1 text-xs ${r.approved_by_user ? 'text-gray-600' : 'text-gray-400 italic'}`}>
+                {r.approved_by_user
+                  ? describeContribution(r)
+                  : 'Not approved — nothing from this reference is sent to any generation step'}
+              </div>
+
+              {r.summary_stale && (
+                <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                  This summary was made from a different portion of the document than the current
+                  selection, so it is <strong>not</strong> being sent. Click <strong>Re-summarize</strong> to
+                  summarize what you have selected.
+                </div>
+              )}
+
+              {justSummarizedId === r.reference_id && !r.approved_by_user && (
+                <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                  New summary generated, and <strong>Approved</strong> was cleared so you can review it.
+                  Re-check <strong>Approved</strong> to include this reference in generation.
+                </div>
+              )}
+
               {r.content_summary && (
                 <div className="mt-2">
                   <button
@@ -263,6 +386,17 @@ const SourceMaterial: React.FC<Props> = ({ projectId, onError, onChange, models 
           );
         })}
       </ul>
+
+      {pickerRefId && (
+        <ReferenceContentViewer
+          projectId={projectId}
+          referenceId={pickerRefId}
+          charCap={REFERENCE_TEXT_CHAR_CAP}
+          onClose={() => setPickerRefId(null)}
+          onSaved={reload}
+          onError={onError}
+        />
+      )}
     </div>
   );
 };

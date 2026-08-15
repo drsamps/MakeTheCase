@@ -39,6 +39,83 @@ Additional supporting prompts: `case_writer.boundary_validation`, `case_writer.s
 
 Approved rows feed every generator prompt as `{source_materials}` via `loadSourceMaterials(projectId)`. Uploads (`POST /projects/:id/references/upload`) store extracted text directly in the `content` column — they intentionally bypass `case_files` to avoid the FK to `cases.case_id`.
 
+Two orthogonal controls decide what an approved reference contributes:
+
+```
+selection  ->  WHICH part of the document        (migrations 068-069)
+use_mode   ->  HOW MUCH detail of that part      (migration 067)
+```
+
+| `use_mode` | Sends |
+|---|---|
+| `full_text` (default) | the selected text verbatim |
+| `summary` | the AI summary **of the selected text** |
+| `summary_and_full_text` | the summary, then `--- Full text ---`, then the text — both covering the same portion |
+
+The two used to ignore each other: the summarize route read the whole `content` column, so picking three chapters and choosing `summary` silently discarded the selection, and `summary_and_full_text` put a whole-document summary above three selected chapters. Migration 071 fixed that — see *Keeping the summary and selection in the same scope* below.
+
+Two invariants, both of which exist because violating them caused a real bug:
+
+1. **No mode ever emits a header with no body.** `summary` falls back to full text when `content_summary` is NULL (with a `_(not summarized yet — using full text)_` note), and a reference with nothing to contribute is skipped entirely rather than emitted as a title line. Before 067, `loadSourceMaterials` selected only `content_summary`, so an approved-but-never-summarized reference reached the model as a bare `### Source: …` header — the instructor saw "Approved" and got nothing.
+2. **Output is capped.** `REFERENCE_TEXT_CHAR_CAP` = 60,000 chars per reference, `SOURCE_MATERIALS_TOTAL_CHAR_CAP` = 150,000 across all approved references (a running budget consumed in `created_at` order). Truncation appends a visible `[truncated — showing first N of M characters]` marker. A single 1.5 MB PDF extracts to ~110k chars and `{source_materials}` is rebuilt on all six generate calls, so an uncapped build would exceed provider context windows.
+
+Note that `POST .../summarize` sets `approved_by_user = 0` by design, so a new summary must be re-approved before it is used. The Source Material UI shows an explicit notice when this happens.
+
+#### Keeping the summary and selection in the same scope (migrations 071-072)
+
+`POST .../summarize` summarizes the reference's **default selection**, not the whole document, and records which selection it used in `summary_scope_hash`.
+
+`selectionScopeKey(row, step)` derives that key from the effective selection plus `outline_hash` — deliberately **not** from the document body, so it can also be computed on the list routes, which never load `content`. `summaryMatchesScope(row, step)` compares them:
+
+- **Match** → the summary is used.
+- **Mismatch** → the summary is *not* sent; the selected text goes instead, carrying `_(summary is out of date with the current selection — using the selected text)_`. The UI shows a re-summarize prompt (`summary_stale` on the list payload), so this is never silent.
+
+Consequences worth knowing:
+
+- A **per-step override** changes the scope for that step, and there is only one summary per reference — so an overridden step falls back to text under `summary` mode. That is intentional: the alternative is sending a summary of a portion that step is not using.
+- **Editing `content`** rebuilds `outline_hash`, which changes the scope key, which flags the summary stale. No separate invalidation needed.
+- A summary with a NULL `summary_scope_hash` is treated as untrusted and not sent. Migration 071 backfilled every existing summary with the "whole document" key, so this only occurs if a new code path forgets to record scope — write `summary_scope_hash` whenever you write `content_summary`.
+
+Key derivation is duplicated in migration 071's backfill (`MD5(CONCAT('whole:', COALESCE(outline_hash, '')))`); the two must stay in sync, and `test-summary-scope.mjs` asserts they agree.
+
+Migration 072 updates `case_writer.reference_summary` accordingly: it no longer claims `<content>` is the full document, gains a `{scope_note}` variable naming the selected sections, and asks the model to flag excerpts that begin or end mid-argument. Its JSON output contract is unchanged.
+
+#### Choosing portions of a large document (migrations 068-070)
+
+A 1.5 MB textbook PDF extracts to ~110,000 characters, and truncating to the first 60,000 keeps the title page and throws away the chapter that matters. So a reference can carry a selection:
+
+- `outline` — detected sections `[{id, level, title, start, end, chars}]`, built by `server/services/referenceOutline.js`.
+- `outline_hash` — md5 of `content` when the outline was built.
+- `selection` — `{sections: [id], excerpts: [{id, start, end, label}]}`. NULL/empty means the whole document.
+- `selection_overrides` — `{step: selection}` for `brief` / `scenarios` / `blueprint` / `student_case` / `teaching_note`. An absent key falls back to `selection`.
+
+`loadSourceMaterials(projectId, step)` resolves override → default → whole document, merges section and excerpt ranges with `mergeRanges()` (so an excerpt inside a selected section is not sent twice), and joins the pieces with `[…]` to mark elision.
+
+**Offsets are the fragile part.** `start`/`end` index into `content`, which is editable via PATCH. Two defences, and both are needed:
+
+1. Any write to `content` calls `refreshReferenceOutline()`, which rebuilds `outline`/`outline_hash` and clears **both** `selection` and `selection_overrides`.
+2. `resolveSelectionRanges()` re-checks `outline_hash` against `md5(content)` at read time and ignores a stale selection, degrading to the whole document rather than slicing at offsets that now point at the wrong text.
+
+##### Outline detection tiers
+
+`detectOutline(text, format)` tries, in order, and falls through when a tier's result fails a quality gate (≥3 sections averaging ≥500 chars after cleanup):
+
+1. **markdown_headings** — `#`-`####`. Only DOCX (via mammoth) and `.md` carry these.
+2. **text_headings** — `Chapter N —`/numbered/ALL-CAPS heuristics for plain text. Post-processing does the real work here: lines ending like prose are rejected, sections under 400 chars are absorbed into their predecessor (kills numbered-list false positives), repeated running headers are collapsed to their first occurrence (PDF page headers otherwise make every page a section), and sections over 12,000 chars are split into parts.
+3. **chunks** — ~5,000-char blocks split at paragraph breaks, labelled by their opening words. Always succeeds.
+
+PDFs go through `pdf-parse` + `cleanPdfText()`, which carries no headings and strips standalone page numbers, so tier 3 is load-bearing rather than a corner case. In practice the ESDI test document (`ESDI-4E_Chapters_1-3.pdf`, 109,942 chars) resolves on tier 2 into 11 sections with real chapter boundaries.
+
+##### Routes
+
+- `GET /projects/:id/references/:refId/content` — full text + outline. **The only route that ships `content` to the browser**; the list routes return `CHAR_LENGTH(content)` and a compact selection summary (`withSelectionSummary()`) instead.
+- `POST /projects/:id/references/:refId/rebuild-outline` — force re-detection; clears the selection.
+- `POST /projects/:id/references/:refId/suggest-sections` — `case_writer.reference_section_select`. Sends **only the outline** (id, title, char count, 120-char snippet) plus the teaching principle, never the document body. Returns a suggestion and **persists nothing**; unknown section ids are dropped server-side. The picker pre-checks the boxes and the instructor saves.
+
+##### UI
+
+`components/caseWriter/ReferenceContentViewer.tsx` is the picker (Sections / Excerpts tabs, running total against the cap, ✨ Suggest sections). Excerpt capture renders one `<span data-start>` per outline section, so a DOM selection maps to absolute offsets as `dataset.start + offsetWithinSpan`. `components/caseWriter/StepSourceScope.tsx` renders the per-step line under each Generate row — a per-step override has to be visible where it takes effect, or an unexpectedly narrow output is very hard to diagnose.
+
 ### `case_writer_versions`
 
 Append-only snapshots of each step output. Created automatically by mutating routes; surfaced in `CaseVersionsPanel.tsx`.
@@ -56,7 +133,9 @@ Resolution order per generate call: explicit `model_override` → `project.defau
 
 ## Generation hints (`revision_hint`)
 
-All four generator routes (Scenarios, Blueprint, Student Case, Teaching Note) accept an optional `revision_hint` in the request body and substitute it into the prompt inside a `<revision_hint>` tag. The 💡 Hint button next to each Generate's model picker exposes this. **Ephemeral by design** — hint lives in component state, not persisted. Persistent guidance belongs in the Learning Brief / Case Blueprint, which the Tweak workflow can also edit.
+All five generator routes (**Learning Brief**, Scenarios, Blueprint, Student Case, Teaching Note) accept an optional `revision_hint` in the request body and substitute it into the prompt inside a `<revision_hint>` tag. The 💡 Hint button next to each Generate's model picker exposes this. **Ephemeral by design** — hint lives in component state, not persisted. Persistent guidance belongs in the Learning Brief / Case Blueprint, which the Tweak workflow can also edit.
+
+The Learning Brief was wired up late (migration 073). `MarkdownStepEditor` renders 💡 Hint for **any** step that can Generate, so the Brief displayed the control from the start while the hint was discarded at three separate layers: `generateBrief()` forwarded only `log_this_prompt` from `opts`, `POST /generate/brief` destructured only `model_id`, and `case_writer.teaching_brief` had no `{revision_hint}` placeholder. **If you add a generate step, wire all three layers** — the button appears whether or not anything is listening.
 
 ## Access model
 
@@ -93,12 +172,15 @@ All four generator routes (Scenarios, Blueprint, Student Case, Teaching Note) ac
 - `loadProject(projectId, req, action?)` — access-gated load (see above).
 - `asMarkdown(value)` — unwraps `JSON.stringify(markdownString)` storage.
 - `renderPrompt(template, vars)` — literal `{var}` substitution.
-- `loadSourceMaterials(projectId)` — concatenates approved `case_writer_references`.
+- `loadSourceMaterials(projectId, step)` — concatenates approved `case_writer_references` per each row's `use_mode` and section/excerpt selection; see below.
+- `refreshReferenceOutline(refId, text, format)` — rebuilds `outline`/`outline_hash`, clears `selection` + `selection_overrides`. Call on **every** write to `content`.
+- `resolveSelectionRanges(row, text, step)` / `assembleSelectedText(text, ranges)` — resolve and stitch the selected portions.
+- `withSelectionSummary(row)` — strips bulky `outline`/`selection` JSON from list responses, leaving counts.
 - `loadPromptOrThrow(use, version)` — fetches `ai_prompts` rows.
 - `generateOutlineWithLLM(...)` — wraps `llmRouter.generate()` with provider-aware token-limit handling.
 
 ## Reference docs
 
-- **Per-release change logs:** `docs/Case-Writer-Updates-2026-05-13.md`, `…-05-14.md`, `…-05-21.md`.
+- **Per-release change logs:** `docs/Case-Writer-Updates-2026-05-13.md`, `…-05-14.md`, `…-05-21.md`, `…-08-14.md`.
 - **Prompt logging (for prompt verification):** `docs/prompt-logging.md`.
 - **DB structure:** `docs/mysql-database-structure-Oct2025.sql` (search for `case_writer_`).

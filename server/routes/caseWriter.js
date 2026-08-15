@@ -15,6 +15,8 @@ import { getEffectiveInstructorId, buildVisibilityScope, canAccessResource, hasA
 import { setVisibility } from '../services/visibilityWrites.js';
 import { markdownToDocxBuffer, markdownToPdfBuffer } from '../services/markdownExport.js';
 import { convertFile } from '../services/fileConverter.js';
+import { detectOutline, mergeRanges } from '../services/referenceOutline.js';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -126,12 +128,299 @@ async function recordRevision(projectId, step, snapshot, userId) {
   );
 }
 
+// Caps on how much reference text reaches the model. A single 1.5 MB PDF can
+// extract to several hundred thousand characters, and {source_materials} is
+// rebuilt on every one of the six generate calls, so an uncapped build would
+// blow past provider context windows mid-generation.
+const REFERENCE_TEXT_CHAR_CAP = 60000;
+const SOURCE_MATERIALS_TOTAL_CHAR_CAP = 150000;
+
+// Mirrors the ENUM on case_writer_references.use_mode (migration 067).
+const REFERENCE_USE_MODES = ['full_text', 'summary', 'summary_and_full_text'];
+
+function formatCount(n) {
+  return Number(n).toLocaleString('en-US');
+}
+
+// Trim `text` to whatever is left of the shared budget, appending a visible
+// marker when anything was dropped. Returns the trimmed text and the number of
+// characters consumed so the caller can decrement the running budget.
+function capReferenceText(text, remainingBudget) {
+  const full = String(text || '');
+  const limit = Math.max(0, Math.min(REFERENCE_TEXT_CHAR_CAP, remainingBudget));
+  if (full.length <= limit) return { text: full, used: full.length };
+  if (limit === 0) {
+    // The shared budget is spent. Say the material exists but was dropped —
+    // "showing first 0 of N characters" reads as a bug, and silence would hide
+    // from the instructor that an approved reference contributed nothing.
+    return {
+      text: `[omitted — ${formatCount(full.length)} characters, exceeds the source material budget]`,
+      used: 0
+    };
+  }
+  const kept = full.slice(0, limit);
+  return {
+    text: `${kept}\n\n[truncated — showing first ${formatCount(limit)} of ${formatCount(full.length)} characters]`,
+    used: limit
+  };
+}
+
+// Shape-check a client-supplied `selection` before it reaches the JSON column.
+// Offsets drive slicing of stored document text, so they must be sane integers;
+// resolveSelectionRanges() additionally verifies them against the content hash
+// at read time. Returns an error string, or null when the value is acceptable.
+function validateSelection(value) {
+  if (value == null) return null;                       // explicit clear
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return 'selection must be an object like {sections:[], excerpts:[]}';
+  }
+  const { sections, excerpts } = value;
+  if (sections !== undefined) {
+    if (!Array.isArray(sections) || sections.some(s => typeof s !== 'string')) {
+      return 'selection.sections must be an array of section ids';
+    }
+    if (sections.length > 5000) return 'selection.sections is too large';
+  }
+  if (excerpts !== undefined) {
+    if (!Array.isArray(excerpts)) return 'selection.excerpts must be an array';
+    if (excerpts.length > 500) return 'selection.excerpts is too large';
+    for (const e of excerpts) {
+      if (!e || typeof e !== 'object') return 'each excerpt must be an object';
+      if (!Number.isInteger(e.start) || !Number.isInteger(e.end)) {
+        return 'excerpt start/end must be integers';
+      }
+      if (e.start < 0 || e.end <= e.start) return 'excerpt range is invalid';
+      if (e.label !== undefined && typeof e.label !== 'string') {
+        return 'excerpt label must be a string';
+      }
+    }
+  }
+  return null;
+}
+
+// Steps that can carry their own source-material selection. Mirrors the
+// generate routes; 'scenarios' is included here even though TWEAK_STEPS omits
+// it, because /generate/scenarios also consumes {source_materials}.
+const SELECTION_STEPS = ['brief', 'scenarios', 'blueprint', 'student_case', 'teaching_note'];
+
+// {step: selection} — each value follows the same shape as `selection`.
+function validateSelectionOverrides(value) {
+  if (value == null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return 'selection_overrides must be an object keyed by step';
+  }
+  for (const [step, sel] of Object.entries(value)) {
+    if (!SELECTION_STEPS.includes(step)) {
+      return `unknown step "${step}"; expected one of: ${SELECTION_STEPS.join(', ')}`;
+    }
+    const err = validateSelection(sel);
+    if (err) return `${step}: ${err}`;
+  }
+  return null;
+}
+
+function contentHash(text) {
+  return crypto.createHash('md5').update(String(text || ''), 'utf8').digest('hex');
+}
+
+/**
+ * Replace the bulky `outline` / `selection` JSON on a reference row with a few
+ * scalars the Source Material list actually needs. A chunked 400k-char document
+ * has a large outline; multiplied by every reference on a project it is not
+ * something to ship on every list call.
+ */
+function withSelectionSummary(row) {
+  const outline = parseJsonColumn(row.outline);
+  const selection = parseJsonColumn(row.selection);
+  const sections = outline?.sections || [];
+  const selectedIds = new Set(Array.isArray(selection?.sections) ? selection.sections : []);
+  const excerpts = Array.isArray(selection?.excerpts) ? selection.excerpts : [];
+
+  const selectedChars =
+    sections.filter(s => selectedIds.has(s.id)).reduce((n, s) => n + (s.chars || 0), 0)
+    + excerpts.reduce((n, e) => n + Math.max(0, (e.end || 0) - (e.start || 0)), 0);
+
+  const overrides = parseJsonColumn(row.selection_overrides) || {};
+
+  // Internal bookkeeping columns stay server-side; the client gets the derived
+  // booleans and counts below instead.
+  const {
+    outline: _outline, selection: _selection, selection_overrides: _ov,
+    summary_scope_hash: _ssh, outline_hash: _oh,
+    ...rest
+  } = row;
+  return {
+    ...rest,
+    // True when a summary exists but was built from a different portion of the
+    // document than the current selection — it will not be sent until
+    // re-summarized, and the UI says so rather than dropping it silently.
+    summary_stale: !!row.content_summary && !summaryMatchesScope(row, null),
+    outline_strategy: outline?.strategy || null,
+    section_count: sections.length,
+    selected_section_count: selectedIds.size,
+    excerpt_count: excerpts.length,
+    // 0 with no selection means "whole document"; the client checks the counts.
+    selected_chars: selectedChars,
+    // Which steps deviate from the default selection, so the UI can flag them
+    // at the point of generation rather than burying them in a modal.
+    override_steps: Object.keys(overrides)
+  };
+}
+
+function parseJsonColumn(value) {
+  if (value == null) return null;
+  if (typeof value === 'object') return value;   // mysql2 already parsed the JSON column
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+// Build (or rebuild) the cached outline for a reference. Called on every write
+// that changes `content`, because the offsets in `selection` are only valid for
+// the exact text they were computed against.
+async function refreshReferenceOutline(referenceId, text, format) {
+  const src = String(text || '');
+  // Per-step overrides hold the same kind of offsets as `selection`, so they
+  // are cleared alongside it — leaving one behind would silently apply stale
+  // ranges to a single step, which is far harder to notice than a full reset.
+  if (!src.trim()) {
+    await pool.execute(
+      `UPDATE case_writer_references
+          SET outline = NULL, outline_hash = NULL, selection = NULL, selection_overrides = NULL
+       WHERE reference_id = ?`,
+      [referenceId]
+    );
+    return null;
+  }
+  const outline = detectOutline(src, format);
+  await pool.execute(
+    `UPDATE case_writer_references
+        SET outline = ?, outline_hash = ?, selection = NULL, selection_overrides = NULL
+     WHERE reference_id = ?`,
+    [JSON.stringify(outline), contentHash(src), referenceId]
+  );
+  return outline;
+}
+
+/**
+ * Resolve a reference's stored selection into concrete character ranges.
+ *
+ * Returns null when the whole document should be used — which covers "nothing
+ * selected yet" and, deliberately, "the document changed since the selection
+ * was made". Slicing at offsets that no longer line up with the text would feed
+ * the model confident-looking garbage, so a hash mismatch degrades to the
+ * migration-067 behavior instead.
+ */
+// The selection in effect for a step: a per-step override wins over the
+// reference's default, and an absent override key means "no opinion for this
+// step", not "select nothing".
+function effectiveSelection(row, step) {
+  const overrides = parseJsonColumn(row.selection_overrides);
+  if (step && overrides && Object.prototype.hasOwnProperty.call(overrides, step)) {
+    return overrides[step];
+  }
+  return parseJsonColumn(row.selection);
+}
+
+/**
+ * Stable key identifying WHICH portion of a reference a given step will use.
+ *
+ * Stored on the row when a summary is generated (`summary_scope_hash`) and
+ * recomputed at read time, so a summary is only used when it describes the same
+ * text the selection would send. Deliberately derived from the selection and
+ * `outline_hash` rather than from the document body, so it can be computed on
+ * the list routes, which never load `content`.
+ *
+ * Must stay in sync with the backfill in migration 071.
+ */
+function selectionScopeKey(row, step) {
+  const sel = effectiveSelection(row, step);
+  const ids = Array.isArray(sel?.sections) ? [...sel.sections].sort() : [];
+  const ex = Array.isArray(sel?.excerpts)
+    ? sel.excerpts.map(e => `${e.start}-${e.end}`).sort()
+    : [];
+  if (ids.length === 0 && ex.length === 0) {
+    return contentHash(`whole:${row.outline_hash || ''}`);
+  }
+  return contentHash(JSON.stringify({ h: row.outline_hash || '', ids, ex }));
+}
+
+/** True when the stored summary describes the text this step would send. */
+function summaryMatchesScope(row, step) {
+  if (!row.content_summary) return false;
+  if (!row.summary_scope_hash) return false;
+  return row.summary_scope_hash === selectionScopeKey(row, step);
+}
+
+function resolveSelectionRanges(row, fullText, step) {
+  const selection = effectiveSelection(row, step);
+  if (!selection) return null;
+
+  const sectionIds = Array.isArray(selection.sections) ? selection.sections : [];
+  const excerpts = Array.isArray(selection.excerpts) ? selection.excerpts : [];
+  if (sectionIds.length === 0 && excerpts.length === 0) return null;
+
+  if (!row.outline_hash || row.outline_hash !== contentHash(fullText)) return null;
+
+  const outline = parseJsonColumn(row.outline);
+  const byId = new Map((outline?.sections || []).map(s => [s.id, s]));
+
+  const ranges = [];
+  for (const id of sectionIds) {
+    const s = byId.get(id);
+    if (s) ranges.push({ start: s.start, end: s.end, title: s.title });
+  }
+  for (const e of excerpts) {
+    ranges.push({ start: e.start, end: e.end, title: e.label || 'excerpt' });
+  }
+
+  const merged = mergeRanges(ranges);
+  return merged.length > 0 ? merged : null;
+}
+
+// Stitch selected ranges into one body, marking the gaps so the model knows it
+// is reading excerpts rather than a continuous document.
+function assembleSelectedText(fullText, ranges) {
+  const parts = [];
+  let prevEnd = null;
+  for (const r of ranges) {
+    if (prevEnd !== null && r.start > prevEnd) parts.push('[…]');
+    parts.push(fullText.slice(r.start, r.end).trim());
+    prevEnd = r.end;
+  }
+  if (prevEnd !== null && prevEnd < fullText.length) parts.push('[…]');
+  return parts.filter(Boolean).join('\n\n');
+}
+
+// Render the instructor-approved AI summary for a reference. Handles both the
+// {summary, key_facts} JSON shape written by the summarize route and legacy
+// plain-string values. Returns '' when there is no summary yet.
+function formatReferenceSummary(contentSummary) {
+  if (!contentSummary) return '';
+  try {
+    const parsed = JSON.parse(contentSummary);
+    const facts = Array.isArray(parsed?.key_facts) ? parsed.key_facts : [];
+    return [
+      parsed?.summary || '',
+      facts.length ? '\nKey facts:\n' + facts.map(f => `- ${f}`).join('\n') : ''
+    ].filter(Boolean).join('\n');
+  } catch {
+    return String(contentSummary);
+  }
+}
+
 // Build the {source_materials} variable from approved references on this project.
 // Returns an empty string if there are no approved references, so prompts can
 // gracefully handle the "no source material" case.
-async function loadSourceMaterials(projectId) {
+//
+// Each reference contributes according to its `use_mode`. The one invariant
+// that must not be broken: a reference never emits a header with no body. That
+// is precisely the bug this function used to have — it read only
+// `content_summary`, so an approved reference that had never been summarized
+// reached the model as a title line and nothing else.
+export async function loadSourceMaterials(projectId, step) {
   const [rows] = await pool.execute(
-    `SELECT r.reference_id, r.type, r.title, r.content_summary, r.source_notes
+    `SELECT r.reference_id, r.type, r.title, r.content, r.content_summary, r.summary_scope_hash,
+            r.use_mode, r.outline, r.outline_hash, r.selection, r.selection_overrides,
+            r.source_notes, r.link_url
      FROM case_writer_references r
      WHERE r.project_id = ? AND r.approved_by_user = 1
      ORDER BY r.created_at ASC`,
@@ -139,27 +428,58 @@ async function loadSourceMaterials(projectId) {
   );
   if (rows.length === 0) return '';
 
+  let remaining = SOURCE_MATERIALS_TOTAL_CHAR_CAP;
   const blocks = [];
+
   for (const r of rows) {
-    let summaryText = '';
-    if (r.content_summary) {
-      try {
-        const parsed = JSON.parse(r.content_summary);
-        const facts = Array.isArray(parsed?.key_facts) ? parsed.key_facts : [];
-        summaryText = [
-          parsed?.summary || '',
-          facts.length ? '\nKey facts:\n' + facts.map(f => `- ${f}`).join('\n') : ''
-        ].filter(Boolean).join('\n');
-      } catch {
-        summaryText = String(r.content_summary);
+    const storedText = String(r.content || '');
+    // Honour the instructor's section/excerpt picks. Falls back to the whole
+    // document when nothing is selected or the text has changed underneath the
+    // stored offsets.
+    const ranges = resolveSelectionRanges(r, storedText, step);
+    const fullText = (ranges ? assembleSelectedText(storedText, ranges) : storedText).trim();
+    const mode = r.use_mode || 'full_text';
+
+    // The summary is only usable when it was built from the same portion of the
+    // document this step is about to send. Otherwise it describes text we are
+    // not using — a whole-document summary sitting above three selected
+    // chapters is two scopes presented as one source.
+    const scopeOk = summaryMatchesScope(r, step);
+    const summaryText = scopeOk ? formatReferenceSummary(r.content_summary) : '';
+
+    const parts = [];
+    let wantsFullText = mode === 'full_text' || mode === 'summary_and_full_text';
+
+    if (mode === 'summary' || mode === 'summary_and_full_text') {
+      if (summaryText) {
+        parts.push(summaryText);
+      } else if (mode === 'summary') {
+        // No usable summary. Send the selected text rather than an empty block,
+        // and say which case this is so the output is self-explanatory.
+        parts.push(r.content_summary
+          ? '_(summary is out of date with the current selection — using the selected text)_'
+          : '_(not summarized yet — using the selected text)_');
+        wantsFullText = true;
       }
     }
+
+    if (wantsFullText && fullText) {
+      const { text, used } = capReferenceText(fullText, remaining);
+      remaining -= used;
+      if (text) parts.push(parts.length ? `--- Full text ---\n${text}` : text);
+    }
+
+    // Links carry no body of their own; the URL is the content.
+    if (parts.length === 0 && r.link_url) parts.push(`URL: ${r.link_url}`);
+    if (parts.length === 0) continue;
+
     blocks.push(
       `### Source: ${r.title || '(untitled)'} (${r.type})`
       + (r.source_notes ? `\nNotes: ${r.source_notes}` : '')
-      + (summaryText ? `\n\n${summaryText}` : '')
+      + `\n\n${parts.join('\n\n')}`
     );
   }
+
   return blocks.join('\n\n---\n\n');
 }
 
@@ -548,19 +868,28 @@ router.post('/projects/:id/clone', async (req, res) => {
 
     // Copy references (with new ids) so the source materials carry over.
     const [refRows] = await pool.execute(
-      `SELECT type, title, content, content_summary, approved_by_user,
+      `SELECT type, title, content, content_summary, summary_scope_hash, use_mode,
+              outline, outline_hash, selection, selection_overrides, approved_by_user,
               source_notes, link_url, case_file_id
        FROM case_writer_references WHERE project_id = ?`,
       [sourceId]
     );
     for (const r of refRows) {
+      // The clone shares the source's `content` verbatim, so its outline and
+      // selection offsets stay valid — copy them rather than making the
+      // instructor redo the section picking.
       await pool.execute(
         `INSERT INTO case_writer_references
-           (reference_id, project_id, type, title, content, content_summary,
+           (reference_id, project_id, type, title, content, content_summary, summary_scope_hash, use_mode,
+            outline, outline_hash, selection, selection_overrides,
             approved_by_user, source_notes, link_url, case_file_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          uuidv4(), newId, r.type, r.title, r.content, r.content_summary,
+          uuidv4(), newId, r.type, r.title, r.content, r.content_summary, r.summary_scope_hash, r.use_mode,
+          r.outline ? JSON.stringify(parseJsonColumn(r.outline)) : null,
+          r.outline_hash,
+          r.selection ? JSON.stringify(parseJsonColumn(r.selection)) : null,
+          r.selection_overrides ? JSON.stringify(parseJsonColumn(r.selection_overrides)) : null,
           r.approved_by_user, r.source_notes, r.link_url, r.case_file_id
         ]
       );
@@ -587,14 +916,92 @@ router.get('/projects/:id/references', async (req, res) => {
     if (forbidden) return fail(res, 403, 'Not authorized to access this project');
     if (!project) return fail(res, 404, 'Project not found');
     const [rows] = await pool.execute(
-      `SELECT reference_id, project_id, type, title, content_summary, approved_by_user,
+      `SELECT reference_id, project_id, type, title, content_summary, summary_scope_hash, use_mode,
+              CHAR_LENGTH(content) AS content_length, outline, outline_hash, selection, selection_overrides,
+              approved_by_user,
               source_notes, link_url, case_file_id, created_at, updated_at
        FROM case_writer_references WHERE project_id = ? ORDER BY created_at ASC`,
       [req.params.id]
     );
-    ok(res, rows);
+    ok(res, rows.map(withSelectionSummary));
   } catch (err) {
     console.error('[caseWriter] list references error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
+// Full document text + outline for the section/excerpt picker. This is the only
+// route that sends a reference's `content` to the browser — the list routes
+// deliberately return CHAR_LENGTH(content) instead, so opening a project does
+// not ship several hundred KB of textbook per reference.
+router.get('/projects/:id/references/:refId/content', async (req, res) => {
+  try {
+    const { project, forbidden } = await loadProject(req.params.id, req);
+    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (!project) return fail(res, 404, 'Project not found');
+
+    const [rows] = await pool.execute(
+      `SELECT reference_id, type, title, content, content_summary, summary_scope_hash,
+              outline, outline_hash, selection, selection_overrides
+       FROM case_writer_references WHERE reference_id = ? AND project_id = ?`,
+      [req.params.refId, req.params.id]
+    );
+    if (rows.length === 0) return fail(res, 404, 'Reference not found');
+    const r = rows[0];
+    const content = r.content || '';
+
+    // Legacy rows (and anything written before migration 068) have no outline
+    // yet. Build it on first access rather than making the instructor click a
+    // button to make the feature work at all.
+    let outline = parseJsonColumn(r.outline);
+    if (!outline && content.trim()) {
+      outline = await refreshReferenceOutline(r.reference_id, content, r.type === 'uploaded_file' ? 'pdf' : 'text');
+    }
+
+    ok(res, {
+      reference_id: r.reference_id,
+      title: r.title,
+      type: r.type,
+      content,
+      content_length: content.length,
+      outline,
+      // Tells the client whether the stored selection still lines up with the
+      // text it is about to render.
+      outline_stale: !!r.outline_hash && r.outline_hash !== contentHash(content),
+      selection: parseJsonColumn(r.selection),
+      selection_overrides: parseJsonColumn(r.selection_overrides),
+      has_summary: !!r.content_summary,
+      summary_stale: !!r.content_summary && !summaryMatchesScope(r, null)
+    });
+  } catch (err) {
+    console.error('[caseWriter] reference content error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
+// Force re-detection, e.g. after the heuristics improve or a bad outline is
+// cached. Clears any selection, since section ids are positional.
+router.post('/projects/:id/references/:refId/rebuild-outline', async (req, res) => {
+  try {
+    const { project, forbidden } = await loadProject(req.params.id, req);
+    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (!project) return fail(res, 404, 'Project not found');
+
+    const [rows] = await pool.execute(
+      `SELECT reference_id, type, content FROM case_writer_references
+       WHERE reference_id = ? AND project_id = ?`,
+      [req.params.refId, req.params.id]
+    );
+    if (rows.length === 0) return fail(res, 404, 'Reference not found');
+
+    const outline = await refreshReferenceOutline(
+      rows[0].reference_id,
+      rows[0].content,
+      rows[0].type === 'uploaded_file' ? 'pdf' : 'text'
+    );
+    ok(res, { reference_id: rows[0].reference_id, outline });
+  } catch (err) {
+    console.error('[caseWriter] rebuild outline error:', err);
     fail(res, 500, err.message);
   }
 });
@@ -626,13 +1033,17 @@ router.post('/projects/:id/references', async (req, res) => {
       ]
     );
 
+    if (content) await refreshReferenceOutline(referenceId, content, 'text');
+
     const [rows] = await pool.execute(
-      `SELECT reference_id, project_id, type, title, content_summary, approved_by_user,
+      `SELECT reference_id, project_id, type, title, content_summary, summary_scope_hash, use_mode,
+              CHAR_LENGTH(content) AS content_length, outline, outline_hash, selection, selection_overrides,
+              approved_by_user,
               source_notes, link_url, case_file_id, created_at, updated_at
        FROM case_writer_references WHERE reference_id = ?`,
       [referenceId]
     );
-    ok(res, rows[0]);
+    ok(res, withSelectionSummary(rows[0]));
   } catch (err) {
     console.error('[caseWriter] create reference error:', err);
     fail(res, 500, err.message);
@@ -645,11 +1056,28 @@ router.patch('/projects/:id/references/:refId', async (req, res) => {
     if (forbidden) return fail(res, 403, 'Not authorized to access this project');
     if (!project) return fail(res, 404, 'Project not found');
 
-    const allowed = ['title', 'content', 'content_summary', 'approved_by_user', 'source_notes', 'link_url'];
+    const allowed = ['title', 'content', 'content_summary', 'use_mode', 'selection', 'selection_overrides', 'approved_by_user', 'source_notes', 'link_url'];
     const sets = [];
     const params = [];
     for (const [key, value] of Object.entries(req.body || {})) {
       if (!allowed.includes(key)) continue;
+      if (key === 'use_mode' && !REFERENCE_USE_MODES.includes(value)) {
+        return fail(res, 400, `use_mode must be one of: ${REFERENCE_USE_MODES.join(', ')}`);
+      }
+      if (key === 'selection') {
+        const err = validateSelection(value);
+        if (err) return fail(res, 400, err);
+        sets.push('selection = ?');
+        params.push(value == null ? null : JSON.stringify(value));
+        continue;
+      }
+      if (key === 'selection_overrides') {
+        const err = validateSelectionOverrides(value);
+        if (err) return fail(res, 400, err);
+        sets.push('selection_overrides = ?');
+        params.push(value == null ? null : JSON.stringify(value));
+        continue;
+      }
       sets.push(`${key} = ?`);
       params.push(key === 'approved_by_user' ? (value ? 1 : 0) : value);
     }
@@ -663,13 +1091,22 @@ router.patch('/projects/:id/references/:refId', async (req, res) => {
     );
     if (result.affectedRows === 0) return fail(res, 404, 'Reference not found');
 
+    // Rewriting the body invalidates every character offset in `selection`, so
+    // the outline is rebuilt and the selection cleared. Doing this after the
+    // UPDATE keeps it correct even when content and selection arrive together.
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'content')) {
+      await refreshReferenceOutline(req.params.refId, req.body.content, 'text');
+    }
+
     const [rows] = await pool.execute(
-      `SELECT reference_id, project_id, type, title, content_summary, approved_by_user,
+      `SELECT reference_id, project_id, type, title, content_summary, summary_scope_hash, use_mode,
+              CHAR_LENGTH(content) AS content_length, outline, outline_hash, selection, selection_overrides,
+              approved_by_user,
               source_notes, link_url, case_file_id, created_at, updated_at
        FROM case_writer_references WHERE reference_id = ?`,
       [req.params.refId]
     );
-    ok(res, rows[0]);
+    ok(res, withSelectionSummary(rows[0]));
   } catch (err) {
     console.error('[caseWriter] update reference error:', err);
     fail(res, 500, err.message);
@@ -772,9 +1209,14 @@ router.post('/projects/:id/references/upload',
 
       const extWithDot = path.extname(req.file.originalname).toLowerCase();
       let convertedText = '';
+      // convertFile reports how the text was produced ('docx-markdown',
+      // 'markdown', 'pdf', 'text'). Outline detection prefers the markdown tier
+      // only for the two formats that actually carry '#' headings.
+      let convertedFormat = 'text';
       try {
         const result = await convertFile(req.file.path, extWithDot);
         convertedText = result?.text || '';
+        convertedFormat = result?.format || 'text';
       } catch (err) {
         console.error('[caseWriter] reference upload convertFile failed:', err);
         return fail(res, 422, `Could not extract text from file: ${err.message}`);
@@ -798,13 +1240,17 @@ router.post('/projects/:id/references/upload',
         ]
       );
 
+      await refreshReferenceOutline(referenceId, convertedText, convertedFormat);
+
       const [rows] = await pool.execute(
-        `SELECT reference_id, project_id, type, title, content_summary, approved_by_user,
+        `SELECT reference_id, project_id, type, title, content_summary, summary_scope_hash, use_mode,
+                CHAR_LENGTH(content) AS content_length, outline, outline_hash, selection, selection_overrides,
+              approved_by_user,
                 source_notes, link_url, case_file_id, created_at, updated_at
          FROM case_writer_references WHERE reference_id = ?`,
         [referenceId]
       );
-      ok(res, rows[0]);
+      ok(res, withSelectionSummary(rows[0]));
     } catch (err) {
       console.error('[caseWriter] reference upload error:', err);
       fail(res, 500, err.message);
@@ -1034,13 +1480,13 @@ router.post('/projects/:id/generate/brief', async (req, res) => {
       return fail(res, 400, 'Project is missing a teaching_principle');
     }
 
-    const { model_id: requestedModelId } = req.body || {};
+    const { model_id: requestedModelId, revision_hint } = req.body || {};
 
     if (project.learning_brief) {
       await recordRevision(req.params.id, 'brief', (project.learning_brief || ''), req.user.id);
     }
 
-    const sourceMaterials = await loadSourceMaterials(req.params.id);
+    const sourceMaterials = await loadSourceMaterials(req.params.id, 'brief');
     const activePrompt = await getActivePrompt('case_writer.teaching_brief');
     const renderedPrompt = renderPrompt(activePrompt.prompt_template, {
       teaching_principle: project.teaching_principle || '',
@@ -1048,7 +1494,8 @@ router.post('/projects/:id/generate/brief', async (req, res) => {
       course_context: project.course_context || '',
       difficulty: project.difficulty || '',
       case_type: project.case_type || '',
-      source_materials: sourceMaterials
+      source_materials: sourceMaterials,
+      revision_hint: revision_hint || ''
     });
 
     const model = await resolveModel(requestedModelId, project.default_model_id);
@@ -1133,7 +1580,7 @@ router.post('/projects/:id/generate/scenarios', async (req, res) => {
         ? industry_preference
         : (project.industries_preference || '');
 
-    const sourceMaterials = await loadSourceMaterials(req.params.id);
+    const sourceMaterials = await loadSourceMaterials(req.params.id, 'scenarios');
     const activePrompt = await getActivePrompt('case_writer.scenario_generation');
     const renderedPrompt = renderPrompt(activePrompt.prompt_template, {
       learning_brief: (project.learning_brief || ''),
@@ -1235,7 +1682,7 @@ router.post('/projects/:id/generate/blueprint', async (req, res) => {
       selected.markdown || ''
     ].filter(Boolean).join('\n\n');
 
-    const sourceMaterials = await loadSourceMaterials(req.params.id);
+    const sourceMaterials = await loadSourceMaterials(req.params.id, 'blueprint');
     const activePrompt = await getActivePrompt('case_writer.case_blueprint');
     const renderedPrompt = renderPrompt(activePrompt.prompt_template, {
       learning_brief: (project.learning_brief || ''),
@@ -1325,7 +1772,7 @@ router.post('/projects/:id/generate/student-case', async (req, res) => {
       await recordRevision(req.params.id, 'student_case', (project.student_case || ''), req.user.id);
     }
 
-    const sourceMaterials = await loadSourceMaterials(req.params.id);
+    const sourceMaterials = await loadSourceMaterials(req.params.id, 'student_case');
     const activePrompt = await getActivePrompt('case_writer.student_case_draft');
     const renderedPrompt = renderPrompt(activePrompt.prompt_template, {
       learning_brief: (project.learning_brief || ''),
@@ -1412,7 +1859,7 @@ router.post('/projects/:id/generate/teaching-note', async (req, res) => {
       await recordRevision(req.params.id, 'teaching_note', (project.teaching_note || ''), req.user.id);
     }
 
-    const sourceMaterials = await loadSourceMaterials(req.params.id);
+    const sourceMaterials = await loadSourceMaterials(req.params.id, 'teaching_note');
     const activePrompt = await getActivePrompt('case_writer.teaching_note');
     const renderedPrompt = renderPrompt(activePrompt.prompt_template, {
       learning_brief: (project.learning_brief || ''),
@@ -1854,6 +2301,107 @@ router.post('/projects/:id/publish', async (req, res) => {
 // Reference summarization (unchanged shape; output is still JSON)
 // ----------------------------------------------------------------------------
 
+// Suggest which sections of a reference are worth feeding to generation.
+//
+// Only the OUTLINE is sent to the model — id, title, size, and a short opening
+// snippet per section — never the document body. That keeps the call cheap
+// enough to click freely on a 110,000-character textbook, and keeps
+// adversary-controlled document text out of the prompt beyond the snippets
+// (which the prompt wraps in XML and marks as data).
+//
+// Deliberately does NOT persist: it returns a suggestion, the picker pre-checks
+// the boxes, and the instructor saves. The model never silently decides what
+// grounds a case.
+router.post('/projects/:id/references/:refId/suggest-sections', async (req, res) => {
+  try {
+    const { project, forbidden } = await loadProject(req.params.id, req);
+    if (forbidden) return fail(res, 403, 'Not authorized to access this project');
+    if (!project) return fail(res, 404, 'Project not found');
+
+    const { step, model_id: requestedModelId } = req.body || {};
+    if (step && !SELECTION_STEPS.includes(step)) {
+      return fail(res, 400, `step must be one of: ${SELECTION_STEPS.join(', ')}`);
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT reference_id, type, title, content, outline, outline_hash
+       FROM case_writer_references WHERE reference_id = ? AND project_id = ?`,
+      [req.params.refId, req.params.id]
+    );
+    if (rows.length === 0) return fail(res, 404, 'Reference not found');
+    const ref = rows[0];
+    const content = ref.content || '';
+
+    let outline = parseJsonColumn(ref.outline);
+    if (!outline && content.trim()) {
+      outline = await refreshReferenceOutline(ref.reference_id, content, ref.type === 'uploaded_file' ? 'pdf' : 'text');
+    }
+    const sections = outline?.sections || [];
+    if (sections.length === 0) return fail(res, 400, 'This reference has no detected sections to choose from');
+
+    const outlineText = sections
+      .map(s => `${s.id} | ${s.chars} | ${s.title} | ${content.slice(s.start, s.start + 120).replace(/\s+/g, ' ').trim()}`)
+      .join('\n');
+
+    const caseContext = [
+      project.audience ? `Audience: ${project.audience}` : '',
+      project.course_context ? `Course: ${project.course_context}` : '',
+      project.difficulty ? `Difficulty: ${project.difficulty}` : '',
+      project.case_type ? `Case type: ${project.case_type}` : '',
+      step ? `Generation step this selection is for: ${step}` : ''
+    ].filter(Boolean).join('\n');
+
+    const activePrompt = await getActivePrompt('case_writer.reference_section_select');
+    const renderedPrompt = renderPrompt(activePrompt.prompt_template, {
+      teaching_principle: project.teaching_principle || '',
+      case_context: caseContext,
+      document_title: ref.title || '',
+      outline: outlineText,
+      char_budget: String(REFERENCE_TEXT_CHAR_CAP)
+    });
+
+    const model = await resolveModel(requestedModelId, project.default_model_id);
+    const { text, meta } = await callOutline(req, {
+      modelId: model.model_id,
+      vendor: model.vendor,
+      prompt: renderedPrompt,
+      config: { temperature: model.temperature, reasoning_effort: model.reasoning_effort }
+    });
+
+    let suggestion;
+    try {
+      suggestion = extractJsonObject(text);
+    } catch (parseErr) {
+      console.error('[caseWriter] suggest-sections JSON parse failed:', parseErr.message, 'raw:', text?.slice(0, 500));
+      return fail(res, 502, `LLM returned non-JSON response: ${parseErr.message}`);
+    }
+
+    // Drop hallucinated ids rather than handing the client something that
+    // silently selects nothing when saved.
+    const known = new Set(sections.map(s => s.id));
+    const requested = Array.isArray(suggestion?.section_ids) ? suggestion.section_ids : [];
+    const sectionIds = requested.filter(id => known.has(id));
+    const dropped = requested.length - sectionIds.length;
+
+    ok(res, {
+      reference_id: ref.reference_id,
+      section_ids: sectionIds,
+      estimated_chars: sections.filter(s => sectionIds.includes(s.id)).reduce((n, s) => n + s.chars, 0),
+      rationale: typeof suggestion?.rationale === 'string' ? suggestion.rationale : '',
+      dropped_unknown_ids: dropped,
+      meta: {
+        model_id: model.model_id,
+        vendor: model.vendor,
+        prompt_version: activePrompt.version,
+        provider: meta?.provider || null
+      }
+    });
+  } catch (err) {
+    console.error('[caseWriter] suggest sections error:', err);
+    fail(res, 500, err.message);
+  }
+});
+
 router.post('/projects/:id/references/:refId/summarize', async (req, res) => {
   try {
     const { project, forbidden } = await loadProject(req.params.id, req);
@@ -1862,6 +2410,7 @@ router.post('/projects/:id/references/:refId/summarize', async (req, res) => {
 
     const [refRows] = await pool.execute(
       `SELECT r.reference_id, r.project_id, r.type, r.title, r.content, r.source_notes,
+              r.outline, r.outline_hash, r.selection, r.selection_overrides,
               r.case_file_id, cf.converted_text AS file_text
        FROM case_writer_references r
        LEFT JOIN case_files cf ON cf.id = r.case_file_id
@@ -1883,11 +2432,38 @@ router.post('/projects/:id/references/:refId/summarize', async (req, res) => {
       return fail(res, 400, 'Reference has no readable content to summarize');
     }
 
+    // Summarize the instructor's selection, not the whole document, so the
+    // summary and the document-text channel always describe the same portion.
+    // Uses the reference's default selection — there is one summary per
+    // reference, so a per-step override cannot have its own.
+    const ranges = resolveSelectionRanges(ref, sourceText, null);
+    const outlineSections = parseJsonColumn(ref.outline)?.sections || [];
+    const selectedIds = effectiveSelection(ref, null)?.sections || [];
+    const excerptCount = effectiveSelection(ref, null)?.excerpts?.length || 0;
+
+    let scopeNote = 'The complete document.';
+    if (ranges) {
+      sourceText = assembleSelectedText(sourceText, ranges);
+      const titles = outlineSections.filter(s => selectedIds.includes(s.id)).map(s => s.title);
+      scopeNote = [
+        titles.length
+          ? `${titles.length} of ${outlineSections.length} sections selected by the instructor: ${titles.join('; ')}.`
+          : '',
+        excerptCount ? `${excerptCount} hand-picked excerpt(s).` : '',
+        'Skipped portions are marked with [...].'
+      ].filter(Boolean).join(' ');
+    }
+
+    if (!sourceText.trim()) {
+      return fail(res, 400, 'The current selection contains no text to summarize');
+    }
+
     const activePrompt = await getActivePrompt('case_writer.reference_summary');
     const renderedPrompt = renderPrompt(activePrompt.prompt_template, {
       title: ref.title || '',
       type: ref.type,
       source_notes: ref.source_notes || '',
+      scope_note: scopeNote,
       content: sourceText
     });
 
@@ -1916,14 +2492,15 @@ router.post('/projects/:id/references/:refId/summarize', async (req, res) => {
 
     await pool.execute(
       `UPDATE case_writer_references
-         SET content_summary = ?, approved_by_user = 0
+         SET content_summary = ?, summary_scope_hash = ?, approved_by_user = 0
        WHERE reference_id = ?`,
-      [JSON.stringify(summary), req.params.refId]
+      [JSON.stringify(summary), selectionScopeKey(ref, null), req.params.refId]
     );
 
     ok(res, {
       reference_id: req.params.refId,
       summary,
+      summarized_scope: scopeNote,
       meta: {
         model_id: model.model_id,
         vendor: model.vendor,
@@ -2113,7 +2690,7 @@ router.post('/projects/:id/tweak', async (req, res) => {
       return fail(res, 400, 'instruction is required');
     }
 
-    const sourceMaterials = await loadSourceMaterials(req.params.id);
+    const sourceMaterials = await loadSourceMaterials(req.params.id, step);
 
     // Build a per-step BACKGROUND block. We deliberately omit whichever
     // upstream artifact is being tweaked (its content is already in

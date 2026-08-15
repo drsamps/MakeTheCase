@@ -109,18 +109,113 @@ export interface GenerateMeta {
   [k: string]: any;
 }
 
+export type ReferenceUseMode = 'full_text' | 'summary' | 'summary_and_full_text';
+
+/**
+ * Mirrors REFERENCE_TEXT_CHAR_CAP in server/routes/caseWriter.js — the most
+ * text one reference contributes to {source_materials}. Used only to warn
+ * before generating; the server does the actual capping.
+ */
+export const REFERENCE_TEXT_CHAR_CAP = 60000;
+
 export interface CaseWriterReference {
   reference_id: string;
   project_id: string;
   type: 'pasted_text' | 'uploaded_file' | 'link' | 'saved_framework';
   title: string | null;
   content_summary: string | null;
+  /** How this reference is injected into {source_materials} at generation time. */
+  use_mode: ReferenceUseMode;
+  /** Character count of the stored text. The body itself is never sent to the browser. */
+  content_length: number | null;
   approved_by_user: 0 | 1;
   source_notes: string | null;
   link_url: string | null;
   case_file_id: number | null;
   created_at: string;
   updated_at: string;
+
+  // Compact summary of the section/excerpt selection. The full outline is only
+  // fetched when the picker opens — see getReferenceContent.
+  outline_strategy: 'markdown_headings' | 'text_headings' | 'chunks' | 'empty' | null;
+  section_count: number;
+  selected_section_count: number;
+  excerpt_count: number;
+  /** Chars the current selection would send. Meaningless when nothing is selected. */
+  selected_chars: number;
+  /** Steps whose selection deviates from the default. */
+  override_steps: string[];
+  /**
+   * A summary exists but was built from a different portion of the document
+   * than the current selection, so it will not be sent until re-summarized.
+   */
+  summary_stale: boolean;
+}
+
+export interface OutlineSection {
+  id: string;
+  level: number;
+  title: string;
+  start: number;
+  end: number;
+  chars: number;
+}
+
+export interface ReferenceOutline {
+  strategy: 'markdown_headings' | 'text_headings' | 'chunks' | 'empty';
+  sections: OutlineSection[];
+}
+
+export interface ReferenceExcerpt {
+  id: string;
+  start: number;
+  end: number;
+  label?: string;
+}
+
+export interface ReferenceSelection {
+  sections: string[];
+  excerpts: ReferenceExcerpt[];
+}
+
+/** Generation steps that can carry their own source-material selection. */
+export type SelectionStep = 'brief' | 'scenarios' | 'blueprint' | 'student_case' | 'teaching_note';
+
+export const SELECTION_STEP_LABEL: Record<SelectionStep, string> = {
+  brief: 'Learning Brief',
+  scenarios: 'Scenarios',
+  blueprint: 'Case Blueprint',
+  student_case: 'Student Case',
+  teaching_note: 'Teaching Note'
+};
+
+/** {step: selection}. An absent key means that step uses the default selection. */
+export type SelectionOverrides = Partial<Record<SelectionStep, ReferenceSelection>>;
+
+export interface SectionSuggestion {
+  reference_id: string;
+  section_ids: string[];
+  estimated_chars: number;
+  rationale: string;
+  /** Ids the model invented that aren't in the outline; dropped server-side. */
+  dropped_unknown_ids: number;
+  meta: GenerateMeta;
+}
+
+export interface ReferenceContent {
+  reference_id: string;
+  title: string | null;
+  type: string;
+  content: string;
+  content_length: number;
+  outline: ReferenceOutline | null;
+  /** True when `content` changed after the selection was saved, invalidating its offsets. */
+  outline_stale: boolean;
+  selection: ReferenceSelection | null;
+  selection_overrides: SelectionOverrides | null;
+  has_summary: boolean;
+  /** The stored summary describes a different portion than the current selection. */
+  summary_stale: boolean;
 }
 
 export interface PrincipleCandidate {
@@ -189,7 +284,10 @@ export const caseWriterApi = {
 
   // -------------------------- Generation --------------------------
 
-  generateBrief: (id: string, body: { model_id?: string; log_this_prompt?: boolean } = {}) =>
+  generateBrief: (
+    id: string,
+    body: { model_id?: string; revision_hint?: string; log_this_prompt?: boolean } = {}
+  ) =>
     req<{ markdown: string; meta: GenerateMeta }>(`/projects/${id}/generate/brief`, {
       method: 'POST',
       body: JSON.stringify(body)
@@ -266,8 +364,37 @@ export const caseWriterApi = {
   ) =>
     req<CaseWriterReference>(`/projects/${id}/references`, { method: 'POST', body: JSON.stringify(body) }),
 
-  updateReference: (id: string, refId: string, patch: Partial<CaseWriterReference> & { content?: string }) =>
+  updateReference: (
+    id: string,
+    refId: string,
+    patch: Partial<CaseWriterReference> & {
+      content?: string;
+      selection?: ReferenceSelection | null;
+      selection_overrides?: SelectionOverrides | null;
+    }
+  ) =>
     req<CaseWriterReference>(`/projects/${id}/references/${refId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+
+  /** Full document text + outline for the section/excerpt picker. Lazy: only called when the picker opens. */
+  getReferenceContent: (id: string, refId: string) =>
+    req<ReferenceContent>(`/projects/${id}/references/${refId}/content`),
+
+  /** Ask the model which sections match the teaching principle. Returns a suggestion; does not save. */
+  suggestReferenceSections: (
+    id: string,
+    refId: string,
+    body: { step?: SelectionStep; model_id?: string } = {}
+  ) =>
+    req<SectionSuggestion>(`/projects/${id}/references/${refId}/suggest-sections`, {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }),
+
+  rebuildReferenceOutline: (id: string, refId: string) =>
+    req<{ reference_id: string; outline: ReferenceOutline | null }>(
+      `/projects/${id}/references/${refId}/rebuild-outline`,
+      { method: 'POST' }
+    ),
 
   deleteReference: (id: string, refId: string) =>
     req<{ reference_id: string; deleted: true }>(`/projects/${id}/references/${refId}`, { method: 'DELETE' }),
