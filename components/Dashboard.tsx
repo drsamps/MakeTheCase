@@ -5021,6 +5021,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       onClick={() => {
                         setSelectedSemesterForInstructors(semester);
                         setShowSemesterInstructorsModal(true);
+                        // Refresh so instructors added since page load appear in the dropdown
+                        fetchAllInstructors();
                       }}
                       className="px-3 py-1.5 text-xs font-medium text-purple-600 hover:text-purple-700 hover:bg-purple-50 rounded"
                     >
@@ -5349,6 +5351,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 onClick={() => {
                   setEditingCourse(null);
                   setShowCourseModal(true);
+                  // Refresh so instructors added since page load appear in the dropdown
+                  fetchAllInstructors();
                 }}
                 className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
               >
@@ -5409,6 +5413,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                             onClick={() => {
                               setEditingCourse(course);
                               setShowCourseModal(true);
+                              // Refresh so instructors added since page load appear in the dropdown
+                              fetchAllInstructors();
                             }}
                             className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded"
                           >
