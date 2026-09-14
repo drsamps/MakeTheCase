@@ -18,14 +18,19 @@ This is the canonical reference for "who can do what" across the four user types
 | List semesters | ✓ | ✓ | ✓ (read) | ✓ (read) | ✓ (read) |
 | Create semester | ✓ | ✗ (superuser only) | ✗ | ✗ | ✗ |
 | Set current semester | ✓ | ✗ (superuser only) | ✗ | ✗ | ✗ |
-| Create course | ✓ | ✗ | ✗ (via impersonate) | ✗ | ✗ |
+| Create / edit / delete course | ✓ | ✓ | ✗ | ✗ | ✗ |
 | Assign primary instructor | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Edit course case list and case settings versions | ✓ | ✓ | course owner only | ✗ | ✗ |
+| Bulk-schedule a course's sections | ✓ | ✓ | course owner, or primary of every target section | ✗ | ✗ |
+| Roll over a course | ✓ | ✓ | ✗ | ✗ | ✗ |
 | **Sections** |
-| Create section in own course | ✓ | ✗ | ✓ | ✗ | ✗ |
+| Create section (incl. Duplicate) | ✓ | ✓ | ✗ | ✗ | ✗ |
+| Move section (course, semester, section number) / remove from or adopt into a course | ✓ | ✓ | ✗ | ✗ | ✗ |
 | List sections | all | all | own + TA assignments | TA assignments | none |
-| Delete section | ✓ | ✗ | ✓ (own) | ✗ (even with `can_manage_cases`) | ✗ |
+| Delete section | ✓ | ✓ | ✗ | ✗ | ✗ |
 | Add/remove TA on own section | ✓ | ✗ | ✓ | ✗ | ✗ |
-| Edit section settings (chat_model, super_model) | ✓ | ✗ | ✓ | ✗ | ✗ |
+| Edit section settings (chat_model, super_model) | ✓ | ✓ | ✓ | ✗ | ✗ |
+| Edit section title, enabled, accept new students, enrollment key | ✓ | ✓ | ✓ | ✓ | ✗ |
 | **Students within a section** |
 | Enroll/remove students | ✓ | ✓ | ✓ | if `can_manage_students` | ✗ |
 | View roster | ✓ | ✓ | ✓ | ✓ (always for TAs) | ✗ |
@@ -34,8 +39,12 @@ This is the canonical reference for "who can do what" across the four user types
 | Edit a chat transcript | ✓ | ✗ | ✓ | ✗ | ✗ |
 | Run / re-run evaluation | ✓ | ✓ | ✓ | if `can_view_chats` | ✗ |
 | **Section-case assignment** |
-| Assign case to section | ✓ | ✓ | ✓ | if `can_manage_cases` | ✗ |
-| Edit chat options on assignment | ✓ | ✓ | ✓ | if `can_manage_cases` | ✗ |
+| Assign case to section (case must be visible to the caller) | ✓ | ✓ | ✓ | if `can_manage_cases` | ✗ |
+| Edit chat options, rubric, scheduling, scenarios, positions on assignment | ✓ | ✓ | ✓ | if `can_manage_cases` | ✗ |
+| Detach a followed assignment from its course version (`?detach=1`) | ✓ | ✓ | ✓ | if `can_manage_cases` | ✗ |
+| Section chat-options default | ✓ | ✓ | ✓ | if `can_manage_cases` | ✗ |
+| Global chat-options default; copy chat options to all sections | ✓ | ✓ | ✗ | ✗ | ✗ |
+| Live session monitor | ✓ | ✓ | ✓ | if `can_view_chats` | ✗ |
 | **Cases (resource ownership)** |
 | Create case | ✗ (admins don't own) | ✗ | ✓ | ✓ | ✓ |
 | Read own case | n/a | n/a | ✓ | ✓ | ✓ |
@@ -106,7 +115,9 @@ This is the canonical reference for "who can do what" across the four user types
 | Permission lookup | `server/middleware/permissions.js` | `requirePermission(functionName)` for the legacy `adminAccess` allowlist |
 | Resource visibility | `server/services/resourceAccess.js` | `buildVisibilityScope`, `canAccessResource` |
 | Resource writes | `server/services/visibilityWrites.js` | `setVisibility` (enforces `can_publish`, normalizes team_ids) |
-| Section field gates | `server/routes/sections.js` | `PATCH /:id` blocks non-admin/non-primary edits of `chat_model`, `super_model`, `course_id` (TAs with `can_manage_cases` can edit other fields but not these) |
+| Section field gates | `server/routes/sections.js` | `PATCH /:id`: `course_id`, `semester_id`, `section_number` admin-only; `chat_model`, `super_model` admin or primary; other fields anyone with section access. `POST /` and `DELETE /:id` admin-only |
+| Course structure | `server/routes/courses.js`, `courseCases.js` | Add/remove/adopt section and rollover: `requireRole(['admin'])`. Case list, versions: `requireCourseOwnerOrAdmin`. Bulk schedule: owner or primary of every target |
+| Section-case assignment | `server/routes/sectionCases.js`, `chatOptions.js` | Every write: `requireAdminOrInstructor` + `requireSectionCaseManager('sectionId')` (= `requireSectionAccess` + `requireSectionPermission('canManageCases')`), placed before `guardFollowedCaseSettings`. Assigning a case / setting a rubric also checks `canAccessResource(..., 'view')`. Chat-options defaults and bulk-copy use `canManageSectionCases()`; global default and `target: 'all'` stay admin-only |
 | Case file gates | `server/routes/caseFiles.js`, `server/routes/casePrep.js` | All routes use `requireAdminOrInstructor` + (`requireCaseAccess('caseId', action)` for `:caseId` routes \| `requireCaseAccessByRow('case_files', 'fileId', action)` for `:fileId` routes). Instructors reach Case Files & AI Case Prep sub-tabs through `BASE_FUNCTIONS` (`casefiles`, `caseprep`); access to the file rows themselves flows through the case's `visibility`/team-share rules. |
 | Chat scoping | `server/routes/caseChats.js` | `getChatViewableSectionIds(req)` scopes `GET /case-chats` and `POST /case-chats/mark-abandoned` for instructors to sections where they are primary or have `can_view_chats=1`; admins not impersonating see everything |
 | Key resolution | `server/services/keyResolver.js` | `resolveProviderKey` (env key vs. per-instructor key vs. error) |

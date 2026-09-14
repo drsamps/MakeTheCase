@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api, getApiBaseUrl, getImpersonationId, setImpersonationId } from '../services/apiClient'; // Dashboard with tiles/list view toggle
+import { fetchSectionCaseSetting } from '../services/sectionCaseSettings';
 import { detectProvider } from '../services/llmService';
 import { PromptManager } from './PromptManager';
 import { SettingsManager } from './SettingsManager';
@@ -24,6 +25,19 @@ import { useFeedbackEligibility } from '../hooks/useFeedbackEligibility';
 import { setCurrentScreen } from '../services/screenContext';
 import VisibilityPicker from './ui/VisibilityPicker';
 import StudentManager from './StudentManager';
+import CourseCatalog from './courses/CourseCatalog';
+import SectionFormModal, { SectionFormDefaults } from './courses/SectionFormModal';
+import SemesterFormModal from './courses/SemesterFormModal';
+import RolloverModal from './courses/RolloverModal';
+import {
+  SEMESTER_SELECT_ID,
+  SemesterFilterContext,
+  SemesterScopeNote,
+  groupBySemester,
+  semesterOptionLabel,
+  useSemesterFilterState,
+} from './courses/semesterFilter';
+import BackupManager from './BackupManager';
 import DashboardHome from './DashboardHome';
 import WelcomeScreen from './WelcomeScreen';
 import Analytics from './Analytics';
@@ -76,7 +90,7 @@ type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live' | 'ai-usage';
 type ResultsSubTab = 'responses' | 'positions' | 'section-results';
 type SetupSubTab = 'personas' | 'apikeys' | 'teams' | 'rubrics';
-type AdminSubTab = 'instructors' | 'settings' | 'models' | 'prompts' | 'admins' | 'logging' | 'shadow';
+type AdminSubTab = 'instructors' | 'settings' | 'models' | 'prompts' | 'admins' | 'logging' | 'backup' | 'shadow';
 type RubricsSubTab = 'criteria' | 'rubrics';
 type FeedbackSubTab = 'mine' | 'inbox' | 'summary';
 
@@ -110,8 +124,12 @@ interface SectionStat {
   course_id?: number | null;
   course_id_num?: number | null;
   course_name?: string | null;
+  course_code?: string | null;
+  section_number?: number | null;
   semester_id?: number | null;
+  semester_code?: string | null;
   semester_name?: string | null;
+  semester_start_date?: string | null;
   semester_is_current?: boolean;
   student_count?: number;
 }
@@ -358,7 +376,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     };
     const ADMIN: Record<AdminSubTab, string> = {
       instructors: 'Instructors', settings: 'Settings', models: 'Models', prompts: 'Prompts',
-      admins: 'Admins', logging: 'Logging', shadow: 'Shadow-Owned',
+      admins: 'Admins', logging: 'Logging', backup: 'Backup', shadow: 'Shadow-Owned',
     };
 
     const parts: string[] = ['Instructor Dashboard', PRIMARY_LABELS[primaryTab]];
@@ -426,7 +444,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Check if user has access to any admin functions
   const hasAdminAccess = useCallback(() => {
     return hasAccess(user, 'instructors') || hasAccess(user, 'prompts') ||
-           hasAccess(user, 'models') || hasAccess(user, 'settings');
+           hasAccess(user, 'models') || hasAccess(user, 'settings') ||
+           hasAccess(user, 'backups');
   }, [user]);
 
   const hasSetupAccess = useCallback(() => {
@@ -434,20 +453,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
            hasAccess(user, 'teams') || hasAccess(user, 'rubrics');
   }, [user]);
 
-  // Semesters and Courses state
-  const [semesters, setSemesters] = useState<any[]>([]);
-  const [courses, setCourses] = useState<any[]>([]);
-  const [allCourses, setAllCourses] = useState<any[]>([]); // All courses for Sections tab dropdown
-  const [selectedSemesterId, setSelectedSemesterId] = useState<number | null>(null);
-  const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
-  const [orphanedSections, setOrphanedSections] = useState<any[]>([]);
-  const [isLoadingSemesters, setIsLoadingSemesters] = useState(false);
-  const [isLoadingCourses, setIsLoadingCourses] = useState(false);
+  // Semesters and Courses state. The semester list and the header Semester selector are shared
+  // with child screens through SemesterFilterContext (components/courses/semesterFilter.tsx).
+  const semesterFilter = useSemesterFilterState();
+  const { semesters, inScope: semesterInScope } = semesterFilter;
+  const isLoadingSemesters = !semesterFilter.loaded;
   const [showSemesterModal, setShowSemesterModal] = useState(false);
-  const [showCourseModal, setShowCourseModal] = useState(false);
-  const [showCloneSemesterModal, setShowCloneSemesterModal] = useState(false);
   const [editingSemester, setEditingSemester] = useState<any | null>(null);
-  const [editingCourse, setEditingCourse] = useState<any | null>(null);
+  const [rolloverSemester, setRolloverSemester] = useState<any | null>(null);
 
   // Instructor assignment state
   const [semesterInstructors, setSemesterInstructors] = useState<Map<number, any[]>>(new Map());
@@ -546,29 +559,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   
   // Section management
   const [editingSection, setEditingSection] = useState<SectionStat | null>(null);
-  const [sectionForm, setSectionForm] = useState<{
-    section_id: string;
-    section_title: string;
-    year_term: string;
-    chat_model: string;
-    super_model: string;
-    enabled: boolean;
-    accept_new_students: boolean;
-    enrollment_key: string;
-    semester_id: number | null;
-    course_id: number | null;
-  }>({
-    section_id: '',
-    section_title: '',
-    year_term: '',
-    chat_model: '',
-    super_model: '',
-    enabled: true,
-    accept_new_students: false,
-    enrollment_key: '',
-    semester_id: null,
-    course_id: null
-  });
+  // Defaults for a new section opened from elsewhere (e.g. "Add another section of this course").
+  const [sectionModalDefaults, setSectionModalDefaults] = useState<SectionFormDefaults>({});
 
   // Toggle for showing models column in section list
   const [showModelsColumn, setShowModelsColumn] = useState(false);
@@ -804,20 +796,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         setPrimaryTab('courses');
         if (subTab === 'new-section') {
           setCoursesSubTab('sections');
-          setShowSectionModal(true);
-          setEditingSection(null);
-          setSectionForm({
-            section_id: '',
-            section_title: '',
-            year_term: '',
-            chat_model: '',
-            super_model: '',
-            enabled: true,
-            accept_new_students: false,
-            enrollment_key: '',
-            semester_id: null,
-            course_id: null
-          });
+          if (user?.role === 'admin') {
+            setEditingSection(null);
+            setSectionModalDefaults({});
+            setShowSectionModal(true);
+          }
         } else if (subTab && ['sections', 'students', 'semesters', 'course-setup'].includes(subTab)) {
           setCoursesSubTab(subTab as CoursesSubTab);
           if (subTab === 'students') {
@@ -895,7 +878,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           setSetupSubTab(subTab as SetupSubTab);
         } else {
           setPrimaryTab('admin');
-          if (subTab && ['prompts', 'models', 'settings', 'instructors', 'admins', 'logging', 'shadow'].includes(subTab)) {
+          if (subTab && ['prompts', 'models', 'settings', 'instructors', 'admins', 'logging', 'backup', 'shadow'].includes(subTab)) {
             setAdminSubTab(subTab as AdminSubTab);
           }
         }
@@ -918,7 +901,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       default:
         setPrimaryTab('home');
     }
-  }, [sectionStats]);
+  }, [sectionStats, user?.role]);
 
   // Navigate to Chat Options tab with pre-selected section and case
   const navigateToChatOptions = useCallback(async (sectionId: string, caseId: string) => {
@@ -991,80 +974,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     fetchModels();
   }, [fetchModels]);
 
-  // Fetch semesters
-  const fetchSemesters = useCallback(async () => {
-    setIsLoadingSemesters(true);
-    try {
-      const response = await fetch(`${getApiBaseUrl()}/semesters`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
-      });
-      const result = await response.json();
-      if (result.error) {
-        setError(result.error.message);
-      } else {
-        setSemesters(result.data || []);
-        // Auto-select current semester
-        const currentSemester = (result.data || []).find((s: any) => s.is_current);
-        if (currentSemester && !selectedSemesterId) {
-          setSelectedSemesterId(currentSemester.id);
-        }
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to fetch semesters');
-    } finally {
-      setIsLoadingSemesters(false);
-    }
-  }, [selectedSemesterId]);
-
-  // Fetch courses for selected semester
-  const fetchCourses = useCallback(async (semesterId: number) => {
-    setIsLoadingCourses(true);
-    try {
-      const response = await fetch(`${getApiBaseUrl()}/semesters/${semesterId}/courses`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
-      });
-      const result = await response.json();
-      if (result.error) {
-        setError(result.error.message);
-      } else {
-        setCourses(result.data || []);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to fetch courses');
-    } finally {
-      setIsLoadingCourses(false);
-    }
-  }, []);
-
-  // Fetch orphaned sections (not assigned to any course)
-  const fetchOrphanedSections = useCallback(async () => {
-    try {
-      const response = await fetch(`${getApiBaseUrl()}/sections/orphaned`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
-      });
-      const result = await response.json();
-      if (!result.error) {
-        setOrphanedSections(result.data || []);
-      }
-    } catch (err: any) {
-      console.error('Failed to fetch orphaned sections:', err);
-    }
-  }, []);
-
-  // Fetch all courses (for Sections tab dropdown)
-  const fetchAllCourses = useCallback(async () => {
-    try {
-      const response = await fetch(`${getApiBaseUrl()}/courses`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` }
-      });
-      const result = await response.json();
-      if (!result.error) {
-        setAllCourses(result.data || []);
-      }
-    } catch (err: any) {
-      console.error('Failed to fetch all courses:', err);
-    }
-  }, []);
+  // Reload the shared semester list (header selector + Semesters tab).
+  const fetchSemesters = semesterFilter.refresh;
 
   // Fetch all instructors (for assignment dropdowns)
   const fetchAllInstructors = useCallback(async () => {
@@ -1149,13 +1060,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       setError(err.message || 'Failed to remove instructor');
     }
   };
-
-  // Fetch courses when semester changes
-  useEffect(() => {
-    if (selectedSemesterId) {
-      fetchCourses(selectedSemesterId);
-    }
-  }, [selectedSemesterId, fetchCourses]);
 
   const fetchSectionStats = useCallback(async () => {
     setIsLoadingSections(true);
@@ -1483,8 +1387,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   useEffect(() => {
     fetchSectionStats();
-    fetchAllCourses(); // Load all courses for Sections tab dropdown
-  }, [fetchSectionStats, fetchAllCourses]);
+  }, [fetchSectionStats]);
 
   // Load instructor data when on semesters tab and semesters are loaded
   useEffect(() => {
@@ -2463,7 +2366,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     setIsSavingChatOptions(true);
     try {
       const token = localStorage.getItem('admin_auth_token');
-      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/options`, {
+      const response = await fetchSectionCaseSetting(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/options`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -2620,7 +2523,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     try {
       const token = localStorage.getItem('admin_auth_token');
 
-      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/position-settings`, {
+      const response = await fetchSectionCaseSetting(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/position-settings`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -2648,7 +2551,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleToggleAssignmentPosition = async (sectionId: string, caseId: string, positionId: number) => {
     try {
       const token = localStorage.getItem('admin_auth_token');
-      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions/${positionId}/toggle`, {
+      const response = await fetchSectionCaseSetting(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions/${positionId}/toggle`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -2697,7 +2600,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         sort_order: idx
       }));
 
-      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions/reorder`, {
+      const response = await fetchSectionCaseSetting(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions/reorder`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -2803,14 +2706,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     try {
       if (isAssigned) {
         // Remove assignment
-        await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/scenarios/${scenarioId}`, {
+        const response = await fetchSectionCaseSetting(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/scenarios/${scenarioId}`, {
           method: 'DELETE',
           headers: token ? { 'Authorization': `Bearer ${token}` } : {}
         });
+        if (!response.ok) {
+          const result = await response.json().catch(() => null);
+          setError(result?.error?.message || 'Failed to remove scenario');
+          return;
+        }
         setAssignedScenarios(prev => prev.filter(s => s.scenario_id !== scenarioId));
       } else {
         // Add assignment
-        const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/scenarios`, {
+        const response = await fetchSectionCaseSetting(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/scenarios`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -2819,6 +2727,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           body: JSON.stringify({ scenario_ids: [scenarioId] })
         });
         const result = await response.json();
+        if (!response.ok || result.error) {
+          setError(result.error?.message || 'Failed to add scenario');
+          return;
+        }
         if (result.data) {
           // Refresh assigned scenarios
           const assignedResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/scenarios`, {
@@ -2860,7 +2772,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const token = localStorage.getItem('admin_auth_token');
 
       // Save scenario selection settings
-      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/selection-mode`, {
+      const response = await fetchSectionCaseSetting(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/selection-mode`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -2875,7 +2787,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
       // Also save position tracking settings if there are positions defined
       if (assignmentPositions.length > 0) {
-        const positionResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/position-settings`, {
+        const positionResponse = await fetchSectionCaseSetting(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/position-settings`, {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
@@ -2939,40 +2851,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
-  // Filter sections based on showAllSections toggle
+  // Filter sections by the header Semester selector and the Enabled/All toggle. The synthetic
+  // "Not in a course" / "Other course sections" rows have no semester, so they show only under All.
   const filteredSections = useMemo(() => {
+    const inSemester = sectionStats.filter(s => semesterInScope(s));
     if (showAllSections) {
-      return sectionStats;
+      return inSemester;
     }
     // Show only enabled sections (plus always show unassigned and other_courses if they have students)
-    return sectionStats.filter(s => s.enabled || s.section_id === 'unassigned' || s.section_id === 'other_courses');
-  }, [sectionStats, showAllSections]);
-
-  // Unique semesters derived from allCourses, sorted current first then by name desc.
-  // Used by the Edit/Create Section modal.
-  const allSemesters = useMemo(() => {
-    const map = new Map<number, { id: number; name: string; is_current: boolean }>();
-    for (const c of allCourses) {
-      if (c.semester_id != null && !map.has(c.semester_id)) {
-        map.set(c.semester_id, {
-          id: c.semester_id,
-          name: c.semester_name || 'Unknown',
-          is_current: !!c.is_current
-        });
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => {
-      if (a.is_current && !b.is_current) return -1;
-      if (!a.is_current && b.is_current) return 1;
-      return b.name.localeCompare(a.name);
-    });
-  }, [allCourses]);
+    return inSemester.filter(s => s.enabled || s.section_id === 'unassigned' || s.section_id === 'other_courses');
+  }, [sectionStats, showAllSections, semesterInScope]);
 
   // Group sections by semester and course for hierarchical view
   const groupedSections = useMemo(() => {
     const groups: {
       semesterId: number | null;
       semesterName: string;
+      semesterCode: string | null;
+      semesterStartDate: string | null;
       semesterIsCurrent: boolean;
       courses: {
         courseId: number | null;
@@ -2994,7 +2890,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     // Then group by course within each semester
     semesterMap.forEach((sections, semId) => {
       const semesterName = semId ? (sections[0] as any).semester_name || 'Unknown' : 'Unassigned';
-      const semesterIsCurrent = semId ? (sections[0] as any).semester_is_current : false;
+      const semesterCode = semId ? (sections[0] as any).semester_code || null : null;
+      const semesterStartDate = semId ? (sections[0] as any).semester_start_date || null : null;
+      const semesterIsCurrent = semId ? Boolean((sections[0] as any).semester_is_current) : false;
 
       const courseMap = new Map<number | null, typeof filteredSections>();
       sections.forEach(section => {
@@ -3020,18 +2918,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       groups.push({
         semesterId: semId,
         semesterName,
+        semesterCode,
+        semesterStartDate,
         semesterIsCurrent,
         courses
       });
     });
 
-    // Sort semesters: current first, then by name descending
+    // Sort semesters newest first by start date (never by name: "Fall 2026" < "Winter 2026"),
+    // undated semesters next, sections with no semester last.
     groups.sort((a, b) => {
-      if (a.semesterIsCurrent && !b.semesterIsCurrent) return -1;
-      if (!a.semesterIsCurrent && b.semesterIsCurrent) return 1;
       if (a.semesterId === null) return 1;
       if (b.semesterId === null) return -1;
-      return b.semesterName.localeCompare(a.semesterName);
+      const da = a.semesterStartDate ? String(a.semesterStartDate).slice(0, 10) : '';
+      const db = b.semesterStartDate ? String(b.semesterStartDate).slice(0, 10) : '';
+      if (da && db && da !== db) return db.localeCompare(da);
+      if (da && !db) return -1;
+      if (!da && db) return 1;
+      return (a.semesterCode || '').localeCompare(b.semesterCode || '');
     });
 
     return groups;
@@ -3231,16 +3135,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
                   </svg>
                 </button>
-                <button
-                  onClick={(e) => handleDuplicateSection(section, e)}
-                  className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors"
-                  title="Duplicate section"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z" />
-                    <path d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z" />
-                  </svg>
-                </button>
+                {/* Duplicate creates a section: course structure, admin-only on the server. */}
+                {user?.role === 'admin' && (
+                  <button
+                    onClick={(e) => handleDuplicateSection(section, e)}
+                    className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors"
+                    title="Duplicate section"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                      <path d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z" />
+                      <path d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z" />
+                    </svg>
+                  </button>
+                )}
               </>
             )}
             <button
@@ -3320,166 +3227,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       return 0;
     });
   }, [studentDetails, sortKey, sortDirection, filterMode, filterCaseId, searchQuery]);
-
-  // Export to MySQL helpers
-  const [isExporting, setIsExporting] = useState(false);
-
-  const sqlEscapeString = (value: string): string => {
-    return value
-      .replace(/\\/g, "\\\\")
-      .replace(/\u0000/g, "")
-      .replace(/\n/g, "\\n")
-      .replace(/\r/g, "\\r")
-      .replace(/\t/g, "\\t")
-      .replace(/\u001a/g, "")
-      .replace(/'/g, "\\'");
-  };
-
-  const sqlValue = (val: any): string => {
-    if (val === null || val === undefined) return 'NULL';
-    if (typeof val === 'number') return Number.isFinite(val) ? String(val) : 'NULL';
-    if (typeof val === 'boolean') return val ? '1' : '0';
-    if (val instanceof Date) return `'${sqlEscapeString(val.toISOString().slice(0, 19).replace('T', ' '))}'`;
-    if (typeof val === 'string') {
-      const d = new Date(val);
-      if (!isNaN(d.getTime()) && /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val)) {
-        const ts = d.toISOString().slice(0, 19).replace('T', ' ');
-        return `'${sqlEscapeString(ts)}'`;
-      }
-      return `'${sqlEscapeString(val)}'`;
-    }
-    try {
-      const json = JSON.stringify(val);
-      return json === undefined ? 'NULL' : `'${sqlEscapeString(json)}'`;
-    } catch {
-      return 'NULL';
-    }
-  };
-
-  const handleDownloadToMySQL = useCallback(async () => {
-    if (isExporting) return;
-    const confirmed = window.confirm('Download SQL to upsert data into MySQL (models, sections, students, evaluations)?');
-    if (!confirmed) return;
-    setIsExporting(true);
-    try {
-      const [modelsRes, sectionsRes, studentsRes, evalsRes] = await Promise.all([
-        api.from('models').select('*'),
-        api.from('sections').select('*'),
-        api.from('students').select('*'),
-        api.from('evaluations').select('*'),
-      ]);
-
-      const errors: string[] = [];
-      if (modelsRes.error) errors.push(`models: ${modelsRes.error.message}`);
-      if (sectionsRes.error) errors.push(`sections: ${sectionsRes.error.message}`);
-      if (studentsRes.error) errors.push(`students: ${studentsRes.error.message}`);
-      if (evalsRes.error) errors.push(`evaluations: ${evalsRes.error.message}`);
-      if (errors.length) {
-        alert('Failed to fetch some data from database:\n' + errors.join('\n'));
-        setIsExporting(false);
-        return;
-      }
-
-      const models = modelsRes.data || [];
-      const sections = sectionsRes.data || [];
-      const students = studentsRes.data || [];
-      const evaluations = evalsRes.data || [];
-
-      const lines: string[] = [];
-      lines.push('-- Upsert script for ceochat (MySQL)');
-      lines.push('USE ceochat;');
-      lines.push('SET FOREIGN_KEY_CHECKS=0;');
-
-      for (const m of models) {
-        const cols = ['model_id','model_name','vendor','enabled','default_model','cpm_input','cpm_input_cache','cpm_output'];
-        const vals = [
-          sqlValue(m.model_id),
-          sqlValue(m.model_name),
-          sqlValue((m as any).vendor),
-          sqlValue(m.enabled),
-          sqlValue((m as any).default),
-          sqlValue((m as any).cpm_input),
-          sqlValue((m as any).cpm_input_cache),
-          sqlValue((m as any).cpm_output),
-        ];
-        const updates = ['model_name=VALUES(model_name)','vendor=VALUES(vendor)','enabled=VALUES(enabled)','default_model=VALUES(default_model)','cpm_input=VALUES(cpm_input)','cpm_input_cache=VALUES(cpm_input_cache)','cpm_output=VALUES(cpm_output)'];
-        lines.push(`INSERT INTO models (${cols.join(',')}) VALUES (${vals.join(',')}) ON DUPLICATE KEY UPDATE ${updates.join(',')};`);
-      }
-
-      for (const s of sections) {
-        const cols = ['section_id','created_at','section_title','year_term','enabled','chat_model','super_model'];
-        const vals = [
-          sqlValue(s.section_id),
-          sqlValue(s.created_at),
-          sqlValue(s.section_title),
-          sqlValue(s.year_term),
-          sqlValue(s.enabled),
-          sqlValue(s.chat_model),
-          sqlValue(s.super_model),
-        ];
-        const updates = ['created_at=VALUES(created_at)','section_title=VALUES(section_title)','year_term=VALUES(year_term)','enabled=VALUES(enabled)','chat_model=VALUES(chat_model)','super_model=VALUES(super_model)'];
-        lines.push(`INSERT INTO sections (${cols.join(',')}) VALUES (${vals.join(',')}) ON DUPLICATE KEY UPDATE ${updates.join(',')};`);
-      }
-
-      for (const st of students) {
-        const cols = ['id','created_at','first_name','last_name','full_name','favorite_persona','section_id','finished_at'];
-        const vals = [
-          sqlValue(st.id),
-          sqlValue(st.created_at),
-          sqlValue(st.first_name),
-          sqlValue(st.last_name),
-          sqlValue(st.full_name),
-          sqlValue(st.favorite_persona),
-          sqlValue(st.section_id),
-          sqlValue(st.finished_at),
-        ];
-        const updates = ['created_at=VALUES(created_at)','first_name=VALUES(first_name)','last_name=VALUES(last_name)','full_name=VALUES(full_name)','favorite_persona=VALUES(favorite_persona)','section_id=VALUES(section_id)','finished_at=VALUES(finished_at)'];
-        lines.push(`INSERT INTO students (${cols.join(',')}) VALUES (${vals.join(',')}) ON DUPLICATE KEY UPDATE ${updates.join(',')};`);
-      }
-
-      for (const e of evaluations) {
-        const cols = ['id','created_at','student_id','score','summary','criteria','persona','hints','helpful','liked','improve','chat_model','super_model','transcript'];
-        const vals = [
-          sqlValue(e.id),
-          sqlValue(e.created_at),
-          sqlValue(e.student_id),
-          sqlValue(e.score),
-          sqlValue(e.summary),
-          sqlValue(e.criteria),
-          sqlValue(e.persona),
-          sqlValue(e.hints),
-          sqlValue(e.helpful),
-          sqlValue(e.liked),
-          sqlValue(e.improve),
-          sqlValue(e.chat_model),
-          sqlValue(e.super_model),
-          sqlValue(e.transcript),
-        ];
-        const updates = ['created_at=VALUES(created_at)','student_id=VALUES(student_id)','score=VALUES(score)','summary=VALUES(summary)','criteria=VALUES(criteria)','persona=VALUES(persona)','hints=VALUES(hints)','helpful=VALUES(helpful)','liked=VALUES(liked)','improve=VALUES(improve)','chat_model=VALUES(chat_model)','super_model=VALUES(super_model)','transcript=VALUES(transcript)'];
-        lines.push(`INSERT INTO evaluations (${cols.join(',')}) VALUES (${vals.join(',')}) ON DUPLICATE KEY UPDATE ${updates.join(',')};`);
-      }
-
-      lines.push('SET FOREIGN_KEY_CHECKS=1;');
-
-      const content = lines.join('\n');
-      const blob = new Blob([content], { type: 'text/sql;charset=utf-8' });
-      const a = document.createElement('a');
-      const ts = new Date();
-      const pad = (n: number) => n.toString().padStart(2, '0');
-      const fname = `ceochat-upsert-${ts.getFullYear()}${pad(ts.getMonth()+1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}.sql`;
-      a.href = URL.createObjectURL(blob);
-      a.download = fname;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(a.href);
-    } catch (err: any) {
-      console.error('Export to MySQL failed', err);
-      alert('Export failed. See console for details.');
-    } finally {
-      setIsExporting(false);
-    }
-  }, [isExporting]);
 
   // CSV Export
   const handleDownloadCSV = useCallback(() => {
@@ -3585,21 +3332,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     setSelectedStudentIds(new Set());
   }, []);
 
-  // Section CRUD operations
+  // Section create/edit go through SectionFormModal, which mints ids via utils/academicIds.js.
   const handleCreateSection = () => {
     setEditingSection(null);
-    setSectionForm({
-      section_id: '',
-      section_title: '',
-      year_term: '',
-      chat_model: '',
-      super_model: '',
-      enabled: true,
-      accept_new_students: false,
-      enrollment_key: '',
-      semester_id: null,
-      course_id: null
-    });
+    setSectionModalDefaults({});
     setShowSectionModal(true);
   };
 
@@ -3607,116 +3343,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     if (e) e.stopPropagation();
     if (section.section_id === 'unassigned') return;
     setEditingSection(section);
-    setSectionForm({
-      section_id: section.section_id,
-      section_title: section.section_title,
-      year_term: section.year_term,
-      chat_model: section.chat_model || '',
-      super_model: section.super_model || '',
-      enabled: !!section.enabled,
-      accept_new_students: !!section.accept_new_students,
-      enrollment_key: section.enrollment_key || '',
-      semester_id: section.semester_id ?? null,
-      course_id: section.course_id_num ?? section.course_id ?? null
-    });
     setShowSectionModal(true);
   };
 
-  const handleSaveSection = async () => {
-    if (!sectionForm.section_id.trim() || !sectionForm.section_title.trim()) {
-      alert('Section ID and Title are required.');
-      return;
-    }
-    if (sectionForm.semester_id == null) {
-      alert('Please select a Semester.');
-      return;
-    }
-
-    // Verify the chosen course (if any) belongs to the chosen semester.
-    if (sectionForm.course_id != null) {
-      const chosenCourse = allCourses.find(c => c.id === sectionForm.course_id);
-      if (!chosenCourse || chosenCourse.semester_id !== sectionForm.semester_id) {
-        alert('The selected course does not belong to the selected semester.');
-        return;
-      }
-    }
-
-    // Derive year_term from the selected semester's name so existing UI that
-    // still reads year_term keeps working without a data migration.
-    const semesterCourse = allCourses.find(c => c.semester_id === sectionForm.semester_id);
-    const derivedYearTerm = semesterCourse?.semester_name || sectionForm.year_term || '';
-
-    try {
-      if (editingSection) {
-        const { error } = await api
-          .from('sections')
-          .update({
-            section_title: sectionForm.section_title,
-            year_term: derivedYearTerm,
-            chat_model: sectionForm.chat_model || null,
-            super_model: sectionForm.super_model || null,
-            enabled: sectionForm.enabled,
-            accept_new_students: sectionForm.accept_new_students,
-            enrollment_key: sectionForm.enrollment_key.trim() || null,
-            course_id: sectionForm.course_id
-          })
-          .eq('section_id', sectionForm.section_id);
-
-        if (error) throw error;
-      } else {
-        const { error } = await api
-          .from('sections')
-          .insert({
-            section_id: sectionForm.section_id,
-            section_title: sectionForm.section_title,
-            year_term: derivedYearTerm,
-            chat_model: sectionForm.chat_model || null,
-            super_model: sectionForm.super_model || null,
-            enabled: sectionForm.enabled,
-            accept_new_students: sectionForm.accept_new_students,
-            enrollment_key: sectionForm.enrollment_key.trim() || null,
-            course_id: sectionForm.course_id
-          });
-
-        if (error) throw error;
-      }
-
-      setShowSectionModal(false);
-      fetchSectionStats();
-    } catch (err: any) {
-      console.error('Failed to save section:', err);
-      alert(`Failed to save section: ${err.message}`);
-    }
-  };
-
-  const handleDuplicateSection = async (section: SectionStat, e?: React.MouseEvent) => {
+  // "Duplicate" = add another section of the same course and semester, with the same models.
+  const handleDuplicateSection = (section: SectionStat, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    if (section.section_id === 'unassigned') return;
-    
-    const newId = prompt('Enter new Section ID:', `${section.section_id}-copy`);
-    if (!newId) return;
-    
-    const newTitle = prompt('Enter new Section Title:', `${section.section_title} (Copy)`);
-    if (!newTitle) return;
-
-    try {
-      const { error } = await api
-        .from('sections')
-        .insert({
-          section_id: newId,
-          section_title: newTitle,
-          year_term: section.year_term,
-          chat_model: section.chat_model,
-          super_model: section.super_model,
-          enabled: true
-        });
-      
-      if (error) throw error;
-      fetchSectionStats();
-    } catch (err: any) {
-      console.error('Failed to duplicate section:', err);
-      alert(`Failed to duplicate section: ${err.message}`);
-    }
+    if (section.section_id === 'unassigned' || section.section_id === 'other_courses') return;
+    setEditingSection(null);
+    setSectionModalDefaults({
+      semesterId: section.semester_id ?? null,
+      courseId: section.course_id_num ?? section.course_id ?? null,
+      chatModel: section.chat_model,
+      superModel: section.super_model,
+    });
+    setShowSectionModal(true);
   };
 
   const handleToggleStatus = async (section: SectionStat, e?: React.MouseEvent) => {
@@ -4605,7 +4246,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const handleUpdateAssignmentRubric = async (sectionId: string, caseId: string, rubricId: number | null) => {
     try {
       const token = localStorage.getItem('admin_auth_token');
-      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/rubric`, {
+      const response = await fetchSectionCaseSetting(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/rubric`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -4720,38 +4361,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
-  // Handle creating/updating semester
-  const handleSaveSemester = async (semesterData: any) => {
-    try {
-      const isEdit = !!editingSemester;
-      const url = isEdit
-        ? `${getApiBaseUrl()}/semesters/${editingSemester.id}`
-        : `${getApiBaseUrl()}/semesters`;
-      const method = isEdit ? 'PUT' : 'POST';
-
-      const response = await fetch(url, {
-        method,
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(semesterData)
-      });
-      const result = await response.json();
-      if (result.error) {
-        setError(result.error.message);
-      } else {
-        setSuccessMessage(isEdit ? 'Semester updated' : 'Semester created');
-        setShowSemesterModal(false);
-        setEditingSemester(null);
-        fetchSemesters();
-        setTimeout(() => setSuccessMessage(null), 3000);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to save semester');
-    }
-  };
-
   // Handle deleting semester
   const handleDeleteSemester = async (semester: { id: number; semester_name?: string | null }) => {
     if (!confirm(`Delete semester "${semester.semester_name ?? '(unnamed)'}"? This cannot be undone.`)) return;
@@ -4773,166 +4382,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
-  // Handle creating/updating course
-  const handleSaveCourse = async (courseData: any) => {
-    try {
-      const isEdit = !!editingCourse;
-      const url = isEdit
-        ? `${getApiBaseUrl()}/courses/${editingCourse.id}`
-        : `${getApiBaseUrl()}/semesters/${selectedSemesterId}/courses`;
-      const method = isEdit ? 'PUT' : 'POST';
-
-      const response = await fetch(url, {
-        method,
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(courseData)
-      });
-      const result = await response.json();
-      if (result.error) {
-        setError(result.error.message);
-      } else {
-        setSuccessMessage(isEdit ? 'Course updated' : 'Course created');
-        setShowCourseModal(false);
-        setEditingCourse(null);
-        if (selectedSemesterId) fetchCourses(selectedSemesterId);
-        setTimeout(() => setSuccessMessage(null), 3000);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to save course');
-    }
-  };
-
-  // Handle course sync
-  const handleSyncCourse = async (courseId: number) => {
-    if (!confirm('Push case assignments from the primary section to all other sections in this course?')) return;
-    try {
-      const response = await fetch(`${getApiBaseUrl()}/courses/${courseId}/sync`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ sync_options: true, sync_scenarios: true })
-      });
-      const result = await response.json();
-      if (result.error) {
-        setError(result.error.message);
-      } else {
-        setSuccessMessage(result.message || 'Course synced successfully');
-        setTimeout(() => setSuccessMessage(null), 3000);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to sync course');
-    }
-  };
-
-  // Handle deleting a course (with cascade option)
-  const handleDeleteCourse = async (course: Course) => {
-    try {
-      // First, try to delete without cascade to get info about what would be deleted
-      const response = await fetch(`${getApiBaseUrl()}/courses/${course.id}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`
-        }
-      });
-      const result = await response.json();
-
-      if (result.data?.requires_cascade) {
-        // Show confirmation with details about what will be deleted
-        const { sections_count, students_count, assignments_count } = result.data;
-        const confirmed = confirm(
-          `Are you sure you want to delete "${course.course_name}"?\n\n` +
-          `This will permanently delete:\n` +
-          `• ${sections_count} section(s)\n` +
-          `• ${assignments_count} case assignment(s)\n` +
-          `• ${students_count} student enrollment(s)\n\n` +
-          `This action cannot be undone.`
-        );
-
-        if (confirmed) {
-          // Delete with cascade
-          const cascadeResponse = await fetch(`${getApiBaseUrl()}/courses/${course.id}?cascade=true`, {
-            method: 'DELETE',
-            headers: {
-              'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`
-            }
-          });
-          const cascadeResult = await cascadeResponse.json();
-          if (cascadeResult.error) {
-            setError(cascadeResult.error.message);
-          } else {
-            setSuccessMessage(`Deleted course "${course.course_name}" and ${cascadeResult.data.sections_deleted} section(s)`);
-            if (selectedSemesterId) fetchCourses(selectedSemesterId);
-            fetchOrphanedSections();
-            setTimeout(() => setSuccessMessage(null), 3000);
-          }
-        }
-      } else if (result.error) {
-        setError(result.error.message);
-      } else {
-        // Course had no sections, deleted successfully
-        setSuccessMessage(`Deleted course "${course.course_name}"`);
-        if (selectedSemesterId) fetchCourses(selectedSemesterId);
-        setTimeout(() => setSuccessMessage(null), 3000);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to delete course');
-    }
-  };
-
-  // Handle assigning an orphaned section to a course
-  const handleAssignSectionToCourse = async (sectionId: string, courseId: number) => {
-    try {
-      const response = await fetch(`${getApiBaseUrl()}/courses/${courseId}/sections/${sectionId}/assign`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      const result = await response.json();
-      if (result.error) {
-        setError(result.error.message);
-      } else {
-        setSuccessMessage('Section assigned to course');
-        fetchOrphanedSections();
-        if (selectedSemesterId) fetchCourses(selectedSemesterId);
-        setTimeout(() => setSuccessMessage(null), 3000);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to assign section');
-    }
-  };
-
-  // Handle changing a section's course assignment (or unassigning it)
-  const handleChangeSectionCourse = async (sectionId: string, newCourseId: number | null) => {
-    try {
-      const response = await fetch(`${getApiBaseUrl()}/sections/${sectionId}`, {
-        method: 'PATCH',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ course_id: newCourseId })
-      });
-      const result = await response.json();
-      if (result.error) {
-        setError(result.error.message);
-      } else {
-        setSuccessMessage(newCourseId ? 'Section moved to course' : 'Section unassigned from course');
-        fetchSectionStats(); // Refresh sections list
-        fetchOrphanedSections();
-        if (selectedSemesterId) fetchCourses(selectedSemesterId);
-        setTimeout(() => setSuccessMessage(null), 3000);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to change section assignment');
-    }
-  };
+  // Where a section's case settings come from: a course case version (written through, so
+  // direct edits ask to "Customize"), or the section itself.
+  const renderCaseSettingsSourceChip = (sc: { version_id?: number | null; version_label?: string | null }) =>
+    sc.version_id ? (
+      <span
+        className="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100"
+        title="Settings come from the course. Edit them on Courses → Courses, or edit here to customize this section."
+      >
+        Follows: {sc.version_label || 'course'}
+      </span>
+    ) : (
+      <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500" title="This section has its own settings for this case">
+        Customized
+      </span>
+    );
 
   const renderDismissibleErrorBanner = (className: string) =>
     error ? (
@@ -4966,7 +4430,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           <h2 className="text-2xl font-bold text-gray-900">Semesters</h2>
           <p className="text-sm text-gray-500">
             {canEditSemesters
-              ? 'Manage academic semesters and clone setups between terms'
+              ? 'Manage academic semesters. Listed newest first by start date.'
               : 'View academic semesters. Only superuser admins can create or edit semesters.'}
           </p>
         </div>
@@ -5008,6 +4472,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     </span>
                   )}
                   <h3 className="text-lg font-semibold text-gray-900">{semester.semester_name}</h3>
+                  <code className="text-sm font-mono text-gray-500">{semester.semester_code}</code>
                   <span className="text-sm text-gray-500">
                     {semester.course_count || 0} courses • {semester.section_count || 0} sections
                     {(semesterInstructors.get(semester.id)?.length || 0) > 0 && (
@@ -5036,15 +4501,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         Set as Current
                       </button>
                     )}
-                    <button
-                      onClick={() => {
-                        setEditingSemester(semester);
-                        setShowCloneSemesterModal(true);
-                      }}
-                      className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded"
-                    >
-                      Clone
-                    </button>
+                    {(semester.section_count || 0) > 0 && (
+                      <button
+                        onClick={() => setRolloverSemester(semester)}
+                        className="px-3 py-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded"
+                        title="Copy this semester's course sections and case setup into another semester"
+                      >
+                        Roll over →
+                      </button>
+                    )}
                     <button
                       onClick={() => {
                         setEditingSemester(semester);
@@ -5068,163 +4533,35 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       )}
 
-      {/* Semester Modal */}
-      {showSemesterModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4">{editingSemester ? 'Edit Semester' : 'Create Semester'}</h3>
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              const formData = new FormData(e.currentTarget);
-              handleSaveSemester({
-                semester_name: formData.get('semester_name'),
-                start_date: formData.get('start_date') || null,
-                end_date: formData.get('end_date') || null,
-                is_current: formData.get('is_current') === 'on'
-              });
-            }}>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Semester Name *</label>
-                  <input
-                    name="semester_name"
-                    defaultValue={editingSemester?.semester_name || ''}
-                    required
-                    placeholder="e.g., Fall 2026"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
-                    <input
-                      type="date"
-                      name="start_date"
-                      defaultValue={editingSemester?.start_date?.split('T')[0] || ''}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">End Date</label>
-                    <input
-                      type="date"
-                      name="end_date"
-                      defaultValue={editingSemester?.end_date?.split('T')[0] || ''}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                    />
-                  </div>
-                </div>
-                {!editingSemester && (
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" name="is_current" className="rounded" />
-                    <span className="text-sm text-gray-700">Set as current semester</span>
-                  </label>
-                )}
-              </div>
-              <div className="flex justify-end gap-2 mt-6">
-                <button
-                  type="button"
-                  onClick={() => { setShowSemesterModal(false); setEditingSemester(null); }}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
-                >
-                  {editingSemester ? 'Save Changes' : 'Create Semester'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+      {rolloverSemester && (
+        <RolloverModal
+          mode="semester"
+          fromSemesterId={rolloverSemester.id}
+          fromSemesterName={rolloverSemester.semester_name}
+          onClose={() => setRolloverSemester(null)}
+          onDone={(text) => {
+            setRolloverSemester(null);
+            setSuccessMessage(text);
+            fetchSemesters();
+            fetchSectionStats();
+            setTimeout(() => setSuccessMessage(null), 5000);
+          }}
+        />
       )}
 
-      {/* Clone Semester Modal */}
-      {showCloneSemesterModal && editingSemester && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4">Clone Semester</h3>
-            <p className="text-sm text-gray-600 mb-4">
-              Clone from: <strong>{editingSemester.semester_name}</strong><br/>
-              This will copy all courses, sections, and case assignments.
-            </p>
-            <form onSubmit={async (e) => {
-              e.preventDefault();
-              const formData = new FormData(e.currentTarget);
-              try {
-                const response = await fetch(`${getApiBaseUrl()}/semesters/${editingSemester.id}/clone`, {
-                  method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`,
-                    'Content-Type': 'application/json'
-                  },
-                  body: JSON.stringify({
-                    new_semester_name: formData.get('new_semester_name'),
-                    clone_case_assignments: formData.get('clone_case_assignments') === 'on',
-                    clone_chat_options: formData.get('clone_chat_options') === 'on',
-                    clone_scenarios: formData.get('clone_scenarios') === 'on'
-                  })
-                });
-                const result = await response.json();
-                if (result.error) {
-                  setError(result.error.message);
-                } else {
-                  setSuccessMessage(`Cloned: ${result.data.stats.courses_cloned} courses, ${result.data.stats.sections_cloned} sections, ${result.data.stats.case_assignments_cloned} assignments`);
-                  setShowCloneSemesterModal(false);
-                  setEditingSemester(null);
-                  fetchSemesters();
-                  setTimeout(() => setSuccessMessage(null), 5000);
-                }
-              } catch (err: any) {
-                setError(err.message || 'Failed to clone semester');
-              }
-            }}>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">New Semester Name *</label>
-                  <input
-                    name="new_semester_name"
-                    required
-                    placeholder="e.g., Fall 2027"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" name="clone_case_assignments" defaultChecked className="rounded" />
-                    <span className="text-sm text-gray-700">Clone case assignments</span>
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" name="clone_chat_options" defaultChecked className="rounded" />
-                    <span className="text-sm text-gray-700">Clone chat options</span>
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" name="clone_scenarios" defaultChecked className="rounded" />
-                    <span className="text-sm text-gray-700">Clone scenarios</span>
-                  </label>
-                </div>
-                <p className="text-xs text-gray-500">Students will NOT be copied. The new semester will start with empty rosters.</p>
-              </div>
-              <div className="flex justify-end gap-2 mt-6">
-                <button
-                  type="button"
-                  onClick={() => { setShowCloneSemesterModal(false); setEditingSemester(null); }}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
-                >
-                  Clone Semester
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+      {showSemesterModal && (
+        <SemesterFormModal
+          semester={editingSemester}
+          onClose={() => { setShowSemesterModal(false); setEditingSemester(null); }}
+          onSaved={(text) => {
+            setShowSemesterModal(false);
+            setEditingSemester(null);
+            setSuccessMessage(text);
+            fetchSemesters();
+            fetchSectionStats();
+            setTimeout(() => setSuccessMessage(null), 3000);
+          }}
+        />
       )}
 
       {/* Semester Instructors Modal */}
@@ -5312,304 +4649,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     );
   };
 
-  // Render Course Setup Tab
-  const renderCourseSetupTab = () => (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Course Setup</h2>
-          <p className="text-sm text-gray-500">Organize sections into courses for easier assignment management</p>
-        </div>
-      </div>
-
-      {renderDismissibleErrorBanner('mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg')}
-      {successMessage && <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg">{successMessage}</div>}
-
-      {/* Semester Selector */}
-      <div className="mb-6">
-        <label className="block text-sm font-medium text-gray-700 mb-2">Select Semester</label>
-        <select
-          value={selectedSemesterId || ''}
-          onChange={(e) => setSelectedSemesterId(e.target.value ? Number(e.target.value) : null)}
-          className="w-full max-w-md px-4 py-2.5 border border-gray-300 rounded-lg text-sm bg-white"
-        >
-          <option value="">Select a semester...</option>
-          {semesters.map((sem) => (
-            <option key={sem.id} value={sem.id}>
-              {sem.semester_name} {sem.is_current ? '(Current)' : ''}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {selectedSemesterId && (
-        <>
-          {/* Create Course Button — admin-only */}
-          {user?.role === 'admin' && (
-            <div className="mb-6">
-              <button
-                onClick={() => {
-                  setEditingCourse(null);
-                  setShowCourseModal(true);
-                  // Refresh so instructors added since page load appear in the dropdown
-                  fetchAllInstructors();
-                }}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
-                </svg>
-                New Course
-              </button>
-            </div>
-          )}
-
-          {/* Courses List */}
-          {isLoadingCourses ? (
-            <div className="text-center py-8 text-gray-500">Loading courses...</div>
-          ) : courses.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">No courses in this semester. Create one to get started.</div>
-          ) : (
-            <div className="space-y-4">
-              {courses.map((course) => (
-                <div key={course.id} className="bg-white border border-gray-200 rounded-lg p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900">{course.course_name}</h3>
-                      {course.course_code && (
-                        <span className="text-sm text-gray-500">{course.course_code}</span>
-                      )}
-                      <span className="text-sm text-gray-500 ml-2">
-                        • {course.section_count || 0} sections
-                      </span>
-                      <div className="text-sm mt-1 space-x-3">
-                        {(course as any).primary_instructor_name ? (
-                          <span className="text-emerald-700">
-                            <span className="font-medium">Primary Instructor:</span> {(course as any).primary_instructor_name}
-                          </span>
-                        ) : (
-                          <span className="text-amber-700">
-                            <span className="font-medium">Primary Instructor:</span> <em>not set</em>
-                          </span>
-                        )}
-                        {course.primary_section_title && (
-                          <span className="text-indigo-600">
-                            <span className="font-medium">Template Section:</span> {course.primary_section_title}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {user?.role === 'admin' && (
-                        <>
-                          <button
-                            onClick={() => handleSyncCourse(course.id)}
-                            className="px-3 py-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded"
-                            title="Push from template section to all other sections"
-                          >
-                            Sync
-                          </button>
-                          <button
-                            onClick={() => {
-                              setEditingCourse(course);
-                              setShowCourseModal(true);
-                              // Refresh so instructors added since page load appear in the dropdown
-                              fetchAllInstructors();
-                            }}
-                            className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => handleDeleteCourse(course)}
-                            className="px-3 py-1.5 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded"
-                            title="Delete course"
-                          >
-                            Delete
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  {course.description && (
-                    <p className="text-sm text-gray-600 mb-2">{course.description}</p>
-                  )}
-                  <div className="text-xs text-gray-500">
-                    Sync scheduling: {course.sync_scheduling ? 'Yes' : 'No'}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Orphaned Sections */}
-          {orphanedSections.length > 0 && (
-            <div className="mt-8">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Unassigned Sections</h3>
-              <p className="text-sm text-gray-500 mb-4">These sections are not assigned to any course. Select a course to assign each section.</p>
-              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                <div className="space-y-3">
-                  {orphanedSections.map((section: any) => (
-                    <div key={section.section_id} className="flex items-center justify-between gap-4 bg-white rounded-lg p-3 border border-yellow-200">
-                      <div className="flex-1 min-w-0">
-                        <span className="font-medium text-gray-900">{section.section_title}</span>
-                        <span className="text-sm text-gray-500 ml-2">({section.section_id})</span>
-                        {section.year_term && (
-                          <span className="text-sm text-gray-500 ml-2">• {section.year_term}</span>
-                        )}
-                        <div className="text-xs text-gray-400 mt-0.5">
-                          {section.student_count || 0} students • {section.case_count || 0} cases
-                        </div>
-                      </div>
-                      <select
-                        className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
-                        defaultValue=""
-                        onChange={(e) => {
-                          if (e.target.value) {
-                            handleAssignSectionToCourse(section.section_id, Number(e.target.value));
-                            e.target.value = '';
-                          }
-                        }}
-                      >
-                        <option value="">Assign to course...</option>
-                        {courses.map((course) => (
-                          <option key={course.id} value={course.id}>
-                            {course.course_name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-
-      {/* Course Modal */}
-      {showCourseModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4">{editingCourse ? 'Edit Course' : 'Create Course'}</h3>
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              const formData = new FormData(e.currentTarget);
-              handleSaveCourse({
-                course_name: formData.get('course_name'),
-                course_code: formData.get('course_code') || null,
-                description: formData.get('description') || null,
-                sync_scheduling: formData.get('sync_scheduling') === 'on',
-                primary_instructor_id: (formData.get('primary_instructor_id') as string) || null,
-                cascade_to_sections: formData.get('cascade_to_sections') === 'on'
-              });
-            }}>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Course Name *</label>
-                  <p className="text-xs text-gray-500 mb-1">Full descriptive name for this course</p>
-                  <input
-                    name="course_name"
-                    defaultValue={editingCourse?.course_name || ''}
-                    required
-                    placeholder="e.g., MBA 530 - Operations Management"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Course Code</label>
-                  <p className="text-xs text-gray-500 mb-1">Short catalog identifier (optional)</p>
-                  <input
-                    name="course_code"
-                    defaultValue={editingCourse?.course_code || ''}
-                    placeholder="e.g., MBA530"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-                  <textarea
-                    name="description"
-                    defaultValue={editingCourse?.description || ''}
-                    placeholder="Optional notes about this course"
-                    rows={2}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Primary Instructor *</label>
-                  <p className="text-xs text-gray-500 mb-1">The instructor who owns this course. Required so student chats can resolve API keys.</p>
-                  <select
-                    name="primary_instructor_id"
-                    defaultValue={editingCourse?.primary_instructor_id || ''}
-                    required
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white"
-                  >
-                    <option value="">Select an instructor...</option>
-                    {allInstructors
-                      .filter((i: any) => i.active && !i.is_system_account)
-                      .map((i: any) => (
-                        <option key={i.id} value={i.id}>
-                          {i.full_name || i.email}
-                        </option>
-                      ))}
-                  </select>
-                </div>
-                <div className="bg-blue-50 p-3 rounded-lg">
-                  <label className="flex items-start gap-2">
-                    <input
-                      type="checkbox"
-                      name="cascade_to_sections"
-                      defaultChecked
-                      className="rounded mt-0.5"
-                    />
-                    <div>
-                      <span className="text-sm font-medium text-gray-700">Also set as primary instructor on all sections in this course</span>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        Recommended. Sections need their own <code>primary_instructor_id</code> so student chats can resolve the right API keys. Uncheck only if some sections in this course are owned by different instructors.
-                      </p>
-                    </div>
-                  </label>
-                </div>
-                <div className="bg-gray-50 p-3 rounded-lg">
-                  <label className="flex items-start gap-2">
-                    <input
-                      type="checkbox"
-                      name="sync_scheduling"
-                      defaultChecked={editingCourse?.sync_scheduling || false}
-                      className="rounded mt-0.5"
-                    />
-                    <div>
-                      <span className="text-sm font-medium text-gray-700">Include case schedules when syncing</span>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        When syncing from the template section to other sections, also copy the case open/close dates. Uncheck if different sections need different schedules (e.g., different class meeting times).
-                      </p>
-                    </div>
-                  </label>
-                </div>
-              </div>
-              <div className="flex justify-end gap-2 mt-6">
-                <button
-                  type="button"
-                  onClick={() => { setShowCourseModal(false); setEditingCourse(null); }}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
-                >
-                  {editingCourse ? 'Save Changes' : 'Create Course'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-
   const renderAssignmentsTab = () => (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-4">
@@ -5655,12 +4694,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           className="w-full max-w-md px-4 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
         >
           <option value="">Select a course section...</option>
-          {assignmentsSectionsList.filter((s: any) => s.enabled).map((section: any) => (
+          {assignmentsSectionsList.filter((s: any) => s.enabled && semesterInScope(s)).map((section: any) => (
             <option key={section.section_id} value={section.section_id}>
               {section.section_title} ({section.section_id}) - {section.year_term}
             </option>
           ))}
         </select>
+        <SemesterScopeNote className="mt-1" />
       </div>
 
       {isLoadingAssignments ? (
@@ -5737,6 +4777,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           <div className="flex items-center gap-2">
                             <span className="font-medium text-gray-900">{sc.case_title}</span>
                             <span className="text-sm text-gray-500">({sc.case_id})</span>
+                            {renderCaseSettingsSourceChip(sc)}
                           </div>
                           <div className="flex items-center gap-2">
                             {/* Rubric Selector */}
@@ -6203,13 +5244,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 className="w-full max-w-md px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
               >
                 <option value="">Select a source section...</option>
-                {assignmentsSectionsList
-                  .filter((s: any) => s.enabled && s.section_id !== selectedAssignmentSection)
-                  .map((section: any) => (
-                    <option key={section.section_id} value={section.section_id}>
-                      {section.section_title} ({section.section_id}) - {section.year_term}
-                    </option>
-                  ))}
+                {/* Deliberately NOT limited to the header semester: copying last term's setup is normal. */}
+                {groupBySemester(
+                  semesters,
+                  assignmentsSectionsList.filter((s: any) => s.enabled && s.section_id !== selectedAssignmentSection)
+                ).map((group) => (
+                  <optgroup key={group.key} label={group.label}>
+                    {group.sections.map((section: any) => (
+                      <option key={section.section_id} value={section.section_id}>
+                        {section.section_title} ({section.section_id}) - {section.year_term}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
               </select>
             </div>
 
@@ -6523,7 +5570,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
     try {
       const token = localStorage.getItem('admin_auth_token');
-      const response = await fetch(`${getApiBaseUrl()}/sections/${chatOptionsSection}/cases/${chatOptionsCase}/options`, {
+      const response = await fetchSectionCaseSetting(`${getApiBaseUrl()}/sections/${chatOptionsSection}/cases/${chatOptionsCase}/options`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -6608,13 +5655,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
             >
               <option value="">Select a section...</option>
-              <option value="__global_default__" className="font-medium text-purple-700">Default for all sections</option>
-              {assignmentsSectionsList.filter((s: any) => s.enabled).map((section: any) => (
+              {/* Global defaults and "all sections" copies are admin-only on the server (chatOptions.js). */}
+              {user?.role === 'admin' && (
+                <option value="__global_default__" className="font-medium text-purple-700">Default for all sections</option>
+              )}
+              {assignmentsSectionsList.filter((s: any) => s.enabled && semesterInScope(s)).map((section: any) => (
                 <option key={section.section_id} value={section.section_id}>
                   {section.section_title} ({section.section_id})
                 </option>
               ))}
             </select>
+            <SemesterScopeNote className="mt-1" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Case</label>
@@ -7379,12 +6430,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         >
                           Make default for this section
                         </button>
-                        <button
-                          onClick={() => handleSaveAsDefaults(false)}
-                          className="w-full px-3 py-2 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 text-left"
-                        >
-                          Make default for all sections
-                        </button>
+                        {user?.role === 'admin' && (
+                          <button
+                            onClick={() => handleSaveAsDefaults(false)}
+                            className="w-full px-3 py-2 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 text-left"
+                          >
+                            Make default for all sections
+                          </button>
+                        )}
                       </div>
 
                       {/* Copy Column */}
@@ -7397,13 +6450,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         >
                           {isBulkCopying ? 'Copying...' : 'Copy to all case assignments in this section'}
                         </button>
-                        <button
-                          onClick={() => handleBulkCopyChatOptions('all')}
-                          disabled={isBulkCopying}
-                          className="w-full px-3 py-2 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 text-left disabled:opacity-50"
-                        >
-                          {isBulkCopying ? 'Copying...' : 'Copy to all case assignments in all sections'}
-                        </button>
+                        {user?.role === 'admin' && (
+                          <button
+                            onClick={() => handleBulkCopyChatOptions('all')}
+                            disabled={isBulkCopying}
+                            className="w-full px-3 py-2 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 text-left disabled:opacity-50"
+                          >
+                            {isBulkCopying ? 'Copying...' : 'Copy to all case assignments in all sections'}
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -7416,7 +6471,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
           <p className="text-gray-500">
             {!chatOptionsSection
-              ? 'Select "Default for all sections" to manage global defaults, or select a section and case to configure specific chat options.'
+              ? user?.role === 'admin'
+                ? 'Select "Default for all sections" to manage global defaults, or select a section and case to configure specific chat options.'
+                : 'Select a section and case to configure specific chat options.'
               : chatOptionsSection === '__global_default__'
                 ? 'Global defaults will appear above once loaded.'
                 : 'Select a case to configure its chat options, or select "Default for this section" to manage section-specific defaults.'}
@@ -7632,6 +6689,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const params = new URLSearchParams();
       if (caseChatsFilter.status !== 'all') params.append('status', caseChatsFilter.status);
       if (caseChatsFilter.section_id !== 'all') params.append('section_id', caseChatsFilter.section_id);
+      // "All Sections" means all sections of the header semester when one is chosen.
+      else if (semesterFilter.semesterId != null) params.append('semester_id', String(semesterFilter.semesterId));
       params.append('limit', chatsLimit.toString());
 
       const response = await fetch(`${getApiBaseUrl()}/case-chats?${params.toString()}`, {
@@ -7663,7 +6722,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     } finally {
       setIsLoadingCaseChats(false);
     }
-  }, [caseChatsFilter, chatsLimit]);
+  }, [caseChatsFilter, chatsLimit, semesterFilter.semesterId]);
 
   // Fetch case chats when filters change or monitor tab is active
   useEffect(() => {
@@ -7676,6 +6735,36 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   useEffect(() => {
     fetchCaseChats();
   }, []);
+
+  // Header Semester selector: a picked section outside the chosen semester is cleared, so no
+  // picker keeps showing (or editing) a section its own option list no longer offers. Rows not
+  // found in a list (still loading) are left alone until the list arrives.
+  useEffect(() => {
+    if (semesterFilter.selection === 'all') return;
+    const outOfScope = (id: string | null | undefined, list: any[]) => {
+      if (!id) return false;
+      const row = list.find((s: any) => s.section_id === id);
+      return Boolean(row) && !semesterInScope(row);
+    };
+    if (outOfScope(selectedAssignmentSection, assignmentsSectionsList)) {
+      setSelectedAssignmentSection(null);
+      setCopyFromSection(null);
+    }
+    if (chatOptionsSection !== '__global_default__' && outOfScope(chatOptionsSection, assignmentsSectionsList)) {
+      handleChatOptionsSectionChange('');
+    }
+    if (outOfScope(liveSessionSection, sectionStats)) {
+      setLiveSessionSection('');
+      setLiveSessionCase('');
+      setLiveSessionCases([]);
+      setLiveSessionData([]);
+      setLiveSessionSummary({ total: 0, completed: 0, in_progress: 0, not_started: 0 });
+    }
+    if (caseChatsFilter.section_id !== 'all' && outOfScope(caseChatsFilter.section_id, sectionStats)) {
+      setCaseChatsFilter(prev => ({ ...prev, section_id: 'all' }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [semesterFilter.selection, semesterInScope, selectedAssignmentSection, chatOptionsSection, assignmentsSectionsList, liveSessionSection, sectionStats, caseChatsFilter.section_id]);
 
   // Fetch cases for live session when section changes
   const fetchLiveSessionCases = useCallback(async (sectionId: string) => {
@@ -7903,7 +6992,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-green-500 focus:border-green-500"
         >
           <option value="">Select Section...</option>
-          {sectionStats.filter(s => s.section_id !== 'unassigned').map(s => (
+          {sectionStats.filter(s => s.section_id !== 'unassigned' && semesterInScope(s)).map(s => (
             <option key={s.section_id} value={s.section_id}>{s.section_title}</option>
           ))}
         </select>
@@ -7918,6 +7007,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <option key={sc.case_id} value={sc.case_id}>{sc.case_title}</option>
           ))}
         </select>
+        <SemesterScopeNote className="self-center" />
         {lastLiveRefresh && (
           <span className="text-xs text-gray-500 self-center">
             Last updated: {lastLiveRefresh.toLocaleTimeString()}
@@ -8097,11 +7187,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           onChange={(e) => setCaseChatsFilter(prev => ({ ...prev, section_id: e.target.value }))}
           className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-blue-500 focus:border-blue-500"
         >
-          <option value="all">All Sections</option>
-          {sectionStats.filter(s => s.section_id !== 'unassigned').map(s => (
+          <option value="all">{semesterFilter.selectedSemester ? `All ${semesterFilter.selectedSemester.semester_name} Sections` : 'All Sections'}</option>
+          {sectionStats.filter(s => s.section_id !== 'unassigned' && semesterInScope(s)).map(s => (
             <option key={s.section_id} value={s.section_id}>{s.section_title}</option>
           ))}
         </select>
+        <SemesterScopeNote className="self-center" />
         <input
           type="text"
           placeholder="Search by student or case..."
@@ -8282,10 +7373,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     return studentDetails.filter(s => s.status === 'in_progress').length;
   }, [studentDetails]);
   
-  // Count of disabled sections for showing in toggle
+  // Count of disabled sections (in the selected semester) for showing in toggle
   const disabledSectionsCount = useMemo(() => {
-    return sectionStats.filter(s => !s.enabled && s.section_id !== 'unassigned' && s.section_id !== 'other_courses').length;
-  }, [sectionStats]);
+    return sectionStats.filter(s => semesterInScope(s) && !s.enabled && s.section_id !== 'unassigned' && s.section_id !== 'other_courses').length;
+  }, [sectionStats, semesterInScope]);
 
   const sortedModels = useMemo(() => {
     return [...modelsList].sort((a, b) => {
@@ -8314,6 +7405,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   return (
+    <SemesterFilterContext.Provider value={semesterFilter}>
     <div className="flex flex-col h-screen bg-gray-50 text-gray-800 font-sans">
       {/* Impersonation banner — sticky across the top whenever an admin is
           viewing as a specific instructor. */}
@@ -8346,23 +7438,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           )}
         </div>
         <div className="flex items-center gap-4">
-          {semesters.length > 0 && (
-            <label className="flex items-center gap-2 text-xs font-medium text-gray-600">
-              Semester:
-              <select
-                value={selectedSemesterId || ''}
-                onChange={(e) => setSelectedSemesterId(e.target.value ? Number(e.target.value) : null)}
-                className="px-2 py-1 text-xs border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-blue-500 max-w-[14rem]"
-                title="Filter the dashboard to a specific semester. Defaults to the current semester."
-              >
-                {semesters.map((sem) => (
-                  <option key={sem.id} value={sem.id}>
-                    {sem.semester_name}{sem.is_current ? ' (Current)' : ''}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
+          <label className="flex items-center gap-2 text-xs font-medium text-gray-600">
+            Semester:
+            <select
+              id={SEMESTER_SELECT_ID}
+              value={String(semesterFilter.selection)}
+              onChange={(e) => semesterFilter.setSelection(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+              className="px-2 py-1 text-xs border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-blue-500 max-w-[16rem]"
+              title="Filters sections, students, assignments, chat options, monitor, results and home to one semester. Starts on the current semester each browser session."
+            >
+              <option value="all">All semesters</option>
+              {semesters.map((sem) => (
+                <option key={sem.id} value={sem.id}>
+                  {semesterOptionLabel(sem)}
+                </option>
+              ))}
+            </select>
+          </label>
           {user?.role === 'admin' && (
             <label className="flex items-center gap-2 text-xs font-medium text-gray-600">
               View as:
@@ -8584,7 +7676,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             {/* Admin */}
             {hasAdminAccess() && (
               <button
-                onClick={() => setPrimaryTab('admin')}
+                onClick={() => {
+                  setPrimaryTab('admin');
+                  // The default sub-tab is Instructors; an admin granted only other tools
+                  // (e.g. just Backups) lands on the first one they can open instead.
+                  if (adminSubTab === 'instructors' && !hasAccess(user, 'instructors')) {
+                    const first = (['settings', 'models', 'prompts'] as AdminSubTab[]).find((t) => hasAccess(user, t));
+                    setAdminSubTab(first ?? (hasAccess(user, 'backups') ? 'backup' : 'instructors'));
+                  }
+                }}
                 className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
                   primaryTab === 'admin'
                     ? 'bg-gray-50 text-purple-600 border-b-2 border-purple-600'
@@ -8667,7 +7767,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 <button
                   onClick={() => {
                     setCoursesSubTab('sections');
-                    fetchAllCourses();
                   }}
                   className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                     coursesSubTab === 'sections'
@@ -8694,8 +7793,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 <button
                   onClick={() => {
                     setCoursesSubTab('course-setup');
-                    fetchSemesters();
-                    fetchOrphanedSections();
                   }}
                   className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                     coursesSubTab === 'course-setup'
@@ -9029,6 +8126,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   Logging
                 </button>
               )}
+              {hasAccess(user, 'backups') && (
+                <button
+                  onClick={() => setAdminSubTab('backup')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'backup'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Backup
+                </button>
+              )}
               {user?.superuser && (
                 <button
                   onClick={() => setAdminSubTab('shadow')}
@@ -9148,6 +8257,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <InstructorManager user={user} mode="admins" />
           ) : adminSubTab === 'logging' ? (
             <LoggingManager />
+          ) : adminSubTab === 'backup' && hasAccess(user, 'backups') ? (
+            <BackupManager />
           ) : adminSubTab === 'shadow' ? (
             <ShadowOwnershipManager />
           ) : null
@@ -9692,7 +8803,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           coursesSubTab === 'semesters' ? (
             renderSemestersTab()
           ) : coursesSubTab === 'course-setup' ? (
-            renderCourseSetupTab()
+            <CourseCatalog
+              isAdmin={user?.role === 'admin'}
+              userId={user?.role === 'instructor' ? user.id : null}
+              models={modelsList}
+              onSectionsChanged={fetchSectionStats}
+            />
           ) : coursesSubTab === 'students' ? (
             <StudentManager initialSectionFilter={studentsInitialSectionId} />
           ) : (
@@ -9704,10 +8820,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 <h2 className="text-2xl font-bold text-gray-900">Course Sections</h2>
                 <p className="text-sm text-gray-500 mt-1">
                   {filteredSections.length} section{filteredSections.length !== 1 ? 's' : ''}
+                  {semesterFilter.selectedSemester && <> in {semesterFilter.selectedSemester.semester_name}</>}
                   {!showAllSections && disabledSectionsCount > 0 && (
                     <span className="text-gray-400"> ({disabledSectionsCount} disabled hidden)</span>
                   )}
                 </p>
+                <SemesterScopeNote className="mt-0.5" />
               </div>
               <div className="flex flex-wrap items-center gap-3">
                 {/* Show All / Enabled Toggle */}
@@ -9771,33 +8889,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   </button>
                 </div>
 
-                {/* Create New Section */}
-                <button
-                  onClick={handleCreateSection}
-                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
-                  </svg>
-                  New Section
-                </button>
-
-                {/* Download SQL */}
-                <button
-                  onClick={handleDownloadToMySQL}
-                  disabled={isExporting}
-                  className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
-                    isExporting 
-                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed' 
-                      : 'bg-blue-600 text-white hover:bg-blue-700'
-                  }`}
-                  title="Generate a .sql file to upsert data into MySQL"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
-                  </svg>
-                  {isExporting ? 'Exporting...' : 'Download SQL'}
-                </button>
+                {/* Create New Section (course structure: admin-only) */}
+                {user?.role === 'admin' && (
+                  <button
+                    onClick={handleCreateSection}
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+                    </svg>
+                    New Section
+                  </button>
+                )}
 
                 {/* Refresh */}
                 <button
@@ -9830,8 +8933,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               <div className="text-center p-12 text-gray-500">Loading sections...</div>
             ) : filteredSections.length === 0 ? (
               <div className="text-center p-12 text-gray-500">
-                <p className="text-lg font-medium">No sections found</p>
-                <p className="text-sm mt-1">Create a new section to get started.</p>
+                <p className="text-lg font-medium">
+                  {semesterFilter.selectedSemester
+                    ? `No ${showAllSections ? '' : 'enabled '}sections in ${semesterFilter.selectedSemester.semester_name}`
+                    : 'No sections found'}
+                </p>
+                <p className="text-sm mt-1">
+                  {semesterFilter.selectedSemester
+                    ? 'Choose another semester in the header, or create a new section.'
+                    : 'Create a new section to get started.'}
+                </p>
               </div>
             ) : sectionViewMode === 'grouped' ? (
               /* ========== GROUPED VIEW ========== */
@@ -9839,6 +8950,61 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 {groupedSections.map((semesterGroup) => {
                   const semKey = String(semesterGroup.semesterId);
                   const isSemCollapsed = collapsedSemesters.has(semKey);
+
+                  const courseGroups = (
+                    <div className={semesterFilter.selection === 'all' ? 'p-4 space-y-4' : 'space-y-4'}>
+                      {semesterGroup.courses.map((courseGroup) => {
+                        const courseKey = `${semesterGroup.semesterId}-${courseGroup.courseId}`;
+                        const isCourseCollapsed = collapsedCourses.has(courseKey);
+
+                        return (
+                          <div key={courseKey} className={`bg-white border border-gray-200 rounded-lg overflow-hidden ${semesterFilter.selection === 'all' ? '' : 'shadow-sm'}`}>
+                            {/* Course Header */}
+                            <button
+                              onClick={() => toggleCourseCollapse(semesterGroup.semesterId, courseGroup.courseId)}
+                              className={`w-full px-3 py-2 flex items-center justify-between ${
+                                courseGroup.courseId === null
+                                  ? 'bg-yellow-50 hover:bg-yellow-100'
+                                  : 'bg-gray-50 hover:bg-gray-100'
+                              } transition-colors`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  className={`w-4 h-4 text-gray-400 transition-transform ${isCourseCollapsed ? '' : 'rotate-90'}`}
+                                  viewBox="0 0 20 20"
+                                  fill="currentColor"
+                                >
+                                  <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                                </svg>
+                                <span className="font-medium text-gray-800">{courseGroup.courseName}</span>
+                              </div>
+                              <span className="text-xs text-gray-500">{courseGroup.sections.length} section(s)</span>
+                            </button>
+
+                            {/* Course Sections */}
+                            {!isCourseCollapsed && (
+                              <div className="bg-white overflow-x-auto">
+                                <table className="min-w-full divide-y divide-gray-200">
+                                  {renderSectionTableHeader({ hideTermColumn: true })}
+                                  <tbody className="bg-white divide-y divide-gray-200">
+                                    {courseGroup.sections.map((section) =>
+                                      renderSectionRow(section, { hideTermColumn: true })
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+
+                  // One semester chosen in the header: the semester header adds nothing, group by course only.
+                  if (semesterFilter.selection !== 'all') {
+                    return <React.Fragment key={semKey}>{courseGroups}</React.Fragment>;
+                  }
 
                   return (
                     <div key={semKey} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -9875,55 +9041,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       </button>
 
                       {/* Semester Content */}
-                      {!isSemCollapsed && (
-                        <div className="p-4 space-y-4">
-                          {semesterGroup.courses.map((courseGroup) => {
-                            const courseKey = `${semesterGroup.semesterId}-${courseGroup.courseId}`;
-                            const isCourseCollapsed = collapsedCourses.has(courseKey);
-
-                            return (
-                              <div key={courseKey} className="border border-gray-200 rounded-lg overflow-hidden">
-                                {/* Course Header */}
-                                <button
-                                  onClick={() => toggleCourseCollapse(semesterGroup.semesterId, courseGroup.courseId)}
-                                  className={`w-full px-3 py-2 flex items-center justify-between ${
-                                    courseGroup.courseId === null
-                                      ? 'bg-yellow-50 hover:bg-yellow-100'
-                                      : 'bg-gray-50 hover:bg-gray-100'
-                                  } transition-colors`}
-                                >
-                                  <div className="flex items-center gap-2">
-                                    <svg
-                                      xmlns="http://www.w3.org/2000/svg"
-                                      className={`w-4 h-4 text-gray-400 transition-transform ${isCourseCollapsed ? '' : 'rotate-90'}`}
-                                      viewBox="0 0 20 20"
-                                      fill="currentColor"
-                                    >
-                                      <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
-                                    </svg>
-                                    <span className="font-medium text-gray-800">{courseGroup.courseName}</span>
-                                  </div>
-                                  <span className="text-xs text-gray-500">{courseGroup.sections.length} section(s)</span>
-                                </button>
-
-                                {/* Course Sections */}
-                                {!isCourseCollapsed && (
-                                  <div className="bg-white overflow-x-auto">
-                                    <table className="min-w-full divide-y divide-gray-200">
-                                      {renderSectionTableHeader({ hideTermColumn: true })}
-                                      <tbody className="bg-white divide-y divide-gray-200">
-                                        {courseGroup.sections.map((section) =>
-                                          renderSectionRow(section, { hideTermColumn: true })
-                                        )}
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
+                      {!isSemCollapsed && courseGroups}
                     </div>
                   );
                 })}
@@ -9970,16 +9088,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                               <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
                             </svg>
                           </button>
-                          <button
-                            onClick={(e) => handleDuplicateSection(section, e)}
-                            className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                            title="Duplicate section"
-                          >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                              <path d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z" />
-                              <path d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z" />
-                            </svg>
-                          </button>
+                          {user?.role === 'admin' && (
+                            <button
+                              onClick={(e) => handleDuplicateSection(section, e)}
+                              className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
+                              title="Duplicate section"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                                <path d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z" />
+                                <path d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z" />
+                              </svg>
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -10390,181 +9510,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
       {/* Section Modal */}
       {showSectionModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
-            <div className="flex justify-between items-center p-4 border-b">
-              <h3 className="text-lg font-bold text-gray-900">
-                {editingSection ? 'Edit Section' : 'Create Section'}
-              </h3>
-              <button
-                onClick={() => setShowSectionModal(false)}
-                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                </svg>
-              </button>
-            </div>
-            <div className="p-4 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Section ID</label>
-                <input
-                  type="text"
-                  value={sectionForm.section_id}
-                  onChange={(e) => setSectionForm({ ...sectionForm, section_id: e.target.value })}
-                  disabled={!!editingSection}
-                  placeholder="e.g., GSCM-W25-001"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Section Title</label>
-                <input
-                  type="text"
-                  value={sectionForm.section_title}
-                  onChange={(e) => setSectionForm({ ...sectionForm, section_title: e.target.value })}
-                  placeholder="e.g., GSCM 330 Section 001"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Semester <span className="text-red-500">*</span></label>
-                <select
-                  value={sectionForm.semester_id ?? ''}
-                  onChange={(e) => {
-                    const newSemId = e.target.value ? Number(e.target.value) : null;
-                    // Clear course if it doesn't belong to the new semester.
-                    const currentCourse = allCourses.find(c => c.id === sectionForm.course_id);
-                    const keepCourse = currentCourse && currentCourse.semester_id === newSemId;
-                    setSectionForm({
-                      ...sectionForm,
-                      semester_id: newSemId,
-                      course_id: keepCourse ? sectionForm.course_id : null
-                    });
-                  }}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="">— Select semester —</option>
-                  {allSemesters.map(s => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}{s.is_current ? ' (Current)' : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Course</label>
-                <select
-                  value={sectionForm.course_id ?? ''}
-                  disabled={sectionForm.semester_id == null}
-                  onChange={(e) => setSectionForm({
-                    ...sectionForm,
-                    course_id: e.target.value ? Number(e.target.value) : null
-                  })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
-                >
-                  <option value="">Unassigned</option>
-                  {allCourses
-                    .filter(c => c.semester_id === sectionForm.semester_id)
-                    .map(c => (
-                      <option key={c.id} value={c.id}>{c.course_name}</option>
-                    ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Chat Model</label>
-                <select
-                  value={sectionForm.chat_model}
-                  onChange={(e) => setSectionForm({ ...sectionForm, chat_model: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="">Default</option>
-                  {modelsList.filter(m => m.enabled).map(model => (
-                    <option key={model.model_id} value={model.model_id}>{model.model_name}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Supervisor Model</label>
-                <select
-                  value={sectionForm.super_model}
-                  onChange={(e) => setSectionForm({ ...sectionForm, super_model: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="">Default</option>
-                  {modelsList.filter(m => m.enabled).map(model => (
-                    <option key={model.model_id} value={model.model_id}>{model.model_name}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="sectionEnabled"
-                  checked={sectionForm.enabled}
-                  onChange={(e) => setSectionForm({ ...sectionForm, enabled: e.target.checked })}
-                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                <label htmlFor="sectionEnabled" className="text-sm font-medium text-gray-700">
-                  Section Enabled (visible to students)
-                </label>
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="acceptNewStudents"
-                  checked={sectionForm.accept_new_students}
-                  onChange={(e) => setSectionForm({ ...sectionForm, accept_new_students: e.target.checked })}
-                  className="h-4 w-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
-                />
-                <label htmlFor="acceptNewStudents" className="text-sm font-medium text-gray-700">
-                  Accept new student enrollments
-                </label>
-              </div>
-              <div>
-                <label htmlFor="sectionEnrollmentKey" className="block text-sm font-medium text-gray-700 mb-1">
-                  Enrollment key (optional)
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    id="sectionEnrollmentKey"
-                    value={sectionForm.enrollment_key}
-                    onChange={(e) => setSectionForm({ ...sectionForm, enrollment_key: e.target.value })}
-                    placeholder="e.g. doit"
-                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  />
-                  {sectionForm.enrollment_key && (
-                    <button
-                      type="button"
-                      onClick={() => setSectionForm({ ...sectionForm, enrollment_key: '' })}
-                      className="px-3 py-2 text-sm text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-                    >
-                      Clear
-                    </button>
-                  )}
-                </div>
-                <p className="mt-1 text-xs text-gray-500">
-                  If set, new students must enter this code to self-enroll. Publish it in your syllabus. Leave blank to allow any BYU CAS user to join while "Accept" is on.
-                </p>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2 p-4 border-t bg-gray-50 rounded-b-xl">
-              <button
-                onClick={() => setShowSectionModal(false)}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveSection}
-                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
-              >
-                {editingSection ? 'Save Changes' : 'Create Section'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <SectionFormModal
+          section={editingSection}
+          defaults={editingSection ? undefined : sectionModalDefaults}
+          models={modelsList}
+          isAdmin={user?.role === 'admin'}
+          onClose={() => { setShowSectionModal(false); setEditingSection(null); }}
+          onSaved={(text) => {
+            setSuccessMessage(text);
+            fetchSectionStats();
+            setTimeout(() => setSuccessMessage(null), 3000);
+          }}
+        />
       )}
 
       {/* Section-Cases Modal */}
@@ -10640,7 +9597,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                               </span>
                             )}
                             <div>
-                              <p className="font-medium text-gray-900">{sc.case_title}</p>
+                              <p className="font-medium text-gray-900">{sc.case_title} {renderCaseSettingsSourceChip(sc)}</p>
                               <p className="text-xs text-gray-500">{sc.protagonist}</p>
                             </div>
                           </div>
@@ -11230,6 +10187,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       )}
     </div>
+    </SemesterFilterContext.Provider>
   );
 };
 

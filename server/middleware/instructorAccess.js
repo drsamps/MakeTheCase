@@ -4,7 +4,12 @@
  * - Superuser admins: Full access (admins.superuser=1)
  * - Regular admins: Function-based access (admins.superuser=0)
  * - Primary instructors: Assigned to semesters (instructors table)
+ * - Course owners: courses.primary_instructor_id -- the course's sections in EVERY semester
  * - TAs: Assigned to specific sections (instructors table)
+ *
+ * SEMESTER SCOPE COMES FROM sections.semester_id (migration 077). Courses span semesters,
+ * so a course has no semester of its own: "course X in semester Y" is X's sections whose
+ * semester_id = Y. Never join courses.semester_id -- it is deprecated and read by nothing.
  */
 
 import { pool } from '../db.js';
@@ -23,48 +28,54 @@ export async function getAccessibleSemesterIds(instructorId) {
   const [rows] = await pool.execute(`
     SELECT semester_id FROM instructor_semesters WHERE instructor_id = ?
     UNION
-    SELECT DISTINCT c.semester_id FROM courses c WHERE c.primary_instructor_id = ?
+    SELECT DISTINCT s.semester_id
+    FROM sections s
+    JOIN courses c ON s.course_id = c.id
+    WHERE c.primary_instructor_id = ? AND s.semester_id IS NOT NULL
     UNION
-    SELECT DISTINCT c.semester_id
-    FROM courses c
-    JOIN sections s ON s.course_id = c.id
-    WHERE s.primary_instructor_id = ?
+    SELECT DISTINCT s.semester_id
+    FROM sections s
+    WHERE s.primary_instructor_id = ? AND s.semester_id IS NOT NULL
   `, [instructorId, instructorId, instructorId]);
   return rows.map(r => r.semester_id);
 }
 
 /**
  * Get all course IDs an instructor has access to
- * Sources: semester assignment, course primary, section primary
+ * Sources: course owner, a section in an assigned semester, section primary, TA on a section
  * @param {string} instructorId - Instructor UUID
  * @returns {Promise<number[]>} Array of course IDs
  */
 export async function getAccessibleCourseIds(instructorId) {
   const [rows] = await pool.execute(`
-    SELECT DISTINCT c.id
-    FROM courses c
-    JOIN instructor_semesters isem ON c.semester_id = isem.semester_id
-    WHERE isem.instructor_id = ?
-    UNION
     SELECT id FROM courses WHERE primary_instructor_id = ?
     UNION
-    SELECT DISTINCT s.course_id FROM sections s WHERE s.primary_instructor_id = ?
-  `, [instructorId, instructorId, instructorId]);
+    SELECT DISTINCT s.course_id
+    FROM sections s
+    JOIN instructor_semesters isem ON s.semester_id = isem.semester_id
+    WHERE isem.instructor_id = ? AND s.course_id IS NOT NULL
+    UNION
+    SELECT DISTINCT s.course_id FROM sections s WHERE s.primary_instructor_id = ? AND s.course_id IS NOT NULL
+    UNION
+    SELECT DISTINCT s.course_id
+    FROM sections s
+    JOIN instructor_sections isec ON isec.section_id = s.section_id
+    WHERE isec.instructor_id = ? AND s.course_id IS NOT NULL
+  `, [instructorId, instructorId, instructorId, instructorId]);
   return rows.map(r => r.id);
 }
 
 /**
  * Get all section IDs an instructor has access to
- * Sources: semester assignment, course primary, section primary, direct TA assignment
+ * Sources: semester assignment, course owner, section primary, direct TA assignment
  * @param {string} instructorId - Instructor UUID
  * @returns {Promise<string[]>} Array of section IDs
  */
 export async function getAccessibleSectionIds(instructorId) {
   const [rows] = await pool.execute(`
-    SELECT DISTINCT s.section_id
+    SELECT s.section_id
     FROM sections s
-    JOIN courses c ON s.course_id = c.id
-    JOIN instructor_semesters isem ON c.semester_id = isem.semester_id
+    JOIN instructor_semesters isem ON s.semester_id = isem.semester_id
     WHERE isem.instructor_id = ?
     UNION
     SELECT s.section_id
@@ -77,6 +88,20 @@ export async function getAccessibleSectionIds(instructorId) {
     SELECT section_id FROM instructor_sections WHERE instructor_id = ?
   `, [instructorId, instructorId, instructorId, instructorId]);
   return rows.map(r => r.section_id);
+}
+
+/**
+ * Is this instructor the owner (courses.primary_instructor_id) of the course?
+ * @param {string} instructorId
+ * @param {number|string} courseId
+ * @returns {Promise<boolean>}
+ */
+export async function isCourseOwner(instructorId, courseId) {
+  const [rows] = await pool.execute(
+    'SELECT 1 FROM courses WHERE id = ? AND primary_instructor_id = ? LIMIT 1',
+    [courseId, instructorId]
+  );
+  return rows.length > 0;
 }
 
 // ============================================================
@@ -94,13 +119,13 @@ export async function canAccessSemester(instructorId, semesterId) {
     SELECT 1 FROM instructor_semesters
     WHERE instructor_id = ? AND semester_id = ?
     UNION
-    SELECT 1 FROM courses
-    WHERE primary_instructor_id = ? AND semester_id = ?
-    UNION
     SELECT 1
     FROM sections s
     JOIN courses c ON s.course_id = c.id
-    WHERE s.primary_instructor_id = ? AND c.semester_id = ?
+    WHERE c.primary_instructor_id = ? AND s.semester_id = ?
+    UNION
+    SELECT 1 FROM sections
+    WHERE primary_instructor_id = ? AND semester_id = ?
     LIMIT 1
   `, [instructorId, semesterId, instructorId, semesterId, instructorId, semesterId]);
   return rows.length > 0;
@@ -108,23 +133,28 @@ export async function canAccessSemester(instructorId, semesterId) {
 
 /**
  * Check if an instructor has access to a specific course
- * Access is granted via semester assignment
+ * Access via ownership, a section in an assigned semester, section primary, or TA
  * @param {string} instructorId - Instructor UUID
  * @param {number} courseId - Course ID
  * @returns {Promise<boolean>}
  */
 export async function canAccessCourse(instructorId, courseId) {
   const [rows] = await pool.execute(`
-    SELECT 1
-    FROM courses c
-    JOIN instructor_semesters isem ON c.semester_id = isem.semester_id
-    WHERE isem.instructor_id = ? AND c.id = ?
-    UNION
     SELECT 1 FROM courses WHERE primary_instructor_id = ? AND id = ?
     UNION
+    SELECT 1
+    FROM sections s
+    JOIN instructor_semesters isem ON s.semester_id = isem.semester_id
+    WHERE isem.instructor_id = ? AND s.course_id = ?
+    UNION
     SELECT 1 FROM sections WHERE primary_instructor_id = ? AND course_id = ?
+    UNION
+    SELECT 1
+    FROM sections s
+    JOIN instructor_sections isec ON isec.section_id = s.section_id
+    WHERE isec.instructor_id = ? AND s.course_id = ?
     LIMIT 1
-  `, [instructorId, courseId, instructorId, courseId, instructorId, courseId]);
+  `, [instructorId, courseId, instructorId, courseId, instructorId, courseId, instructorId, courseId]);
   return rows.length > 0;
 }
 
@@ -142,8 +172,7 @@ export async function canAccessSection(instructorId, sectionId) {
     UNION
     SELECT 1
     FROM sections s
-    JOIN courses c ON s.course_id = c.id
-    JOIN instructor_semesters isem ON c.semester_id = isem.semester_id
+    JOIN instructor_semesters isem ON s.semester_id = isem.semester_id
     WHERE isem.instructor_id = ? AND s.section_id = ?
     UNION
     SELECT 1 FROM sections WHERE primary_instructor_id = ? AND section_id = ?
@@ -190,8 +219,7 @@ export async function isPrimaryInstructorForSection(instructorId, sectionId) {
   const [rows] = await pool.execute(`
     SELECT 1
     FROM sections s
-    JOIN courses c ON s.course_id = c.id
-    JOIN instructor_semesters isem ON c.semester_id = isem.semester_id
+    JOIN instructor_semesters isem ON s.semester_id = isem.semester_id
     WHERE isem.instructor_id = ? AND s.section_id = ?
     UNION
     SELECT 1 FROM sections WHERE primary_instructor_id = ? AND section_id = ?
@@ -343,6 +371,33 @@ export function requireCourseAccess(courseIdParam = 'id') {
 }
 
 /**
+ * Middleware factory: Require admin OR the course owner (courses.primary_instructor_id).
+ * Gates course-level teaching choices: its case list and case versions. Course STRUCTURE (new,
+ * removed or adopted sections, rollover) is admin-only -- see docs/plan-admin-only-course-structure.md.
+ * Section instructors and TAs manage only their own sections.
+ * @param {string} courseIdParam - Request param name containing course ID (default: 'id')
+ */
+export function requireCourseOwnerOrAdmin(courseIdParam = 'id') {
+  return async (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    if (req.user.superuser || req.user.role === 'admin') {
+      return next();
+    }
+    const courseId = req.params[courseIdParam] || req.body?.course_id;
+    if (!courseId) {
+      return res.status(400).json({ error: 'Course ID required' });
+    }
+    if (req.user.role === 'instructor' && await isCourseOwner(req.user.id, courseId)) {
+      req.isCourseOwner = true;
+      return next();
+    }
+    return res.status(403).json({ error: 'Only admins or the course owner can do this' });
+  };
+}
+
+/**
  * Middleware factory: Require access to a specific section
  * Superusers and admins bypass check
  * @param {string} sectionIdParam - Request param name containing section ID (default: 'id')
@@ -410,6 +465,48 @@ export function requireSectionPermission(permission) {
       error: `You don't have permission for this action on this section`
     });
   };
+}
+
+/**
+ * Middleware factory: may this user manage the section's case assignments?
+ * Admins, the section's primary instructor, and TAs with can_manage_cases pass.
+ * Gates every write in routes/sectionCases.js. Put it BEFORE guardFollowedCaseSettings so a
+ * refused caller never opens a detach transaction.
+ * @param {string} sectionIdParam - Request param name containing section ID (default: 'sectionId')
+ */
+export function requireSectionCaseManager(sectionIdParam = 'sectionId') {
+  const access = requireSectionAccess(sectionIdParam);
+  const permission = requireSectionPermission('canManageCases');
+  return (req, res, next) => access(req, res, (err) => {
+    if (err) return next(err);
+    return permission(req, res, next);
+  });
+}
+
+/**
+ * Non-middleware form of requireSectionCaseManager, for section ids that arrive in the body or
+ * query (chat-options defaults, bulk-copy, copy-from source).
+ * @returns {Promise<boolean>}
+ */
+export async function canManageSectionCases(req, sectionId) {
+  if (!req.user || !sectionId) return false;
+  if (req.user.superuser || req.user.role === 'admin') return true;
+  if (req.user.role !== 'instructor') return false;
+  if (!(await canAccessSection(req.user.id, sectionId))) return false;
+  if (await isPrimaryInstructorForSection(req.user.id, sectionId)) return true;
+  const permissions = await getTAPermissions(req.user.id, sectionId);
+  return Boolean(permissions?.canManageCases);
+}
+
+/**
+ * Non-middleware section access check (view), admin-aware.
+ * @returns {Promise<boolean>}
+ */
+export async function canViewSection(req, sectionId) {
+  if (!req.user || !sectionId) return false;
+  if (req.user.superuser || req.user.role === 'admin') return true;
+  if (req.user.role !== 'instructor') return false;
+  return canAccessSection(req.user.id, sectionId);
 }
 
 /**

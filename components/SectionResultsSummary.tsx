@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../services/apiClient';
+import { SemesterScopeNote, useSemesterFilter } from './courses/semesterFilter';
 
 interface SectionOption {
   section_id: string;
   section_title: string;
   year_term?: string;
   enabled: boolean;
+  semester_id?: number | null;
 }
 
 interface CaseBreakdownRow {
@@ -29,6 +31,8 @@ const SectionResultsSummary: React.FC<SectionResultsSummaryProps> = ({
   initialSectionId,
   onNavigate
 }) => {
+  // Header Semester selector limits the section picker.
+  const { inScope } = useSemesterFilter();
   const [sections, setSections] = useState<SectionOption[]>([]);
   const [selectedSectionId, setSelectedSectionId] = useState<string | undefined>(initialSectionId);
   const [caseBreakdown, setCaseBreakdown] = useState<CaseBreakdownRow[]>([]);
@@ -46,7 +50,8 @@ const SectionResultsSummary: React.FC<SectionResultsSummaryProps> = ({
             section_id: s.section_id,
             section_title: s.section_title,
             year_term: s.year_term,
-            enabled: !!s.enabled
+            enabled: !!s.enabled,
+            semester_id: s.semester_id ?? null
           }));
           setSections(opts);
         }
@@ -58,9 +63,16 @@ const SectionResultsSummary: React.FC<SectionResultsSummaryProps> = ({
   }, []);
 
   const visibleSections = useMemo(
-    () => (showAllSections ? sections : sections.filter(s => s.enabled)),
-    [sections, showAllSections]
+    () => sections.filter(s => inScope(s) && (showAllSections || s.enabled)),
+    [sections, showAllSections, inScope]
   );
+
+  // A picked section outside the header semester is cleared.
+  useEffect(() => {
+    if (!selectedSectionId) return;
+    const picked = sections.find(s => s.section_id === selectedSectionId);
+    if (picked && !inScope(picked)) setSelectedSectionId(undefined);
+  }, [selectedSectionId, sections, inScope]);
 
   // Sync incoming initialSectionId
   useEffect(() => {
@@ -157,6 +169,7 @@ const SectionResultsSummary: React.FC<SectionResultsSummaryProps> = ({
             All Sections
           </button>
         </div>
+        <SemesterScopeNote />
       </div>
 
       {error && (

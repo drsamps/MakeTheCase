@@ -271,9 +271,10 @@ export async function getAssignmentsUsingRubric(rubricId) {
               c.case_title
        FROM section_cases sc
        JOIN sections s ON sc.section_id = s.section_id
+       LEFT JOIN semesters sem ON sem.id = s.semester_id
        JOIN cases c ON sc.case_id = c.case_id
        WHERE sc.rubric_id = ?
-       ORDER BY s.year_term DESC, s.section_title, c.case_title`,
+       ORDER BY sem.start_date IS NULL, sem.start_date DESC, s.section_title, c.case_title`,
       [rubricId]
     );
 

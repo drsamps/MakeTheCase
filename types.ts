@@ -254,8 +254,11 @@ export interface Section {
 
 export interface Semester {
     id: number;
+    /** Short semester id minted into section ids, e.g. 'f26'. See utils/academicIds.js. */
+    semester_code: string;
     semester_name: string;
     is_current: boolean;
+    /** The sort field for semesters -- never sort by code or name. */
     start_date: string | null;
     end_date: string | null;
     created_at: string;
@@ -266,21 +269,47 @@ export interface Semester {
     courses?: Course[];
 }
 
+/** A course's sections in one semester (the "offering" is just this grouping). */
+export interface CourseSemesterSummary {
+    semester_id: number;
+    semester_code: string;
+    semester_name: string;
+    start_date: string | null;
+    section_count: number;
+}
+
+/** One course across all semesters (migration 077). primary_instructor_id is the owner. */
 export interface Course {
     id: number;
-    semester_id: number;
+    /** Course id minted into section ids, e.g. 'gscm410'. */
+    course_code: string;
     course_name: string;
-    course_code: string | null;
     description: string | null;
-    primary_section_id: string | null;
-    sync_scheduling: boolean;
+    primary_instructor_id: string | null;
+    primary_instructor_name?: string | null;
     created_at: string;
-    // Joined fields
-    semester_name?: string;
-    primary_section_title?: string;
-    section_count?: number;
-    // Nested data
-    sections?: Section[];
+    semesters?: CourseSemesterSummary[];
+    // Nested data (GET /api/courses/:id)
+    sections?: CourseSection[];
+}
+
+export interface CourseSection {
+    section_id: string;
+    section_number: number | null;
+    section_title: string;
+    year_term: string | null;
+    semester_id: number | null;
+    semester_code: string | null;
+    semester_name: string | null;
+    semester_start_date: string | null;
+    enabled: number | boolean;
+    accept_new_students: number | boolean;
+    chat_model: string | null;
+    super_model: string | null;
+    primary_instructor_id: string | null;
+    primary_instructor_name: string | null;
+    student_count: number;
+    case_count: number;
 }
 
 export interface AdminUser {

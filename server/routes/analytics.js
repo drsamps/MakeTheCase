@@ -20,12 +20,21 @@ async function resolveScopedSectionIds(req) {
   return await getAccessibleSectionIds(effectiveId);
 }
 
+// Optional ?semester_id= from the dashboard header Semester selector. It narrows results
+// within the caller's access scope and never widens it. null = all semesters.
+function parseSemesterId(req) {
+  const raw = req.query.semester_id;
+  if (raw == null || raw === '' || raw === 'all') return null;
+  return parseInt(raw, 10) || null;
+}
+
 // Build the WHERE clause for the /positions* endpoints, including section
 // scoping for instructors / impersonating admins.
 // Returns { whereClause, params, denied } where denied=true means the caller
 // has zero matching sections and the handler should short-circuit.
 async function buildPositionsScope(req, baseConditions) {
   const { section_id, case_id, scenario_id } = req.query;
+  const semesterId = parseSemesterId(req);
   const whereConditions = [...baseConditions];
   const params = [];
 
@@ -47,6 +56,12 @@ async function buildPositionsScope(req, baseConditions) {
   } else if (section_id) {
     whereConditions.push('cc.section_id = ?');
     params.push(section_id);
+  }
+
+  // A specific section already pins the semester; apply the semester only to "all sections".
+  if (semesterId && !section_id) {
+    whereConditions.push('cc.section_id IN (SELECT section_id FROM sections WHERE semester_id = ?)');
+    params.push(semesterId);
   }
 
   if (case_id) {
@@ -156,6 +171,12 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
     if (sectionIdList) {
       whereConditions.push(`sec.section_id IN (${sectionIdList.map(() => '?').join(',')})`);
       params.push(...sectionIdList);
+    }
+
+    const semesterId = parseSemesterId(req);
+    if (semesterId) {
+      whereConditions.push('sec.semester_id = ?');
+      params.push(semesterId);
     }
 
     if (caseIdList) {
@@ -447,7 +468,7 @@ router.get('/filters', verifyToken, requireAdminOrInstructor, async (req, res) =
     }
 
     let sectionsQuery = `
-      SELECT DISTINCT sec.section_id, sec.section_title, sec.year_term
+      SELECT DISTINCT sec.section_id, sec.section_title, sec.year_term, sec.semester_id
       FROM sections sec
       WHERE sec.enabled = TRUE
     `;
@@ -478,7 +499,8 @@ router.get('/filters', verifyToken, requireAdminOrInstructor, async (req, res) =
         sections: sections.map(s => ({
           section_id: s.section_id,
           section_title: s.section_title,
-          year_term: s.year_term
+          year_term: s.year_term,
+          semester_id: s.semester_id
         })),
         cases: cases.map(c => ({
           case_id: c.case_id,

@@ -92,6 +92,7 @@ instructor_sections (
 - **Access**: Base access plus additional permissions from `admin_access` field
 - **Base access includes**:
   - View and manage sections (all sections)
+  - Course structure: create courses and sections, move/remove/delete sections, roll over
   - View student chats and evaluations
   - Manage case assignments
 - **Additional permissions** (granted via `admin_access`):
@@ -103,20 +104,29 @@ instructor_sections (
   - `instructors` - Manage instructor accounts
 
 ### 3. Primary Instructors
-- **Who**: Faculty assigned to teach in specific semesters
-- **Access**: Limited to their assigned semesters and derived courses/sections
-- **Assignment**: Linked to semesters via `instructor_semesters` table
-- **Can do**:
-  - Create courses within their assigned semesters
-  - Create sections within their courses
-  - Manage all sections in their courses
-  - Assign TAs to their sections
-  - View student chats and evaluations for their sections
+- **Who**: Faculty assigned to teach in specific semesters, courses, or sections
+- **Access** (any of these grants a section):
+  - **Semester assignment** (`instructor_semesters`) — every section whose `sections.semester_id` is that semester
+  - **Course owner** (`courses.primary_instructor_id`) — every section of the course, **in every semester**
+  - **Section primary instructor** (`sections.primary_instructor_id`) — that section
+- **Course owners can**:
+  - Edit the course's case list and case settings versions (Main and semester copies)
+  - Bulk-schedule cases across the course's sections
+- **Section instructors / semester-assigned instructors can**:
+  - Make Assignments on their sections: assign cases, activate, schedule, chat options, rubric,
+    scenarios and positions (`server/routes/sectionCases.js`)
+  - Edit section title, enabled, accept new students, enrollment key, chat and supervisor models
+  - Manage their sections' students, assign TAs, view chats and evaluations
+  - Bulk-schedule cases on sections where they are the primary instructor
   - Create and share cases
-- **Cannot do**:
-  - Create or delete semesters
-  - Access other instructors' semesters/courses
+- **Cannot do** (course structure is admin-only):
+  - Create courses or sections, move a section to another course/semester/number, remove or
+    delete a section, or roll over a course
+  - Create/delete semesters (superuser only)
+  - Edit another course's case list or versions
   - Manage admin accounts
+
+Courses are not tied to a semester (migration 077); see `docs/semesters-courses-sections.md`.
 
 ### 4. TAs (Teaching Assistants)
 - **Who**: Graduate students or assistants helping with specific sections
@@ -134,9 +144,17 @@ instructor_sections (
 ## Access Inheritance
 
 ```
-Primary Instructor assigned to Semester
-    └── Can access all Courses in that Semester
-        └── Can access all Sections in those Courses
+Instructor assigned to Semester
+    └── Can access every Section with sections.semester_id = that Semester
+        (and, read-only, the Courses those Sections belong to)
+
+Course owner (courses.primary_instructor_id)
+    └── Can access every Section of the Course, in every Semester
+        └── and edit the Course's case list, versions and bulk schedules
+            (sections and rollover are admin-only)
+
+Section primary instructor (sections.primary_instructor_id)
+    └── Can access that Section
 
 TA assigned to Section
     └── Can only access that specific Section
@@ -182,6 +200,7 @@ Key middleware functions in `server/middleware/instructorAccess.js`:
 | `requireAdminOrInstructor` | Admins or instructors |
 | `requireSemesterAccess` | Admin or instructor assigned to semester |
 | `requireCourseAccess` | Admin or instructor with course access |
+| `requireCourseOwnerOrAdmin` | Admin or the course owner (`courses.primary_instructor_id`) |
 | `requireSectionAccess` | Admin or instructor with section access |
 | `requireCaseAccess` | Case owner, shared case viewer, or admin |
 

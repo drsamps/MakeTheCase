@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { api, getApiBaseUrl } from '../services/apiClient';
 import { AdminUser } from '../types';
+import { SemesterScopeNote, useSemesterFilter } from './courses/semesterFilter';
 
 interface DashboardHomeProps {
   user: AdminUser | null | undefined;
@@ -66,6 +67,8 @@ interface ActiveSession {
   section_id: string;
   section_title: string;
   year_term: string;
+  /** Position of this semester in the server's newest-first order (0 = newest). */
+  term_rank: number;
   case_id: string;
   case_title: string;
   open_date: string | null;
@@ -84,6 +87,8 @@ interface ActiveSession {
 }
 
 const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
+  // Header Semester selector: the section overview and assignment sessions cover that semester only.
+  const { inScope } = useSemesterFilter();
   const [isLoading, setIsLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [sections, setSections] = useState<SectionOverview[]>([]);
@@ -124,7 +129,7 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
         .select('id, student_id, section_id, status, case_id, start_time, last_activity');
 
       // Fetch section_cases for each enabled section (the API is per-section)
-      const enabledSectionsList = (sectionsData as any[] || []).filter(s => s.enabled);
+      const enabledSectionsList = (sectionsData as any[] || []).filter(s => s.enabled && inScope(s));
       const sectionCasesPromises = enabledSectionsList.map(async (section) => {
         const { data } = await api.from(`sections/${section.section_id}/cases`).select('*');
         return (data as any[] || []).map(sc => ({
@@ -155,9 +160,16 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
         }
       });
 
+      // GET /sections returns sections newest semester first (by semesters.start_date).
+      // Rank terms by that order -- never by year_term text, where "Fall" < "Winter".
+      const termRank = new Map<string, number>();
+      for (const s of (sectionsData as any[] || [])) {
+        if (!termRank.has(s.year_term)) termRank.set(s.year_term, termRank.size);
+      }
+
       // Calculate section overviews
       const sectionOverviews: SectionOverview[] = (sectionsData as any[] || [])
-        .filter(s => s.enabled)
+        .filter(s => s.enabled && inScope(s))
         .map(section => {
           const sectionStudents = (studentsData as any[] || []).filter(s => s.section_id === section.section_id);
           const completed = sectionStudents.filter(s => completedStudentIds.has(s.id)).length;
@@ -248,6 +260,7 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
           section_id: sc.section_id,
           section_title: section.section_title,
           year_term: section.year_term,
+          term_rank: termRank.get(section.year_term) ?? Number.MAX_SAFE_INTEGER,
           case_id: sc.case_id,
           case_title: sc.case_title || 'Unknown Case',
           open_date: sc.open_date,
@@ -266,11 +279,10 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
         });
       }
 
-      // Sort by year_term (descending), then section_title, then by closing time
+      // Sort by semester (most recent first), then section_title, then by closing time
       sessions.sort((a, b) => {
-        // First by year_term (descending - most recent first)
-        if (a.year_term !== b.year_term) {
-          return b.year_term.localeCompare(a.year_term);
+        if (a.term_rank !== b.term_rank) {
+          return a.term_rank - b.term_rank;
         }
         // Then by section title
         if (a.section_title !== b.section_title) {
@@ -442,9 +454,9 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [inScope]);
 
-  // Fetch initial data on mount
+  // Fetch initial data on mount (and again when the header semester changes)
   useEffect(() => {
     fetchDashboardData();
   }, [fetchDashboardData]);
@@ -513,6 +525,7 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
             {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
             {stats.casesOpenNow > 0 && ` • ${stats.casesOpenNow} case${stats.casesOpenNow > 1 ? 's' : ''} open now`}
           </p>
+          <SemesterScopeNote className="mt-0.5" />
         </div>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer">
@@ -563,17 +576,17 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
             );
           }
 
-          // Group by year_term
+          // Group by year_term; sessions are already sorted most recent semester first,
+          // so first-seen order is chronological (object keys would not be).
           const groupedByTerm: Record<string, ActiveSession[]> = {};
+          const sortedTerms: string[] = [];
           for (const session of openSessions) {
             if (!groupedByTerm[session.year_term]) {
               groupedByTerm[session.year_term] = [];
+              sortedTerms.push(session.year_term);
             }
             groupedByTerm[session.year_term].push(session);
           }
-
-          // Sort terms descending (most recent first)
-          const sortedTerms = Object.keys(groupedByTerm).sort((a, b) => b.localeCompare(a));
 
           return (
             <div className="divide-y divide-gray-200">
@@ -847,17 +860,20 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ user, onNavigate }) => {
               </div>
               <span className="text-sm font-medium text-gray-700">New Case</span>
             </button>
-            <button
-              onClick={() => onNavigate('courses', 'new-section')}
-              className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-green-300 hover:bg-green-50 transition-colors text-left"
-            >
-              <div className="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center">
-                <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-green-600" viewBox="0 0 20 20" fill="currentColor">
-                  <path d="M10.394 2.08a1 1 0 00-.788 0l-7 3a1 1 0 000 1.84L5.25 8.051a.999.999 0 01.356-.257l4-1.714a1 1 0 11.788 1.838l-2.727 1.17 1.94.831a1 1 0 00.787 0l7-3a1 1 0 000-1.838l-7-3zM3.31 9.397L5 10.12v4.102a8.969 8.969 0 00-1.05-.174 1 1 0 01-.89-.89 11.115 11.115 0 01.25-3.762zM9.3 16.573A9.026 9.026 0 007 14.935v-3.957l1.818.78a3 3 0 002.364 0l5.508-2.361a11.026 11.026 0 01.25 3.762 1 1 0 01-.89.89 8.968 8.968 0 00-5.35 2.524 1 1 0 01-1.4 0zM6 18a1 1 0 001-1v-2.065a8.935 8.935 0 00-2-.712V17a1 1 0 001 1z" />
-                </svg>
-              </div>
-              <span className="text-sm font-medium text-gray-700">New Section</span>
-            </button>
+            {/* Creating sections is admin-only (course structure). */}
+            {user?.role === 'admin' && (
+              <button
+                onClick={() => onNavigate('courses', 'new-section')}
+                className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-green-300 hover:bg-green-50 transition-colors text-left"
+              >
+                <div className="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-green-600" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M10.394 2.08a1 1 0 00-.788 0l-7 3a1 1 0 000 1.84L5.25 8.051a.999.999 0 01.356-.257l4-1.714a1 1 0 11.788 1.838l-2.727 1.17 1.94.831a1 1 0 00.787 0l7-3a1 1 0 000-1.838l-7-3zM3.31 9.397L5 10.12v4.102a8.969 8.969 0 00-1.05-.174 1 1 0 01-.89-.89 11.115 11.115 0 01.25-3.762zM9.3 16.573A9.026 9.026 0 007 14.935v-3.957l1.818.78a3 3 0 002.364 0l5.508-2.361a11.026 11.026 0 01.25 3.762 1 1 0 01-.89.89 8.968 8.968 0 00-5.35 2.524 1 1 0 01-1.4 0zM6 18a1 1 0 001-1v-2.065a8.935 8.935 0 00-2-.712V17a1 1 0 001 1z" />
+                  </svg>
+                </div>
+                <span className="text-sm font-medium text-gray-700">New Section</span>
+              </button>
+            )}
             <button
               onClick={() => onNavigate('monitor')}
               className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-purple-300 hover:bg-purple-50 transition-colors text-left"

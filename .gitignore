@@ -28,3 +28,6 @@ dist-ssr
 
 # Case files
 case_files/
+
+# Database backups (Admin > Backup) -- full dumps, never commit
+backups/

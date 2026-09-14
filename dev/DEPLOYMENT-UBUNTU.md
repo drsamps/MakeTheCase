@@ -218,6 +218,41 @@ sudo chmod 755 /var/www/makethecase/case_files
 mkdir -p /var/www/makethecase/case_files/malawis-pizza/uploads
 ```
 
+### 3.7 Database Backups (Admin > Backup)
+
+Admin > Backup (and "Take a database backup first" in Rollover) runs `mysqldump` on the server and keeps
+the newest 10 gzipped dumps in `backups/` in the app directory. Full notes: `docs/database-backup.md`.
+
+```bash
+# mysqldump comes with the MySQL client tools (already present if mysql-server is installed here)
+sudo apt install -y mysql-client
+which mysqldump   # if it is not on PATH for the pm2 user, set MYSQLDUMP_PATH in the env file
+
+# backups/ must be owned by the user pm2 runs as, and private (a dump is every student record)
+mkdir -p /var/www/makethecase/backups
+chown $USER:$USER /var/www/makethecase/backups
+chmod 700 /var/www/makethecase/backups
+```
+
+The app's MySQL user needs, at minimum, `SELECT, SHOW VIEW, TRIGGER, LOCK TABLES` on the database
+(`ALL PRIVILEGES ON ceochat.*` from 2.1 already covers them):
+
+```sql
+GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES ON ceochat.* TO 'makethecase'@'localhost';
+```
+
+`backups/` is outside `dist/`, so the web server never serves it. Keep it that way: do not point a web
+root or alias at the app directory. Restoring is command-line only:
+
+```bash
+# Take a fresh backup first (Admin > Backup), then:
+gunzip -c backups/makethecase_2026-09-12_210635.sql.gz | mysql -u makethecase -p ceochat
+pm2 restart makethecase
+```
+
+These backups live on the same disk as the database. They are a safety net, not disaster recovery; keep
+the off-server backups in 9.4 as well.
+
 ---
 
 ## Part 4: PM2 Configuration
@@ -536,6 +571,10 @@ du -sh /var/www/makethecase/case_files
 ```
 
 ### 9.4 Backup Strategy
+
+On-demand backups from the dashboard are covered in 3.7. They stay on this server, so also copy backups
+off the machine. In the script below, prefer a `~/.my.cnf` (mode 600) over `-p'PASSWORD'`, which is
+visible to other users in `ps` while the dump runs.
 
 **Create backup script:**
 ```bash

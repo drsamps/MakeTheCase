@@ -54,7 +54,7 @@ Full credentials (passwords + JWTs) stored in **`.claude/permissions-test-creden
 - [ ] [A] Enroll students; view roster on any section — _result: ⊘ not exercised in this run (deferred)_
 - [ ] [A] View any chat transcript (read); run/re-run evaluation — _result: ⊘ deferred — no chat fixtures in dataset_
 - [ ] [A] Edit transcript (PATCH succeeds) — _result: ⊘ deferred — no chat fixtures_
-- [ ] [A] Assign case to section; edit chat_options — _result: ⊘ deferred_
+- [x] [A] Assign case to section; edit chat_options — _result: ✓ 2026-09-12 superuser POST /sections/:id/cases 201 (private case too), PATCH section_number 200, rollover preview 200 — see docs/plan-admin-only-course-structure.md_
 - [ ] [A] Read public + team-shared case as super — _result: ✓ super read team case 200 (§6.2c)_
 - [ ] [A] Change visibility of any case to public (no can_publish gate for admins) — _result: ⊘ deferred (admin path; gate verified only for instructor in §3.4b / §5.3b)_
 - [ ] [A] List rubrics (all); edit system-default rubric; criterion edit on system rubric — _result: ⊘ admin path deferred; instructor side verified §3.5/§3.6_
@@ -84,7 +84,7 @@ Full credentials (passwords + JWTs) stored in **`.claude/permissions-test-creden
 - [x] [A] Edit chat_model/super_model on own section works — _result: ✓ PATCH 200 (§3.3)_
 - [ ] [A] Enroll students; view roster — _result: ⊘ deferred_
 - [ ] [A] View own students' chats; edit transcript; re-run eval — _result: ⊘ deferred — no chat fixtures_
-- [ ] [A] Assign case to own section; edit chat_options — _result: ⊘ deferred_
+- [x] [A] Assign case to own section; edit chat_options — _result: ✗ found 403 (sectionCases.js was `requireRole([admin])`); fixed 2026-09-12 → assign 201, activate/scheduling/options/rubric 200, followed row 409 → `?detach=1` 200, section default 200, global default 403, private case of another user 403_
 - [x] [A] Create case; read own; edit own; delete own — _result: ✓ POST 201 (§3.4a)_
 - [ ] [A] Read public case (from `other`); read team-shared case (team membership) — _result: ✗ **BUG #1** — teammate GET team-shared case 403 (§6.2a), other GET public case 403 (§6.3). See Failures._
 - [ ] [A] Edit team-shared case where access_level=edit works; where access_level=view returns 403 — _result: ⊘ blocked — team-share read itself broken (BUG #1)_
@@ -109,14 +109,14 @@ Full credentials (passwords + JWTs) stored in **`.claude/permissions-test-creden
 - [ ] [A] View roster works — _result: ✓ 200 after flag flip (§4b.1) — implies pre-flip also fine_
 - [ ] [A] View chats works; run/re-run eval works — _result: ⊘ deferred — no chat fixtures_
 - [ ] [A] PATCH transcript returns 403 — _result: ⊘ deferred — no transcript fixtures_
-- [ ] [A] Assign case to section works; edit chat_options works — _result: ⊘ deferred_
+- [x] [A] Assign case to section works; edit chat_options works — _result: ✓ 2026-09-12 (after fix) TA with can_manage_cases: assign 201, options 200; PATCH chat_model 403_
 - [x] [A] Resource-ownership rows: create case/rubric/persona/project; edit own — _result: ✓ TA POST /cases 201 (§4b.2)_
 - [ ] [A] Create team; accept team invite — _result: ⊘ deferred — covered for primary in §3_
 
 ### Round 4b — flags flipped to 0, 15s cache wait
 - [ ] [A] Enroll/remove students returns 403 — _result: ⊘ deferred_
 - [ ] [A] View chats returns 403; re-run eval returns 403 — _result: ⊘ deferred — no chat fixtures_
-- [ ] [A] Assign case to section returns 403 — _result: ⊘ deferred_
+- [x] [A] Assign case to section returns 403 — _result: ✓ 2026-09-12 TA without flags: assign 403, live-session 403, section default 403_
 - [x] [A] Roster view still returns 200 — _result: ✓ GET /sections/:id/students 200 (§4b.1)_
 - [x] [A] Own case/rubric/persona endpoints still work — _result: ✓ POST /cases 201 (§4b.2)_
 - [ ] [M] UI gracefully reflects new flags (buttons gone, no console errors)

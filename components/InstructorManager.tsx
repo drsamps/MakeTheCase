@@ -85,6 +85,7 @@ const AVAILABLE_PERMISSIONS = [
   { id: 'models', label: 'Models' },
   { id: 'settings', label: 'Settings' },
   { id: 'instructors', label: 'Instructors' },
+  { id: 'backups', label: 'Backups' },
 ];
 
 const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => {

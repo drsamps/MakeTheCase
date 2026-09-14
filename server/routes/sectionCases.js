@@ -1,9 +1,38 @@
 import express from 'express';
 import { pool } from '../db.js';
-import { verifyToken, requireRole } from '../middleware/auth.js';
+import { verifyToken } from '../middleware/auth.js';
+import {
+  canViewSection,
+  requireAdminOrInstructor,
+  requireSectionAccess,
+  requireSectionCaseManager,
+  requireSectionPermission,
+} from '../middleware/instructorAccess.js';
+import { canAccessResource } from '../services/resourceAccess.js';
 import { resolveAvailablePersonas } from '../services/personaService.js';
+import {
+  CaseVersionError,
+  findMainVersionForSection,
+  guardFollowedCaseSettings,
+  linkSectionToVersion,
+} from '../services/caseVersionSync.js';
+import { parseDateInput } from '../utils/dateInput.js';
+
+// SETTINGS WRITERS BELOW CARRY guardFollowedCaseSettings. A section_cases row that follows a
+// course case version (version_id set) has its settings written through from that version, so a
+// direct edit here would be silently overwritten by the next version edit. The guard answers 409
+// CASE_FOLLOWS_VERSION unless ?detach=1. Scheduling and activate/deactivate are per section and
+// are NOT guarded. Add the guard to any new route that writes chat_options, rubric_id,
+// selection_mode/require_order/use_scenarios, position settings, or scenario/position rows.
+//
+// WHO MAY WRITE: admins, the section's primary instructor, and TAs with can_manage_cases
+// (docs/multi-instructor-permissions.md). Every write route carries manageSectionCases, and it must
+// come BEFORE guardFollowedCaseSettings so a refused caller never opens a detach transaction.
 
 const router = express.Router();
+
+const manageSectionCases = [requireAdminOrInstructor, requireSectionCaseManager('sectionId')];
+const isAdminUser = (req) => Boolean(req.user?.superuser || req.user?.role === 'admin');
 
 function normalizeChatOptions(chatOptions) {
   if (chatOptions === null || chatOptions === undefined) return null;
@@ -64,10 +93,11 @@ router.get('/:sectionId/cases', async (req, res) => {
               sc.open_date, sc.close_date, sc.manual_status,
               sc.selection_mode, sc.require_order, sc.use_scenarios,
               sc.position_tracking_enabled, sc.position_capture_method, sc.track_position_change,
-              sc.rubric_id,
+              sc.rubric_id, sc.version_id, v.label AS version_label, v.semester_id AS version_semester_id,
               c.case_title, c.enabled as case_enabled
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
+       LEFT JOIN course_case_versions v ON v.version_id = sc.version_id
        WHERE sc.section_id = ?
        ORDER BY sc.active DESC, sc.created_at DESC`,
       [sectionId]
@@ -347,8 +377,8 @@ router.get('/:sectionId/active-case', async (req, res) => {
   }
 });
 
-// POST /api/sections/:sectionId/cases - Assign a case to a section (admin only)
-router.post('/:sectionId/cases', verifyToken, requireRole(['admin']), async (req, res) => {
+// POST /api/sections/:sectionId/cases - Assign a case to a section (admin, primary instructor, or TA with can_manage_cases)
+router.post('/:sectionId/cases', verifyToken, manageSectionCases, async (req, res) => {
   try {
     const { sectionId } = req.params;
     const { case_id, active, chat_options, open_date, close_date, manual_status } = req.body;
@@ -368,6 +398,10 @@ router.post('/:sectionId/cases', verifyToken, requireRole(['admin']), async (req
     if (cases.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Case not found' } });
     }
+    // An instructor may assign only cases they can see (own, team-shared, public).
+    if (!isAdminUser(req) && !(await canAccessResource(req, 'case', case_id, 'view')).allowed) {
+      return res.status(403).json({ data: null, error: { message: 'You do not have access to that case' } });
+    }
 
     // Check if assignment already exists
     const [existing] = await pool.execute(
@@ -376,6 +410,15 @@ router.post('/:sectionId/cases', verifyToken, requireRole(['admin']), async (req
     );
     if (existing.length > 0) {
       return res.status(409).json({ data: null, error: { message: 'Case is already assigned to this section' } });
+    }
+
+    let openDate;
+    let closeDate;
+    try {
+      openDate = parseDateInput(open_date);
+      closeDate = parseDateInput(close_date);
+    } catch (dateError) {
+      return res.status(400).json({ data: null, error: { message: dateError.message } });
     }
 
     // Insert the assignment with scheduling fields
@@ -390,11 +433,30 @@ router.post('/:sectionId/cases', verifyToken, requireRole(['admin']), async (req
         case_id,
         isActive ? 1 : 0,
         chatOptionsJson,
-        open_date || null,
-        close_date || null,
+        openDate,
+        closeDate,
         manual_status || 'auto'
       ]
     );
+
+    // If the section's course already lists this case, follow its Main settings -- unless the
+    // caller supplied chat_options, which makes this assignment Customized on purpose.
+    if (!chat_options) {
+      const mainVersionId = await findMainVersionForSection(pool, sectionId, case_id);
+      if (mainVersionId != null) {
+        const conn = await pool.getConnection();
+        try {
+          await conn.beginTransaction();
+          await linkSectionToVersion(conn, sectionId, mainVersionId);
+          await conn.commit();
+        } catch (linkError) {
+          await conn.rollback();
+          console.error('Assigned case but could not link it to the course Main version:', linkError);
+        } finally {
+          conn.release();
+        }
+      }
+    }
 
     // Return the created assignment with case details
     const [rows] = await pool.execute(
@@ -414,8 +476,8 @@ router.post('/:sectionId/cases', verifyToken, requireRole(['admin']), async (req
   }
 });
 
-// DELETE /api/sections/:sectionId/cases/:caseId - Remove case from section (admin only)
-router.delete('/:sectionId/cases/:caseId', verifyToken, requireRole(['admin']), async (req, res) => {
+// DELETE /api/sections/:sectionId/cases/:caseId - Remove case from section (admin, primary instructor, or TA with can_manage_cases)
+router.delete('/:sectionId/cases/:caseId', verifyToken, manageSectionCases, async (req, res) => {
   try {
     const { sectionId, caseId } = req.params;
     
@@ -440,9 +502,9 @@ router.delete('/:sectionId/cases/:caseId', verifyToken, requireRole(['admin']), 
   }
 });
 
-// PATCH /api/sections/:sectionId/cases/:caseId/activate - Set this case as active (admin only)
+// PATCH /api/sections/:sectionId/cases/:caseId/activate - Set this case as active (admin, primary instructor, or TA with can_manage_cases)
 // Note: Multiple cases can be active simultaneously - students can choose from active cases
-router.patch('/:sectionId/cases/:caseId/activate', verifyToken, requireRole(['admin']), async (req, res) => {
+router.patch('/:sectionId/cases/:caseId/activate', verifyToken, manageSectionCases, async (req, res) => {
   try {
     const { sectionId, caseId } = req.params;
 
@@ -480,8 +542,8 @@ router.patch('/:sectionId/cases/:caseId/activate', verifyToken, requireRole(['ad
   }
 });
 
-// PATCH /api/sections/:sectionId/cases/:caseId/deactivate - Deactivate a case (admin only)
-router.patch('/:sectionId/cases/:caseId/deactivate', verifyToken, requireRole(['admin']), async (req, res) => {
+// PATCH /api/sections/:sectionId/cases/:caseId/deactivate - Deactivate a case (admin, primary instructor, or TA with can_manage_cases)
+router.patch('/:sectionId/cases/:caseId/deactivate', verifyToken, manageSectionCases, async (req, res) => {
   try {
     const { sectionId, caseId } = req.params;
     
@@ -511,9 +573,10 @@ router.patch('/:sectionId/cases/:caseId/deactivate', verifyToken, requireRole(['
   }
 });
 
-// PATCH /api/sections/:sectionId/cases/:caseId/options - Update chat_options (admin only) - Phase 2
-router.patch('/:sectionId/cases/:caseId/options', verifyToken, requireRole(['admin']), async (req, res) => {
+// PATCH /api/sections/:sectionId/cases/:caseId/options - Update chat_options (admin, primary instructor, or TA with can_manage_cases) - Phase 2
+router.patch('/:sectionId/cases/:caseId/options', verifyToken, manageSectionCases, guardFollowedCaseSettings, async (req, res) => {
   try {
+    const db = req.db || pool; // the detach transaction when ?detach=1 (caseVersionSync.js)
     const { sectionId, caseId } = req.params;
     const { chat_options } = req.body;
 
@@ -524,12 +587,12 @@ router.patch('/:sectionId/cases/:caseId/options', verifyToken, requireRole(['adm
 
     const chatOptionsJson = chat_options ? JSON.stringify(chat_options) : null;
 
-    await pool.execute(
+    await db.execute(
       'UPDATE section_cases SET chat_options = ? WHERE section_id = ? AND case_id = ?',
       [chatOptionsJson, sectionId, caseId]
     );
 
-    const [rows] = await pool.execute(
+    const [rows] = await db.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
               sc.open_date, sc.close_date, sc.manual_status, sc.rubric_id,
               c.case_title
@@ -550,9 +613,10 @@ router.patch('/:sectionId/cases/:caseId/options', verifyToken, requireRole(['adm
   }
 });
 
-// PATCH /api/sections/:sectionId/cases/:caseId/rubric - Update rubric assignment (admin only)
-router.patch('/:sectionId/cases/:caseId/rubric', verifyToken, requireRole(['admin']), async (req, res) => {
+// PATCH /api/sections/:sectionId/cases/:caseId/rubric - Update rubric assignment (admin, primary instructor, or TA with can_manage_cases)
+router.patch('/:sectionId/cases/:caseId/rubric', verifyToken, manageSectionCases, guardFollowedCaseSettings, async (req, res) => {
   try {
+    const db = req.db || pool; // the detach transaction when ?detach=1 (caseVersionSync.js)
     const { sectionId, caseId } = req.params;
     const { rubric_id } = req.body;
 
@@ -563,21 +627,24 @@ router.patch('/:sectionId/cases/:caseId/rubric', verifyToken, requireRole(['admi
 
     // If rubric_id provided, verify it exists
     if (rubric_id) {
-      const [rubricRows] = await pool.execute(
+      const [rubricRows] = await db.execute(
         'SELECT rubric_id FROM rubrics WHERE rubric_id = ? AND enabled = 1',
         [rubric_id]
       );
       if (rubricRows.length === 0) {
         return res.status(400).json({ data: null, error: { message: 'Rubric not found or disabled' } });
       }
+      if (!isAdminUser(req) && !(await canAccessResource(req, 'rubric', rubric_id, 'view')).allowed) {
+        return res.status(403).json({ data: null, error: { message: 'You do not have access to that rubric' } });
+      }
     }
 
-    await pool.execute(
+    await db.execute(
       'UPDATE section_cases SET rubric_id = ? WHERE section_id = ? AND case_id = ?',
       [rubric_id || null, sectionId, caseId]
     );
 
-    const [rows] = await pool.execute(
+    const [rows] = await db.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.active, sc.chat_options, sc.created_at,
               sc.open_date, sc.close_date, sc.manual_status, sc.rubric_id,
               c.case_title
@@ -598,8 +665,8 @@ router.patch('/:sectionId/cases/:caseId/rubric', verifyToken, requireRole(['admi
   }
 });
 
-// PATCH /api/sections/:sectionId/cases/:caseId/scheduling - Update scheduling (admin only)
-router.patch('/:sectionId/cases/:caseId/scheduling', verifyToken, requireRole(['admin']), async (req, res) => {
+// PATCH /api/sections/:sectionId/cases/:caseId/scheduling - Update scheduling (admin, primary instructor, or TA with can_manage_cases)
+router.patch('/:sectionId/cases/:caseId/scheduling', verifyToken, manageSectionCases, async (req, res) => {
   try {
     const { sectionId, caseId } = req.params;
     const { open_date, close_date, manual_status } = req.body;
@@ -626,13 +693,22 @@ router.patch('/:sectionId/cases/:caseId/scheduling', verifyToken, requireRole(['
     const updates = [];
     const params = [];
 
+    // ISO strings must become Dates: strict MySQL rejects '…Z' for DATETIME (utils/dateInput.js).
+    let openDate;
+    let closeDate;
+    try {
+      openDate = parseDateInput(open_date);
+      closeDate = parseDateInput(close_date);
+    } catch (dateError) {
+      return res.status(400).json({ data: null, error: { message: dateError.message } });
+    }
     if (open_date !== undefined) {
       updates.push('open_date = ?');
-      params.push(open_date || null);
+      params.push(openDate);
     }
     if (close_date !== undefined) {
       updates.push('close_date = ?');
-      params.push(close_date || null);
+      params.push(closeDate);
     }
     if (manual_status !== undefined) {
       updates.push('manual_status = ?');
@@ -719,9 +795,10 @@ router.get('/:sectionId/cases/:caseId/scenarios', async (req, res) => {
   }
 });
 
-// POST /api/sections/:sectionId/cases/:caseId/scenarios - Assign scenarios to section-case (admin only)
-router.post('/:sectionId/cases/:caseId/scenarios', verifyToken, requireRole(['admin']), async (req, res) => {
+// POST /api/sections/:sectionId/cases/:caseId/scenarios - Assign scenarios to section-case (admin, primary instructor, or TA with can_manage_cases)
+router.post('/:sectionId/cases/:caseId/scenarios', verifyToken, manageSectionCases, guardFollowedCaseSettings, async (req, res) => {
   try {
+    const db = req.db || pool; // the detach transaction when ?detach=1 (caseVersionSync.js)
     const { sectionId, caseId } = req.params;
     const { scenario_ids } = req.body; // Array of scenario IDs to assign
 
@@ -733,7 +810,7 @@ router.post('/:sectionId/cases/:caseId/scenarios', verifyToken, requireRole(['ad
     }
 
     // Get the section_case id
-    const [sectionCase] = await pool.execute(
+    const [sectionCase] = await db.execute(
       'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
       [sectionId, caseId]
     );
@@ -746,7 +823,7 @@ router.post('/:sectionId/cases/:caseId/scenarios', verifyToken, requireRole(['ad
 
     // Verify all scenarios belong to this case
     const placeholders = scenario_ids.map(() => '?').join(',');
-    const [scenarios] = await pool.execute(
+    const [scenarios] = await db.execute(
       `SELECT id FROM case_scenarios WHERE case_id = ? AND id IN (${placeholders})`,
       [caseId, ...scenario_ids]
     );
@@ -759,7 +836,7 @@ router.post('/:sectionId/cases/:caseId/scenarios', verifyToken, requireRole(['ad
     }
 
     // Get current max sort_order
-    const [maxOrder] = await pool.execute(
+    const [maxOrder] = await db.execute(
       'SELECT COALESCE(MAX(sort_order), -1) + 1 as next_order FROM section_case_scenarios WHERE section_case_id = ?',
       [sectionCaseId]
     );
@@ -769,7 +846,7 @@ router.post('/:sectionId/cases/:caseId/scenarios', verifyToken, requireRole(['ad
     const inserted = [];
     for (const scenarioId of scenario_ids) {
       try {
-        await pool.execute(
+        await db.execute(
           'INSERT INTO section_case_scenarios (section_case_id, scenario_id, enabled, sort_order) VALUES (?, ?, TRUE, ?)',
           [sectionCaseId, scenarioId, sortOrder++]
         );
@@ -781,13 +858,13 @@ router.post('/:sectionId/cases/:caseId/scenarios', verifyToken, requireRole(['ad
     }
 
     // Enable use_scenarios for this section_case
-    await pool.execute(
+    await db.execute(
       'UPDATE section_cases SET use_scenarios = TRUE WHERE id = ?',
       [sectionCaseId]
     );
 
     // Return updated scenarios list
-    const [rows] = await pool.execute(
+    const [rows] = await db.execute(
       `SELECT scs.id, scs.section_case_id, scs.scenario_id, scs.enabled, scs.sort_order,
               cs.scenario_name, cs.protagonist, cs.protagonist_initials
        FROM section_case_scenarios scs
@@ -804,13 +881,14 @@ router.post('/:sectionId/cases/:caseId/scenarios', verifyToken, requireRole(['ad
   }
 });
 
-// DELETE /api/sections/:sectionId/cases/:caseId/scenarios/:scenarioId - Remove scenario from section-case (admin only)
-router.delete('/:sectionId/cases/:caseId/scenarios/:scenarioId', verifyToken, requireRole(['admin']), async (req, res) => {
+// DELETE /api/sections/:sectionId/cases/:caseId/scenarios/:scenarioId - Remove scenario from section-case (admin, primary instructor, or TA with can_manage_cases)
+router.delete('/:sectionId/cases/:caseId/scenarios/:scenarioId', verifyToken, manageSectionCases, guardFollowedCaseSettings, async (req, res) => {
   try {
+    const db = req.db || pool; // the detach transaction when ?detach=1 (caseVersionSync.js)
     const { sectionId, caseId, scenarioId } = req.params;
 
     // Get the section_case id
-    const [sectionCase] = await pool.execute(
+    const [sectionCase] = await db.execute(
       'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
       [sectionId, caseId]
     );
@@ -821,7 +899,7 @@ router.delete('/:sectionId/cases/:caseId/scenarios/:scenarioId', verifyToken, re
 
     const sectionCaseId = sectionCase[0].id;
 
-    const [result] = await pool.execute(
+    const [result] = await db.execute(
       'DELETE FROM section_case_scenarios WHERE section_case_id = ? AND scenario_id = ?',
       [sectionCaseId, scenarioId]
     );
@@ -831,13 +909,13 @@ router.delete('/:sectionId/cases/:caseId/scenarios/:scenarioId', verifyToken, re
     }
 
     // Check if there are any remaining scenarios; if not, disable use_scenarios
-    const [remaining] = await pool.execute(
+    const [remaining] = await db.execute(
       'SELECT COUNT(*) as count FROM section_case_scenarios WHERE section_case_id = ?',
       [sectionCaseId]
     );
 
     if (remaining[0].count === 0) {
-      await pool.execute(
+      await db.execute(
         'UPDATE section_cases SET use_scenarios = FALSE WHERE id = ?',
         [sectionCaseId]
       );
@@ -850,13 +928,14 @@ router.delete('/:sectionId/cases/:caseId/scenarios/:scenarioId', verifyToken, re
   }
 });
 
-// PATCH /api/sections/:sectionId/cases/:caseId/scenarios/:scenarioId/toggle - Toggle scenario enabled (admin only)
-router.patch('/:sectionId/cases/:caseId/scenarios/:scenarioId/toggle', verifyToken, requireRole(['admin']), async (req, res) => {
+// PATCH /api/sections/:sectionId/cases/:caseId/scenarios/:scenarioId/toggle - Toggle scenario enabled (admin, primary instructor, or TA with can_manage_cases)
+router.patch('/:sectionId/cases/:caseId/scenarios/:scenarioId/toggle', verifyToken, manageSectionCases, guardFollowedCaseSettings, async (req, res) => {
   try {
+    const db = req.db || pool; // the detach transaction when ?detach=1 (caseVersionSync.js)
     const { sectionId, caseId, scenarioId } = req.params;
 
     // Get the section_case id
-    const [sectionCase] = await pool.execute(
+    const [sectionCase] = await db.execute(
       'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
       [sectionId, caseId]
     );
@@ -868,7 +947,7 @@ router.patch('/:sectionId/cases/:caseId/scenarios/:scenarioId/toggle', verifyTok
     const sectionCaseId = sectionCase[0].id;
 
     // Get current enabled state
-    const [current] = await pool.execute(
+    const [current] = await db.execute(
       'SELECT id, enabled FROM section_case_scenarios WHERE section_case_id = ? AND scenario_id = ?',
       [sectionCaseId, scenarioId]
     );
@@ -879,7 +958,7 @@ router.patch('/:sectionId/cases/:caseId/scenarios/:scenarioId/toggle', verifyTok
 
     const newEnabled = !current[0].enabled;
 
-    await pool.execute(
+    await db.execute(
       'UPDATE section_case_scenarios SET enabled = ? WHERE id = ?',
       [newEnabled ? 1 : 0, current[0].id]
     );
@@ -891,9 +970,10 @@ router.patch('/:sectionId/cases/:caseId/scenarios/:scenarioId/toggle', verifyTok
   }
 });
 
-// PATCH /api/sections/:sectionId/cases/:caseId/selection-mode - Update selection mode settings (admin only)
-router.patch('/:sectionId/cases/:caseId/selection-mode', verifyToken, requireRole(['admin']), async (req, res) => {
+// PATCH /api/sections/:sectionId/cases/:caseId/selection-mode - Update selection mode settings (admin, primary instructor, or TA with can_manage_cases)
+router.patch('/:sectionId/cases/:caseId/selection-mode', verifyToken, manageSectionCases, guardFollowedCaseSettings, async (req, res) => {
   try {
+    const db = req.db || pool; // the detach transaction when ?detach=1 (caseVersionSync.js)
     const { sectionId, caseId } = req.params;
     const { selection_mode, require_order } = req.body;
 
@@ -906,7 +986,7 @@ router.patch('/:sectionId/cases/:caseId/selection-mode', verifyToken, requireRol
     }
 
     // Check if assignment exists
-    const [existing] = await pool.execute(
+    const [existing] = await db.execute(
       'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
       [sectionId, caseId]
     );
@@ -934,13 +1014,13 @@ router.patch('/:sectionId/cases/:caseId/selection-mode', verifyToken, requireRol
 
     params.push(sectionId, caseId);
 
-    await pool.execute(
+    await db.execute(
       `UPDATE section_cases SET ${updates.join(', ')} WHERE section_id = ? AND case_id = ?`,
       params
     );
 
     // Return updated data
-    const [rows] = await pool.execute(
+    const [rows] = await db.execute(
       `SELECT sc.id, sc.section_id, sc.case_id, sc.selection_mode, sc.require_order, sc.use_scenarios
        FROM section_cases sc
        WHERE sc.section_id = ? AND sc.case_id = ?`,
@@ -954,9 +1034,10 @@ router.patch('/:sectionId/cases/:caseId/selection-mode', verifyToken, requireRol
   }
 });
 
-// PATCH /api/sections/:sectionId/cases/:caseId/scenarios/reorder - Reorder scenarios (admin only)
-router.patch('/:sectionId/cases/:caseId/scenarios/reorder', verifyToken, requireRole(['admin']), async (req, res) => {
+// PATCH /api/sections/:sectionId/cases/:caseId/scenarios/reorder - Reorder scenarios (admin, primary instructor, or TA with can_manage_cases)
+router.patch('/:sectionId/cases/:caseId/scenarios/reorder', verifyToken, manageSectionCases, guardFollowedCaseSettings, async (req, res) => {
   try {
+    const db = req.db || pool; // the detach transaction when ?detach=1 (caseVersionSync.js)
     const { sectionId, caseId } = req.params;
     const { order } = req.body; // Array of scenario IDs in desired order
 
@@ -968,7 +1049,7 @@ router.patch('/:sectionId/cases/:caseId/scenarios/reorder', verifyToken, require
     }
 
     // Get the section_case id
-    const [sectionCase] = await pool.execute(
+    const [sectionCase] = await db.execute(
       'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
       [sectionId, caseId]
     );
@@ -981,14 +1062,14 @@ router.patch('/:sectionId/cases/:caseId/scenarios/reorder', verifyToken, require
 
     // Update sort_order for each scenario
     for (let i = 0; i < order.length; i++) {
-      await pool.execute(
+      await db.execute(
         'UPDATE section_case_scenarios SET sort_order = ? WHERE section_case_id = ? AND scenario_id = ?',
         [i, sectionCaseId, order[i]]
       );
     }
 
     // Return updated scenarios
-    const [rows] = await pool.execute(
+    const [rows] = await db.execute(
       `SELECT scs.id, scs.scenario_id, scs.enabled, scs.sort_order,
               cs.scenario_name, cs.protagonist
        FROM section_case_scenarios scs
@@ -1032,9 +1113,10 @@ router.get('/:sectionId/cases/:caseId/position-settings', async (req, res) => {
   }
 });
 
-// PATCH /api/sections/:sectionId/cases/:caseId/position-settings - Update position tracking settings (admin only)
-router.patch('/:sectionId/cases/:caseId/position-settings', verifyToken, requireRole(['admin']), async (req, res) => {
+// PATCH /api/sections/:sectionId/cases/:caseId/position-settings - Update position tracking settings (admin, primary instructor, or TA with can_manage_cases)
+router.patch('/:sectionId/cases/:caseId/position-settings', verifyToken, manageSectionCases, guardFollowedCaseSettings, async (req, res) => {
   try {
+    const db = req.db || pool; // the detach transaction when ?detach=1 (caseVersionSync.js)
     const { sectionId, caseId } = req.params;
     const { position_tracking_enabled, position_capture_method, track_position_change } = req.body;
 
@@ -1048,7 +1130,7 @@ router.patch('/:sectionId/cases/:caseId/position-settings', verifyToken, require
     }
 
     // Check if assignment exists
-    const [existing] = await pool.execute(
+    const [existing] = await db.execute(
       'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
       [sectionId, caseId]
     );
@@ -1080,13 +1162,13 @@ router.patch('/:sectionId/cases/:caseId/position-settings', verifyToken, require
 
     params.push(sectionId, caseId);
 
-    await pool.execute(
+    await db.execute(
       `UPDATE section_cases SET ${updates.join(', ')} WHERE section_id = ? AND case_id = ?`,
       params
     );
 
     // Return updated settings
-    const [rows] = await pool.execute(
+    const [rows] = await db.execute(
       `SELECT sc.id, sc.position_tracking_enabled, sc.position_capture_method, sc.track_position_change
        FROM section_cases sc
        WHERE sc.section_id = ? AND sc.case_id = ?`,
@@ -1143,12 +1225,13 @@ router.get('/:sectionId/cases/:caseId/positions', async (req, res) => {
 });
 
 // PATCH /api/sections/:sectionId/cases/:caseId/positions/:positionId/toggle - Toggle position enabled for this assignment
-router.patch('/:sectionId/cases/:caseId/positions/:positionId/toggle', verifyToken, requireRole(['admin']), async (req, res) => {
+router.patch('/:sectionId/cases/:caseId/positions/:positionId/toggle', verifyToken, manageSectionCases, guardFollowedCaseSettings, async (req, res) => {
   try {
+    const db = req.db || pool; // the detach transaction when ?detach=1 (caseVersionSync.js)
     const { sectionId, caseId, positionId } = req.params;
 
     // Get the section_case id
-    const [sectionCase] = await pool.execute(
+    const [sectionCase] = await db.execute(
       'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
       [sectionId, caseId]
     );
@@ -1160,7 +1243,7 @@ router.patch('/:sectionId/cases/:caseId/positions/:positionId/toggle', verifyTok
     const sectionCaseId = sectionCase[0].id;
 
     // Check if position exists
-    const [position] = await pool.execute(
+    const [position] = await db.execute(
       'SELECT position_id, position_enabled FROM scenario_positions WHERE position_id = ?',
       [positionId]
     );
@@ -1170,7 +1253,7 @@ router.patch('/:sectionId/cases/:caseId/positions/:positionId/toggle', verifyTok
     }
 
     // Check if there's an existing override in section_case_positions
-    const [existingOverride] = await pool.execute(
+    const [existingOverride] = await db.execute(
       'SELECT id, enabled FROM section_case_positions WHERE section_case_id = ? AND position_id = ?',
       [sectionCaseId, positionId]
     );
@@ -1179,14 +1262,14 @@ router.patch('/:sectionId/cases/:caseId/positions/:positionId/toggle', verifyTok
     if (existingOverride.length > 0) {
       // Toggle the existing override
       newEnabled = !existingOverride[0].enabled;
-      await pool.execute(
+      await db.execute(
         'UPDATE section_case_positions SET enabled = ? WHERE id = ?',
         [newEnabled ? 1 : 0, existingOverride[0].id]
       );
     } else {
       // Create new override (toggled from default)
       newEnabled = !position[0].position_enabled;
-      await pool.execute(
+      await db.execute(
         'INSERT INTO section_case_positions (section_case_id, position_id, enabled) VALUES (?, ?, ?)',
         [sectionCaseId, positionId, newEnabled ? 1 : 0]
       );
@@ -1200,8 +1283,9 @@ router.patch('/:sectionId/cases/:caseId/positions/:positionId/toggle', verifyTok
 });
 
 // PATCH /api/sections/:sectionId/cases/:caseId/positions/reorder - Reorder positions for this assignment
-router.patch('/:sectionId/cases/:caseId/positions/reorder', verifyToken, requireRole(['admin']), async (req, res) => {
+router.patch('/:sectionId/cases/:caseId/positions/reorder', verifyToken, manageSectionCases, guardFollowedCaseSettings, async (req, res) => {
   try {
+    const db = req.db || pool; // the detach transaction when ?detach=1 (caseVersionSync.js)
     const { sectionId, caseId } = req.params;
     const { positions } = req.body; // Array of { position_id, sort_order }
 
@@ -1210,7 +1294,7 @@ router.patch('/:sectionId/cases/:caseId/positions/reorder', verifyToken, require
     }
 
     // Get the section_case id
-    const [sectionCase] = await pool.execute(
+    const [sectionCase] = await db.execute(
       'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
       [sectionId, caseId]
     );
@@ -1224,20 +1308,20 @@ router.patch('/:sectionId/cases/:caseId/positions/reorder', verifyToken, require
     // Update sort_order for each position
     for (const pos of positions) {
       // Check if override record exists
-      const [existing] = await pool.execute(
+      const [existing] = await db.execute(
         'SELECT id FROM section_case_positions WHERE section_case_id = ? AND position_id = ?',
         [sectionCaseId, pos.position_id]
       );
 
       if (existing.length > 0) {
         // Update existing
-        await pool.execute(
+        await db.execute(
           'UPDATE section_case_positions SET sort_order = ? WHERE id = ?',
           [pos.sort_order, existing[0].id]
         );
       } else {
         // Create new record with sort_order (enabled defaults to true)
-        await pool.execute(
+        await db.execute(
           'INSERT INTO section_case_positions (section_case_id, position_id, enabled, sort_order) VALUES (?, ?, 1, ?)',
           [sectionCaseId, pos.position_id, pos.sort_order]
         );
@@ -1252,8 +1336,9 @@ router.patch('/:sectionId/cases/:caseId/positions/reorder', verifyToken, require
 });
 
 // POST /api/sections/:targetSectionId/cases/copy-from/:sourceSectionId
-// Copy case assignments from one section to another
-router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, requireRole(['admin']), async (req, res) => {
+// Copy case assignments from one section to another.
+// Manage rights on the target; view access on the source.
+router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, requireAdminOrInstructor, requireSectionCaseManager('targetSectionId'), async (req, res) => {
   const { targetSectionId, sourceSectionId } = req.params;
   const { copy_options = true, copy_scenarios = true, copy_scheduling = true } = req.body;
 
@@ -1265,6 +1350,10 @@ router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, r
   }
 
   try {
+    if (!(await canViewSection(req, sourceSectionId))) {
+      return res.status(403).json({ data: null, error: { message: 'Access denied to the source section' } });
+    }
+
     // Verify both sections exist
     const [sections] = await pool.execute(
       'SELECT section_id FROM sections WHERE section_id IN (?, ?)',
@@ -1281,7 +1370,7 @@ router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, r
     // Get all cases from source section with their settings
     const [sourceCases] = await pool.execute(
       `SELECT sc.case_id, sc.chat_options, sc.open_date, sc.close_date, sc.manual_status,
-              sc.selection_mode, sc.require_order, sc.use_scenarios, sc.rubric_id,
+              sc.selection_mode, sc.require_order, sc.use_scenarios, sc.rubric_id, sc.version_id,
               sc.id as source_section_case_id,
               c.case_title
        FROM section_cases sc
@@ -1307,6 +1396,7 @@ router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, r
     const results = {
       copied: 0,
       skipped: 0,
+      following: 0,
       details: []
     };
 
@@ -1364,6 +1454,40 @@ router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, r
         }
       }
 
+      // Keep the copy on course settings where that loses nothing, as POST /:sectionId/cases does:
+      //  1. options AND scenarios were copied, and the source follows a version the target can
+      //     follow too -> follow that same version (identical settings; linking keeps the
+      //     scheduling copied above). Linking writes the version's options, rubric, scenarios and
+      //     positions, so it must not happen when either was unticked;
+      //  2. no settings were copied and the target's course lists the case -> follow Main.
+      // Otherwise the copied settings are deliberate and the row stays Customized.
+      const candidates = [];
+      if (copy_options && copy_scenarios && sourceCase.version_id != null) candidates.push(sourceCase.version_id);
+      if (!copy_options && !copy_scenarios) {
+        const mainId = await findMainVersionForSection(pool, targetSectionId, sourceCase.case_id);
+        if (mainId != null) candidates.push(mainId);
+      }
+      let followsVersionId = null;
+      for (const versionId of candidates) {
+        const conn = await pool.getConnection();
+        try {
+          await conn.beginTransaction();
+          await linkSectionToVersion(conn, targetSectionId, versionId);
+          await conn.commit();
+          followsVersionId = versionId;
+          break;
+        } catch (linkError) {
+          await conn.rollback();
+          // A version of another course or semester cannot be followed here; try the next one.
+          if (!(linkError instanceof CaseVersionError)) {
+            console.error('Copied case but could not link it to course settings:', linkError);
+          }
+        } finally {
+          conn.release();
+        }
+      }
+      if (followsVersionId != null) results.following++;
+
       results.copied++;
       results.details.push({
         case_id: sourceCase.case_id,
@@ -1371,13 +1495,17 @@ router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, r
         status: 'copied',
         options_copied: copy_options,
         scheduling_copied: copy_scheduling,
-        scenarios_copied: scenariosCopied
+        scenarios_copied: scenariosCopied,
+        version_id: followsVersionId
       });
     }
 
+    const followingNote = results.following > 0
+      ? `; ${results.following} follow the course's case settings`
+      : '';
     res.json({
       data: results,
-      message: `Copied ${results.copied} case(s), skipped ${results.skipped} already assigned`,
+      message: `Copied ${results.copied} case(s), skipped ${results.skipped} already assigned${followingNote}`,
       error: null
     });
   } catch (error) {
@@ -1387,7 +1515,8 @@ router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, r
 });
 
 // GET /api/sections/:sectionId/cases/:caseId/live-session - Get live session data for monitoring
-router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireRole(['admin']), async (req, res) => {
+// (admin, primary instructor, or TA with can_view_chats)
+router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireAdminOrInstructor, requireSectionAccess('sectionId'), requireSectionPermission('canViewChats'), async (req, res) => {
   try {
     const { sectionId, caseId } = req.params;
 

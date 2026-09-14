@@ -36,6 +36,7 @@ import analyticsRoutes from './routes/analytics.js';
 import positionTemplatesRoutes from './routes/positionTemplates.js';
 import semestersRoutes from './routes/semesters.js';
 import coursesRoutes from './routes/courses.js';
+import courseCasesRoutes from './routes/courseCases.js';
 import instructorsRoutes from './routes/instructors.js';
 import rubricsRoutes from './routes/rubrics.js';
 import rubricCriteriaRoutes from './routes/rubricCriteria.js';
@@ -47,6 +48,7 @@ import teamsRoutes from './routes/teams.js';
 import feedbackRoutes from './routes/feedback.js';
 import contentRoutes from './routes/content.js';
 import usageRoutes from './routes/usage.js';
+import backupsRoutes from './routes/backups.js';
 import { startTruncateOldRawUsageJob } from './jobs/truncateOldRawUsage.js';
 
 // Load environment variables
@@ -98,6 +100,7 @@ app.use('/api/position-templates', positionTemplatesRoutes); // Position templat
 console.log('✓ Position templates routes mounted at /api/position-templates');
 app.use('/api/semesters', semestersRoutes); // Semester management (includes /api/semesters/:id/courses)
 app.use('/api/courses', coursesRoutes); // Course management (/api/courses/:id)
+app.use('/api', courseCasesRoutes); // Course case lists + case settings versions (/api/courses/:id/cases, /api/case-versions/:id)
 app.use('/api/instructors', instructorsRoutes); // Instructor management and assignments
 console.log('✓ Semesters, courses, and instructors routes mounted');
 app.use('/api/rubrics', rubricsRoutes); // Rubric management
@@ -105,6 +108,7 @@ app.use('/api/rubric-criteria', rubricCriteriaRoutes); // Rubric criteria manage
 app.use('/api/logs', logsRoutes); // AI prompt logging management
 app.use('/api/case-writer', caseWriterRoutes); // Case Writer authoring tool
 app.use('/api/admin/shadow-ownership', shadowOwnershipRoutes); // Admin: transfer legacy resources off the shadow instructor
+app.use('/api/admin/backups', backupsRoutes); // Admin: gzipped mysqldump backups (requires `backups` permission)
 app.use('/api/api-keys', apiKeysRoutes); // Per-instructor encrypted API key storage
 app.use('/api/teams', teamsRoutes); // Instructor teams + sharing
 app.use('/api/feedback', feedbackRoutes); // In-app user feedback system

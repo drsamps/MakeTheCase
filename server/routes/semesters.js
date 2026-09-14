@@ -3,196 +3,217 @@ import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { requireSuperuser } from '../middleware/instructorAccess.js';
 import { writeAudit } from '../services/auditLog.js';
+import { semesterCodeError } from '../../utils/academicIds.js';
+import { executeRollover, planRollover } from '../services/courseRollover.js';
+import { backupBeforeRollover } from '../services/databaseBackup.js';
 
 const router = express.Router();
 
-// GET /api/semesters - Get all semesters with course and section counts
+// Semesters sort by start_date, NEVER by code or name: w26 < sp26 < su26 < f26 in time,
+// but alphabetically f26 comes first. Undated semesters ('ongoing') sort last.
+export const SEMESTER_ORDER_SQL = 'sem.start_date IS NULL, sem.start_date DESC, sem.semester_code ASC';
+
+// is_current is read from system_state (the authority); semesters.is_current is only a
+// mirror kept in step by setCurrentSemester() for older readers.
+const SEMESTER_COLUMNS_SQL = `
+  sem.id, sem.semester_code, sem.semester_name,
+  (sem.id <=> (SELECT current_semester_id FROM system_state WHERE id = 1)) AS is_current,
+  sem.start_date, sem.end_date, sem.created_at`;
+
+async function fetchSemester(executor, id) {
+  const [rows] = await executor.execute(
+    `SELECT ${SEMESTER_COLUMNS_SQL} FROM semesters sem WHERE sem.id = ?`,
+    [id]
+  );
+  return rows[0] ? { ...rows[0], is_current: Boolean(rows[0].is_current) } : null;
+}
+
+/**
+ * Point system_state at a semester and mirror semesters.is_current, inside the caller's
+ * transaction. The ONE writer of the current semester -- create, update and
+ * PUT /:id/current all go through it, so the pointer and the flag cannot drift apart
+ * (they did: POST used to set only the flag, leaving GET /current answering 404).
+ */
+async function setCurrentSemester(connection, semesterId, req) {
+  await connection.execute(
+    'UPDATE system_state SET current_semester_id = ?, updated_by_admin_id = ? WHERE id = 1',
+    [semesterId, req.user.role === 'admin' ? req.user.id : null]
+  );
+  await connection.execute('UPDATE semesters SET is_current = (id = ?)', [semesterId]);
+}
+
+function cleanSemesterInput(body) {
+  const code = typeof body.semester_code === 'string' ? body.semester_code.trim().toLowerCase() : '';
+  const name = typeof body.semester_name === 'string' ? body.semester_name.trim() : '';
+  return {
+    semester_code: code,
+    semester_name: name,
+    start_date: body.start_date || null,
+    end_date: body.end_date || null,
+  };
+}
+
+// GET /api/semesters - All semesters with course and section counts, newest first
 router.get('/', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
-      SELECT
-        sem.id,
-        sem.semester_name,
-        sem.is_current,
-        sem.start_date,
-        sem.end_date,
-        sem.created_at,
-        COUNT(DISTINCT c.id) as course_count,
-        COUNT(DISTINCT s.section_id) as section_count
+      SELECT ${SEMESTER_COLUMNS_SQL},
+             COUNT(DISTINCT s.course_id) AS course_count,
+             COUNT(DISTINCT s.section_id) AS section_count
       FROM semesters sem
-      LEFT JOIN courses c ON sem.id = c.semester_id
-      LEFT JOIN sections s ON c.id = s.course_id
-      GROUP BY sem.id, sem.semester_name, sem.is_current, sem.start_date, sem.end_date, sem.created_at
-      ORDER BY sem.semester_name DESC
+      LEFT JOIN sections s ON s.semester_id = sem.id
+      GROUP BY sem.id, sem.semester_code, sem.semester_name, sem.start_date, sem.end_date, sem.created_at
+      ORDER BY ${SEMESTER_ORDER_SQL}
     `);
-    res.json({ data: rows, error: null });
+    res.json({ data: rows.map(r => ({ ...r, is_current: Boolean(r.is_current) })), error: null });
   } catch (error) {
     console.error('Error fetching semesters:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
 
-// GET /api/semesters/current - Get current semester.
-// Prefers system_state.current_semester_id (CAS-managed); falls back to the
-// legacy semesters.is_current flag for callers that haven't migrated yet.
+// GET /api/semesters/current - The current semester.
+// system_state.current_semester_id is the authority; the is_current flag is a fallback
+// for a pointer that is NULL (the FK nulls it when its semester is deleted).
 router.get('/current', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
-      SELECT
-        sem.id,
-        sem.semester_name,
-        sem.is_current,
-        sem.start_date,
-        sem.end_date,
-        sem.created_at
-      FROM semesters sem
-      WHERE sem.id = COALESCE(
-        (SELECT current_semester_id FROM system_state WHERE id = 1),
-        (SELECT id FROM semesters WHERE is_current = TRUE LIMIT 1)
-      )
-      LIMIT 1
+      SELECT COALESCE(
+        (SELECT sem.id FROM semesters sem
+          WHERE sem.id = (SELECT current_semester_id FROM system_state WHERE id = 1)),
+        (SELECT sem.id FROM semesters sem WHERE sem.is_current = TRUE
+          ORDER BY ${SEMESTER_ORDER_SQL} LIMIT 1)
+      ) AS id
     `);
 
-    if (rows.length === 0) {
+    if (rows[0]?.id == null) {
       return res.status(404).json({ data: null, error: { message: 'No current semester set' } });
     }
 
-    res.json({ data: rows[0], error: null });
+    res.json({ data: await fetchSemester(pool, rows[0].id), error: null });
   } catch (error) {
     console.error('Error fetching current semester:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
 
-// GET /api/semesters/:id - Get single semester with courses
+// GET /api/semesters/:id - Single semester with the courses that have sections in it
 router.get('/:id', async (req, res) => {
   try {
-    const [semesterRows] = await pool.execute(`
-      SELECT
-        sem.id,
-        sem.semester_name,
-        sem.is_current,
-        sem.start_date,
-        sem.end_date,
-        sem.created_at
-      FROM semesters sem
-      WHERE sem.id = ?
-    `, [req.params.id]);
-
-    if (semesterRows.length === 0) {
+    const semester = await fetchSemester(pool, req.params.id);
+    if (!semester) {
       return res.status(404).json({ data: null, error: { message: 'Semester not found' } });
     }
 
-    // Get courses in this semester
     const [courseRows] = await pool.execute(`
-      SELECT
-        c.id,
-        c.course_name,
-        c.course_code,
-        c.description,
-        c.primary_section_id,
-        c.sync_scheduling,
-        COUNT(s.section_id) as section_count
+      SELECT c.id, c.course_code, c.course_name, c.description,
+             COUNT(s.section_id) AS section_count
       FROM courses c
-      LEFT JOIN sections s ON c.id = s.course_id
-      WHERE c.semester_id = ?
-      GROUP BY c.id, c.course_name, c.course_code, c.description, c.primary_section_id, c.sync_scheduling
+      JOIN sections s ON s.course_id = c.id AND s.semester_id = ?
+      GROUP BY c.id, c.course_code, c.course_name, c.description
       ORDER BY c.course_name
     `, [req.params.id]);
 
-    res.json({
-      data: {
-        ...semesterRows[0],
-        courses: courseRows
-      },
-      error: null
-    });
+    res.json({ data: { ...semester, courses: courseRows }, error: null });
   } catch (error) {
     console.error('Error fetching semester:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
 
-// POST /api/semesters - Create new semester
+// POST /api/semesters - Create semester
 router.post('/', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
+  const connection = await pool.getConnection();
   try {
-    const { semester_name, start_date, end_date, is_current } = req.body;
+    const input = cleanSemesterInput(req.body);
 
-    if (!semester_name) {
+    const codeError = semesterCodeError(input.semester_code);
+    if (codeError) {
+      return res.status(400).json({ data: null, error: { message: codeError } });
+    }
+    if (!input.semester_name) {
       return res.status(400).json({ data: null, error: { message: 'Semester name is required' } });
     }
 
-    // Check if semester name already exists
-    const [existing] = await pool.execute(
-      'SELECT id FROM semesters WHERE semester_name = ?',
-      [semester_name]
+    const [existing] = await connection.execute(
+      'SELECT semester_code, semester_name FROM semesters WHERE semester_code = ? OR semester_name = ?',
+      [input.semester_code, input.semester_name]
     );
-
     if (existing.length > 0) {
-      return res.status(409).json({ data: null, error: { message: 'Semester with this name already exists' } });
+      const clash = existing[0].semester_code === input.semester_code ? `ID "${input.semester_code}"` : `name "${input.semester_name}"`;
+      return res.status(409).json({ data: null, error: { message: `A semester with ${clash} already exists` } });
     }
 
-    // If setting as current, clear current flag from other semesters
-    if (is_current) {
-      await pool.execute('UPDATE semesters SET is_current = FALSE');
+    await connection.beginTransaction();
+    const [result] = await connection.execute(
+      'INSERT INTO semesters (semester_code, semester_name, start_date, end_date, is_current) VALUES (?, ?, ?, ?, FALSE)',
+      [input.semester_code, input.semester_name, input.start_date, input.end_date]
+    );
+    if (req.body.is_current) {
+      await setCurrentSemester(connection, result.insertId, req);
     }
+    await connection.commit();
 
-    const [result] = await pool.execute(
-      'INSERT INTO semesters (semester_name, start_date, end_date, is_current) VALUES (?, ?, ?, ?)',
-      [semester_name, start_date || null, end_date || null, is_current ? 1 : 0]
-    );
-
-    // Return the created semester
-    const [rows] = await pool.execute(
-      'SELECT id, semester_name, is_current, start_date, end_date, created_at FROM semesters WHERE id = ?',
-      [result.insertId]
-    );
-
-    res.status(201).json({ data: rows[0], error: null });
+    res.status(201).json({ data: await fetchSemester(pool, result.insertId), error: null });
   } catch (error) {
+    try { await connection.rollback(); } catch (_) {}
     console.error('Error creating semester:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
+  } finally {
+    connection.release();
   }
 });
 
-// PUT /api/semesters/:id - Update semester
+// PUT /api/semesters/:id - Update semester. A rename is copied into sections.year_term,
+// which student-facing lists still display.
 router.put('/:id', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
+  const connection = await pool.getConnection();
   try {
     const { id } = req.params;
-    const { semester_name, start_date, end_date } = req.body;
+    const input = cleanSemesterInput(req.body);
 
-    // Check if semester exists
-    const [existing] = await pool.execute('SELECT id FROM semesters WHERE id = ?', [id]);
+    const [existing] = await connection.execute('SELECT id, semester_code, semester_name FROM semesters WHERE id = ?', [id]);
     if (existing.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Semester not found' } });
     }
 
-    // Check for duplicate name (excluding current semester)
-    if (semester_name) {
-      const [duplicate] = await pool.execute(
-        'SELECT id FROM semesters WHERE semester_name = ? AND id != ?',
-        [semester_name, id]
-      );
-      if (duplicate.length > 0) {
-        return res.status(409).json({ data: null, error: { message: 'Another semester with this name already exists' } });
+    const code = input.semester_code || existing[0].semester_code;
+    const name = input.semester_name || existing[0].semester_name;
+    if (code !== existing[0].semester_code) {
+      const codeError = semesterCodeError(code);
+      if (codeError) {
+        return res.status(400).json({ data: null, error: { message: codeError } });
       }
     }
 
-    await pool.execute(
-      'UPDATE semesters SET semester_name = COALESCE(?, semester_name), start_date = ?, end_date = ? WHERE id = ?',
-      [semester_name, start_date || null, end_date || null, id]
+    const [duplicate] = await connection.execute(
+      'SELECT semester_code FROM semesters WHERE (semester_code = ? OR semester_name = ?) AND id != ?',
+      [code, name, id]
     );
+    if (duplicate.length > 0) {
+      return res.status(409).json({ data: null, error: { message: 'Another semester with this ID or name already exists' } });
+    }
 
-    // Return updated semester
-    const [rows] = await pool.execute(
-      'SELECT id, semester_name, is_current, start_date, end_date, created_at FROM semesters WHERE id = ?',
-      [id]
+    await connection.beginTransaction();
+    await connection.execute(
+      'UPDATE semesters SET semester_code = ?, semester_name = ?, start_date = ?, end_date = ? WHERE id = ?',
+      [code, name, input.start_date, input.end_date, id]
     );
+    if (name !== existing[0].semester_name) {
+      await connection.execute('UPDATE sections SET year_term = ? WHERE semester_id = ?', [name, id]);
+    }
+    if (req.body.is_current === true) {
+      await setCurrentSemester(connection, Number(id), req);
+    }
+    await connection.commit();
 
-    res.json({ data: rows[0], error: null });
+    res.json({ data: await fetchSemester(pool, id), error: null });
   } catch (error) {
+    try { await connection.rollback(); } catch (_) {}
     console.error('Error updating semester:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
+  } finally {
+    connection.release();
   }
 });
 
@@ -203,13 +224,11 @@ router.put('/:id', verifyToken, requireRole(['admin']), requireSuperuser, async 
 router.put('/:id/current', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    const { id } = req.params;
-    const newId = Number(id);
+    const newId = Number(req.params.id);
     const expectedPrev = req.body?.expected_previous_id;
 
-    const [existing] = await connection.execute('SELECT id, semester_name FROM semesters WHERE id = ?', [newId]);
+    const [existing] = await connection.execute('SELECT id FROM semesters WHERE id = ?', [newId]);
     if (existing.length === 0) {
-      connection.release();
       return res.status(404).json({ data: null, error: { message: 'Semester not found' } });
     }
 
@@ -224,7 +243,6 @@ router.put('/:id/current', verifyToken, requireRole(['admin']), requireSuperuser
     // CAS guard - only enforced when caller passes the value they saw.
     if (expectedPrev !== undefined && Number(expectedPrev) !== Number(currentId)) {
       await connection.rollback();
-      connection.release();
       return res.status(409).json({
         data: null,
         error: {
@@ -235,19 +253,7 @@ router.put('/:id/current', verifyToken, requireRole(['admin']), requireSuperuser
       });
     }
 
-    // Update system_state.
-    await connection.execute(
-      `UPDATE system_state
-         SET current_semester_id = ?,
-             updated_by_admin_id = ?
-       WHERE id = 1`,
-      [newId, req.user.role === 'admin' ? req.user.id : null]
-    );
-
-    // Mirror to semesters.is_current for any code still reading that flag.
-    await connection.execute('UPDATE semesters SET is_current = FALSE');
-    await connection.execute('UPDATE semesters SET is_current = TRUE WHERE id = ?', [newId]);
-
+    await setCurrentSemester(connection, newId, req);
     await connection.commit();
 
     await writeAudit(req, {
@@ -257,304 +263,141 @@ router.put('/:id/current', verifyToken, requireRole(['admin']), requireSuperuser
       details: { previous_semester_id: currentId, new_semester_id: newId }
     });
 
-    const [rows] = await pool.execute(
-      'SELECT id, semester_name, is_current, start_date, end_date, created_at FROM semesters WHERE id = ?',
-      [newId]
-    );
-    res.json({ data: rows[0], error: null });
+    res.json({ data: await fetchSemester(pool, newId), error: null });
   } catch (error) {
     try { await connection.rollback(); } catch (_) {}
     console.error('Error setting current semester:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
-  } finally {
-    try { connection.release(); } catch (_) {}
-  }
-});
-
-// DELETE /api/semesters/:id - Delete semester
-router.delete('/:id', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Check if semester exists
-    const [existing] = await pool.execute('SELECT id, semester_name FROM semesters WHERE id = ?', [id]);
-    if (existing.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Semester not found' } });
-    }
-
-    // Check if semester has courses
-    const [courses] = await pool.execute('SELECT id FROM courses WHERE semester_id = ?', [id]);
-    if (courses.length > 0) {
-      return res.status(400).json({
-        data: null,
-        error: { message: `Cannot delete semester with ${courses.length} course(s). Delete courses first or move them to another semester.` }
-      });
-    }
-
-    // Delete the semester
-    await pool.execute('DELETE FROM semesters WHERE id = ?', [id]);
-
-    res.json({ data: { deleted: true, semester_name: existing[0].semester_name }, error: null });
-  } catch (error) {
-    console.error('Error deleting semester:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
-  }
-});
-
-// POST /api/semesters/:id/clone - Clone semester to new semester
-router.post('/:id/clone', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
-  const connection = await pool.getConnection();
-
-  try {
-    const { id } = req.params;
-    const {
-      new_semester_name,
-      clone_case_assignments = true,
-      clone_chat_options = true,
-      clone_scenarios = true,
-      clone_scheduling = false
-    } = req.body;
-
-    if (!new_semester_name) {
-      return res.status(400).json({ data: null, error: { message: 'New semester name is required' } });
-    }
-
-    // Check if source semester exists
-    const [sourceSemester] = await connection.execute(
-      'SELECT id, semester_name FROM semesters WHERE id = ?',
-      [id]
-    );
-    if (sourceSemester.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Source semester not found' } });
-    }
-
-    // Check if new semester name already exists
-    const [existingNew] = await connection.execute(
-      'SELECT id FROM semesters WHERE semester_name = ?',
-      [new_semester_name]
-    );
-    if (existingNew.length > 0) {
-      return res.status(409).json({ data: null, error: { message: 'A semester with this name already exists' } });
-    }
-
-    await connection.beginTransaction();
-
-    // 1. Create new semester
-    const [newSemesterResult] = await connection.execute(
-      'INSERT INTO semesters (semester_name, is_current) VALUES (?, FALSE)',
-      [new_semester_name]
-    );
-    const newSemesterId = newSemesterResult.insertId;
-
-    // 2. Get all courses in source semester
-    const [sourceCourses] = await connection.execute(
-      'SELECT * FROM courses WHERE semester_id = ?',
-      [id]
-    );
-
-    const cloneStats = {
-      courses_cloned: 0,
-      sections_cloned: 0,
-      case_assignments_cloned: 0
-    };
-
-    // 3. Clone each course
-    for (const course of sourceCourses) {
-      // Create new course
-      const [newCourseResult] = await connection.execute(
-        `INSERT INTO courses (semester_id, course_name, course_code, description, sync_scheduling)
-         VALUES (?, ?, ?, ?, ?)`,
-        [newSemesterId, course.course_name, course.course_code, course.description, course.sync_scheduling]
-      );
-      const newCourseId = newCourseResult.insertId;
-      cloneStats.courses_cloned++;
-
-      // 4. Get sections for this course
-      const [sourceSections] = await connection.execute(
-        'SELECT * FROM sections WHERE course_id = ?',
-        [course.id]
-      );
-
-      const sectionIdMap = {}; // old_section_id -> new_section_id
-      let newPrimarySectionId = null;
-
-      // 5. Clone each section
-      for (const section of sourceSections) {
-        // Generate new section_id by replacing year_term reference
-        // e.g., "MBA620-F25-001" -> "MBA620-W26-001" (simplified: append "-clone" for now)
-        const newSectionId = generateNewSectionId(section.section_id, new_semester_name);
-        sectionIdMap[section.section_id] = newSectionId;
-
-        // Create new section (without students)
-        await connection.execute(
-          `INSERT INTO sections (section_id, course_id, section_title, year_term, enabled, accept_new_students, chat_model, super_model)
-           VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
-          [
-            newSectionId,
-            newCourseId,
-            section.section_title,
-            new_semester_name, // Use new semester name as year_term
-            section.enabled,
-            section.chat_model,
-            section.super_model
-          ]
-        );
-        cloneStats.sections_cloned++;
-
-        // Track primary section
-        if (section.section_id === course.primary_section_id) {
-          newPrimarySectionId = newSectionId;
-        }
-
-        // 6. Clone case assignments if requested
-        if (clone_case_assignments) {
-          const [sectionCases] = await connection.execute(
-            'SELECT * FROM section_cases WHERE section_id = ?',
-            [section.section_id]
-          );
-
-          for (const sc of sectionCases) {
-            // Insert new section_case
-            const [scResult] = await connection.execute(
-              `INSERT INTO section_cases (section_id, case_id, active, chat_options, selection_mode, require_order, use_scenarios
-                ${clone_scheduling ? ', open_date, close_date, manual_status' : ''})
-               VALUES (?, ?, ?, ?, ?, ?, ?
-                ${clone_scheduling ? ', ?, ?, ?' : ''})`,
-              [
-                newSectionId,
-                sc.case_id,
-                0, // Start inactive in new semester
-                clone_chat_options ? sc.chat_options : null,
-                sc.selection_mode,
-                sc.require_order,
-                sc.use_scenarios,
-                ...(clone_scheduling ? [sc.open_date, sc.close_date, sc.manual_status] : [])
-              ]
-            );
-            cloneStats.case_assignments_cloned++;
-
-            // Clone scenarios if requested
-            if (clone_scenarios && sc.use_scenarios) {
-              const newSectionCaseId = scResult.insertId;
-
-              // Copy section_case_scenarios
-              await connection.execute(
-                `INSERT INTO section_case_scenarios (section_case_id, scenario_id, enabled, sort_order)
-                 SELECT ?, scenario_id, enabled, sort_order
-                 FROM section_case_scenarios
-                 WHERE section_case_id = ?`,
-                [newSectionCaseId, sc.id]
-              );
-
-              // Copy section_case_positions if they exist
-              const [positions] = await connection.execute(
-                'SELECT * FROM section_case_positions WHERE section_case_id = ?',
-                [sc.id]
-              );
-              for (const pos of positions) {
-                await connection.execute(
-                  `INSERT INTO section_case_positions (section_case_id, position_id, enabled, sort_order)
-                   VALUES (?, ?, ?, ?)`,
-                  [newSectionCaseId, pos.position_id, pos.enabled, pos.sort_order]
-                );
-              }
-            }
-          }
-        }
-      }
-
-      // Update primary_section_id for the new course
-      if (newPrimarySectionId) {
-        await connection.execute(
-          'UPDATE courses SET primary_section_id = ? WHERE id = ?',
-          [newPrimarySectionId, newCourseId]
-        );
-      }
-    }
-
-    await connection.commit();
-
-    // Fetch the created semester
-    const [newSemester] = await connection.execute(
-      'SELECT id, semester_name, is_current, start_date, end_date, created_at FROM semesters WHERE id = ?',
-      [newSemesterId]
-    );
-
-    res.status(201).json({
-      data: {
-        semester: newSemester[0],
-        stats: cloneStats
-      },
-      error: null
-    });
-  } catch (error) {
-    await connection.rollback();
-    console.error('Error cloning semester:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   } finally {
     connection.release();
   }
 });
 
-// Helper function to generate new section ID for cloned semester
-function generateNewSectionId(oldSectionId, newSemesterName) {
-  // Try to parse semester indicators from old ID and replace
-  // Common patterns: F25 (Fall 2025), W26 (Winter 2026), SP25 (Spring 2025), SU25 (Summer 2025)
+// DELETE /api/semesters/:id - Delete an empty, non-current semester
+router.delete('/:id', verifyToken, requireRole(['admin']), requireSuperuser, async (req, res) => {
+  try {
+    const { id } = req.params;
 
-  // Extract semester code from new semester name
-  const semesterMatch = newSemesterName.match(/^(Fall|Winter|Spring|Summer)\s+(\d{4})$/i);
-  if (semesterMatch) {
-    const [, season, year] = semesterMatch;
-    const shortYear = year.slice(-2);
-    const seasonCode = {
-      'fall': 'F',
-      'winter': 'W',
-      'spring': 'SP',
-      'summer': 'SU'
-    }[season.toLowerCase()];
-    const newCode = `${seasonCode}${shortYear}`;
-
-    // Try to replace old semester code in section ID
-    const replaced = oldSectionId.replace(/[FW](?:SP|SU)?\d{2}/i, newCode);
-    if (replaced !== oldSectionId) {
-      return replaced;
+    const semester = await fetchSemester(pool, id);
+    if (!semester) {
+      return res.status(404).json({ data: null, error: { message: 'Semester not found' } });
     }
+    if (semester.is_current) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'Cannot delete the current semester. Set another semester as current first.' }
+      });
+    }
+
+    const [[{ n }]] = await pool.execute('SELECT COUNT(*) AS n FROM sections WHERE semester_id = ?', [id]);
+    if (n > 0) {
+      return res.status(400).json({
+        data: null,
+        error: { message: `Cannot delete semester with ${n} section(s). Delete or move its sections first.` }
+      });
+    }
+
+    await pool.execute('DELETE FROM semesters WHERE id = ?', [id]);
+
+    res.json({ data: { deleted: true, semester_name: semester.semester_name }, error: null });
+  } catch (error) {
+    console.error('Error deleting semester:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/semesters/:id/rollover - Roll every course's sections in this semester into another.
+// Body: { into: semester_id, course_ids?: number[], section_numbers?: {[legacy_id]: n},
+//         copy_tas?: boolean, preview?: boolean, backup_first?: boolean }
+// One plan per course (services/courseRollover.js); execute runs all courses in ONE transaction.
+// backup_first: on execute only, take a `pre-rollover` database backup before the transaction
+// opens; if it fails the rollover is refused.
+router.post('/:id/rollover', verifyToken, requireRole(['admin']), async (req, res) => {
+  const fromSemesterId = Number(req.params.id);
+  const b = req.body || {};
+  const toSemesterId = Number(b.into);
+  if (!toSemesterId) {
+    return res.status(400).json({ data: null, error: { message: 'Choose a semester to roll into.' } });
   }
 
-  // Fallback: append new semester indicator
-  const cleanName = newSemesterName.replace(/\s+/g, '').slice(0, 6);
-  return `${oldSectionId}-${cleanName}`;
-}
+  const planAll = async (db) => {
+    const [courses] = await db.execute(
+      `SELECT DISTINCT c.id FROM courses c JOIN sections s ON s.course_id = c.id
+        WHERE s.semester_id = ? ORDER BY c.id`,
+      [fromSemesterId]
+    );
+    const wanted = Array.isArray(b.course_ids) && b.course_ids.length > 0 ? new Set(b.course_ids.map(Number)) : null;
+    const plans = [];
+    for (const { id } of courses) {
+      if (wanted && !wanted.has(id)) continue;
+      plans.push(await planRollover(db, {
+        courseId: id, fromSemesterId, toSemesterId, sectionNumbers: b.section_numbers || {},
+      }));
+    }
+    return plans;
+  };
 
-// GET /api/semesters/:semesterId/courses - Get all courses in a semester
+  try {
+    if (b.preview !== false) {
+      return res.json({ data: { plans: await planAll(pool) }, error: null });
+    }
+  } catch (error) {
+    return res.status(error.status || 500).json({ data: null, error: { message: error.message } });
+  }
+
+  let backup = null;
+  if (b.backup_first) {
+    const outcome = await backupBeforeRollover(req, writeAudit);
+    if (!outcome.backup) return res.status(outcome.status).json(outcome.body);
+    backup = outcome.backup;
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const plans = await planAll(connection);
+    const results = [];
+    for (const plan of plans) {
+      results.push({ course_id: plan.course.id, ...(await executeRollover(connection, plan, { copyTas: Boolean(b.copy_tas), userId: req.user.id })) });
+    }
+    await connection.commit();
+    await writeAudit(req, {
+      action: 'semester.rollover',
+      resourceType: 'semester',
+      resourceId: String(fromSemesterId),
+      details: { into: toSemesterId, results, backup: backup?.name ?? null },
+    });
+    res.json({ data: { results, plans, backup }, error: null });
+  } catch (error) {
+    try { await connection.rollback(); } catch (_) {}
+    console.error('Error rolling semester over:', error);
+    const suffix = backup ? ` (A backup was taken first: ${backup.name}.)` : '';
+    res.status(error.status || 500).json({ data: null, error: { message: error.message + suffix } });
+  } finally {
+    connection.release();
+  }
+});
+
+// GET /api/semesters/:semesterId/courses - Courses with sections in a semester
 router.get('/:semesterId/courses', async (req, res) => {
   try {
-    const { semesterId } = req.params;
-
     const [rows] = await pool.execute(`
       SELECT
         c.id,
-        c.semester_id,
-        c.course_name,
         c.course_code,
+        c.course_name,
         c.description,
-        c.primary_section_id,
         c.primary_instructor_id,
-        c.sync_scheduling,
         c.created_at,
-        ps.section_title as primary_section_title,
-        i.full_name as primary_instructor_name,
-        COUNT(s.section_id) as section_count
+        i.full_name AS primary_instructor_name,
+        COUNT(s.section_id) AS section_count
       FROM courses c
-      LEFT JOIN sections s ON c.id = s.course_id
-      LEFT JOIN sections ps ON c.primary_section_id = ps.section_id
+      JOIN sections s ON s.course_id = c.id AND s.semester_id = ?
       LEFT JOIN instructors i ON c.primary_instructor_id = i.id
-      WHERE c.semester_id = ?
-      GROUP BY c.id, c.semester_id, c.course_name, c.course_code, c.description,
-               c.primary_section_id, c.primary_instructor_id, c.sync_scheduling, c.created_at,
-               ps.section_title, i.full_name
+      GROUP BY c.id, c.course_code, c.course_name, c.description,
+               c.primary_instructor_id, c.created_at, i.full_name
       ORDER BY c.course_name
-    `, [semesterId]);
+    `, [req.params.semesterId]);
 
     res.json({ data: rows, error: null });
   } catch (error) {
@@ -591,104 +434,6 @@ router.get('/:id/instructors', verifyToken, requireRole(['admin']), async (req, 
   } catch (error) {
     console.error('Error fetching semester instructors:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
-  }
-});
-
-// POST /api/semesters/:semesterId/courses - Create new course in semester
-router.post('/:semesterId/courses', verifyToken, requireRole(['admin']), async (req, res) => {
-  const connection = await pool.getConnection();
-  try {
-    const { semesterId } = req.params;
-    const {
-      course_name,
-      course_code,
-      description,
-      sync_scheduling,
-      primary_instructor_id,
-      cascade_to_sections
-    } = req.body;
-
-    if (!course_name) {
-      connection.release();
-      return res.status(400).json({ data: null, error: { message: 'Course name is required' } });
-    }
-
-    // Check semester exists
-    const [semester] = await connection.execute('SELECT id FROM semesters WHERE id = ?', [semesterId]);
-    if (semester.length === 0) {
-      connection.release();
-      return res.status(404).json({ data: null, error: { message: 'Semester not found' } });
-    }
-
-    // Validate primary instructor (when provided)
-    if (primary_instructor_id) {
-      const [inst] = await connection.execute(
-        'SELECT id, active FROM instructors WHERE id = ?',
-        [primary_instructor_id]
-      );
-      if (inst.length === 0) {
-        connection.release();
-        return res.status(400).json({ data: null, error: { message: 'Primary instructor not found' } });
-      }
-      if (!inst[0].active) {
-        connection.release();
-        return res.status(400).json({ data: null, error: { message: 'Primary instructor is deactivated' } });
-      }
-    }
-
-    // Check for duplicate course name in semester
-    const [existing] = await connection.execute(
-      'SELECT id FROM courses WHERE semester_id = ? AND course_name = ?',
-      [semesterId, course_name]
-    );
-    if (existing.length > 0) {
-      connection.release();
-      return res.status(409).json({ data: null, error: { message: 'A course with this name already exists in this semester' } });
-    }
-
-    await connection.beginTransaction();
-
-    const [result] = await connection.execute(
-      `INSERT INTO courses (semester_id, course_name, course_code, description, sync_scheduling, primary_instructor_id)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        semesterId,
-        course_name,
-        course_code || null,
-        description || null,
-        sync_scheduling ? 1 : 0,
-        primary_instructor_id || null
-      ]
-    );
-
-    // Cascade primary instructor to existing sections in this course (none on create,
-    // but kept for symmetry with PUT).
-    if (primary_instructor_id && cascade_to_sections) {
-      await connection.execute(
-        'UPDATE sections SET primary_instructor_id = ? WHERE course_id = ?',
-        [primary_instructor_id, result.insertId]
-      );
-    }
-
-    await connection.commit();
-
-    const [rows] = await connection.execute(
-      `SELECT c.id, c.semester_id, c.course_name, c.course_code, c.description,
-              c.primary_section_id, c.primary_instructor_id, c.sync_scheduling, c.created_at,
-              i.full_name AS primary_instructor_name
-         FROM courses c
-         LEFT JOIN instructors i ON c.primary_instructor_id = i.id
-        WHERE c.id = ?`,
-      [result.insertId]
-    );
-
-    res.status(201).json({ data: rows[0], error: null });
-  } catch (error) {
-    try { await connection.rollback(); } catch (_) {}
-    console.error('Error creating course:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
-  } finally {
-    connection.release();
   }
 });
 

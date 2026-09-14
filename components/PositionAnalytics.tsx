@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../services/apiClient';
 import MultiSelect, { MultiSelectOption } from './ui/MultiSelect';
 import { getApiBaseUrl } from '../services/apiClient';
+import { SemesterScopeNote, useSemesterFilter } from './courses/semesterFilter';
 
 interface PositionAnalyticsProps {
   sectionId?: string;
@@ -13,6 +14,7 @@ interface FilterOption {
   section_id: string;
   section_title: string;
   year_term?: string;
+  semester_id?: number | null;
 }
 
 interface CaseOption {
@@ -94,6 +96,8 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
   caseId,
   scenarioId
 }) => {
+  // Header Semester selector: limits the section picker, and "ALL Sections" means that semester's.
+  const { inScope, semesterId } = useSemesterFilter();
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
@@ -142,6 +146,8 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
         params.append('section_id', selectedSections[0]);
       } else if (sectionId) {
         params.append('section_id', sectionId);
+      } else if (semesterId != null) {
+        params.append('semester_id', String(semesterId));
       }
 
       if (!selectedCases.includes('all') && selectedCases.length > 0) {
@@ -176,7 +182,7 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, [sectionId, caseId, scenarioId, selectedSections, selectedCases]);
+  }, [sectionId, caseId, scenarioId, selectedSections, selectedCases, semesterId]);
 
   const fetchScoreDistribution = useCallback(async () => {
     try {
@@ -187,6 +193,8 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
         params.append('section_id', selectedSections[0]);
       } else if (sectionId) {
         params.append('section_id', sectionId);
+      } else if (semesterId != null) {
+        params.append('semester_id', String(semesterId));
       }
 
       if (!selectedCases.includes('all') && selectedCases.length > 0) {
@@ -217,13 +225,25 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
     } catch (error) {
       console.error('Error fetching score distribution:', error);
     }
-  }, [sectionId, caseId, scenarioId, selectedSections, selectedCases]);
+  }, [sectionId, caseId, scenarioId, selectedSections, selectedCases, semesterId]);
 
   useEffect(() => {
     if (sectionOptions.length > 0 || caseOptions.length > 0) {
       fetchData();
     }
   }, [fetchData, sectionOptions.length, caseOptions.length]);
+
+  // Drop picked sections that are outside the header semester.
+  useEffect(() => {
+    if (selectedSections.includes('all') || sectionOptions.length === 0) return;
+    const kept = selectedSections.filter(id => {
+      const option = sectionOptions.find(s => s.section_id === id);
+      return !option || inScope(option);
+    });
+    if (kept.length !== selectedSections.length) {
+      setSelectedSections(kept.length > 0 ? kept : ['all']);
+    }
+  }, [inScope, selectedSections, sectionOptions]);
 
   useEffect(() => {
     if (activeTab === 'scoreByPosition') {
@@ -233,11 +253,11 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
 
   // Convert options for MultiSelect - MUST be before any conditional returns (Rules of Hooks)
   const sectionSelectOptions: MultiSelectOption[] = useMemo(() =>
-    sectionOptions.map(s => ({
+    sectionOptions.filter(s => inScope(s)).map(s => ({
       value: s.section_id,
       label: s.section_title,
       subtitle: s.year_term
-    })), [sectionOptions]
+    })), [sectionOptions, inScope]
   );
 
   const caseSelectOptions: MultiSelectOption[] = useMemo(() =>
@@ -292,6 +312,7 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
                 placeholder="Select sections..."
                 allLabel="ALL Sections"
               />
+              <SemesterScopeNote className="mt-1" />
             </div>
             <div className="min-w-56">
               <label className="block text-xs font-medium text-gray-700 mb-1">Cases</label>
@@ -342,6 +363,7 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
               placeholder="Select sections..."
               allLabel="ALL Sections"
             />
+            <SemesterScopeNote className="mt-1" />
           </div>
           <div className="min-w-56">
             <label className="block text-xs font-medium text-gray-700 mb-1">Cases</label>

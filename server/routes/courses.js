@@ -4,175 +4,236 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 import {
   requireAdminOrInstructor,
   requireCourseAccess,
-  getAccessibleSemesterIds,
   getAccessibleCourseIds
 } from '../middleware/instructorAccess.js';
 import { writeAudit } from '../services/auditLog.js';
+import { courseCodeError } from '../../utils/academicIds.js';
+import { createCourseSection, previewSection, ProvisioningError } from '../services/sectionProvisioning.js';
+import { detachMismatchedLinks } from '../services/caseVersionSync.js';
 
 const router = express.Router();
 
-// Note: GET/POST /api/semesters/:semesterId/courses routes are in semesters.js
+// COURSES SPAN SEMESTERS (migration 077). A course is one row keyed by course_code
+// ('gscm410'); "the course in a semester" is its sections with that sections.semester_id.
+// courses.semester_id is deprecated and must not be read. courses.primary_instructor_id is
+// the course OWNER.
 
-// GET /api/courses - Get all courses (filtered by instructor access)
+const COURSE_COLUMNS_SQL = `
+  c.id, c.course_code, c.course_name, c.description,
+  c.primary_instructor_id, c.created_at,
+  i.full_name AS primary_instructor_name`;
+
+function effectiveInstructorId(req) {
+  if (req.user.role === 'instructor') return req.user.id;
+  if (req.user.role === 'admin' && req.effectiveInstructorId) return req.effectiveInstructorId;
+  return null;
+}
+
+async function validateOwner(executor, instructorId) {
+  if (!instructorId) return null;
+  const [inst] = await executor.execute('SELECT id, active FROM instructors WHERE id = ?', [instructorId]);
+  if (inst.length === 0) return 'Course owner not found';
+  if (!inst[0].active) return 'Course owner is deactivated';
+  return null;
+}
+
+function sendProvisioningError(res, error, fallbackMessage) {
+  if (error instanceof ProvisioningError) {
+    return res.status(error.status).json({ data: null, error: { message: error.message } });
+  }
+  if (error?.code === 'ER_DUP_ENTRY') {
+    return res.status(409).json({ data: null, error: { message: 'That section already exists. Refresh and try again.' } });
+  }
+  console.error(fallbackMessage, error);
+  return res.status(500).json({ data: null, error: { message: error.message } });
+}
+
+// GET /api/courses - All courses (filtered by instructor access), each with a per-semester
+// summary of its sections, newest semester first.
 router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
-    let query = `
-      SELECT
-        c.id,
-        c.semester_id,
-        c.course_name,
-        c.course_code,
-        c.description,
-        c.primary_section_id,
-        c.primary_instructor_id,
-        c.sync_scheduling,
-        c.created_at,
-        sem.semester_name,
-        sem.is_current as semester_is_current,
-        i.full_name as primary_instructor_name
-      FROM courses c
-      JOIN semesters sem ON c.semester_id = sem.id
-      LEFT JOIN instructors i ON c.primary_instructor_id = i.id
-    `;
-
     const params = [];
-
-    // Filter by instructor access (admin without impersonation sees all).
-    const effectiveId = req.user.role === 'instructor'
-      ? req.user.id
-      : (req.user.role === 'admin' && req.effectiveInstructorId ? req.effectiveInstructorId : null);
+    let where = '';
+    const effectiveId = effectiveInstructorId(req);
     if (effectiveId) {
       const accessibleCourseIds = await getAccessibleCourseIds(effectiveId);
       if (accessibleCourseIds.length === 0) {
         return res.json({ data: [], error: null });
       }
-      const placeholders = accessibleCourseIds.map(() => '?').join(',');
-      query += ` WHERE c.id IN (${placeholders})`;
+      where = `WHERE c.id IN (${accessibleCourseIds.map(() => '?').join(',')})`;
       params.push(...accessibleCourseIds);
     }
 
-    query += ' ORDER BY sem.is_current DESC, sem.semester_name DESC, c.course_name ASC';
+    const [courses] = await pool.execute(`
+      SELECT ${COURSE_COLUMNS_SQL}
+      FROM courses c
+      LEFT JOIN instructors i ON c.primary_instructor_id = i.id
+      ${where}
+      ORDER BY c.course_name ASC
+    `, params);
 
-    const [rows] = await pool.execute(query, params);
-    res.json({ data: rows, error: null });
+    if (courses.length === 0) {
+      return res.json({ data: [], error: null });
+    }
+
+    const [terms] = await pool.execute(`
+      SELECT s.course_id, sem.id AS semester_id, sem.semester_code, sem.semester_name,
+             sem.start_date, COUNT(s.section_id) AS section_count
+      FROM sections s
+      JOIN semesters sem ON sem.id = s.semester_id
+      WHERE s.course_id IN (${courses.map(() => '?').join(',')})
+      GROUP BY s.course_id, sem.id, sem.semester_code, sem.semester_name, sem.start_date
+      ORDER BY sem.start_date IS NULL, sem.start_date DESC, sem.semester_code ASC
+    `, courses.map(c => c.id));
+
+    const byCourse = new Map(courses.map(c => [c.id, { ...c, semesters: [] }]));
+    for (const t of terms) {
+      byCourse.get(t.course_id)?.semesters.push({
+        semester_id: t.semester_id,
+        semester_code: t.semester_code,
+        semester_name: t.semester_name,
+        start_date: t.start_date,
+        section_count: Number(t.section_count),
+      });
+    }
+
+    res.json({ data: [...byCourse.values()], error: null });
   } catch (error) {
     console.error('Error fetching all courses:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
 
-// GET /api/courses/:id - Get single course with sections
+// POST /api/courses - Create a course (admin)
+router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const course_code = typeof req.body.course_code === 'string' ? req.body.course_code.trim().toLowerCase() : '';
+    const course_name = typeof req.body.course_name === 'string' ? req.body.course_name.trim() : '';
+    const { description, primary_instructor_id } = req.body;
+
+    const codeError = courseCodeError(course_code);
+    if (codeError) {
+      return res.status(400).json({ data: null, error: { message: codeError } });
+    }
+    if (!course_name) {
+      return res.status(400).json({ data: null, error: { message: 'Course name is required' } });
+    }
+    const ownerError = await validateOwner(pool, primary_instructor_id);
+    if (ownerError) {
+      return res.status(400).json({ data: null, error: { message: ownerError } });
+    }
+
+    const [existing] = await pool.execute('SELECT id FROM courses WHERE course_code = ?', [course_code]);
+    if (existing.length > 0) {
+      return res.status(409).json({ data: null, error: { message: `A course with ID "${course_code}" already exists` } });
+    }
+
+    const [result] = await pool.execute(
+      'INSERT INTO courses (course_code, course_name, description, primary_instructor_id) VALUES (?, ?, ?, ?)',
+      [course_code, course_name, description || null, primary_instructor_id || null]
+    );
+
+    const [rows] = await pool.execute(
+      `SELECT ${COURSE_COLUMNS_SQL} FROM courses c LEFT JOIN instructors i ON c.primary_instructor_id = i.id WHERE c.id = ?`,
+      [result.insertId]
+    );
+    res.status(201).json({ data: { ...rows[0], semesters: [] }, error: null });
+  } catch (error) {
+    console.error('Error creating course:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/courses/:id - Single course with its sections, newest semester first
 router.get('/:id', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
   try {
-    const [courseRows] = await pool.execute(`
-      SELECT
-        c.id,
-        c.semester_id,
-        c.course_name,
-        c.course_code,
-        c.description,
-        c.primary_section_id,
-        c.primary_instructor_id,
-        c.sync_scheduling,
-        c.created_at,
-        sem.semester_name,
-        i.full_name as primary_instructor_name
-      FROM courses c
-      JOIN semesters sem ON c.semester_id = sem.id
-      LEFT JOIN instructors i ON c.primary_instructor_id = i.id
-      WHERE c.id = ?
-    `, [req.params.id]);
-
+    const [courseRows] = await pool.execute(
+      `SELECT ${COURSE_COLUMNS_SQL} FROM courses c LEFT JOIN instructors i ON c.primary_instructor_id = i.id WHERE c.id = ?`,
+      [req.params.id]
+    );
     if (courseRows.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Course not found' } });
     }
 
-    // Get sections in this course
     const [sectionRows] = await pool.execute(`
       SELECT
-        s.section_id,
-        s.section_title,
-        s.year_term,
-        s.enabled,
-        s.accept_new_students,
-        s.chat_model,
-        s.super_model,
-        s.created_at,
-        (s.section_id = ?) as is_primary,
-        COUNT(DISTINCT ss.student_id) as student_count,
-        COUNT(DISTINCT sc.case_id) as case_count
+        s.section_id, s.section_number, s.section_title, s.year_term,
+        s.semester_id, sem.semester_code, sem.semester_name, sem.start_date AS semester_start_date,
+        s.enabled, s.accept_new_students, s.chat_model, s.super_model,
+        s.primary_instructor_id, si.full_name AS primary_instructor_name, s.created_at,
+        COUNT(DISTINCT ss.student_id) AS student_count,
+        COUNT(DISTINCT sc.case_id) AS case_count
       FROM sections s
+      LEFT JOIN semesters sem ON sem.id = s.semester_id
+      LEFT JOIN instructors si ON si.id = s.primary_instructor_id
       LEFT JOIN student_sections ss ON s.section_id = ss.section_id
       LEFT JOIN section_cases sc ON s.section_id = sc.section_id
       WHERE s.course_id = ?
-      GROUP BY s.section_id, s.section_title, s.year_term, s.enabled, s.accept_new_students,
-               s.chat_model, s.super_model, s.created_at
-      ORDER BY s.section_title
-    `, [courseRows[0].primary_section_id, req.params.id]);
+      GROUP BY s.section_id, s.section_number, s.section_title, s.year_term,
+               s.semester_id, sem.semester_code, sem.semester_name, sem.start_date,
+               s.enabled, s.accept_new_students, s.chat_model, s.super_model,
+               s.primary_instructor_id, si.full_name, s.created_at
+      ORDER BY sem.start_date IS NULL, sem.start_date DESC, sem.semester_code,
+               s.section_number IS NULL, s.section_number, s.section_id
+    `, [req.params.id]);
 
-    res.json({
-      data: {
-        ...courseRows[0],
-        sections: sectionRows
-      },
-      error: null
-    });
+    res.json({ data: { ...courseRows[0], sections: sectionRows }, error: null });
   } catch (error) {
     console.error('Error fetching course:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
 
-// PUT /api/courses/:id - Update course
+// GET /api/courses/:id/next-section?semester_id= - What "+ Add section" would create
+router.get('/:id/next-section', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
+  try {
+    const semesterId = Number(req.query.semester_id);
+    if (!semesterId) {
+      return res.status(400).json({ data: null, error: { message: 'semester_id is required' } });
+    }
+    const sectionNumber = req.query.section_number ? Number(req.query.section_number) : null;
+    const preview = await previewSection(pool, req.params.id, semesterId, sectionNumber);
+    res.json({ data: preview, error: null });
+  } catch (error) {
+    sendProvisioningError(res, error, 'Error previewing section:');
+  }
+});
+
+// PUT /api/courses/:id - Update course (admin). Changing course_code does NOT rename
+// existing sections: their ids are keys referenced by chats and enrolments.
 router.put('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const { id } = req.params;
-    const {
-      course_name,
-      course_code,
-      description,
-      sync_scheduling,
-      primary_instructor_id,
-      cascade_to_sections
-    } = req.body;
+    const { description, primary_instructor_id, cascade_to_sections } = req.body;
+    const course_name = typeof req.body.course_name === 'string' ? req.body.course_name.trim() : undefined;
+    const course_code = typeof req.body.course_code === 'string' ? req.body.course_code.trim().toLowerCase() : undefined;
 
-    // Check course exists
     const [existing] = await connection.execute(
-      'SELECT id, semester_id, primary_instructor_id FROM courses WHERE id = ?',
+      'SELECT id, course_code, primary_instructor_id FROM courses WHERE id = ?',
       [id]
     );
     if (existing.length === 0) {
-      connection.release();
       return res.status(404).json({ data: null, error: { message: 'Course not found' } });
     }
 
-    // Check for duplicate name in same semester (if name changed)
-    if (course_name) {
-      const [duplicate] = await connection.execute(
-        'SELECT id FROM courses WHERE semester_id = ? AND course_name = ? AND id != ?',
-        [existing[0].semester_id, course_name, id]
-      );
+    // A non-conforming code already in the data stays saveable; only a CHANGED code is validated.
+    if (course_code !== undefined && course_code !== existing[0].course_code) {
+      const codeError = courseCodeError(course_code);
+      if (codeError) {
+        return res.status(400).json({ data: null, error: { message: codeError } });
+      }
+      const [duplicate] = await connection.execute('SELECT id FROM courses WHERE course_code = ? AND id != ?', [course_code, id]);
       if (duplicate.length > 0) {
-        connection.release();
-        return res.status(409).json({ data: null, error: { message: 'Another course with this name already exists in this semester' } });
+        return res.status(409).json({ data: null, error: { message: `Another course already uses ID "${course_code}"` } });
       }
     }
 
-    // Validate primary instructor when set
     const primaryIdProvided = primary_instructor_id !== undefined;
-    if (primaryIdProvided && primary_instructor_id) {
-      const [inst] = await connection.execute(
-        'SELECT id, active FROM instructors WHERE id = ?',
-        [primary_instructor_id]
-      );
-      if (inst.length === 0) {
-        connection.release();
-        return res.status(400).json({ data: null, error: { message: 'Primary instructor not found' } });
-      }
-      if (!inst[0].active) {
-        connection.release();
-        return res.status(400).json({ data: null, error: { message: 'Primary instructor is deactivated' } });
+    if (primaryIdProvided) {
+      const ownerError = await validateOwner(connection, primary_instructor_id);
+      if (ownerError) {
+        return res.status(400).json({ data: null, error: { message: ownerError } });
       }
     }
 
@@ -180,18 +241,17 @@ router.put('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
 
     await connection.execute(
       `UPDATE courses SET
-        course_name = COALESCE(?, course_name),
-        course_code = ?,
-        description = ?,
-        sync_scheduling = COALESCE(?, sync_scheduling),
-        primary_instructor_id = ${primaryIdProvided ? '?' : 'primary_instructor_id'}
+         course_code = COALESCE(?, course_code),
+         course_name = COALESCE(NULLIF(?, ''), course_name),
+         description = ?,
+         primary_instructor_id = ${primaryIdProvided ? '?' : 'primary_instructor_id'}
        WHERE id = ?`,
       primaryIdProvided
-        ? [course_name, course_code, description, sync_scheduling !== undefined ? (sync_scheduling ? 1 : 0) : null, primary_instructor_id || null, id]
-        : [course_name, course_code, description, sync_scheduling !== undefined ? (sync_scheduling ? 1 : 0) : null, id]
+        ? [course_code ?? null, course_name ?? null, description ?? null, primary_instructor_id || null, id]
+        : [course_code ?? null, course_name ?? null, description ?? null, id]
     );
 
-    // Cascade to sections only when caller asks AND we're setting a non-null instructor.
+    // Cascade to sections only when caller asks AND we're setting a non-null owner.
     let sectionsCascaded = 0;
     if (primaryIdProvided && primary_instructor_id && cascade_to_sections) {
       const [r] = await connection.execute(
@@ -203,7 +263,6 @@ router.put('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
 
     await connection.commit();
 
-    // Audit the primary-instructor change (if any).
     if (primaryIdProvided && primary_instructor_id !== existing[0].primary_instructor_id) {
       await writeAudit(req, {
         action: 'course.primary_instructor',
@@ -218,15 +277,9 @@ router.put('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
     }
 
     const [rows] = await connection.execute(
-      `SELECT c.id, c.semester_id, c.course_name, c.course_code, c.description,
-              c.primary_section_id, c.primary_instructor_id, c.sync_scheduling, c.created_at,
-              i.full_name AS primary_instructor_name
-         FROM courses c
-         LEFT JOIN instructors i ON c.primary_instructor_id = i.id
-        WHERE c.id = ?`,
+      `SELECT ${COURSE_COLUMNS_SQL} FROM courses c LEFT JOIN instructors i ON c.primary_instructor_id = i.id WHERE c.id = ?`,
       [id]
     );
-
     res.json({ data: { ...rows[0], cascaded_sections: sectionsCascaded }, error: null });
   } catch (error) {
     try { await connection.rollback(); } catch (_) {}
@@ -244,13 +297,11 @@ router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
     const { id } = req.params;
     const { cascade } = req.query;
 
-    // Check course exists
     const [existing] = await pool.execute('SELECT id, course_name FROM courses WHERE id = ?', [id]);
     if (existing.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Course not found' } });
     }
 
-    // Get sections in this course
     const [sections] = await pool.execute('SELECT section_id FROM sections WHERE course_id = ?', [id]);
 
     if (sections.length > 0 && cascade !== 'true') {
@@ -258,13 +309,10 @@ router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
       const sectionIds = sections.map(s => s.section_id);
       const placeholders = sectionIds.map(() => '?').join(',');
 
-      // Count students
       const [studentCount] = await pool.execute(
         `SELECT COUNT(DISTINCT student_id) as count FROM student_sections WHERE section_id IN (${placeholders})`,
         sectionIds
       );
-
-      // Count case assignments
       const [assignmentCount] = await pool.execute(
         `SELECT COUNT(*) as count FROM section_cases WHERE section_id IN (${placeholders})`,
         sectionIds
@@ -277,22 +325,19 @@ router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
           assignments_count: assignmentCount[0].count,
           requires_cascade: true
         },
-        error: { message: `Course has ${sections.length} section(s). Use cascade delete to remove everything.` }
+        error: { message: `Course has ${sections.length} section(s) across all semesters. Use cascade delete to remove everything.` }
       });
     }
 
-    // Cascade delete if requested
     if (cascade === 'true' && sections.length > 0) {
       const sectionIds = sections.map(s => s.section_id);
       const placeholders = sectionIds.map(() => '?').join(',');
 
-      // Delete student enrollments for these sections
       await pool.execute(
         `DELETE FROM student_sections WHERE section_id IN (${placeholders})`,
         sectionIds
       );
 
-      // Get section_case IDs for cleanup
       const [sectionCases] = await pool.execute(
         `SELECT id FROM section_cases WHERE section_id IN (${placeholders})`,
         sectionIds
@@ -301,34 +346,26 @@ router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
       if (sectionCases.length > 0) {
         const scIds = sectionCases.map(sc => sc.id);
         const scPlaceholders = scIds.map(() => '?').join(',');
-
-        // Delete section_case_scenarios
         await pool.execute(
           `DELETE FROM section_case_scenarios WHERE section_case_id IN (${scPlaceholders})`,
           scIds
         );
-
-        // Delete section_case_positions
         await pool.execute(
           `DELETE FROM section_case_positions WHERE section_case_id IN (${scPlaceholders})`,
           scIds
         );
       }
 
-      // Delete case assignments
       await pool.execute(
         `DELETE FROM section_cases WHERE section_id IN (${placeholders})`,
         sectionIds
       );
-
-      // Delete sections
       await pool.execute(
         `DELETE FROM sections WHERE section_id IN (${placeholders})`,
         sectionIds
       );
     }
 
-    // Delete the course
     await pool.execute('DELETE FROM courses WHERE id = ?', [id]);
 
     res.json({
@@ -346,77 +383,60 @@ router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   }
 });
 
-// POST /api/courses/:id/sections - Add section to course
-router.post('/:id/sections', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
+// POST /api/courses/:id/sections - Add a section of this course in a semester (admin only: course structure).
+// Body: { semester_id, section_number?, section_id?, section_title?, chat_model?, super_model?,
+//         primary_instructor_id?, enabled?, accept_new_students?, enrollment_key? }
+// section_number defaults to the next free number; section_id is minted as
+// {semester_code}-{course_code}-{n} unless explicitly overridden.
+router.post('/:id/sections', verifyToken, requireRole(['admin']), async (req, res) => {
+  const connection = await pool.getConnection();
   try {
-    const { id } = req.params;
-    const { section_id, section_title, enabled, accept_new_students, chat_model, super_model } = req.body;
-
-    // Check course exists
-    const [course] = await pool.execute('SELECT id, semester_id, primary_section_id FROM courses WHERE id = ?', [id]);
-    if (course.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Course not found' } });
+    const b = req.body || {};
+    if (!b.semester_id) {
+      return res.status(400).json({ data: null, error: { message: 'Semester is required' } });
     }
 
-    // Get semester name for year_term
-    const [semester] = await pool.execute('SELECT semester_name FROM semesters WHERE id = ?', [course[0].semester_id]);
+    await connection.beginTransaction();
+    const created = await createCourseSection(connection, {
+      courseId: Number(req.params.id),
+      semesterId: Number(b.semester_id),
+      sectionNumber: b.section_number,
+      sectionId: b.section_id,
+      sectionTitle: b.section_title,
+      chatModel: b.chat_model,
+      superModel: b.super_model,
+      primaryInstructorId: b.primary_instructor_id,
+      enabled: b.enabled,
+      acceptNewStudents: b.accept_new_students,
+      enrollmentKey: b.enrollment_key,
+    });
+    await connection.commit();
 
-    if (!section_id || !section_title) {
-      return res.status(400).json({ data: null, error: { message: 'Section ID and title are required' } });
-    }
-
-    // Check if section_id already exists
-    const [existingSection] = await pool.execute('SELECT section_id FROM sections WHERE section_id = ?', [section_id]);
-    if (existingSection.length > 0) {
-      return res.status(409).json({ data: null, error: { message: 'Section ID already exists' } });
-    }
-
-    // Create the section
-    await pool.execute(
-      `INSERT INTO sections (section_id, course_id, section_title, year_term, enabled, accept_new_students, chat_model, super_model)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        section_id,
-        id,
-        section_title,
-        semester[0]?.semester_name || null,
-        enabled !== false ? 1 : 0,
-        accept_new_students ? 1 : 0,
-        chat_model || null,
-        super_model || null
-      ]
-    );
-
-    // If this is the first section, make it the primary
-    if (!course[0].primary_section_id) {
-      await pool.execute('UPDATE courses SET primary_section_id = ? WHERE id = ?', [section_id, id]);
-    }
-
-    // Return created section
     const [rows] = await pool.execute(
-      'SELECT section_id, course_id, section_title, year_term, enabled, accept_new_students, chat_model, super_model, created_at FROM sections WHERE section_id = ?',
-      [section_id]
+      `SELECT section_id, course_id, semester_id, section_number, section_title, year_term, enabled,
+              accept_new_students, enrollment_key, chat_model, super_model, primary_instructor_id, created_at
+         FROM sections WHERE section_id = ?`,
+      [created.section_id]
     );
-
     res.status(201).json({ data: rows[0], error: null });
   } catch (error) {
-    console.error('Error adding section to course:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
+    try { await connection.rollback(); } catch (_) {}
+    sendProvisioningError(res, error, 'Error adding section to course:');
+  } finally {
+    connection.release();
   }
 });
 
-// DELETE /api/courses/:id/sections/:sectionId - Remove section from course (unassign, not delete)
-router.delete('/:id/sections/:sectionId', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
+// DELETE /api/courses/:id/sections/:sectionId - Remove section from course (unassign, not delete; admin only)
+router.delete('/:id/sections/:sectionId', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { id, sectionId } = req.params;
 
-    // Check course exists
-    const [course] = await pool.execute('SELECT id, primary_section_id FROM courses WHERE id = ?', [id]);
+    const [course] = await pool.execute('SELECT id FROM courses WHERE id = ?', [id]);
     if (course.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Course not found' } });
     }
 
-    // Check section belongs to this course
     const [section] = await pool.execute(
       'SELECT section_id FROM sections WHERE section_id = ? AND course_id = ?',
       [sectionId, id]
@@ -425,19 +445,10 @@ router.delete('/:id/sections/:sectionId', verifyToken, requireAdminOrInstructor,
       return res.status(404).json({ data: null, error: { message: 'Section not found in this course' } });
     }
 
-    // Unassign section from course (set course_id to NULL)
-    await pool.execute('UPDATE sections SET course_id = NULL WHERE section_id = ?', [sectionId]);
-
-    // If this was the primary section, clear primary_section_id
-    if (course[0].primary_section_id === sectionId) {
-      // Find another section to make primary, or set to NULL
-      const [remainingSections] = await pool.execute(
-        'SELECT section_id FROM sections WHERE course_id = ? LIMIT 1',
-        [id]
-      );
-      const newPrimaryId = remainingSections.length > 0 ? remainingSections[0].section_id : null;
-      await pool.execute('UPDATE courses SET primary_section_id = ? WHERE id = ?', [newPrimaryId, id]);
-    }
+    // The section keeps its semester; section_number is per course, so it goes with the course.
+    await pool.execute('UPDATE sections SET course_id = NULL, section_number = NULL WHERE section_id = ?', [sectionId]);
+    // Its case assignments stay, but can no longer follow this course's versions.
+    await detachMismatchedLinks(pool, sectionId);
 
     res.json({ data: { removed: true, section_id: sectionId }, error: null });
   } catch (error) {
@@ -446,279 +457,18 @@ router.delete('/:id/sections/:sectionId', verifyToken, requireAdminOrInstructor,
   }
 });
 
-// PUT /api/courses/:id/primary - Change primary section
-router.put('/:id/primary', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
+// PUT /api/courses/:id/sections/:sectionId/assign - Assign existing orphan section to course (admin only).
+// Body: { section_number? } -- defaults to the next free number in the section's semester.
+router.put('/:id/sections/:sectionId/assign', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
-    const { id } = req.params;
-    const { section_id } = req.body;
+    const { id, sectionId } = req.params;
 
-    if (!section_id) {
-      return res.status(400).json({ data: null, error: { message: 'Section ID is required' } });
-    }
-
-    // Check course exists
     const [course] = await pool.execute('SELECT id FROM courses WHERE id = ?', [id]);
     if (course.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Course not found' } });
     }
 
-    // Check section belongs to this course
-    const [section] = await pool.execute(
-      'SELECT section_id FROM sections WHERE section_id = ? AND course_id = ?',
-      [section_id, id]
-    );
-    if (section.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Section not found in this course' } });
-    }
-
-    await pool.execute('UPDATE courses SET primary_section_id = ? WHERE id = ?', [section_id, id]);
-
-    res.json({ data: { primary_section_id: section_id }, error: null });
-  } catch (error) {
-    console.error('Error changing primary section:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
-  }
-});
-
-// POST /api/courses/:id/sync - Push from primary section to other sections in course
-router.post('/:id/sync', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const {
-      sync_options = true,
-      sync_scenarios = true,
-      sync_scheduling = null // null = use course setting
-    } = req.body;
-
-    // Get course with primary section
-    const [course] = await pool.execute(
-      'SELECT id, course_name, primary_section_id, sync_scheduling FROM courses WHERE id = ?',
-      [id]
-    );
-    if (course.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Course not found' } });
-    }
-
-    if (!course[0].primary_section_id) {
-      return res.status(400).json({ data: null, error: { message: 'Course has no primary section set' } });
-    }
-
-    const primarySectionId = course[0].primary_section_id;
-    const shouldSyncScheduling = sync_scheduling !== null ? sync_scheduling : course[0].sync_scheduling;
-
-    // Get other sections in course
-    const [targetSections] = await pool.execute(
-      'SELECT section_id FROM sections WHERE course_id = ? AND section_id != ?',
-      [id, primarySectionId]
-    );
-
-    if (targetSections.length === 0) {
-      return res.status(400).json({ data: null, error: { message: 'No other sections in course to sync to' } });
-    }
-
-    // Get all case assignments from primary section
-    const [primaryCases] = await pool.execute(
-      `SELECT sc.id, sc.case_id, sc.chat_options, sc.open_date, sc.close_date, sc.manual_status,
-              sc.selection_mode, sc.require_order, sc.use_scenarios,
-              c.case_title
-       FROM section_cases sc
-       JOIN cases c ON sc.case_id = c.case_id
-       WHERE sc.section_id = ?`,
-      [primarySectionId]
-    );
-
-    const results = {
-      sections_synced: targetSections.length,
-      cases_in_primary: primaryCases.length,
-      details: []
-    };
-
-    // Sync each target section
-    for (const targetSection of targetSections) {
-      const sectionResult = {
-        section_id: targetSection.section_id,
-        cases_updated: 0,
-        cases_added: 0,
-        scenarios_synced: 0
-      };
-
-      for (const primaryCase of primaryCases) {
-        // Check if case already exists in target section
-        const [existingCase] = await pool.execute(
-          'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
-          [targetSection.section_id, primaryCase.case_id]
-        );
-
-        if (existingCase.length > 0) {
-          // Update existing case assignment
-          const updateFields = [];
-          const updateParams = [];
-
-          if (sync_options) {
-            updateFields.push('chat_options = ?');
-            updateParams.push(primaryCase.chat_options ? JSON.stringify(primaryCase.chat_options) : null);
-          }
-
-          if (sync_scenarios) {
-            updateFields.push('selection_mode = ?', 'require_order = ?', 'use_scenarios = ?');
-            updateParams.push(primaryCase.selection_mode, primaryCase.require_order, primaryCase.use_scenarios);
-          }
-
-          if (shouldSyncScheduling) {
-            updateFields.push('open_date = ?', 'close_date = ?', 'manual_status = ?');
-            updateParams.push(primaryCase.open_date, primaryCase.close_date, primaryCase.manual_status);
-          }
-
-          if (updateFields.length > 0) {
-            updateParams.push(existingCase[0].id);
-            await pool.execute(
-              `UPDATE section_cases SET ${updateFields.join(', ')} WHERE id = ?`,
-              updateParams
-            );
-            sectionResult.cases_updated++;
-          }
-
-          // Sync scenarios if requested
-          if (sync_scenarios && primaryCase.use_scenarios) {
-            // Delete existing scenarios for this section_case
-            await pool.execute(
-              'DELETE FROM section_case_scenarios WHERE section_case_id = ?',
-              [existingCase[0].id]
-            );
-
-            // Copy scenarios from primary
-            const [primaryScenarios] = await pool.execute(
-              'SELECT scenario_id, enabled, sort_order FROM section_case_scenarios WHERE section_case_id = ?',
-              [primaryCase.id]
-            );
-
-            for (const scenario of primaryScenarios) {
-              try {
-                await pool.execute(
-                  'INSERT INTO section_case_scenarios (section_case_id, scenario_id, enabled, sort_order) VALUES (?, ?, ?, ?)',
-                  [existingCase[0].id, scenario.scenario_id, scenario.enabled, scenario.sort_order]
-                );
-                sectionResult.scenarios_synced++;
-              } catch (err) {
-                console.error('Error syncing scenario:', err.message);
-              }
-            }
-
-            // Copy positions if they exist
-            await pool.execute(
-              'DELETE FROM section_case_positions WHERE section_case_id = ?',
-              [existingCase[0].id]
-            );
-
-            const [primaryPositions] = await pool.execute(
-              'SELECT position_id, enabled, sort_order FROM section_case_positions WHERE section_case_id = ?',
-              [primaryCase.id]
-            );
-
-            for (const pos of primaryPositions) {
-              try {
-                await pool.execute(
-                  'INSERT INTO section_case_positions (section_case_id, position_id, enabled, sort_order) VALUES (?, ?, ?, ?)',
-                  [existingCase[0].id, pos.position_id, pos.enabled, pos.sort_order]
-                );
-              } catch (err) {
-                console.error('Error syncing position:', err.message);
-              }
-            }
-          }
-        } else {
-          // Insert new case assignment
-          const chatOptions = sync_options ? primaryCase.chat_options : null;
-          const openDate = shouldSyncScheduling ? primaryCase.open_date : null;
-          const closeDate = shouldSyncScheduling ? primaryCase.close_date : null;
-          const manualStatus = shouldSyncScheduling ? primaryCase.manual_status : 'auto';
-
-          const [insertResult] = await pool.execute(
-            `INSERT INTO section_cases (section_id, case_id, active, chat_options, open_date, close_date, manual_status, selection_mode, require_order, use_scenarios)
-             VALUES (?, ?, FALSE, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              targetSection.section_id,
-              primaryCase.case_id,
-              chatOptions ? JSON.stringify(chatOptions) : null,
-              openDate,
-              closeDate,
-              manualStatus,
-              sync_scenarios ? primaryCase.selection_mode : 'student_choice',
-              sync_scenarios ? primaryCase.require_order : false,
-              sync_scenarios ? primaryCase.use_scenarios : false
-            ]
-          );
-
-          sectionResult.cases_added++;
-
-          // Copy scenarios if requested
-          if (sync_scenarios && primaryCase.use_scenarios) {
-            const newSectionCaseId = insertResult.insertId;
-
-            const [primaryScenarios] = await pool.execute(
-              'SELECT scenario_id, enabled, sort_order FROM section_case_scenarios WHERE section_case_id = ?',
-              [primaryCase.id]
-            );
-
-            for (const scenario of primaryScenarios) {
-              try {
-                await pool.execute(
-                  'INSERT INTO section_case_scenarios (section_case_id, scenario_id, enabled, sort_order) VALUES (?, ?, ?, ?)',
-                  [newSectionCaseId, scenario.scenario_id, scenario.enabled, scenario.sort_order]
-                );
-                sectionResult.scenarios_synced++;
-              } catch (err) {
-                console.error('Error copying scenario:', err.message);
-              }
-            }
-
-            // Copy positions
-            const [primaryPositions] = await pool.execute(
-              'SELECT position_id, enabled, sort_order FROM section_case_positions WHERE section_case_id = ?',
-              [primaryCase.id]
-            );
-
-            for (const pos of primaryPositions) {
-              try {
-                await pool.execute(
-                  'INSERT INTO section_case_positions (section_case_id, position_id, enabled, sort_order) VALUES (?, ?, ?, ?)',
-                  [newSectionCaseId, pos.position_id, pos.enabled, pos.sort_order]
-                );
-              } catch (err) {
-                console.error('Error copying position:', err.message);
-              }
-            }
-          }
-        }
-      }
-
-      results.details.push(sectionResult);
-    }
-
-    res.json({
-      data: results,
-      message: `Synced ${results.sections_synced} section(s) from primary`,
-      error: null
-    });
-  } catch (error) {
-    console.error('Error syncing course:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
-  }
-});
-
-// PUT /api/courses/:id/sections/:sectionId/assign - Assign existing orphan section to course
-router.put('/:id/sections/:sectionId/assign', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
-  try {
-    const { id, sectionId } = req.params;
-
-    // Check course exists
-    const [course] = await pool.execute('SELECT id, primary_section_id FROM courses WHERE id = ?', [id]);
-    if (course.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Course not found' } });
-    }
-
-    // Check section exists and is orphaned (no course_id)
-    const [section] = await pool.execute('SELECT section_id, course_id FROM sections WHERE section_id = ?', [sectionId]);
+    const [section] = await pool.execute('SELECT section_id, course_id, semester_id FROM sections WHERE section_id = ?', [sectionId]);
     if (section.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Section not found' } });
     }
@@ -726,15 +476,31 @@ router.put('/:id/sections/:sectionId/assign', verifyToken, requireAdminOrInstruc
       return res.status(400).json({ data: null, error: { message: 'Section is already assigned to a course' } });
     }
 
-    // Assign section to course
-    await pool.execute('UPDATE sections SET course_id = ? WHERE section_id = ?', [id, sectionId]);
-
-    // If course has no primary section, make this the primary
-    if (!course[0].primary_section_id) {
-      await pool.execute('UPDATE courses SET primary_section_id = ? WHERE id = ?', [sectionId, id]);
+    let sectionNumber = null;
+    if (section[0].semester_id != null) {
+      const requested = req.body?.section_number != null ? Number(req.body.section_number) : null;
+      if (requested != null) {
+        const [taken] = await pool.execute(
+          'SELECT section_id FROM sections WHERE course_id = ? AND semester_id = ? AND section_number = ?',
+          [id, section[0].semester_id, requested]
+        );
+        if (taken.length > 0) {
+          return res.status(409).json({ data: null, error: { message: `Section number ${requested} is already used by ${taken[0].section_id}` } });
+        }
+        sectionNumber = requested;
+      } else {
+        const [[row]] = await pool.execute(
+          'SELECT COALESCE(MAX(section_number), 0) + 1 AS n FROM sections WHERE course_id = ? AND semester_id = ?',
+          [id, section[0].semester_id]
+        );
+        sectionNumber = Number(row.n);
+      }
     }
 
-    res.json({ data: { assigned: true, section_id: sectionId, course_id: id }, error: null });
+    // Its existing case assignments stay Customized; link them to the course's versions on the Courses screen.
+    await pool.execute('UPDATE sections SET course_id = ?, section_number = ? WHERE section_id = ?', [id, sectionNumber, sectionId]);
+
+    res.json({ data: { assigned: true, section_id: sectionId, course_id: id, section_number: sectionNumber }, error: null });
   } catch (error) {
     console.error('Error assigning section to course:', error);
     res.status(500).json({ data: null, error: { message: error.message } });

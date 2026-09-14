@@ -1,8 +1,18 @@
 import express from 'express';
 import { pool } from '../db.js';
-import { verifyToken, requireRole } from '../middleware/auth.js';
+import { verifyToken } from '../middleware/auth.js';
+import {
+  canManageSectionCases,
+  canViewSection,
+  requireAdminOrInstructor,
+} from '../middleware/instructorAccess.js';
 
 const router = express.Router();
+
+// Global defaults and "all sections" copies stay admin-only; section-scoped writes follow the
+// section-case rule (admin, primary instructor, or TA with can_manage_cases).
+const isAdminUser = (req) => Boolean(req.user?.superuser || req.user?.role === 'admin');
+const forbid = (res, message) => res.status(403).json({ data: null, error: { message } });
 
 // Default chat options - used when section_cases.chat_options is NULL
 const DEFAULT_CHAT_OPTIONS = {
@@ -307,7 +317,7 @@ router.get('/defaults', async (req, res) => {
 
 // POST /api/chat-options/defaults - Create or update defaults
 // Body: { section_id: string|null, chat_options: object }
-router.post('/defaults', verifyToken, requireRole(['admin']), async (req, res) => {
+router.post('/defaults', verifyToken, requireAdminOrInstructor, async (req, res) => {
   const { section_id, chat_options } = req.body;
 
   if (!chat_options) {
@@ -315,6 +325,13 @@ router.post('/defaults', verifyToken, requireRole(['admin']), async (req, res) =
   }
 
   try {
+    if (!section_id && !isAdminUser(req)) {
+      return forbid(res, 'Only admins can change the global chat options default');
+    }
+    if (section_id && !(await canManageSectionCases(req, section_id))) {
+      return forbid(res, 'You do not have permission to manage cases on this section');
+    }
+
     const chatOptionsJson = JSON.stringify(chat_options);
 
     // First, try to update existing record (LIMIT 1 to prevent multiple updates)
@@ -346,7 +363,7 @@ router.post('/defaults', verifyToken, requireRole(['admin']), async (req, res) =
 
 // DELETE /api/chat-options/defaults - Delete section-specific defaults
 // Query params: ?section_id=X (required - cannot delete global default)
-router.delete('/defaults', verifyToken, requireRole(['admin']), async (req, res) => {
+router.delete('/defaults', verifyToken, requireAdminOrInstructor, async (req, res) => {
   const { section_id } = req.query;
 
   if (!section_id) {
@@ -357,6 +374,10 @@ router.delete('/defaults', verifyToken, requireRole(['admin']), async (req, res)
   }
 
   try {
+    if (!(await canManageSectionCases(req, section_id))) {
+      return forbid(res, 'You do not have permission to manage cases on this section');
+    }
+
     const [result] = await pool.execute(
       'DELETE FROM chat_options_defaults WHERE section_id = ?',
       [section_id]
@@ -382,7 +403,9 @@ router.delete('/defaults', verifyToken, requireRole(['admin']), async (req, res)
 
 // POST /api/chat-options/bulk-copy - Copy chat options to multiple section-cases
 // Body: { source_section_id, source_case_id, target: 'section'|'all', target_section_id? }
-router.post('/bulk-copy', async (req, res) => {
+// Rows that follow a course case version are skipped: their chat_options are written through
+// from the version (services/caseVersionSync.js) and a copy here would be overwritten.
+router.post('/bulk-copy', verifyToken, requireAdminOrInstructor, async (req, res) => {
   const { source_section_id, source_case_id, target, target_section_id } = req.body;
 
   if (!source_section_id || !source_case_id || !target) {
@@ -407,6 +430,18 @@ router.post('/bulk-copy', async (req, res) => {
   }
 
   try {
+    if (!isAdminUser(req)) {
+      if (target === 'all') {
+        return forbid(res, 'Only admins can copy chat options to every section');
+      }
+      if (!(await canViewSection(req, source_section_id))) {
+        return forbid(res, 'Access denied to the source section');
+      }
+      if (!(await canManageSectionCases(req, target_section_id))) {
+        return forbid(res, 'You do not have permission to manage cases on the target section');
+      }
+    }
+
     // Get source chat options
     const [sourceRows] = await pool.execute(
       'SELECT chat_options FROM section_cases WHERE section_id = ? AND case_id = ?',
@@ -423,28 +458,29 @@ router.post('/bulk-copy', async (req, res) => {
     const sourceOptions = sourceRows[0].chat_options || DEFAULT_CHAT_OPTIONS;
     const chatOptionsJson = JSON.stringify(sourceOptions);
 
-    let result;
-    if (target === 'section') {
-      // Copy to all cases in target section
-      [result] = await pool.execute(
-        `UPDATE section_cases
-         SET chat_options = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE section_id = ? AND NOT (section_id = ? AND case_id = ?)`,
-        [chatOptionsJson, target_section_id, source_section_id, source_case_id]
-      );
-    } else {
-      // Copy to all cases in all sections
-      [result] = await pool.execute(
-        `UPDATE section_cases
-         SET chat_options = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE NOT (section_id = ? AND case_id = ?)`,
-        [chatOptionsJson, source_section_id, source_case_id]
-      );
-    }
+    const scopeSql = target === 'section' ? 'section_id = ? AND ' : '';
+    const scopeParams = target === 'section' ? [target_section_id] : [];
+    const notSourceSql = 'NOT (section_id = ? AND case_id = ?)';
 
+    // section_cases has no updated_at column; the previous version referenced one and failed.
+    const [result] = await pool.execute(
+      `UPDATE section_cases
+       SET chat_options = ?
+       WHERE ${scopeSql}${notSourceSql} AND version_id IS NULL`,
+      [chatOptionsJson, ...scopeParams, source_section_id, source_case_id]
+    );
+    const [[{ skipped }]] = await pool.execute(
+      `SELECT COUNT(*) AS skipped FROM section_cases
+       WHERE ${scopeSql}${notSourceSql} AND version_id IS NOT NULL`,
+      [...scopeParams, source_section_id, source_case_id]
+    );
+
+    const skippedNote = skipped > 0
+      ? `; skipped ${skipped} that follow course settings (edit those on the Courses screen)`
+      : '';
     res.json({
-      data: { updated: result.affectedRows },
-      message: `Chat options copied to ${result.affectedRows} section-case assignment(s)`,
+      data: { updated: result.affectedRows, skipped_following_version: skipped },
+      message: `Chat options copied to ${result.affectedRows} section-case assignment(s)${skippedNote}`,
       error: null
     });
   } catch (error) {

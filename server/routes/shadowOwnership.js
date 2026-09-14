@@ -83,14 +83,14 @@ const SHADOW_TARGETS = {
     ownerCol: 'primary_instructor_id',
     ownerTypeCol: null,
     labelSql: 'course_name',
-    extraSql: 'semester_id'
+    extraSql: 'course_code'
   },
   section: {
     table: 'sections',
     pkCol: 'section_id',
     ownerCol: 'primary_instructor_id',
     ownerTypeCol: null,
-    labelSql: 'section_name',
+    labelSql: 'section_title',
     extraSql: 'course_id'
   }
 };

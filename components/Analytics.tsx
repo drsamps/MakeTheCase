@@ -5,6 +5,7 @@ import Pagination from './ui/Pagination';
 import SortableHeader from './ui/SortableHeader';
 import StatusBadge, { StatusType } from './ui/StatusBadge';
 import ScoreChart from './ui/ScoreChart';
+import { SemesterScopeNote, useSemesterFilter } from './courses/semesterFilter';
 
 interface AnalyticsProps {
   onNavigate?: (section: string, subTab?: string) => void;
@@ -65,6 +66,7 @@ interface FilterOption {
   section_id: string;
   section_title: string;
   year_term?: string;
+  semester_id?: number | null;
 }
 
 interface CaseOption {
@@ -102,6 +104,9 @@ const STATUS_OPTIONS = [
 ];
 
 const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, initialCaseId }) => {
+  // Header Semester selector: limits the section picker, and "ALL Sections" means that semester's.
+  const { inScope, semesterId, selectedSemester } = useSemesterFilter();
+
   // Loading state
   const [isLoading, setIsLoading] = useState(true);
 
@@ -221,6 +226,18 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     }
   }, [initialSectionId, sectionOptions]);
 
+  // Drop picked sections that are outside the header semester.
+  useEffect(() => {
+    if (selectedSections.includes('all') || sectionOptions.length === 0) return;
+    const kept = selectedSections.filter(id => {
+      const option = sectionOptions.find(s => s.section_id === id);
+      return !option || inScope(option);
+    });
+    if (kept.length !== selectedSections.length) {
+      setSelectedSections(kept.length > 0 ? kept : ['all']);
+    }
+  }, [inScope, selectedSections, sectionOptions]);
+
   // Handle initial case selection from navigation
   useEffect(() => {
     if (initialCaseId && caseOptions.length > 0) {
@@ -234,6 +251,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     try {
       const params = new URLSearchParams();
       params.set('section_ids', selectedSections.includes('all') ? 'all' : selectedSections.join(','));
+      if (selectedSections.includes('all') && semesterId != null) {
+        params.set('semester_id', String(semesterId));
+      }
       params.set('case_ids', selectedCases.includes('all') ? 'all' : selectedCases.join(','));
       params.set('statuses', selectedStatuses.includes('all') ? 'all' : selectedStatuses.join(','));
       if (studentSearch.trim()) {
@@ -255,7 +275,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     } finally {
       setIsLoading(false);
     }
-  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, pageSize, currentPage, sortKey, sortDirection]);
+  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, pageSize, currentPage, sortKey, sortDirection, semesterId]);
 
   useEffect(() => {
     if (sectionOptions.length > 0 || caseOptions.length > 0) {
@@ -266,7 +286,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
   // Reset to page 1 when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, pageSize]);
+  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, pageSize, semesterId]);
 
   // Handle sorting
   const handleSort = (key: SortKey) => {
@@ -632,11 +652,11 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
 
   // Convert options for MultiSelect
   const sectionSelectOptions: MultiSelectOption[] = useMemo(() =>
-    sectionOptions.map(s => ({
+    sectionOptions.filter(s => inScope(s)).map(s => ({
       value: s.section_id,
       label: s.section_title,
       subtitle: s.year_term
-    })), [sectionOptions]
+    })), [sectionOptions, inScope]
   );
 
   const caseSelectOptions: MultiSelectOption[] = useMemo(() =>
@@ -689,7 +709,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
 
   // Generate filter description for headings
   const getFilterDescription = useMemo(() => {
-    let sectionText = 'all sections';
+    let sectionText = selectedSemester ? `all ${selectedSemester.semester_name} sections` : 'all sections';
     let caseText = 'all cases';
 
     if (!selectedSections.includes('all') && selectedSections.length > 0) {
@@ -711,7 +731,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     }
 
     return { sectionText, caseText };
-  }, [selectedSections, selectedCases, sectionOptions, caseOptions]);
+  }, [selectedSections, selectedCases, sectionOptions, caseOptions, selectedSemester]);
 
   if (isLoading && students.length === 0) {
     return (
@@ -764,6 +784,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
               placeholder="Select sections..."
               allLabel="ALL Sections"
             />
+            <SemesterScopeNote className="mt-1" />
           </div>
           <div className="min-w-56">
             <label className="block text-xs font-medium text-gray-700 mb-1">Cases</label>

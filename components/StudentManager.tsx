@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/apiClient';
 import { personLabel } from '../utils/confirmLabels';
+import { SemesterScopeNote, useSemesterFilter } from './courses/semesterFilter';
 
 interface Student {
   id: string;
@@ -19,6 +20,7 @@ interface Section {
   section_id: string;
   section_title: string;
   year_term: string;
+  semester_id?: number | null;
 }
 
 interface StudentSection {
@@ -36,6 +38,8 @@ interface StudentManagerProps {
 }
 
 const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter }) => {
+  // Header Semester selector: section options, and which students "All sections" covers.
+  const { inScope, selection: semesterSelection } = useSemesterFilter();
   const [students, setStudents] = useState<Student[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -158,6 +162,15 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
       );
     }
 
+    // Header semester: "All sections" means students enrolled in any of that semester's sections.
+    if (semesterSelection !== 'all' && sectionFilter === 'all') {
+      const semesterSectionIds = new Set(sections.filter(sec => inScope(sec)).map(sec => sec.section_id));
+      result = result.filter(student =>
+        (student.section_id != null && semesterSectionIds.has(student.section_id)) ||
+        (student.section_ids || []).some(id => semesterSectionIds.has(id))
+      );
+    }
+
     // Apply section filter — match against legacy section_id OR junction memberships
     if (sectionFilter !== 'all') {
       if (sectionFilter === 'unassigned') {
@@ -200,7 +213,18 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
     });
 
     return result;
-  }, [students, searchQuery, sectionFilter, sortField, sortDirection, sections]);
+  }, [students, searchQuery, sectionFilter, sortField, sortDirection, sections, semesterSelection, inScope]);
+
+  // A section filter outside the header semester (or "Unassigned", which has no semester) resets to All.
+  useEffect(() => {
+    if (semesterSelection === 'all' || sectionFilter === 'all') return;
+    if (sectionFilter === 'unassigned') {
+      setSectionFilter('all');
+      return;
+    }
+    const picked = sections.find(sec => sec.section_id === sectionFilter);
+    if (picked && !inScope(picked)) setSectionFilter('all');
+  }, [semesterSelection, sectionFilter, sections, inScope]);
 
   // Sort indicator component
   const SortIndicator: React.FC<{ field: SortField }> = ({ field }) => {
@@ -489,13 +513,14 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 bg-white"
           >
             <option value="all">All sections</option>
-            <option value="unassigned">— Unassigned —</option>
-            {sections.map((section) => (
+            {semesterSelection === 'all' && <option value="unassigned">— Unassigned —</option>}
+            {sections.filter(section => inScope(section)).map((section) => (
               <option key={section.section_id} value={section.section_id}>
                 {section.section_title}
               </option>
             ))}
           </select>
+          <SemesterScopeNote className="mt-1" />
         </div>
       </div>
 

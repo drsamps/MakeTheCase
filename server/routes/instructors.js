@@ -86,8 +86,7 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
           WHERE isec2.section_id IN (
             SELECT s.section_id
             FROM sections s
-            JOIN courses c ON s.course_id = c.id
-            JOIN instructor_semesters isem2 ON c.semester_id = isem2.semester_id
+            JOIN instructor_semesters isem2 ON s.semester_id = isem2.semester_id
             WHERE isem2.instructor_id = ?
           )
         )
@@ -154,11 +153,11 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => {
     // Get semester assignments
     const [semesterRows] = await pool.execute(`
       SELECT isem.id, isem.semester_id, isem.assigned_at,
-             sem.semester_name, sem.is_current
+             sem.semester_code, sem.semester_name, sem.is_current
       FROM instructor_semesters isem
       JOIN semesters sem ON isem.semester_id = sem.id
       WHERE isem.instructor_id = ?
-      ORDER BY sem.is_current DESC, sem.semester_name DESC
+      ORDER BY sem.start_date IS NULL, sem.start_date DESC, sem.semester_code
     `, [id]);
 
     // Get section assignments (TA)
@@ -169,9 +168,9 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, async (req, res) => {
       FROM instructor_sections isec
       JOIN sections s ON isec.section_id = s.section_id
       LEFT JOIN courses c ON s.course_id = c.id
-      LEFT JOIN semesters sem ON c.semester_id = sem.id
+      LEFT JOIN semesters sem ON s.semester_id = sem.id
       WHERE isec.instructor_id = ?
-      ORDER BY sem.is_current DESC, c.course_name ASC, s.section_title ASC
+      ORDER BY sem.start_date IS NULL, sem.start_date DESC, c.course_name ASC, s.section_title ASC
     `, [id]);
 
     instructor.semesters = semesterRows.map(r => ({
@@ -780,11 +779,11 @@ router.get('/:id/semesters', verifyToken, requireAdminOrInstructor, async (req, 
 
     const [rows] = await pool.execute(`
       SELECT isem.id, isem.semester_id, isem.assigned_at, isem.assigned_by,
-             sem.semester_name, sem.is_current, sem.start_date, sem.end_date
+             sem.semester_code, sem.semester_name, sem.is_current, sem.start_date, sem.end_date
       FROM instructor_semesters isem
       JOIN semesters sem ON isem.semester_id = sem.id
       WHERE isem.instructor_id = ?
-      ORDER BY sem.is_current DESC, sem.semester_name DESC
+      ORDER BY sem.start_date IS NULL, sem.start_date DESC, sem.semester_code
     `, [id]);
 
     res.json({
@@ -893,9 +892,9 @@ router.get('/:id/sections', verifyToken, requireAdminOrInstructor, async (req, r
       FROM instructor_sections isec
       JOIN sections s ON isec.section_id = s.section_id
       LEFT JOIN courses c ON s.course_id = c.id
-      LEFT JOIN semesters sem ON c.semester_id = sem.id
+      LEFT JOIN semesters sem ON s.semester_id = sem.id
       WHERE isec.instructor_id = ?
-      ORDER BY sem.semester_name DESC, c.course_name ASC, s.section_title ASC
+      ORDER BY sem.start_date IS NULL, sem.start_date DESC, c.course_name ASC, s.section_title ASC
     `, [id]);
 
     res.json({

@@ -329,12 +329,9 @@ const App: React.FC = () => {
                 setError('Could not load course sections from the database.');
             }
         } else if (data) {
-            // Sort by year_term descending, then section_title ascending
-            const sorted = [...data].sort((a, b) => {
-                const termCompare = (b.year_term || '').localeCompare(a.year_term || '');
-                if (termCompare !== 0) return termCompare;
-                return (a.section_title || '').localeCompare(b.section_title || '');
-            });
+            // The server orders sections newest semester first (by semesters.start_date).
+            // Do not re-sort by year_term: it is display text, and "Fall 2026" < "Winter 2026".
+            const sorted = data;
             setSections(sorted);
             if (sorted.length === 0) {
                 setSelectedSection('other');
@@ -1177,7 +1174,7 @@ const App: React.FC = () => {
         console.error('Failed to get AI response:', err);
         const errorMessage: Message = {
           role: MessageRole.MODEL,
-          content: "I appreciate your position. Could you elaborate on why you believe that?"
+          content: "Okay, can you explain why you recommend that action?"
         };
         setMessages(prev => [...prev, errorMessage]);
       } finally {

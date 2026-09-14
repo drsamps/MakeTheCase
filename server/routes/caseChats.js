@@ -261,6 +261,11 @@ router.patch('/:id/complete', async (req, res) => {
 router.get('/', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { status, section_id, student_id, case_id } = req.query;
+    // Optional: the dashboard header Semester selector. Narrows within the access scope above,
+    // never widens it.
+    const semesterId = req.query.semester_id != null && req.query.semester_id !== 'all'
+      ? parseInt(req.query.semester_id, 10) || null
+      : null;
     let { limit = 100, offset = 0 } = req.query;
 
     // Ensure limit and offset are valid numbers
@@ -304,6 +309,11 @@ router.get('/', verifyToken, requireRole(['admin', 'instructor']), async (req, r
       params.push(section_id);
     }
 
+    if (semesterId) {
+      query += ' AND sec.semester_id = ?';
+      params.push(semesterId);
+    }
+
     if (student_id) {
       query += ' AND cc.student_id = ?';
       params.push(student_id);
@@ -322,8 +332,10 @@ router.get('/', verifyToken, requireRole(['admin', 'instructor']), async (req, r
     const [rows] = await pool.query(query, params);
 
     // Get total count for pagination
-    let countQuery = 'SELECT COUNT(*) as total FROM case_chats cc WHERE 1=1';
-    const countParams = [];
+    let countQuery = semesterId
+      ? 'SELECT COUNT(*) as total FROM case_chats cc JOIN sections sec ON cc.section_id = sec.section_id WHERE sec.semester_id = ?'
+      : 'SELECT COUNT(*) as total FROM case_chats cc WHERE 1=1';
+    const countParams = semesterId ? [semesterId] : [];
 
     if (scopedSectionIds) {
       countQuery += ` AND cc.section_id IN (${scopedSectionIds.map(() => '?').join(',')})`;
