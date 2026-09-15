@@ -2071,7 +2071,7 @@ const App: React.FC = () => {
 
             {/* Position selection for 'explicit' method now happens IN the chat after protagonist greeting */}
 
-            <p className="text-xs text-gray-500 italic px-2">Disclosure: Some courses and cases allow you to share your chat conversation with the instructor to track progress and improve the dialog for future students.</p>
+            <p className="text-xs text-gray-500 italic px-2">Disclosure: In order to facilitate assessment and provide feedback in this case chat activity, your conversation with the chatbot will be recorded in a secure database. In addition to providing you with feedback at the end of the activity, the conversation transcript will be made available to the instructor for review.</p>
             
             {error && (
               <div className="p-4 bg-red-50 border-2 border-red-300 rounded-lg">
