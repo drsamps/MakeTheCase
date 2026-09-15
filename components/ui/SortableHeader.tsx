@@ -6,6 +6,9 @@ interface SortableHeaderProps<T extends string> {
   currentSortKey: T | null;
   sortDirection: 'asc' | 'desc';
   onSort: (key: T) => void;
+  /** Replaces the default cell padding (p-3), e.g. "px-4 py-3 whitespace-nowrap" to match a table's other headers. */
+  cellClassName?: string;
+  title?: string;
 }
 
 function SortableHeader<T extends string>({
@@ -13,12 +16,16 @@ function SortableHeader<T extends string>({
   sortKey,
   currentSortKey,
   sortDirection,
-  onSort
+  onSort,
+  cellClassName = 'p-3',
+  title
 }: SortableHeaderProps<T>) {
   return (
     <th
       onClick={() => onSort(sortKey)}
-      className="p-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+      title={title}
+      aria-sort={currentSortKey === sortKey ? (sortDirection === 'asc' ? 'ascending' : 'descending') : undefined}
+      className={`${cellClassName} text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100`}
     >
       <div className="flex items-center gap-2">
         <span>{label}</span>

@@ -229,6 +229,49 @@ router.post(
   }
 );
 
+// GET /api/models/usage - Where each model is referenced (admin only), for the
+// Admin > Models delete guard. Declared before GET /:id so "usage" isn't read as a model id.
+// sections: current assignments (DELETE refuses these). chats/evaluations: history that
+// loses its model reference on delete (FKs are ON DELETE SET NULL).
+router.get('/usage', verifyToken, requireRole(['admin']), requirePermission('models'), async (req, res) => {
+  try {
+    const [[sectionRows], [chatRows], [evalRows]] = await Promise.all([
+      pool.execute(
+        `SELECT m.model_id, COUNT(DISTINCT s.section_id) AS cnt
+           FROM models m
+           JOIN sections s ON s.chat_model = m.model_id OR s.super_model = m.model_id
+          GROUP BY m.model_id`
+      ),
+      pool.execute(
+        `SELECT chat_model AS model_id, COUNT(*) AS cnt
+           FROM case_chats WHERE chat_model IS NOT NULL
+          GROUP BY chat_model`
+      ),
+      pool.execute(
+        `SELECT super_model AS model_id, COUNT(*) AS cnt
+           FROM evaluations WHERE super_model IS NOT NULL
+          GROUP BY super_model`
+      ),
+    ]);
+
+    const usage = {};
+    const add = (rows, key) => {
+      for (const r of rows) {
+        usage[r.model_id] ??= { sections: 0, chats: 0, evaluations: 0 };
+        usage[r.model_id][key] = Number(r.cnt);
+      }
+    };
+    add(sectionRows, 'sections');
+    add(chatRows, 'chats');
+    add(evalRows, 'evaluations');
+
+    res.json({ data: usage, error: null });
+  } catch (error) {
+    console.error('Error fetching model usage:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 // GET /api/models/:id - Get single model
 router.get('/:id', async (req, res) => {
   try {
@@ -494,9 +537,15 @@ router.post(
 router.delete('/:id', verifyToken, requireRole(['admin']), requirePermission('models'), async (req, res) => {
   try {
     const { id } = req.params;
-    const [existing] = await pool.execute('SELECT model_id FROM models WHERE model_id = ?', [id]);
+    const [existing] = await pool.execute('SELECT model_id, default_model FROM models WHERE model_id = ?', [id]);
     if (existing.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Model not found' } });
+    }
+    if (existing[0].default_model) {
+      return res.status(409).json({
+        data: null,
+        error: { message: 'This is the default model. Make another model the default before deleting it.' },
+      });
     }
 
     const [refs] = await pool.execute(

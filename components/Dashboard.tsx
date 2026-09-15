@@ -45,6 +45,7 @@ import Analytics from './Analytics';
 import PositionAnalytics from './PositionAnalytics';
 import SectionResultsSummary from './SectionResultsSummary';
 import HelpTooltip from './ui/HelpTooltip';
+import ModelsList, { type Model, type ModelTestOutcome, type ModelUsage } from './models/ModelsList';
 import { ChatOptionsHelp, PersonasHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
 import { personLabel, caseLabel, quote } from '../utils/confirmLabels';
@@ -177,28 +178,6 @@ interface EvaluationData {
   liked: string | null;
   improve: string | null;
   allow_rechat: boolean;
-}
-
-interface Model {
-  model_id: string;
-  model_name: string;
-  vendor?: string;
-  enabled: boolean;
-  default?: boolean;
-  cpm_input?: number | null;
-  cpm_input_cache?: number | null;
-  cpm_output?: number | null;
-  temperature?: number | null;
-  reasoning_effort?: string | null;
-  release_date?: string | null;
-  type?: string | null;
-  supported_parameters?: string[] | null;
-  default_parameters?: Record<string, unknown> | null;
-  parameter_settings?: Record<string, unknown> | null;
-  test_date?: string | null;
-  test_status?: 'pass' | 'fail' | null;
-  test_result?: string | null;
-  test_results?: Record<string, unknown> | null;
 }
 
 interface Case {
@@ -968,7 +947,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
   };
   const MAX_TEST_RESULTS_LENGTH = 200;
-  const sanitizeTextForDisplay = (value: string) => value.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 
   const persistModelTestResult = async (modelId: string, testResult: string) => {
     const authToken = localStorage.getItem('admin_auth_token');
@@ -3766,11 +3744,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
-  const handleTestModel = async (model: Model) => {
+  /** Runs one model test and returns the outcome without any popup (used by Test all). */
+  const runModelTest = async (model: Model): Promise<ModelTestOutcome> => {
     const authToken = localStorage.getItem('admin_auth_token');
     if (!authToken) {
-      alert('You must be signed in to test models.');
-      return;
+      return { success: false, message: 'You must be signed in to test models.' };
     }
     setTestingModelId(model.model_id);
     try {
@@ -3792,22 +3770,32 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         if (usage.prompt_tokens) usageBits.push(`prompt=${usage.prompt_tokens}`);
         if (usage.completion_tokens) usageBits.push(`completion=${usage.completion_tokens}`);
         const usageText = usageBits.length ? ` (${usageBits.join(', ')})` : '';
-        alert(`Pass: ${model.model_name}\n${preview}${usageText}`);
-      } else {
-        const errMsg = testResults.error || result?.error?.message || `Server returned ${response.status}`;
-        alert(`Fail: ${model.model_name}\n${errMsg}`);
+        return { success: true, message: `${preview}${usageText}` };
       }
+      return { success: false, message: testResults.error || result?.error?.message || `Server returned ${response.status}` };
     } catch (err: any) {
       console.error('Failed to test model:', err);
       await fetchModels();
-      alert(`Failed to test model: ${err.message}`);
+      return { success: false, message: `Failed to test model: ${err.message}` };
     } finally {
       setTestingModelId(null);
     }
   };
 
-  const handleDeleteModel = async (model: Model) => {
-    const confirmed = window.confirm(`Delete model "${model.model_name}"? This cannot be undone.`);
+  const handleTestModel = async (model: Model) => {
+    const outcome = await runModelTest(model);
+    alert(`${outcome.success ? 'Pass' : 'Fail'}: ${model.model_name}\n${outcome.message}`);
+  };
+
+  const handleDeleteModel = async (model: Model, usage?: ModelUsage) => {
+    const history = [
+      usage?.chats ? `${usage.chats} past chat${usage.chats === 1 ? '' : 's'}` : '',
+      usage?.evaluations ? `${usage.evaluations} evaluation${usage.evaluations === 1 ? '' : 's'}` : '',
+    ].filter(Boolean);
+    const historyWarning = history.length
+      ? `\n\nPast records that used this model (${history.join(' and ')}) will no longer show which model was used. Consider disabling it instead.`
+      : '';
+    const confirmed = window.confirm(`Delete model ${quote(model.model_name)}? This cannot be undone.${historyWarning}`);
     if (!confirmed) return;
     const authToken = localStorage.getItem('admin_auth_token');
     if (!authToken) {
@@ -3903,26 +3891,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     </th>
   );
 
-  const vendorLabel = (vendor?: string | null) => {
-    switch ((vendor || '').toLowerCase()) {
-      case 'openai': return 'OpenAI';
-      case 'anthropic': return 'Anthropic';
-      case 'google': return 'Google';
-      case 'openrouter': return 'OpenRouter';
-      default: return vendor || 'Unknown';
-    }
-  };
-
-  const vendorBadgeClasses = (vendor?: string | null) => {
-    switch ((vendor || '').toLowerCase()) {
-      case 'openrouter': return 'bg-purple-100 text-purple-700';
-      case 'anthropic': return 'bg-orange-100 text-orange-700';
-      case 'google': return 'bg-blue-100 text-blue-700';
-      case 'openai': return 'bg-emerald-100 text-emerald-700';
-      default: return 'bg-gray-100 text-gray-700';
-    }
-  };
-
   const providerLabel = (modelId: string) => {
     const provider = detectProvider(modelId);
     if (provider === 'openai') return 'OpenAI';
@@ -3936,13 +3904,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     return `${providerLabel(modelId)} • ${name}`;
   };
 
-  const formatCost = (val: number | null | undefined) => {
-    if (val === null || val === undefined) return '—';
-    const num = typeof val === 'string' ? parseFloat(val) : val;
-    if (Number.isNaN(num)) return '—';
-    return `$${num.toFixed(2)}`;
-  };
-
   const parseApiResponse = async (response: Response) => {
     const contentType = response.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
@@ -3951,195 +3912,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     const text = await response.text();
     return { data: null, error: { message: text } };
   };
-
-  const renderModelsTab = () => (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">AI Models</h2>
-          <p className="text-sm text-gray-500">{sortedModels.length} model{sortedModels.length !== 1 ? 's' : ''} configured</p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={openCreateModelModal}
-            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
-          >
-            + Add Model
-          </button>
-          <button
-            onClick={openOpenRouterImportModal}
-            className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700"
-          >
-            + Add Model from OpenRouter
-          </button>
-          <button
-            onClick={fetchModels}
-            disabled={isLoadingModels}
-            aria-label="Refresh models list"
-            title="Refresh models list"
-            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ${isLoadingModels ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-          </button>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-        {isLoadingModels ? (
-          <div className="p-6 text-sm text-gray-600">Loading models...</div>
-        ) : sortedModels.length === 0 ? (
-          <div className="p-6 text-sm text-gray-600">No models found. Add a model to get started.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Model</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Provider</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Default</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" title="Cost per million input tokens">Input $/M</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" title="Cost per million output tokens">Output $/M</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200">
-                {sortedModels.map(model => {
-                  const hasPassedTest = model.test_status === 'pass';
-                  const hasFailedTest = model.test_status === 'fail';
-                  const testedAt = model.test_date ? new Date(model.test_date).toLocaleString() : 'unknown date';
-                  const failDetail = (model.test_results && typeof model.test_results === 'object'
-                    ? ((model.test_results as Record<string, unknown>).error || (model.test_results as Record<string, unknown>).message) as string | undefined
-                    : undefined) || model.test_result || '';
-                  const safeResult = sanitizeTextForDisplay(String(failDetail));
-                  return (
-                    <React.Fragment key={model.model_id}>
-                      <tr className={`hover:bg-gray-50 ${model.default ? 'bg-yellow-50' : ''}`}>
-                        <td className="px-4 py-3">
-                          <div className="text-sm font-semibold text-gray-900">{model.model_name}</div>
-                          <div className="text-xs text-gray-500">{model.model_id}</div>
-                          {(model.temperature !== null && model.temperature !== undefined) || model.reasoning_effort ? (
-                            <div className="text-[11px] text-gray-500 mt-1 space-x-2">
-                              {model.temperature !== null && model.temperature !== undefined && (
-                                <span>temp: {model.temperature}</span>
-                              )}
-                              {model.reasoning_effort && (
-                                <span>effort: {model.reasoning_effort}</span>
-                              )}
-                            </div>
-                          ) : null}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={`inline-flex items-center px-2 py-1 text-xs font-medium rounded-full ${vendorBadgeClasses(model.vendor)}`}>
-                            {vendorLabel(model.vendor)}
-                          </span>
-                          {model.type && model.type !== 'regular' && (
-                            <div className="text-[10px] text-gray-500 mt-1">{model.type}</div>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {model.default ? (
-                            <span className="px-2 py-1 text-xs font-semibold text-green-700 bg-green-100 rounded-full border border-green-200">
-                              Default
-                            </span>
-                          ) : (
-                            <button
-                              onClick={() => handleMakeDefault(model)}
-                              disabled={!model.enabled}
-                              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
-                                model.enabled
-                                  ? 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                                  : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                              }`}
-                            >
-                              Make default
-                            </button>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <button
-                            onClick={() => handleToggleModel(model)}
-                            className={`px-3 py-1.5 text-xs font-medium rounded-full border ${
-                              model.enabled
-                                ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'
-                                : 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'
-                            }`}
-                          >
-                            {model.enabled ? 'Enabled' : 'Disabled'}
-                          </button>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-700">{formatCost(model.cpm_input)}</td>
-                        <td className="px-4 py-3 text-sm text-gray-700">{formatCost(model.cpm_output)}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex flex-nowrap items-center gap-2 whitespace-nowrap">
-                            <button
-                              onClick={() => handleTestModel(model)}
-                              disabled={testingModelId === model.model_id}
-                              title={
-                                hasFailedTest
-                                  ? 'failed last test, check API key'
-                                  : hasPassedTest
-                                    ? 'passed test'
-                                    : undefined
-                              }
-                              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
-                                testingModelId === model.model_id
-                                  ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                                  : hasFailedTest
-                                    ? 'bg-pink-100 text-pink-800 border-pink-300 hover:bg-pink-200'
-                                    : hasPassedTest
-                                      ? 'bg-green-100 text-green-800 border-green-300 hover:bg-green-200'
-                                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                              }`}
-                            >
-                              {testingModelId === model.model_id
-                                ? 'Testing...'
-                                : hasFailedTest
-                                  ? 'Restest'
-                                  : hasPassedTest
-                                    ? 'Tested'
-                                    : 'Test'}
-                            </button>
-                            <button
-                              onClick={() => openEditModelModal(model)}
-                              className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => handleDeleteModel(model)}
-                              className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-red-600 border-red-200 hover:bg-red-50"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                      {hasFailedTest && (() => {
-                        const fullText = `↳ Tested ${testedAt} and ${safeResult}`;
-                        const displayText = fullText.length > 200 ? `${fullText.slice(0, 200)}…` : fullText;
-                        return (
-                          <tr className="bg-pink-50">
-                            <td colSpan={7} className="px-4 pt-1 pb-1 text-[11px] text-gray-600 italic">
-                              <span className="block whitespace-normal break-words" title={fullText}>
-                                {displayText}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })()}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </div>
-  );
 
   // Helper to truncate scenario name to 20 chars
   const truncateScenarioName = (name: string, maxLen: number = 20) => {
@@ -7544,11 +7316,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     return sectionStats.filter(s => semesterInScope(s) && !s.enabled && s.section_id !== 'unassigned' && s.section_id !== 'other_courses').length;
   }, [sectionStats, semesterInScope]);
 
-  const sortedModels = useMemo(() => {
-    return [...modelsList].sort((a, b) => {
-      return a.model_name.localeCompare(b.model_name);
-    });
-  }, [modelsList]);
 
   // Load instructors once for the admin "View as" picker.
   useEffect(() => {
@@ -8412,8 +8179,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           ) : null
         ) : primaryTab === 'admin' ? (
           adminSubTab === 'models' ? (
-            renderModelsTab()
-          ) : adminSubTab === 'prompts' ? (
+            <ModelsList
+              models={modelsList}
+              isLoading={isLoadingModels}
+              onRefresh={fetchModels}
+              onAdd={openCreateModelModal}
+              onImport={openOpenRouterImportModal}
+              onEdit={openEditModelModal}
+              onToggle={handleToggleModel}
+              onMakeDefault={handleMakeDefault}
+              onTest={handleTestModel}
+              runTest={runModelTest}
+              onDelete={handleDeleteModel}
+              testingModelId={testingModelId}
+            />
+          ) :adminSubTab === 'prompts' ? (
             <PromptManager />
           ) : adminSubTab === 'settings' ? (
             <SettingsManager />
