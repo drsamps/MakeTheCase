@@ -22,6 +22,7 @@ import {
   requireCourseAccess,
   requireCourseOwnerOrAdmin,
   canAccessCourse,
+  canManageSectionCases,
   isCourseOwner,
 } from '../middleware/instructorAccess.js';
 import {
@@ -112,7 +113,9 @@ const parseJson = (value) => {
 // ============================================================================
 
 // GET /api/courses/:id/cases - Case list with versions, the sections following each, and the
-// Customized sections (course sections with the case but no version).
+// Customized sections (course sections with the case but no version). Each section row carries
+// its own scheduling (active, open/close, manual_status), which never comes from a version.
+// `unlisted` = cases on some of the course's sections that are not on the course list.
 router.get('/courses/:id/cases', verifyToken, requireAdminOrInstructor, requireCourseAccess('id'), async (req, res) => {
   try {
     const courseId = req.params.id;
@@ -125,7 +128,7 @@ router.get('/courses/:id/cases', verifyToken, requireAdminOrInstructor, requireC
     );
     const [versions] = await pool.execute(
       `SELECT v.version_id, v.course_case_id, v.semester_id, v.is_main, v.label, v.parent_version_id,
-              v.updated_at, sem.semester_code, sem.semester_name
+              v.rubric_id, v.updated_at, sem.semester_code, sem.semester_name
          FROM course_case_versions v
          JOIN course_cases cc ON cc.id = v.course_case_id
          LEFT JOIN semesters sem ON sem.id = v.semester_id
@@ -134,15 +137,18 @@ router.get('/courses/:id/cases', verifyToken, requireAdminOrInstructor, requireC
       [courseId]
     );
     const [rows] = await pool.execute(
-      `SELECT sc.section_id, sc.case_id, sc.version_id, sc.active, s.section_number, s.semester_id,
-              sem.semester_code, sem.semester_name
+      `SELECT sc.section_id, sc.case_id, sc.version_id, sc.active, sc.open_date, sc.close_date,
+              sc.manual_status, s.section_number, s.semester_id, sem.semester_code, sem.semester_name,
+              c.case_title
          FROM section_cases sc
          JOIN sections s ON s.section_id = sc.section_id
+         JOIN cases c ON c.case_id = sc.case_id
          LEFT JOIN semesters sem ON sem.id = s.semester_id
         WHERE s.course_id = ?
         ORDER BY sem.start_date IS NULL, sem.start_date DESC, s.section_number, sc.section_id`,
       [courseId]
     );
+    const sectionRow = ({ case_title, ...row }) => ({ ...row, active: Boolean(row.active) });
 
     const data = cases.map((cc) => ({
       ...cc,
@@ -151,11 +157,19 @@ router.get('/courses/:id/cases', verifyToken, requireAdminOrInstructor, requireC
         .map((v) => ({
           ...v,
           is_main: v.is_main === 1,
-          sections: rows.filter((r) => r.case_id === cc.case_id && r.version_id === v.version_id),
+          sections: rows.filter((r) => r.case_id === cc.case_id && r.version_id === v.version_id).map(sectionRow),
         })),
-      customized_sections: rows.filter((r) => r.case_id === cc.case_id && r.version_id == null),
+      customized_sections: rows.filter((r) => r.case_id === cc.case_id && r.version_id == null).map(sectionRow),
     }));
-    res.json({ data, error: null });
+
+    const listed = new Set(cases.map((cc) => cc.case_id));
+    const unlisted = new Map();
+    for (const r of rows) {
+      if (listed.has(r.case_id)) continue;
+      if (!unlisted.has(r.case_id)) unlisted.set(r.case_id, { case_id: r.case_id, case_title: r.case_title, sections: [] });
+      unlisted.get(r.case_id).sections.push(sectionRow(r));
+    }
+    res.json({ data, unlisted: [...unlisted.values()], error: null });
   } catch (error) {
     sendError(res, error, 'Error fetching course cases:');
   }
@@ -242,6 +256,50 @@ router.delete('/courses/:id/cases/:caseId', verifyToken, requireAdminOrInstructo
   }
 });
 
+// PATCH /api/courses/:id/cases/reorder - { order: case_id[] } sets the course's custom case order
+// (course_cases.sort_order, used by the "Custom" sort in Assignments > By course and by rollover).
+// Cases left out of `order` keep their current relative order after the listed ones.
+router.patch('/courses/:id/cases/reorder', verifyToken, requireAdminOrInstructor, requireCourseOwnerOrAdmin('id'), async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const courseId = Number(req.params.id);
+    const { order } = req.body || {};
+    if (!Array.isArray(order) || order.length === 0 || order.some((id) => typeof id !== 'string')) {
+      return res.status(400).json({ data: null, error: { message: 'order must be a non-empty array of case IDs' } });
+    }
+    const [existing] = await conn.execute(
+      `SELECT cc.case_id FROM course_cases cc JOIN cases c ON c.case_id = cc.case_id
+        WHERE cc.course_id = ? ORDER BY cc.sort_order, c.case_title`,
+      [courseId]
+    );
+    const current = existing.map((r) => r.case_id);
+    const stray = order.filter((id) => !current.includes(id));
+    if (stray.length > 0) {
+      return res.status(400).json({ data: null, error: { message: `Not cases of this course: ${stray.join(', ')}` } });
+    }
+    const listed = [...new Set(order)];
+    const finalOrder = [...listed, ...current.filter((id) => !listed.includes(id))];
+
+    await conn.beginTransaction();
+    for (let i = 0; i < finalOrder.length; i++) {
+      await conn.execute('UPDATE course_cases SET sort_order = ? WHERE course_id = ? AND case_id = ?', [i, courseId, finalOrder[i]]);
+    }
+    await conn.commit();
+    await writeAudit(req, {
+      action: 'course.cases_reordered',
+      resourceType: 'course',
+      resourceId: String(courseId),
+      details: { order: finalOrder },
+    });
+    res.json({ data: { order: finalOrder }, error: null });
+  } catch (error) {
+    try { await conn.rollback(); } catch (_) {}
+    sendError(res, error, 'Error reordering course cases:');
+  } finally {
+    conn.release();
+  }
+});
+
 // ============================================================================
 // Bulk scheduling for a course in one semester
 // ============================================================================
@@ -295,18 +353,23 @@ router.post('/courses/:id/schedule', verifyToken, requireAdminOrInstructor, asyn
       return res.status(400).json({ data: null, error: { message: 'No sections to schedule' } });
     }
 
-    const isAdmin = req.user.superuser || req.user.role === 'admin';
-    if (!isAdmin && !(await isCourseOwner(req.user.id, courseId))) {
-      const notMine = targets.filter((s) => s.primary_instructor_id !== req.user.id);
-      if (notMine.length > 0) {
-        return res.status(403).json({ data: null, error: { message: `You are not the primary instructor of: ${notMine.map((s) => s.section_id).join(', ')}` } });
-      }
-    }
-
+    // Admins and the course owner schedule every section. Anyone else schedules the sections whose
+    // cases they manage (primary instructor, or TA with can_manage_cases), the same rule as the
+    // per-section scheduling route; the rest are skipped rather than refusing the whole request.
     const updated = [];
     const skipped = [];
-    await conn.beginTransaction();
+    const manageAll = isAdminUser(req) || (await isCourseOwner(req.user.id, courseId));
+    const manageable = [];
     for (const s of targets) {
+      if (manageAll || (await canManageSectionCases(req, s.section_id))) manageable.push(s);
+      else skipped.push({ section_id: s.section_id, reason: 'You cannot manage cases on this section' });
+    }
+    if (manageable.length === 0) {
+      return res.status(403).json({ data: null, error: { message: `You cannot manage cases on: ${targets.map((s) => s.section_id).join(', ')}` } });
+    }
+
+    await conn.beginTransaction();
+    for (const s of manageable) {
       if (!s.section_case_id) {
         skipped.push({ section_id: s.section_id, reason: 'Case is not assigned to this section' });
         continue;
@@ -628,11 +691,13 @@ router.patch('/case-versions/:versionId/positions/reorder', ...WRITE, versionWri
   const { positions } = req.body || {};
   if (!Array.isArray(positions)) throw new CaseVersionError(400, 'positions must be an array');
   for (const pos of positions) {
+    // A new override row starts from the position's own default, so reordering never enables
+    // a position that is disabled by default.
     await conn.execute(
       `INSERT INTO course_case_version_positions (version_id, position_id, enabled, sort_order)
-       VALUES (?, ?, 1, ?)
-       ON DUPLICATE KEY UPDATE sort_order = VALUES(sort_order)`,
-      [v.version_id, pos.position_id, pos.sort_order]
+       SELECT ?, sp.position_id, sp.position_enabled, ? FROM scenario_positions sp WHERE sp.position_id = ?
+       ON DUPLICATE KEY UPDATE sort_order = ?`,
+      [v.version_id, pos.sort_order, pos.position_id, pos.sort_order]
     );
   }
   return { success: true };

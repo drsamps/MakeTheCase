@@ -26,6 +26,7 @@ import { setCurrentScreen } from '../services/screenContext';
 import VisibilityPicker from './ui/VisibilityPicker';
 import StudentManager from './StudentManager';
 import CourseCatalog from './courses/CourseCatalog';
+import CourseAssignments from './courses/CourseAssignments';
 import SectionFormModal, { SectionFormDefaults } from './courses/SectionFormModal';
 import SemesterFormModal from './courses/SemesterFormModal';
 import RolloverModal from './courses/RolloverModal';
@@ -85,6 +86,8 @@ import { CSS } from '@dnd-kit/utilities';
 type PrimaryTab = 'home' | 'assignments' | 'monitor' | 'results' | 'courses' | 'content' | 'setup' | 'feedback' | 'admin';
 type HomeSubTab = 'welcome' | 'dashboard';
 type AssignmentsSubTab = 'assignments' | 'chat-options';
+type AssignmentsView = 'course' | 'section';
+const ASSIGNMENTS_VIEW_KEY = 'mtc_assignments_view';
 type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live' | 'ai-usage';
@@ -308,6 +311,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [primaryTab, setPrimaryTab] = useState<PrimaryTab>('home');
   const [homeSubTab, setHomeSubTab] = useState<HomeSubTab>('welcome');
   const [assignmentsSubTab, setAssignmentsSubTab] = useState<AssignmentsSubTab>('assignments');
+  // Assignments > Assignments is course-first. "By section" is a view switch, never stored on data.
+  const [assignmentsView, setAssignmentsViewState] = useState<AssignmentsView>(() => {
+    try {
+      return localStorage.getItem(ASSIGNMENTS_VIEW_KEY) === 'section' ? 'section' : 'course';
+    } catch {
+      return 'course';
+    }
+  });
+  const setAssignmentsView = useCallback((view: AssignmentsView) => {
+    setAssignmentsViewState(view);
+    try {
+      localStorage.setItem(ASSIGNMENTS_VIEW_KEY, view);
+    } catch {
+      /* the choice just won't survive a reload */
+    }
+  }, []);
+  const [assignmentsCourseId, setAssignmentsCourseId] = useState<number | null>(null);
   const [coursesSubTab, setCoursesSubTab] = useState<CoursesSubTab>('sections');
   const [contentSubTab, setContentSubTab] = useState<ContentSubTab>('cases');
   const [monitorSubTab, setMonitorSubTab] = useState<MonitorSubTab>('chats');
@@ -381,7 +401,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
     const parts: string[] = ['Instructor Dashboard', PRIMARY_LABELS[primaryTab]];
     if (primaryTab === 'home') parts.push(HOME[homeSubTab]);
-    else if (primaryTab === 'assignments') parts.push(ASSIGNMENTS[assignmentsSubTab]);
+    else if (primaryTab === 'assignments') {
+      parts.push(ASSIGNMENTS[assignmentsSubTab]);
+      if (assignmentsSubTab === 'assignments') parts.push(assignmentsView === 'course' ? 'By course' : 'By section');
+    }
     else if (primaryTab === 'monitor') parts.push(MONITOR[monitorSubTab]);
     else if (primaryTab === 'results') parts.push(RESULTS[resultsSubTab]);
     else if (primaryTab === 'courses') parts.push(COURSES[coursesSubTab]);
@@ -395,7 +418,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     setCurrentScreen(parts.join(' > '));
     return () => setCurrentScreen(null);
   }, [
-    primaryTab, homeSubTab, assignmentsSubTab, monitorSubTab, resultsSubTab, coursesSubTab,
+    primaryTab, homeSubTab, assignmentsSubTab, assignmentsView, monitorSubTab, resultsSubTab, coursesSubTab,
     contentSubTab, setupSubTab, rubricsSubTab, feedbackSubTab, adminSubTab,
   ]);
 
@@ -891,7 +914,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         break;
       case 'assignments':
         setPrimaryTab('assignments');
-        if (subTab && ['assignments', 'chat-options'].includes(subTab)) {
+        if (subTab === 'by-course' || subTab === 'by-section') {
+          setAssignmentsSubTab('assignments');
+          setAssignmentsView(subTab === 'by-course' ? 'course' : 'section');
+        } else if (subTab && ['assignments', 'chat-options'].includes(subTab)) {
           setAssignmentsSubTab(subTab as AssignmentsSubTab);
         } else {
           setAssignmentsSubTab('assignments');
@@ -4430,14 +4456,26 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   // Where a section's case settings come from: a course case version (written through, so
   // direct edits ask to "Customize"), or the section itself.
-  const renderCaseSettingsSourceChip = (sc: { version_id?: number | null; version_label?: string | null }) =>
+  // With onOpenCourse the "Follows" chip links to Assignments > By course.
+  const renderCaseSettingsSourceChip = (sc: { version_id?: number | null; version_label?: string | null }, onOpenCourse?: () => void) =>
     sc.version_id ? (
-      <span
-        className="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100"
-        title="Settings come from the course. Edit them on Courses → Courses, or edit here to customize this section."
-      >
-        Follows: {sc.version_label || 'course'}
-      </span>
+      onOpenCourse ? (
+        <button
+          type="button"
+          onClick={onOpenCourse}
+          className="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100 hover:bg-indigo-100"
+          title="Settings come from the course. Click to edit them for every section (By course), or edit here to customize this section."
+        >
+          Follows: {sc.version_label || 'course'}
+        </button>
+      ) : (
+        <span
+          className="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100"
+          title="Settings come from the course. Edit them in Assignments → By course, or edit here to customize this section."
+        >
+          Follows: {sc.version_label || 'course'}
+        </span>
+      )
     ) : (
       <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500" title="This section has its own settings for this case">
         Customized
@@ -4695,31 +4733,99 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     );
   };
 
+  /** Assignments > By section, with this section selected. */
+  const openSectionAssignments = (sectionId: string) => {
+    setPrimaryTab('assignments');
+    setAssignmentsSubTab('assignments');
+    setAssignmentsView('section');
+    if (assignmentsSectionsList.length === 0) fetchAssignmentsSections();
+    handleAssignmentSectionChange(sectionId);
+  };
+
+  /** Assignments > By course, with this course selected. */
+  const openCourseAssignments = (courseId: number | null) => {
+    setPrimaryTab('assignments');
+    setAssignmentsSubTab('assignments');
+    setAssignmentsView('course');
+    if (courseId) setAssignmentsCourseId(courseId);
+  };
+
   const renderAssignmentsTab = () => (
     <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Case Assignments</h2>
-          <p className="text-sm text-gray-500">Manage which cases are assigned to each section</p>
+          <p className="text-sm text-gray-500">
+            {assignmentsView === 'course'
+              ? 'Set up a case once for every section of a course'
+              : 'Manage which cases are assigned to each section'}
+          </p>
         </div>
-        <button
-          onClick={() => {
-            fetchAssignmentsSections();
-            if (selectedAssignmentSection) {
-              fetchSectionCases(selectedAssignmentSection);
-            }
-          }}
-          disabled={isLoadingAssignments}
-          className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg disabled:opacity-50 transition-colors"
-          aria-label="Refresh case assignments"
-          title="Refresh case assignments"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className={`w-5 h-5 ${isLoadingAssignments ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 110 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
-          </svg>
-        </button>
+        <div className="flex items-center gap-2">
+          {/* A view choice, not a setting: both views edit the same assignments. */}
+          <div role="group" aria-label="Assignments view" className="inline-flex rounded-lg border border-gray-300 overflow-hidden text-sm">
+            {(['course', 'section'] as const).map((view) => (
+              <button
+                key={view}
+                type="button"
+                aria-pressed={assignmentsView === view}
+                onClick={() => {
+                  setAssignmentsView(view);
+                  if (view === 'section') fetchAssignmentsSections();
+                }}
+                className={`px-4 py-2 font-medium transition-colors ${view === 'section' ? 'border-l border-gray-300' : ''} ${
+                  assignmentsView === view ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                {view === 'course' ? 'By course' : 'By section'}
+              </button>
+            ))}
+          </div>
+          {assignmentsView === 'section' && (
+            <button
+              onClick={() => {
+                fetchAssignmentsSections();
+                if (selectedAssignmentSection) {
+                  fetchSectionCases(selectedAssignmentSection);
+                }
+              }}
+              disabled={isLoadingAssignments}
+              className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg disabled:opacity-50 transition-colors"
+              aria-label="Refresh case assignments"
+              title="Refresh case assignments"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className={`w-5 h-5 ${isLoadingAssignments ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 110 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
 
+      {assignmentsView === 'course' ? (
+        <CourseAssignments
+          isAdmin={user?.role === 'admin'}
+          userId={user?.role === 'instructor' ? user.id : null}
+          selectedCourseId={assignmentsCourseId}
+          onCourseChange={setAssignmentsCourseId}
+          onOpenSection={openSectionAssignments}
+          onSwitchToSections={() => {
+            setAssignmentsView('section');
+            fetchAssignmentsSections();
+          }}
+          onChanged={() => {
+            fetchSectionStats();
+            if (selectedAssignmentSection) fetchSectionCases(selectedAssignmentSection);
+          }}
+        />
+      ) : (
+        renderSectionAssignments()
+      )}
+    </div>
+  );
+
+  const renderSectionAssignments = () => (
+    <>
       {/* Success/Error Messages */}
       {renderDismissibleErrorBanner('mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg')}
       {successMessage && (
@@ -4747,6 +4853,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           ))}
         </select>
         <SemesterScopeNote className="mt-1" />
+        {selectedAssignmentSection && getSelectedSection() && (
+          getSelectedSection()?.course_id ? (
+            <p className="mt-2 text-sm text-gray-600">
+              To set up a case for every section of {getSelectedSection()?.course_name || 'this course'} at once, use{' '}
+              <button type="button" onClick={() => openCourseAssignments(getSelectedSection()?.course_id)} className="font-medium text-indigo-700 hover:underline">
+                By course
+              </button>.
+            </p>
+          ) : (
+            <p className="mt-2 text-sm text-gray-500">This section isn't part of a course, so its cases are set here.</p>
+          )
+        )}
       </div>
 
       {isLoadingAssignments ? (
@@ -4823,7 +4941,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           <div className="flex items-center gap-2">
                             <span className="font-medium text-gray-900">{sc.case_title}</span>
                             <span className="text-sm text-gray-500">({sc.case_id})</span>
-                            {renderCaseSettingsSourceChip(sc)}
+                            {renderCaseSettingsSourceChip(sc, getSelectedSection()?.course_id
+                              ? () => openCourseAssignments(getSelectedSection()?.course_id)
+                              : undefined)}
                           </div>
                           <div className="flex items-center gap-2">
                             {/* Rubric Selector */}
@@ -5375,7 +5495,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 
   // Fetch defaults from API
@@ -8851,9 +8971,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           ) : coursesSubTab === 'course-setup' ? (
             <CourseCatalog
               isAdmin={user?.role === 'admin'}
-              userId={user?.role === 'instructor' ? user.id : null}
               models={modelsList}
               onSectionsChanged={fetchSectionStats}
+              onOpenCourseAssignments={openCourseAssignments}
             />
           ) : coursesSubTab === 'students' ? (
             <StudentManager initialSectionFilter={studentsInitialSectionId} />

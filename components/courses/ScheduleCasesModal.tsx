@@ -12,6 +12,8 @@ interface Props {
   semesterId: number;
   semesterName: string;
   sections: CourseSection[];
+  /** Preselect this case. */
+  initialCaseId?: string;
   onClose: () => void;
   onSaved: (message: string) => void;
 }
@@ -23,15 +25,18 @@ interface CaseOption {
 
 const fmt = (date: Date | null) => (date ? date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 
-const ScheduleCasesModal: React.FC<Props> = ({ courseId, semesterId, semesterName, sections, onClose, onSaved }) => {
+const ScheduleCasesModal: React.FC<Props> = ({ courseId, semesterId, semesterName, sections, initialCaseId, onClose, onSaved }) => {
   const [cases, setCases] = useState<CaseOption[]>([]);
   // section_id -> case_id -> current { open_date, close_date, manual_status }
   const [current, setCurrent] = useState<Record<string, Record<string, any>>>({});
-  const [caseId, setCaseId] = useState('');
+  const [caseId, setCaseId] = useState(initialCaseId || '');
   const [openAt, setOpenAt] = useState('');
   const [closeAt, setCloseAt] = useState('');
   const [manualStatus, setManualStatus] = useState('auto');
-  const [selected, setSelected] = useState<Set<string>>(new Set(sections.map((s) => s.section_id)));
+  // Nothing is ticked until we know which sections this user can open; a section instructor
+  // sees the course's other sections too, and the server skips those anyway.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [noAccess, setNoAccess] = useState<Set<string>>(new Set());
   const [offsets, setOffsets] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -41,19 +46,23 @@ const ScheduleCasesModal: React.FC<Props> = ({ courseId, semesterId, semesterNam
       const results = await Promise.all(sections.map((s) => api.get<any[]>(`/sections/${encodeURIComponent(s.section_id)}/cases`)));
       const bySection: Record<string, Record<string, any>> = {};
       const options = new Map<string, CaseOption>();
+      const blocked = new Set<string>();
       sections.forEach((s, i) => {
         bySection[s.section_id] = {};
+        if (results[i].error) blocked.add(s.section_id);
         for (const sc of results[i].data || []) {
           bySection[s.section_id][sc.case_id] = sc;
           options.set(sc.case_id, { case_id: sc.case_id, case_title: sc.case_title });
         }
       });
       setCurrent(bySection);
+      setNoAccess(blocked);
+      setSelected(new Set(sections.map((s) => s.section_id).filter((id) => !blocked.has(id))));
       const list = [...options.values()].sort((a, b) => a.case_title.localeCompare(b.case_title));
       setCases(list);
-      if (list.length === 1) setCaseId(list[0].case_id);
+      if (list.length === 1 && !initialCaseId) setCaseId(list[0].case_id);
     })();
-  }, [sections]);
+  }, [sections, initialCaseId]);
 
   const openDate = openAt ? new Date(openAt) : null;
   const closeDate = closeAt ? new Date(closeAt) : null;
@@ -86,7 +95,9 @@ const ScheduleCasesModal: React.FC<Props> = ({ courseId, semesterId, semesterNam
     });
     setSaving(false);
     if (saveError) { setError(saveError.message); return; }
-    onSaved(`Scheduled ${data?.updated.length ?? 0} section(s)`);
+    const skipped = data?.skipped || [];
+    onSaved(`Scheduled ${data?.updated.length ?? 0} section(s)`
+      + (skipped.length ? `; skipped ${skipped.map((s) => `${s.section_id} (${s.reason})`).join(', ')}` : ''));
   };
 
   return (
@@ -141,7 +152,8 @@ const ScheduleCasesModal: React.FC<Props> = ({ courseId, semesterId, semesterNam
               <tbody className="divide-y divide-gray-100">
                 {preview.map(({ section, open, close, existing }) => {
                   const checked = selected.has(section.section_id);
-                  const hasCase = !caseId || Boolean(existing);
+                  const blocked = noAccess.has(section.section_id);
+                  const hasCase = !blocked && (!caseId || Boolean(existing));
                   return (
                     <tr key={section.section_id} className={hasCase ? '' : 'opacity-50'}>
                       <td className="py-1.5 pr-2">
@@ -159,7 +171,7 @@ const ScheduleCasesModal: React.FC<Props> = ({ courseId, semesterId, semesterNam
                           className="w-20 px-2 py-1 border border-gray-300 rounded" />
                       </td>
                       <td className="py-1.5 pr-2 text-xs text-gray-800">
-                        {checked && hasCase ? <>{fmt(open)}<br />{fmt(close)}</> : <span className="text-gray-400">{hasCase ? 'unchanged' : 'case not assigned'}</span>}
+                        {checked && hasCase ? <>{fmt(open)}<br />{fmt(close)}</> : <span className="text-gray-400">{blocked ? 'not your section' : hasCase ? 'unchanged' : 'case not assigned'}</span>}
                       </td>
                       <td className="py-1.5 text-xs text-gray-500">
                         {existing ? <>{fmt(existing.open_date ? new Date(existing.open_date) : null)}<br />{fmt(existing.close_date ? new Date(existing.close_date) : null)}</> : '—'}

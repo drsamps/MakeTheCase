@@ -91,7 +91,7 @@ Admins (any admin, `requireRole(['admin'])`) own **structure**; instructors own 
 
 "Course owner" and "section primary instructor" both count as primary for a section in
 `requireSectionAccess`, as does an instructor assigned to the section's semester. A primary
-instructor who edits a setting the section follows from a course version gets the "Customize this
+instructor who edits (in Assignments > By section) a setting the section follows from a course version gets the "Customize this
 section?" prompt; re-following a version stays with the owner or an admin. Global chat-options
 defaults and "copy to all sections" stay admin-only. Rationale and verification:
 `docs/plan-admin-only-course-structure.md`.
@@ -145,20 +145,56 @@ Other links that must stay consistent:
 
 | Route | Who |
 |---|---|
-| `GET /api/courses/:id/cases` — case list, versions, followers, Customized sections | course access |
+| `GET /api/courses/:id/cases` — case list, versions (with `rubric_id`), followers, Customized sections; each section row carries its own `active`, `open_date`, `close_date`, `manual_status`; top-level `unlisted` = cases on some course sections but not on the course list | course access |
 | `POST /api/courses/:id/cases` `{case_id, from_section_id?, section_ids?}` | admin / owner |
 | `DELETE /api/courses/:id/cases/:caseId` (rows become Customized) | admin / owner |
+| `PATCH /api/courses/:id/cases/reorder` `{order: case_id[]}` — custom case order (`course_cases.sort_order`); unlisted cases keep their order after the listed ones | admin / owner |
 | `GET /api/case-versions/:id[/scenarios\|/positions]` | course access |
 | `PATCH /api/case-versions/:id/{options,rubric,selection-mode,position-settings}` and scenario/position writes — same bodies as the section routes | admin / owner |
 | `POST /api/case-versions/:id/clone` `{semester_id, label, section_ids}` | admin / owner |
 | `DELETE /api/case-versions/:id` (copies only) | admin / owner |
 | `PUT /api/sections/:sid/cases/:caseId/version` `{version_id \| null}` | admin / owner |
-| `POST /api/courses/:id/schedule` — bulk dates, per-section offsets | admin / owner / primary instructor of every target |
+| `POST /api/courses/:id/schedule` — bulk dates, per-section offsets | admin / owner (all sections); others: sections whose cases they manage (primary, or TA with `can_manage_cases`), the rest reported in `skipped` |
 | `POST /api/courses/:id/rollover` | admin |
 
-Dashboard: `components/courses/CourseCatalog.tsx` → `CourseCasesPanel.tsx`
-(`CaseVersionEditor.tsx`, "Who follows what", semester copies), `ScheduleCasesModal.tsx`,
-`RolloverModal.tsx`. The Assignments tab shows a "Follows: …" / "Customized" chip per case.
+### Dashboard: Assignments is course-first
+
+**Assignments > Assignments** has a `[ By course | By section ]` switch (default By course; the
+choice is remembered in `localStorage['mtc_assignments_view']`). The switch is a **view only**:
+whether a section follows the course is stored per case, per section (`version_id`), so there
+is no per-course "by section" mode to keep in sync.
+
+- **By course** — `components/courses/CourseAssignments.tsx`. Pick a course (courses with
+  sections in the header semester). Cases are collapsible cards; the collapsed header shows a
+  summary for the sections in view (settings source, "on N of M sections", "X of N active",
+  earliest opening date, "dates on K of N") plus **Activate on all**. A course with one case opens
+  it; with several, all start collapsed. Expanded case ids are kept per course in
+  `sessionStorage['mtc_course_cases_expanded:{courseId}']`; **Expand all / Collapse all** above the
+  list; an added case opens. **Sort** (`localStorage['mtc_course_cases_sort']`): *Opening date*
+  (default — earliest `open_date` among sections in view, undated last, then title), *Title*, or
+  *Custom* (the course owner's `course_cases.sort_order`, arranged with ▲▼ and saved through
+  `PATCH /courses/:id/cases/reorder`). An expanded case
+  shows:
+  - one row per version in view (Main always; a semester copy only for the semester in view) with
+    **Rubric**, **Options** and **Scenarios and Positions** → `CaseVersionEditor.tsx`
+    (`initialPart` scrolls to the part), **Make semester copy**, **Delete copy**;
+  - a table of the in-scope sections: what each follows, its dates (**Edit dates** →
+    `PATCH /sections/:sid/cases/:caseId/scheduling`) and **Active** (the section activate /
+    deactivate routes), plus **Activate on all**, **Schedule all…** (`ScheduleCasesModal.tsx`),
+    **Give to unassigned sections** and **Who follows what**;
+  - "Assigned to some sections, but not to the course" (`unlisted`) with **Make course-wide…**
+    (`AddCaseModal` seeded `from_section_id`).
+  Modals live in `CourseCaseModals.tsx`. Non-owners see the settings read-only with a pointer to
+  By section; their Active/dates actions follow the server's per-section rules.
+- **By section** — the per-section screen in `Dashboard.tsx`. Its "Follows: …" chip links to By
+  course; a section without a course says its cases are set there.
+- `CaseVersionEditor` matches the section editors: the "All enabled personas" control (empty
+  `allowed_personas` = all, via `utils/personas.ts`), scenario and position reordering
+  (`/case-versions/:id/scenarios/reorder`, `/positions/reorder` — a new position override row
+  starts from the position's default `enabled`), and the Chat Options help.
+
+`components/courses/CourseCatalog.tsx` (Courses → Courses) covers course **structure** and links
+to Assignments → By course for cases. `RolloverModal.tsx` is unchanged.
 
 ## Rollover
 
@@ -191,11 +227,13 @@ The header "Semester:" dropdown filters the whole dashboard (`components/courses
 
 - **Filtered:** Courses > Sections (grouped by course only when one semester is chosen; the
   synthetic "Not in a course" / "Other course sections" rows only under All), Students ("All
-  sections" = students in that semester's sections; "Unassigned" only under All), Assignments and
-  Chat Options section pickers, Monitor > Chats and Live, Results (Student Results, Position
-  Analytics, Section Results), Home.
-- **Not filtered:** Courses > Courses, Semesters, the Assignments "Copy case assignments from"
-  list (grouped by semester instead), Content, Setup, Admin.
+  sections" = students in that semester's sections; "Unassigned" only under All), Assignments
+  (By course: the course picker and section rows; By section) and Chat Options section pickers,
+  Monitor > Chats and Live, Results (Student Results, Position Analytics, Section Results), Home,
+  and the sections shown inside an expanded course on Courses > Courses (with an "N other
+  semesters hidden" note).
+- **Not filtered:** the Courses > Courses course list (courses span semesters), Semesters, the
+  Assignments "Copy case assignments from" list (grouped by semester instead), Content, Setup, Admin.
 - A picked section that falls outside the chosen semester is cleared.
 - With "all sections" and one semester chosen, the dashboard sends `semester_id` to
   `GET /api/case-chats`, `GET /api/analytics/results` and `GET /api/analytics/positions*`. It only

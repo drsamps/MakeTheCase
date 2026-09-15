@@ -4,10 +4,8 @@ import { courseCodeError, normalizeCode } from '../../utils/academicIds.js';
 import { quote } from '../../utils/confirmLabels';
 import type { Course, CourseSection } from '../../types';
 import SectionFormModal, { SectionFormDefaults } from './SectionFormModal';
-import CourseCasesPanel from './CourseCasesPanel';
-import ScheduleCasesModal from './ScheduleCasesModal';
 import RolloverModal from './RolloverModal';
-import { useSemesterFilter } from './semesterFilter';
+import { SEMESTER_SELECT_ID, useSemesterFilter } from './semesterFilter';
 
 interface ModelOption {
   model_id: string;
@@ -17,11 +15,11 @@ interface ModelOption {
 
 interface Props {
   isAdmin: boolean;
-  /** Logged-in instructor id (course owners may add sections). */
-  userId?: string | null;
   models: ModelOption[];
   /** Tell the Dashboard its section list is stale. */
   onSectionsChanged?: () => void;
+  /** Open Assignments > By course for this course (its cases, settings and scheduling live there). */
+  onOpenCourseAssignments?: (courseId: number) => void;
 }
 
 interface SemesterGroup {
@@ -60,10 +58,12 @@ function authHeaders(): HeadersInit {
   return headers;
 }
 
-const CourseCatalog: React.FC<Props> = ({ isAdmin, userId, models, onSectionsChanged }) => {
-  // The catalog spans semesters by design and is NOT filtered by the header selector; it only
-  // uses the chosen semester as a default (rollover source here, new-section semester in SectionFormModal).
-  const { semesterId: headerSemesterId } = useSemesterFilter();
+const CourseCatalog: React.FC<Props> = ({ isAdmin, models, onSectionsChanged, onOpenCourseAssignments }) => {
+  // The course LIST spans semesters by design and is not filtered by the header selector. Inside an
+  // expanded course, only the chosen semester's sections are shown (with a count of hidden ones).
+  // The chosen semester is also the rollover source default and SectionFormModal's new-section semester.
+  // A course's cases, settings and scheduling are managed in Assignments > By course.
+  const { semesterId: headerSemesterId, selectedSemester, inScope } = useSemesterFilter();
   const [courses, setCourses] = useState<Course[]>([]);
   const [details, setDetails] = useState<Map<number, CourseSection[]>>(new Map());
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -75,7 +75,6 @@ const CourseCatalog: React.FC<Props> = ({ isAdmin, userId, models, onSectionsCha
 
   const [courseModal, setCourseModal] = useState<{ course: Course | null } | null>(null);
   const [sectionModal, setSectionModal] = useState<{ defaults: SectionFormDefaults } | null>(null);
-  const [scheduleModal, setScheduleModal] = useState<{ courseId: number; semesterId: number; semesterName: string; sections: CourseSection[] } | null>(null);
   const [rolloverCourse, setRolloverCourse] = useState<Course | null>(null);
 
   const flash = (text: string) => {
@@ -127,7 +126,6 @@ const CourseCatalog: React.FC<Props> = ({ isAdmin, userId, models, onSectionsCha
     });
   };
 
-  const canManageCourse = (course: Course) => isAdmin || (!!userId && course.primary_instructor_id === userId);
 
   const handleDeleteCourse = async (course: Course) => {
     if (!confirm(`Delete course ${quote(course.course_name)} (${course.course_code})?`)) return;
@@ -276,36 +274,43 @@ const CourseCatalog: React.FC<Props> = ({ isAdmin, userId, models, onSectionsCha
                 </div>
                 {course.description && isOpen && <p className="px-4 -mt-2 pb-2 text-sm text-gray-600">{course.description}</p>}
 
-                {isOpen && (
+                {isOpen && (() => {
+                  const groups = sections ? groupBySemester(sections) : [];
+                  const shown = groups.filter((g) => inScope({ semester_id: g.semesterId }));
+                  const hiddenCount = groups.length - shown.length;
+                  const semesterName = selectedSemester?.semester_name || 'this semester';
+                  return (
                   <div className="border-t border-gray-100 px-4 py-3 space-y-4">
                     {!sections ? (
                       <p className="text-sm text-gray-500">Loading sections…</p>
                     ) : sections.length === 0 ? (
                       <p className="text-sm text-gray-500">No sections in any semester yet.</p>
-                    ) : groupBySemester(sections).map((group) => (
+                    ) : shown.length === 0 ? (
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm text-gray-500">No sections in {semesterName}.</p>
+                        {isAdmin && headerSemesterId && (
+                          <button
+                            onClick={() => setSectionModal({ defaults: { courseId: course.id, semesterId: headerSemesterId } })}
+                            className="text-xs font-medium text-green-700 hover:underline"
+                          >
+                            + Add section in {semesterName}
+                          </button>
+                        )}
+                      </div>
+                    ) : shown.map((group) => (
                       <div key={String(group.semesterId)}>
                         <div className="flex items-center justify-between mb-2">
                           <h4 className="text-sm font-semibold text-gray-700">
                             {group.semesterName}
                             {group.semesterCode && <code className="ml-2 text-xs font-mono text-gray-400">{group.semesterCode}</code>}
                           </h4>
-                          {group.semesterId && (
-                            <div className="flex items-center gap-3">
-                              <button
-                                onClick={() => setScheduleModal({ courseId: course.id, semesterId: group.semesterId as number, semesterName: group.semesterName, sections: group.sections })}
-                                className="text-xs font-medium text-blue-700 hover:underline"
-                              >
-                                Schedule cases…
-                              </button>
-                              {isAdmin && (
-                                <button
-                                  onClick={() => setSectionModal({ defaults: { courseId: course.id, semesterId: group.semesterId } })}
-                                  className="text-xs font-medium text-green-700 hover:underline"
-                                >
-                                  + Add section
-                                </button>
-                              )}
-                            </div>
+                          {group.semesterId && isAdmin && (
+                            <button
+                              onClick={() => setSectionModal({ defaults: { courseId: course.id, semesterId: group.semesterId } })}
+                              className="text-xs font-medium text-green-700 hover:underline"
+                            >
+                              + Add section
+                            </button>
                           )}
                         </div>
                         <div className="overflow-x-auto">
@@ -342,16 +347,28 @@ const CourseCatalog: React.FC<Props> = ({ isAdmin, userId, models, onSectionsCha
                         </div>
                       </div>
                     ))}
-                    {sections && (
-                      <CourseCasesPanel
-                        courseId={course.id}
-                        canManage={canManageCourse(course)}
-                        sections={sections}
-                        onChanged={() => loadCourse(course.id)}
-                      />
+                    {sections && hiddenCount > 0 && (
+                      <p className="text-xs text-gray-500">
+                        {hiddenCount} other semester{hiddenCount === 1 ? '' : 's'} hidden ·{' '}
+                        <a href="#" onClick={(e) => { e.preventDefault(); document.getElementById(SEMESTER_SELECT_ID)?.focus(); }}
+                          className="text-indigo-600 hover:text-indigo-800 hover:underline">
+                          change in header
+                        </a>
+                      </p>
+                    )}
+                    {/* By course lists only courses with sections in the header semester; linking to an
+                        out-of-scope course would land on an empty picker. */}
+                    {shown.length > 0 && onOpenCourseAssignments && (
+                      <p className="text-sm text-gray-600 border-t border-gray-100 pt-3">
+                        Cases, their settings, dates and activation for this course's sections:{' '}
+                        <button onClick={() => onOpenCourseAssignments(course.id)} className="font-medium text-indigo-700 hover:underline">
+                          Assignments → By course
+                        </button>
+                      </p>
                     )}
                   </div>
-                )}
+                  );
+                })()}
               </div>
             );
           })}
@@ -424,18 +441,6 @@ const CourseCatalog: React.FC<Props> = ({ isAdmin, userId, models, onSectionsCha
             flash(text);
             setExpanded((prev) => new Set(prev).add(courseId));
             await refreshAfterSectionChange();
-          }}
-        />
-      )}
-
-      {scheduleModal && (
-        <ScheduleCasesModal
-          {...scheduleModal}
-          onClose={() => setScheduleModal(null)}
-          onSaved={(text) => {
-            setScheduleModal(null);
-            flash(text);
-            onSectionsChanged?.();
           }}
         />
       )}
