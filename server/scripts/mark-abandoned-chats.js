@@ -13,7 +13,8 @@
  *   --dry-run     Show what would be updated without making changes
  *
  * Example cron entry (every 15 minutes):
- *   */15 * * * * cd /path/to/MakeTheCase && node server/scripts/mark-abandoned-chats.js
+ *   0,15,30,45 * * * * cd /path/to/MakeTheCase && node server/scripts/mark-abandoned-chats.js
+ * (Not written as the step form "every 15" with a slash: star-slash would end this comment.)
  */
 
 import mysql from 'mysql2/promise';

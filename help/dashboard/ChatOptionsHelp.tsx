@@ -32,6 +32,13 @@ const ChatOptionsHelp: React.FC = () => (
     </ol>
     <p>Lower levels inherit from higher levels unless customized.</p>
 
+    <div className="help-callout">
+      <strong>Looking for the AI model?</strong> The chat model (and the supervisor
+      model used for evaluation) is not a chat option. It is set per section: go to
+      <strong> Courses &gt; Sections</strong>, click the section&apos;s edit (pencil) icon, and
+      choose a <strong>Chat Model</strong>. It applies to every case in that section.
+    </div>
+
     <h4>Managing Defaults</h4>
     <ul>
       <li>

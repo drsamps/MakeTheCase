@@ -5545,6 +5545,22 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             </HelpTooltip>
           </div>
           <p className="text-sm text-gray-500">Configure chat settings for each section-case assignment</p>
+          {/* The chat model is a section column (sections.chat_model), not a chat option. */}
+          <p className="text-xs text-gray-500 mt-1">
+            The AI chat model is set per section on{' '}
+            {hasAccess(user, 'sections') ? (
+              <button
+                type="button"
+                onClick={() => { setPrimaryTab('courses'); setCoursesSubTab('sections'); }}
+                className="text-blue-600 hover:underline"
+              >
+                Courses &gt; Sections
+              </button>
+            ) : (
+              <strong>Courses &gt; Sections</strong>
+            )}
+            {' '}(edit the section), not here.
+          </p>
         </div>
         <button
           onClick={() => {
