@@ -10,6 +10,7 @@ import {
 import { checkSectionReadiness } from '../services/keyResolver.js';
 import { createCourseSection, ProvisioningError } from '../services/sectionProvisioning.js';
 import { detachMismatchedLinks } from '../services/caseVersionSync.js';
+import { writeAudit } from '../services/auditLog.js';
 
 // Sections are listed newest semester first by semesters.start_date -- never by year_term,
 // which is display text ("Fall 2026" sorts before "Winter 2026").
@@ -413,27 +414,115 @@ router.get('/:id/students', verifyToken, requireAdminOrInstructor, requireSectio
 });
 
 // DELETE /api/sections/:id - Delete section (admin only: course structure)
+// A section that still has enrollments, case assignments, TAs or chats is refused (409) with counts
+// of what would go, so the UI can confirm; ?cascade=true then deletes it.
 router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+  let connection;
   try {
+    connection = await pool.getConnection();
     const { id } = req.params;
+    const cascade = req.query.cascade === 'true';
 
-    // Check if section exists
-    const [existing] = await pool.execute(
-      'SELECT section_id FROM sections WHERE section_id = ?',
+    // Check and delete in one transaction. Locking the section row blocks concurrent enrollments,
+    // assignments and chats (their FK checks need a shared lock on it), so the counts below are
+    // exactly what gets removed; without it, data added after a no-cascade check would go unconfirmed.
+    await connection.beginTransaction();
+
+    const [existing] = await connection.execute(
+      'SELECT section_id, section_title FROM sections WHERE section_id = ? FOR UPDATE',
       [id]
     );
-
     if (existing.length === 0) {
+      await connection.rollback();
       return res.status(404).json({ data: null, error: { message: 'Section not found' } });
     }
 
-    // Delete the section (students with this section_id will have their section_id set to NULL due to FK constraint)
-    await pool.execute('DELETE FROM sections WHERE section_id = ?', [id]);
+    const [[counts]] = await connection.execute(
+      `SELECT
+         (SELECT COUNT(DISTINCT st.id) FROM students st
+           WHERE st.section_id = ?
+              OR EXISTS (SELECT 1 FROM student_sections ss WHERE ss.student_id = st.id AND ss.section_id = ?)) AS students_count,
+         (SELECT COUNT(*) FROM section_cases WHERE section_id = ?) AS assignments_count,
+         (SELECT COUNT(*) FROM instructor_sections WHERE section_id = ?) AS instructors_count,
+         (SELECT COUNT(*) FROM case_chats WHERE section_id = ?) AS chats_count`,
+      [id, id, id, id, id]
+    );
+    const summary = {
+      students_count: Number(counts.students_count),
+      assignments_count: Number(counts.assignments_count),
+      instructors_count: Number(counts.instructors_count),
+      chats_count: Number(counts.chats_count),
+    };
+    const hasData = Object.values(summary).some((n) => n > 0);
 
-    res.json({ data: { deleted: true }, error: null });
+    if (hasData && !cascade) {
+      await connection.rollback();
+      return res.status(409).json({
+        data: { ...summary, requires_cascade: true },
+        error: { message: 'Section still has students, assignments, TAs or chats. Use cascade delete to remove it.' }
+      });
+    }
+
+    // students.section_id is the legacy "primary section" and has no FK. Move each affected student's
+    // primary to their earliest remaining enrollment, or clear it (as removing one enrollment does).
+    const [affected] = await connection.execute(
+      `SELECT id FROM students WHERE section_id = ?
+       UNION
+       SELECT student_id FROM student_sections WHERE section_id = ? AND is_primary = 1`,
+      [id, id]
+    );
+    for (const { id: studentId } of affected) {
+      const [remaining] = await connection.execute(
+        'SELECT section_id FROM student_sections WHERE student_id = ? AND section_id <> ? ORDER BY is_primary DESC, enrolled_at ASC LIMIT 1',
+        [studentId, id]
+      );
+      if (remaining.length > 0) {
+        await connection.execute(
+          'UPDATE student_sections SET is_primary = 1 WHERE student_id = ? AND section_id = ?',
+          [studentId, remaining[0].section_id]
+        );
+      }
+      await connection.execute(
+        'UPDATE students SET section_id = ? WHERE id = ? AND (section_id = ? OR section_id IS NULL)',
+        [remaining[0]?.section_id ?? null, studentId, id]
+      );
+    }
+
+    // Explicit rather than relying on FK actions, which older databases may lack.
+    // Chats are student work: kept, but no longer tied to a section.
+    await connection.execute('UPDATE case_chats SET section_id = NULL WHERE section_id = ?', [id]);
+    await connection.execute('DELETE FROM student_sections WHERE section_id = ?', [id]);
+    await connection.execute('DELETE FROM instructor_sections WHERE section_id = ?', [id]);
+    await connection.execute('DELETE FROM chat_options_defaults WHERE section_id = ?', [id]);
+    await connection.execute(
+      `DELETE scs FROM section_case_scenarios scs JOIN section_cases sc ON scs.section_case_id = sc.id WHERE sc.section_id = ?`,
+      [id]
+    );
+    await connection.execute(
+      `DELETE scp FROM section_case_positions scp JOIN section_cases sc ON scp.section_case_id = sc.id WHERE sc.section_id = ?`,
+      [id]
+    );
+    await connection.execute('DELETE FROM section_cases WHERE section_id = ?', [id]);
+    await connection.execute('DELETE FROM sections WHERE section_id = ?', [id]);
+
+    await connection.commit();
+
+    await writeAudit(req, {
+      action: 'section.delete',
+      resourceType: 'section',
+      resourceId: id,
+      details: { section_title: existing[0].section_title, ...summary }
+    });
+
+    res.json({ data: { deleted: true, section_id: id, ...summary }, error: null });
   } catch (error) {
+    if (connection) {
+      try { await connection.rollback(); } catch (_) {}
+    }
     console.error('Error deleting section:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
+  } finally {
+    if (connection) connection.release();
   }
 });
 

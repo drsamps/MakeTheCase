@@ -46,7 +46,7 @@ import SectionResultsSummary from './SectionResultsSummary';
 import HelpTooltip from './ui/HelpTooltip';
 import { ChatOptionsHelp, PersonasHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
-import { personLabel, caseLabel } from '../utils/confirmLabels';
+import { personLabel, caseLabel, quote } from '../utils/confirmLabels';
 import {
   canDeletePersona,
   canEditPersona,
@@ -3135,18 +3135,29 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
                   </svg>
                 </button>
-                {/* Duplicate creates a section: course structure, admin-only on the server. */}
-                {user?.role === 'admin' && (
-                  <button
-                    onClick={(e) => handleDuplicateSection(section, e)}
-                    className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors"
-                    title="Duplicate section"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                      <path d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z" />
-                      <path d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z" />
-                    </svg>
-                  </button>
+                {/* Duplicate and Delete are course structure: admin-only on the server. */}
+                {user?.role === 'admin' && !isSynthetic && (
+                  <>
+                    <button
+                      onClick={(e) => handleDuplicateSection(section, e)}
+                      className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors"
+                      title="Duplicate section"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z" />
+                        <path d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={(e) => handleDeleteSection(section, e)}
+                      className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                      title="Delete section"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                    </button>
+                  </>
                 )}
               </>
             )}
@@ -3358,6 +3369,41 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       superModel: section.super_model,
     });
     setShowSectionModal(true);
+  };
+
+  // Delete is course structure (admin-only on the server). A section that still has data is
+  // refused with counts, so a second confirm says exactly what goes.
+  const handleDeleteSection = async (section: SectionStat, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (section.section_id === 'unassigned' || section.section_id === 'other_courses') return;
+    const label = `${quote(section.section_title)} (${section.section_id})`;
+    if (!confirm(`Delete section ${label}?`)) return;
+    const url = `${getApiBaseUrl()}/sections/${encodeURIComponent(section.section_id)}`;
+    const headers = { 'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}` };
+    try {
+      let result = await fetch(url, { method: 'DELETE', headers }).then((r) => r.json());
+      if (result.data?.requires_cascade) {
+        const { students_count, assignments_count, instructors_count, chats_count } = result.data;
+        const ok = confirm(
+          `${quote(section.section_title)} still has data. Deleting it permanently removes:\n\n` +
+          `• ${students_count} student enrollment(s)\n• ${assignments_count} case assignment(s)\n• ${instructors_count} TA/instructor link(s)\n\n` +
+          (chats_count > 0 ? `${chats_count} student chat(s) are kept but will no longer belong to any section.\n\n` : '') +
+          `To keep all of this, disable the section instead. This cannot be undone.`
+        );
+        if (!ok) return;
+        result = await fetch(`${url}?cascade=true`, { method: 'DELETE', headers }).then((r) => r.json());
+      }
+      if (result.error) {
+        setError(result.error.message);
+        return;
+      }
+      if (selectedSection?.section_id === section.section_id) setSelectedSection(null);
+      setSuccessMessage(`Deleted section ${label}`);
+      fetchSectionStats();
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete section');
+    }
   };
 
   const handleToggleStatus = async (section: SectionStat, e?: React.MouseEvent) => {
@@ -9088,17 +9134,28 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                               <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
                             </svg>
                           </button>
-                          {user?.role === 'admin' && (
-                            <button
-                              onClick={(e) => handleDuplicateSection(section, e)}
-                              className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                              title="Duplicate section"
-                            >
-                              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                                <path d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z" />
-                                <path d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z" />
-                              </svg>
-                            </button>
+                          {user?.role === 'admin' && section.section_id !== 'other_courses' && (
+                            <>
+                              <button
+                                onClick={(e) => handleDuplicateSection(section, e)}
+                                className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
+                                title="Duplicate section"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                                  <path d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z" />
+                                  <path d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z" />
+                                </svg>
+                              </button>
+                              <button
+                                onClick={(e) => handleDeleteSection(section, e)}
+                                className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                title="Delete section"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                                  <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                                </svg>
+                              </button>
+                            </>
                           )}
                         </div>
                       )}

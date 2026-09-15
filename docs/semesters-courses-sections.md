@@ -81,7 +81,7 @@ Admins (any admin, `requireRole(['admin'])`) own **structure**; instructors own 
 | Create a section (`POST /api/sections`, `POST /api/courses/:id/sections`, Duplicate) | ✓ | ✗ | ✗ | ✗ |
 | Move a section: `course_id`, `semester_id`, `section_number` (`PATCH /api/sections/:id`) | ✓ | ✗ | ✗ | ✗ |
 | Remove / adopt a section (`DELETE`/`PUT /api/courses/:id/sections/:sid[/assign]`) | ✓ | ✗ | ✗ | ✗ |
-| Delete a section (`DELETE /api/sections/:id`) | ✓ | ✗ | ✗ | ✗ |
+| Delete a section (`DELETE /api/sections/:id`, trash icon on Courses > Sections; a section with enrollments, assignments, TAs or chats is refused with counts until `?cascade=true`; chats are kept with `section_id` NULL) | ✓ | ✗ | ✗ | ✗ |
 | Roll over a course or semester | ✓ | ✗ | ✗ | ✗ |
 | Section title, enabled, accept new students, enrollment key | ✓ | ✓ | ✓ | ✓ (with section access) |
 | Section chat / supervisor model | ✓ | ✓ | ✓ | ✗ |
