@@ -36,7 +36,24 @@ interface SummaryData {
     completions: number;
     avg_score: number | null;
   }> | null;
+  modelBreakdown?: Array<{
+    chat_model: string | null;
+    chats: number;
+    completions: number;
+    avg_score: number | null;
+    /** Chats where a ranked backup model answered some replies. */
+    backup_chats: number;
+    /** Average score over chats answered only by chat_model. */
+    avg_score_no_backup: number | null;
+  }>;
 }
+
+interface ModelOption {
+  model_id: string;
+  model_name: string;
+}
+
+type BackupFilter = 'all' | 'used' | 'none';
 
 interface StudentResult {
   student_id: string;
@@ -60,6 +77,10 @@ interface StudentResult {
   allow_rechat: boolean;
   liked: string | null;
   improve: string | null;
+  /** Model assigned at chat start. */
+  chat_model: string | null;
+  /** NULL unless a ranked backup answered some replies: { model_id: reply_count }. */
+  backup_models_used: Record<string, number> | null;
 }
 
 interface FilterOption {
@@ -74,7 +95,10 @@ interface CaseOption {
   case_title: string;
 }
 
-type SortKey = 'student_name' | 'section_title' | 'case_id' | 'case_title' | 'status' | 'initial_position' | 'final_position' | 'persona' | 'score' | 'hints' | 'helpful' | 'completion_time' | 'time_minutes';
+type SortKey = 'student_name' | 'section_title' | 'case_id' | 'case_title' | 'status' | 'initial_position' | 'final_position' | 'persona' | 'score' | 'hints' | 'helpful' | 'completion_time' | 'time_minutes' | 'chat_model' | 'backup';
+
+const backupReplyCount = (used: Record<string, number> | null) =>
+  used ? Object.values(used).reduce((sum, n) => sum + (Number(n) || 0), 0) : 0;
 
 const COLUMN_OPTIONS = [
   { key: 'section_title', label: 'Section' },
@@ -84,6 +108,8 @@ const COLUMN_OPTIONS = [
   { key: 'initial_position', label: 'Initial Position' },
   { key: 'final_position', label: 'Final Position' },
   { key: 'persona', label: 'Persona' },
+  { key: 'chat_model', label: 'Model' },
+  { key: 'backup', label: 'Backup' },
   { key: 'score', label: 'Score' },
   { key: 'out_of', label: 'Out Of' },
   { key: 'hints', label: 'Hints' },
@@ -113,12 +139,16 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
   // Filter options (populated from API)
   const [sectionOptions, setSectionOptions] = useState<FilterOption[]>([]);
   const [caseOptions, setCaseOptions] = useState<CaseOption[]>([]);
+  const [chatModelOptions, setChatModelOptions] = useState<ModelOption[]>([]);
+  const [modelNames, setModelNames] = useState<Record<string, string>>({});
 
   // Selected filters
   const [selectedSections, setSelectedSections] = useState<string[]>(['all']);
   const [selectedCases, setSelectedCases] = useState<string[]>(['all']);
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>(['all']);
   const [studentSearch, setStudentSearch] = useState<string>('');
+  const [selectedChatModels, setSelectedChatModels] = useState<string[]>(['all']);
+  const [backupFilter, setBackupFilter] = useState<BackupFilter>('all');
 
   // Display toggles
   const [showSummaryStats, setShowSummaryStats] = useState(false);
@@ -177,6 +207,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
         if (response.data) {
           setSectionOptions(response.data.sections || []);
           setCaseOptions(response.data.cases || []);
+          setChatModelOptions(response.data.chat_models || []);
+          setModelNames(response.data.model_names || {});
         }
       } catch (error) {
         console.error('Failed to fetch filter options:', error);
@@ -259,6 +291,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
       if (studentSearch.trim()) {
         params.set('student_search', studentSearch.trim());
       }
+      params.set('chat_models', selectedChatModels.includes('all') ? 'all' : selectedChatModels.join(','));
+      params.set('backup', backupFilter);
       params.set('limit', pageSize.toString());
       params.set('offset', ((currentPage - 1) * pageSize).toString());
       params.set('sort_by', sortKey);
@@ -275,7 +309,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     } finally {
       setIsLoading(false);
     }
-  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, pageSize, currentPage, sortKey, sortDirection, semesterId]);
+  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, selectedChatModels, backupFilter, pageSize, currentPage, sortKey, sortDirection, semesterId]);
 
   useEffect(() => {
     if (sectionOptions.length > 0 || caseOptions.length > 0) {
@@ -286,7 +320,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
   // Reset to page 1 when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, pageSize, semesterId]);
+  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, selectedChatModels, backupFilter, pageSize, semesterId]);
 
   // Handle sorting
   const handleSort = (key: SortKey) => {
@@ -507,7 +541,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
       fetchRubricDetails(initialRubricId);
     }
 
-    const defaultModel = modelsList.find((m: any) => m.default_model);
+    // `default` is a rank (1 = the default model, 2+ = backups).
+    const defaultModel = modelsList.find((m: any) => Number(m.default) === 1);
     setReEvalModelId(defaultModel?.model_id || modelsList[0]?.model_id || '');
 
     setShowReEvaluateModal(true);
@@ -593,6 +628,16 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     }
   };
 
+  const modelLabel = useCallback((modelId: string | null) => (modelId ? modelNames[modelId] || modelId : ''), [modelNames]);
+
+  /** "Claude Haiku 4.5: 3 replies; GPT-5 mini: 1 reply" */
+  const backupSummary = useCallback((used: Record<string, number> | null) =>
+    used
+      ? Object.entries(used)
+          .map(([id, n]) => `${modelLabel(id)}: ${n} ${Number(n) === 1 ? 'reply' : 'replies'}`)
+          .join('; ')
+      : '', [modelLabel]);
+
   // Export CSV
   const handleExportCSV = () => {
     const headers = ['Student'];
@@ -603,6 +648,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     if (visibleColumns.has('initial_position')) headers.push('Initial Position');
     if (visibleColumns.has('final_position')) headers.push('Final Position');
     if (visibleColumns.has('persona')) headers.push('Persona');
+    if (visibleColumns.has('chat_model')) headers.push('Model');
+    if (visibleColumns.has('backup')) headers.push('Backup Replies', 'Backup Models');
     if (visibleColumns.has('score')) headers.push('Score');
     if (visibleColumns.has('out_of')) headers.push('Out Of');
     if (visibleColumns.has('hints')) headers.push('Hints');
@@ -622,6 +669,11 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
       if (visibleColumns.has('initial_position')) row.push(s.initial_position || '');
       if (visibleColumns.has('final_position')) row.push(s.final_position || '');
       if (visibleColumns.has('persona')) row.push(s.persona || '');
+      if (visibleColumns.has('chat_model')) row.push(`"${modelLabel(s.chat_model).replace(/"/g, '""')}"`);
+      if (visibleColumns.has('backup')) {
+        row.push(s.backup_models_used ? backupReplyCount(s.backup_models_used).toString() : '');
+        row.push(`"${backupSummary(s.backup_models_used).replace(/"/g, '""')}"`);
+      }
       if (visibleColumns.has('score')) row.push(s.score !== null ? s.score.toString() : '');
       if (visibleColumns.has('out_of')) row.push(s.out_of.toString());
       if (visibleColumns.has('hints')) row.push(s.hints?.toString() || '');
@@ -664,6 +716,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
       value: c.case_id,
       label: c.case_title
     })), [caseOptions]
+  );
+
+  const chatModelSelectOptions: MultiSelectOption[] = useMemo(() =>
+    chatModelOptions.map(m => ({
+      value: m.model_id,
+      label: m.model_name
+    })), [chatModelOptions]
   );
 
   const statusSelectOptions: MultiSelectOption[] = useMemo(() =>
@@ -805,6 +864,33 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
               placeholder="Select statuses..."
               allLabel="All Statuses"
             />
+          </div>
+          <div className="min-w-48">
+            <label className="block text-xs font-medium text-gray-700 mb-1">Chat Model</label>
+            <MultiSelect
+              options={chatModelSelectOptions}
+              selected={selectedChatModels}
+              onChange={setSelectedChatModels}
+              placeholder="Select models..."
+              allLabel="ALL Models"
+            />
+          </div>
+          <div className="min-w-40">
+            <label
+              className="block text-xs font-medium text-gray-700 mb-1"
+              title="A backup model answers when a chat's model is rate-limited or times out. Choose 'No backup' to compare models fairly."
+            >
+              Backup Model
+            </label>
+            <select
+              value={backupFilter}
+              onChange={(e) => setBackupFilter(e.target.value as BackupFilter)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              <option value="all">All chats</option>
+              <option value="none">No backup used</option>
+              <option value="used">Backup used</option>
+            </select>
           </div>
           <div className="min-w-56">
             <label className="block text-xs font-medium text-gray-700 mb-1">Student</label>
@@ -976,6 +1062,58 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
               </div>
             </div>
           )}
+
+          {/* Model Breakdown */}
+          {summary.modelBreakdown && summary.modelBreakdown.length > 0 && (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-gray-200">
+                <h3 className="text-lg font-semibold text-gray-900">Performance by Chat Model</h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  Model = the model assigned when the chat started. A chat counts as &quot;backup&quot; when a backup
+                  model answered any reply; &quot;Avg Score (no backup)&quot; leaves those chats out.
+                </p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-5 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Model</th>
+                      <th className="px-5 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Chats</th>
+                      <th className="px-5 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Completions</th>
+                      <th className="px-5 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Avg Score</th>
+                      <th className="px-5 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Backup Chats</th>
+                      <th className="px-5 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Avg Score (no backup)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {summary.modelBreakdown.map(row => (
+                      <tr key={row.chat_model ?? '(none)'} className="hover:bg-gray-50">
+                        <td className="px-5 py-4">
+                          <p className="font-medium text-gray-900">{row.chat_model ? modelLabel(row.chat_model) : '(not recorded)'}</p>
+                          {row.chat_model && modelLabel(row.chat_model) !== row.chat_model && (
+                            <p className="text-xs text-gray-500">{row.chat_model}</p>
+                          )}
+                        </td>
+                        <td className="px-5 py-4 text-center text-sm text-gray-900">{row.chats}</td>
+                        <td className="px-5 py-4 text-center text-sm text-gray-900">{row.completions}</td>
+                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(row.avg_score)}`}>
+                          {row.avg_score?.toFixed(1) || '-'}
+                        </td>
+                        <td className="px-5 py-4 text-center text-sm">
+                          {row.backup_chats > 0
+                            ? <span className="text-amber-700 font-medium">{row.backup_chats}</span>
+                            : <span className="text-gray-400">0</span>}
+                        </td>
+                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(row.avg_score_no_backup)}`}>
+                          {row.avg_score_no_backup?.toFixed(1) || '-'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1058,6 +1196,24 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                     <SortableHeader
                       label="Persona"
                       sortKey="persona"
+                      currentSortKey={sortKey}
+                      sortDirection={sortDirection}
+                      onSort={handleSort}
+                    />
+                  )}
+                  {visibleColumns.has('chat_model') && (
+                    <SortableHeader
+                      label="Model"
+                      sortKey="chat_model"
+                      currentSortKey={sortKey}
+                      sortDirection={sortDirection}
+                      onSort={handleSort}
+                    />
+                  )}
+                  {visibleColumns.has('backup') && (
+                    <SortableHeader
+                      label="Backup"
+                      sortKey="backup"
                       currentSortKey={sortKey}
                       sortDirection={sortDirection}
                       onSort={handleSort}
@@ -1171,6 +1327,23 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                     {visibleColumns.has('persona') && (
                       <td className="p-3 whitespace-nowrap text-sm text-gray-600">
                         {student.persona ? student.persona.charAt(0).toUpperCase() + student.persona.slice(1) : <span className="text-gray-400">-</span>}
+                      </td>
+                    )}
+                    {visibleColumns.has('chat_model') && (
+                      <td className="p-3 whitespace-nowrap text-sm text-gray-600" title={student.chat_model || ''}>
+                        {student.chat_model ? modelLabel(student.chat_model) : <span className="text-gray-400">-</span>}
+                      </td>
+                    )}
+                    {visibleColumns.has('backup') && (
+                      <td className="p-3 whitespace-nowrap text-sm">
+                        {student.backup_models_used && (
+                          <span
+                            className="px-2 py-1 text-xs font-medium rounded-full bg-amber-100 text-amber-800 border border-amber-200"
+                            title={`Replies answered by a backup model: ${backupSummary(student.backup_models_used)}`}
+                          >
+                            Backup ×{backupReplyCount(student.backup_models_used)}
+                          </span>
+                        )}
                       </td>
                     )}
                     {visibleColumns.has('score') && (
@@ -1608,7 +1781,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                     >
                       {modelsList.map((m: any) => (
                         <option key={m.model_id} value={m.model_id}>
-                          {m.model_name} {m.default_model ? '(Default)' : ''}
+                          {m.model_name} {Number(m.default) === 1 ? '(Default)' : ''}
                         </option>
                       ))}
                     </select>

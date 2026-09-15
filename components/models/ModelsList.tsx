@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { getApiBaseUrl } from '../../services/apiClient';
 import MultiSelect from '../ui/MultiSelect';
 import SortableHeader from '../ui/SortableHeader';
@@ -20,7 +20,8 @@ export interface Model {
   model_name: string;
   vendor?: string;
   enabled: boolean;
-  default?: boolean;
+  /** Default rank (models.default_model): 0 = none, 1 = the default, 2+ = backup defaults in order. */
+  default?: number | boolean;
   cpm_input?: number | null;
   cpm_input_cache?: number | null;
   cpm_output?: number | null;
@@ -57,7 +58,8 @@ interface Props {
   onImport: () => void;
   onEdit: (model: Model) => void;
   onToggle: (model: Model) => Promise<void>;
-  onMakeDefault: (model: Model) => void;
+  /** rank: 1 = the default, 2+ = backup default, 0 = remove from the order. Others shift server-side. */
+  onSetDefaultRank: (model: Model, rank: number) => void;
   /** Single Test button: runs the test and reports it in a popup. */
   onTest: (model: Model) => void;
   /** Test all: runs one test and returns the outcome, no popup. */
@@ -78,7 +80,7 @@ const COLUMN_OPTIONS: { value: ColumnKey; label: string }[] = [
 ];
 const DEFAULT_COLUMNS: ColumnKey[] = ['provider', 'cpm_input', 'cpm_output'];
 
-type SortKey = 'name' | 'status' | ColumnKey;
+type SortKey = 'name' | 'status' | 'default' | ColumnKey;
 type SortState = { key: SortKey; dir: 'asc' | 'desc' };
 const DEFAULT_SORT: SortState = { key: 'name', dir: 'asc' };
 
@@ -111,7 +113,7 @@ const parseColumns = (raw: string): ColumnKey[] | null => {
   return valid.length > 0 ? valid : null;
 };
 
-const SORT_KEYS: SortKey[] = ['name', 'status', ...COLUMN_OPTIONS.map(o => o.value)];
+const SORT_KEYS: SortKey[] = ['name', 'status', 'default', ...COLUMN_OPTIONS.map(o => o.value)];
 const parseSort = (raw: string): SortState | null => {
   const stored = JSON.parse(raw);
   if (stored && SORT_KEYS.includes(stored.key) && (stored.dir === 'asc' || stored.dir === 'desc')) {
@@ -157,10 +159,20 @@ const releaseDay = (model: Model) => (model.release_date ? String(model.release_
 
 const sanitizeTextForDisplay = (value: string) => value.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 
+/**
+ * A model's default rank: 1 = the default, 2+ = backup defaults tried in order when a chat
+ * model fails (server/services/chatFallback.js), 0 = neither. Never test `model.default` for
+ * truthiness — a backup is truthy too.
+ */
+export const defaultRank = (model: Pick<Model, 'default'>): number => Number(model.default) || 0;
+
+export const defaultRankLabel = (rank: number) => (rank === 1 ? '#1 Default' : `#${rank} Backup`);
+
 const sortValue = (model: Model, key: SortKey): string | number | null => {
   switch (key) {
     case 'name': return model.model_name.toLowerCase();
     case 'status': return model.enabled ? 0 : 1;
+    case 'default': return defaultRank(model) || null;
     case 'provider': return vendorLabel(model.vendor).toLowerCase();
     case 'type': return model.type ? model.type.toLowerCase() : null;
     case 'release_date': return releaseDay(model);
@@ -172,6 +184,139 @@ const sortValue = (model: Model, key: SortKey): string | number | null => {
 
 const pluralize = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+const RANK_BADGE_BASE = 'px-2 py-1 text-xs rounded-full border transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1';
+
+/**
+ * Default column cell: the "#1 Default" / "#2 Backup" badge (or a plain "Set" badge) is itself
+ * the control. Clicking opens a small menu of positions; choosing one shifts the other ranked
+ * models server-side. The menu is position:fixed because the table sits in an overflow-x-auto
+ * wrapper, which would clip an absolutely positioned menu on the last rows.
+ */
+const DefaultRankBadge: React.FC<{
+  model: Model;
+  rank: number;
+  maxRank: number;
+  onSelect: (rank: number) => void;
+}> = ({ model, rank, maxRank, onSelect }) => {
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const open = menuPos !== null;
+
+  const close = useCallback(() => setMenuPos(null), []);
+
+  const toggle = () => {
+    if (open) return close();
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (rect) setMenuPos({ top: rect.bottom + 4, left: rect.left });
+  };
+
+  // Flip above the badge when the menu would run off the bottom of the window.
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (!open || !menu || !rect) return;
+    const height = menu.offsetHeight;
+    if (rect.bottom + 4 + height > window.innerHeight && rect.top - 4 - height > 0) {
+      setMenuPos({ top: rect.top - 4 - height, left: rect.left });
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (!menuRef.current?.contains(target) && !buttonRef.current?.contains(target)) close();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { close(); buttonRef.current?.focus(); }
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKey);
+    // A fixed menu would drift away from its badge on scroll or resize, so just close it.
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open, close]);
+
+  const choose = (r: number) => {
+    close();
+    onSelect(r);
+  };
+
+  const badgeClass = !model.enabled
+    ? `${RANK_BADGE_BASE} font-medium bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed`
+    : rank === 1
+      ? `${RANK_BADGE_BASE} font-semibold text-green-700 bg-green-100 border-green-200 hover:bg-green-200`
+      : rank > 1
+        ? `${RANK_BADGE_BASE} font-medium text-gray-700 bg-gray-100 border-gray-200 hover:bg-gray-200`
+        : `${RANK_BADGE_BASE} font-medium text-gray-500 bg-white border-gray-300 hover:bg-gray-50 hover:text-gray-900`;
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={toggle}
+        disabled={!model.enabled}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={rank > 0
+          ? `${model.model_name}: ${defaultRankLabel(rank)}. Change default order`
+          : `Add ${model.model_name} to the default order`}
+        title={!model.enabled
+          ? 'Enable this model to add it to the default order'
+          : '#1 is the default model; #2, #3, … are backups tried in order when a chat model fails. Click to change.'}
+        className={badgeClass}
+      >
+        {rank > 0 ? defaultRankLabel(rank) : 'Set'}
+      </button>
+      {menuPos && (
+        <div
+          ref={menuRef}
+          role="menu"
+          style={{ top: menuPos.top, left: menuPos.left }}
+          className="fixed z-50 min-w-[10rem] py-1 bg-white border border-gray-200 rounded-lg shadow-lg text-sm"
+        >
+          {Array.from({ length: maxRank }, (_, i) => i + 1).map(r => (
+            <button
+              key={r}
+              type="button"
+              role="menuitemradio"
+              aria-checked={r === rank}
+              onClick={() => choose(r)}
+              className={`w-full flex items-center justify-between gap-3 px-3 py-1.5 text-left hover:bg-gray-50 ${
+                r === rank ? 'font-semibold text-gray-900' : 'text-gray-700'
+              }`}
+            >
+              <span>{defaultRankLabel(r)}</span>
+              {r === rank && <span className="text-green-600" aria-hidden="true">✓</span>}
+            </button>
+          ))}
+          {rank > 0 && (
+            <>
+              <div className="my-1 border-t border-gray-100" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => choose(0)}
+                className="w-full px-3 py-1.5 text-left text-gray-600 hover:bg-gray-50"
+              >
+                Remove from defaults
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </>
+  );
+};
+
 const HEADER_CLASSES = 'px-4 py-3 whitespace-nowrap text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
 
 const ModelsList: React.FC<Props> = ({
@@ -182,7 +327,7 @@ const ModelsList: React.FC<Props> = ({
   onImport,
   onEdit,
   onToggle,
-  onMakeDefault,
+  onSetDefaultRank,
   onTest,
   runTest,
   onDelete,
@@ -287,7 +432,10 @@ const ModelsList: React.FC<Props> = ({
 
   const handleToggle = async (model: Model) => {
     if (model.enabled) {
-      if (model.default && !window.confirm(`Disable ${quote(model.model_name)}? It will also stop being the default model.`)) {
+      const rank = defaultRank(model);
+      if (rank > 0 && !window.confirm(
+        `Disable ${quote(model.model_name)}? It will also stop being the ${defaultRankLabel(rank)} model, and the models ranked below it move up.`
+      )) {
         return;
       }
       if (!showAll) setKeptIds(prev => new Set(prev).add(model.model_id));
@@ -296,6 +444,9 @@ const ModelsList: React.FC<Props> = ({
   };
 
   const has = (key: ColumnKey) => columns.includes(key);
+
+  // Size of the default order; the rank picker offers #1..#N (#N+1 for a model not in it yet).
+  const rankedCount = useMemo(() => models.filter(m => defaultRank(m) > 0).length, [models]);
 
   const providerOptions = useMemo(() => {
     const vendors = Array.from(new Set(models.map(m => (m.vendor || '').toLowerCase()).filter(Boolean)));
@@ -313,7 +464,7 @@ const ModelsList: React.FC<Props> = ({
 
   // A sort on a hidden column would be invisible, so fall back to name.
   const effectiveSort: SortState =
-    sort.key === 'name' || sort.key === 'status' || columns.includes(sort.key) ? sort : DEFAULT_SORT;
+    sort.key === 'name' || sort.key === 'status' || sort.key === 'default' || columns.includes(sort.key) ? sort : DEFAULT_SORT;
 
   const displayedModels = useMemo(() => {
     const filtered = shownByStatus.filter(m =>
@@ -370,7 +521,7 @@ const ModelsList: React.FC<Props> = ({
   };
 
   const deleteBlockedReason = (model: Model): string | null => {
-    if (model.default) return 'Default model: make another model the default first';
+    if (defaultRank(model) === 1) return '#1 Default model: make another model #1 first';
     const sections = usage[model.model_id]?.sections ?? 0;
     if (sections > 0) return `Used by ${pluralize(sections, 'section')}: reassign them first`;
     return null;
@@ -605,7 +756,7 @@ const ModelsList: React.FC<Props> = ({
                   {has('provider') && sortHeader('Provider', 'provider')}
                   {has('type') && sortHeader('Type', 'type')}
                   {has('release_date') && sortHeader('Released', 'release_date')}
-                  <th className={HEADER_CLASSES}>Default</th>
+                  {sortHeader('Default', 'default', '#1 is the default model. #2, #3, … are backups tried in order when a chat model is rate-limited or times out.')}
                   {sortHeader('Enabled', 'status')}
                   {has('cpm_input') && sortHeader('In $/M', 'cpm_input', 'Model input cost per million tokens')}
                   {has('cpm_output') && sortHeader('Out $/M', 'cpm_output', 'Model output cost per million tokens')}
@@ -625,9 +776,10 @@ const ModelsList: React.FC<Props> = ({
                   const safeResult = sanitizeTextForDisplay(String(failDetail));
                   const kept = !model.enabled && keptIds.has(model.model_id);
                   const deleteBlocked = deleteBlockedReason(model);
+                  const rank = defaultRank(model);
                   return (
                     <React.Fragment key={model.model_id}>
-                      <tr className={`hover:bg-gray-50 ${model.default ? 'bg-yellow-50' : ''} ${kept ? 'opacity-60' : ''}`}>
+                      <tr className={`hover:bg-gray-50 ${rank === 1 ? 'bg-yellow-50' : ''} ${kept ? 'opacity-60' : ''}`}>
                         <td className="px-4 py-3">
                           <div className="text-sm font-semibold text-gray-900">{model.model_name}</div>
                           <div className="text-xs text-gray-500">{model.model_id}</div>
@@ -659,27 +811,14 @@ const ModelsList: React.FC<Props> = ({
                         {has('release_date') && (
                           <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">{releaseDay(model) || '—'}</td>
                         )}
-                        <td className="px-4 py-3">
-                          {model.default ? (
-                            <span className="px-2 py-1 text-xs font-semibold text-green-700 bg-green-100 rounded-full border border-green-200">
-                              Default
-                            </span>
-                          ) : (
-                            // Only one model is the default; setting another clears it (server-side).
-                            <button
-                              onClick={() => onMakeDefault(model)}
-                              disabled={!model.enabled}
-                              title={model.enabled ? 'Set as the default model' : 'Enable this model to set it as the default'}
-                              aria-label={`Set ${model.model_name} as the default model`}
-                              className={`px-2 py-1 text-xs font-medium rounded-md border ${
-                                model.enabled
-                                  ? 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50 hover:text-gray-900'
-                                  : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                              }`}
-                            >
-                              Set
-                            </button>
-                          )}
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <DefaultRankBadge
+                            model={model}
+                            rank={rank}
+                            // A model already in the order can move to #1..#N; a new one can also take #N+1.
+                            maxRank={rank > 0 ? rankedCount : rankedCount + 1}
+                            onSelect={(r) => { if (r !== rank) onSetDefaultRank(model, r); }}
+                          />
                         </td>
                         <td className="px-4 py-3">
                           <button

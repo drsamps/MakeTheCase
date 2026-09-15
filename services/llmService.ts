@@ -11,8 +11,15 @@ const parseOrThrow = async (response: Response) => {
   }
 };
 
+export interface LLMChatReply {
+  text: string;
+  /** Model that actually answered (a ranked backup when `backup` is true). */
+  modelId: string;
+  backup: boolean;
+}
+
 export interface LLMChatSession {
-  sendMessage: (options: { message: string }) => Promise<{ text: string }>;
+  sendMessage: (options: { message: string }) => Promise<LLMChatReply>;
 }
 
 export const detectProvider = (modelId: string) => {
@@ -29,7 +36,8 @@ export const createChatSession = (
   history: Message[] = [],
   caseData?: CaseData,
   promptOptions?: SystemPromptOptions,
-  studentId?: string
+  studentId?: string,
+  caseChatId?: string | null
 ): LLMChatSession => {
   // Build prompt with case data at the TOP for LLM caching
   const systemPrompt = caseData
@@ -49,6 +57,7 @@ export const createChatSession = (
           message,
           caseId: caseData?.case_id,  // Pass caseId for metrics tracking
           studentId,  // Pass studentId for logging
+          caseChatId: caseChatId || undefined,  // Records replies served by a backup model
         }),
       });
 
@@ -64,7 +73,11 @@ export const createChatSession = (
         { role: 'user', content: message },
         { role: 'model', content: text },
       ];
-      return { text };
+      return {
+        text,
+        modelId: result.data?.meta?.model_id || modelId,
+        backup: Boolean(result.data?.meta?.backup),
+      };
     },
   };
 };

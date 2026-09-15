@@ -45,7 +45,7 @@ import Analytics from './Analytics';
 import PositionAnalytics from './PositionAnalytics';
 import SectionResultsSummary from './SectionResultsSummary';
 import HelpTooltip from './ui/HelpTooltip';
-import ModelsList, { type Model, type ModelTestOutcome, type ModelUsage } from './models/ModelsList';
+import ModelsList, { defaultRank, defaultRankLabel, type Model, type ModelTestOutcome, type ModelUsage } from './models/ModelsList';
 import { ChatOptionsHelp, PersonasHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
 import { personLabel, caseLabel, quote } from '../utils/confirmLabels';
@@ -496,7 +496,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     model_name: string;
     vendor: string;
     enabled: boolean;
-    default: boolean;
+    /** 0 = not a default, 1 = the default, 2+ = backup default (see ModelsList defaultRank). */
+    default_rank: number;
     cpm_input: string;
     cpm_input_cache: string;
     cpm_output: string;
@@ -512,7 +513,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     model_name: '',
     vendor: 'openai',
     enabled: true,
-    default: false,
+    default_rank: 0,
     cpm_input: '',
     cpm_input_cache: '',
     cpm_output: '',
@@ -822,17 +823,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         setPrimaryTab('content');
         if (subTab === 'new-case') {
           setContentSubTab('cases');
-          setShowCaseModal(true);
-          setEditingCase(null);
-          setCaseForm({
-            case_id: '',
-            case_title: '',
-            protagonist: '',
-            protagonist_initials: '',
-            chat_topic: '',
-            chat_question: '',
-            enabled: true
-          });
+          // Same blank form as the Cases screen's New Case button (includes visibility/team_shares).
+          handleOpenCaseModal();
         } else if (subTab && ['cases', 'caseprep'].includes(subTab)) {
           setContentSubTab(subTab as ContentSubTab);
         }
@@ -3484,12 +3476,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
+  // The modal's Default order picker offers #1..#N, plus #N+1 for a model not ranked yet.
+  const rankedModelCount = modelsList.filter((m) => defaultRank(m) > 0).length;
+  const modelFormRankOptions = editingModel && defaultRank(editingModel) > 0 ? rankedModelCount : rankedModelCount + 1;
+
   const emptyModelForm = (vendor: string = 'openai') => ({
     model_id: '',
     model_name: '',
     vendor,
     enabled: true,
-    default: false,
+    default_rank: 0,
     cpm_input: '',
     cpm_input_cache: '',
     cpm_output: '',
@@ -3537,7 +3533,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       model_name: model.model_name,
       vendor: model.vendor || 'openai',
       enabled: !!model.enabled,
-      default: !!model.default,
+      default_rank: defaultRank(model),
       cpm_input: model.cpm_input !== null && model.cpm_input !== undefined ? String(model.cpm_input) : '',
       cpm_input_cache: model.cpm_input_cache !== null && model.cpm_input_cache !== undefined ? String(model.cpm_input_cache) : '',
       cpm_output: model.cpm_output !== null && model.cpm_output !== undefined ? String(model.cpm_output) : '',
@@ -3586,7 +3582,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         model_name: prefill.model_name || trimmed,
         vendor: 'openrouter',
         enabled: prefill.enabled !== false,
-        default: false,
+        default_rank: 0,
         cpm_input: prefill.cpm_input != null ? String(prefill.cpm_input) : '',
         cpm_input_cache: prefill.cpm_input_cache != null ? String(prefill.cpm_input_cache) : '',
         cpm_output: prefill.cpm_output != null ? String(prefill.cpm_output) : '',
@@ -3645,7 +3641,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         model_name: modelForm.model_name.trim(),
         vendor: modelForm.vendor,
         enabled: modelForm.enabled,
-        default: modelForm.default,
+        // Send the rank only when it changed; the server shifts the other ranked models.
+        ...(!editingModel || defaultRank(editingModel) !== modelForm.default_rank
+          ? { default_rank: modelForm.enabled ? modelForm.default_rank : 0 }
+          : {}),
         cpm_input: parseNumberOrNull(modelForm.cpm_input, 'CPM input'),
         cpm_input_cache: parseNumberOrNull(modelForm.cpm_input_cache, 'CPM input cache'),
         cpm_output: parseNumberOrNull(modelForm.cpm_output, 'CPM output'),
@@ -3717,7 +3716,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
-  const handleMakeDefault = async (model: Model) => {
+  /** rank: 1 = the default, 2+ = backup default, 0 = remove from the order (server shifts the rest). */
+  const handleSetDefaultRank = async (model: Model, rank: number) => {
     const authToken = localStorage.getItem('admin_auth_token');
     if (!authToken) {
       alert('You must be signed in to manage models.');
@@ -3730,7 +3730,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${authToken}`,
         },
-        body: JSON.stringify({ default: true }),
+        body: JSON.stringify({ default_rank: rank }),
       });
       const result = await parseApiResponse(response);
       if (!response.ok || result.error) {
@@ -3739,8 +3739,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       }
       await fetchModels();
     } catch (err: any) {
-      console.error('Failed to set default model:', err);
-      alert(`Failed to set default model: ${err.message}`);
+      console.error('Failed to set default order:', err);
+      alert(`Failed to set default order: ${err.message}`);
     }
   };
 
@@ -5844,7 +5844,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />
                       {useDefaultOptions && applicableDefault && (
-                        <p className="text-xs text-gray-400 mt-0.5 italic">Inherited from {getInheritanceSource(isEditingDefault, chatOptionsSection)}</p>
+                        <p className="text-xs text-gray-400 mt-0.5 italic">Inherited from {getInheritanceSource(isEditingDefault, chatOptionsSection, isDefaultSectionSpecific)}</p>
                       )}
                     </div>
                     <div className={`${!useDefaultOptions && isOptionModified('free_hints', editingChatOptions.free_hints, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
@@ -5874,7 +5874,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />
                       {useDefaultOptions && applicableDefault && (
-                        <p className="text-xs text-gray-400 mt-0.5 italic">Inherited from {getInheritanceSource(isEditingDefault, chatOptionsSection)}</p>
+                        <p className="text-xs text-gray-400 mt-0.5 italic">Inherited from {getInheritanceSource(isEditingDefault, chatOptionsSection, isDefaultSectionSpecific)}</p>
                       )}
                     </div>
                   </div>
@@ -8203,7 +8203,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               onImport={openOpenRouterImportModal}
               onEdit={openEditModelModal}
               onToggle={handleToggleModel}
-              onMakeDefault={handleMakeDefault}
+              onSetDefaultRank={handleSetDefaultRank}
               onTest={handleTestModel}
               runTest={runModelTest}
               onDelete={handleDeleteModel}
@@ -9452,14 +9452,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   Enabled (available for selection)
                 </label>
                 <label className="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
-                  <input
-                    type="checkbox"
-                    checked={modelForm.default}
-                    onChange={(e) => setModelForm({ ...modelForm, default: e.target.checked })}
-                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                  />
-                  Default model
+                  Default order
+                  <select
+                    value={modelForm.default_rank}
+                    onChange={(e) => setModelForm({ ...modelForm, default_rank: Number(e.target.value) })}
+                    disabled={!modelForm.enabled}
+                    className="px-2 py-1 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
+                  >
+                    <option value={0}>Not a default</option>
+                    {Array.from({ length: modelFormRankOptions }, (_, i) => i + 1).map((r) => (
+                      <option key={r} value={r}>{defaultRankLabel(r)}</option>
+                    ))}
+                  </select>
                 </label>
+                <p className="text-xs text-gray-500 -mt-1">
+                  #1 is the default model. #2, #3, … are backups: if a section&apos;s chat model is rate-limited or
+                  times out, the reply comes from the first of these that works.
+                </p>
               </div>
             </div>
             <div className="flex justify-end gap-2 p-4 border-t bg-gray-50 rounded-b-xl">

@@ -1,6 +1,7 @@
 import express from 'express';
 import { pool } from '../db.js';
-import { chatWithLLM, evaluateWithLLM } from '../services/llmRouter.js';
+import { evaluateWithLLM } from '../services/llmRouter.js';
+import { chatWithFallback } from '../services/chatFallback.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
 import { resolveInstructorForStudentCase, resolveSectionForStudentCase } from '../services/keyResolver.js';
 import fs from 'fs/promises';
@@ -318,9 +319,28 @@ router.get('/case-data/:caseId', async (req, res) => {
   }
 });
 
+/**
+ * Count one reply served by a backup model on the chat (case_chats.backup_models_used stays
+ * NULL while every reply comes from chat_model). modelIdUsed comes from the models table,
+ * never the request; the student_id match stops a caller from stamping someone else's chat.
+ */
+function recordBackupReply(caseChatId, studentId, modelIdUsed) {
+  const path = `$."${String(modelIdUsed).replace(/["\\]/g, '')}"`;
+  pool
+    .execute(
+      `UPDATE case_chats
+          SET backup_models_used = JSON_SET(
+                COALESCE(backup_models_used, JSON_OBJECT()), ?,
+                CAST(COALESCE(JSON_EXTRACT(backup_models_used, ?), 0) AS UNSIGNED) + 1)
+        WHERE id = ? AND student_id = ?`,
+      [path, path, caseChatId, studentId]
+    )
+    .catch((e) => console.error('[llm/chat] failed to record backup reply:', e.message));
+}
+
 router.post('/chat', async (req, res) => {
   try {
-    const { modelId, systemPrompt, history, message, caseId, studentId } = req.body || {};
+    const { modelId, systemPrompt, history, message, caseId, studentId, caseChatId } = req.body || {};
     if (!modelId || !systemPrompt || !message) {
       return res.status(400).json({ data: null, error: { message: 'modelId, systemPrompt, and message are required' } });
     }
@@ -333,15 +353,19 @@ router.post('/chat', async (req, res) => {
     const sectionId = await resolveSectionForStudentCase(studentId, caseId);
 
     const startTime = Date.now();
-    const { text, meta } = await chatWithLLM({
+    // Falls back to the ranked default models when modelId is rate-limited or times out.
+    const { text, meta, modelIdUsed, backup } = await chatWithFallback({
       modelId,
-      vendor: modelConfig.vendor,
       systemPrompt,
       history: Array.isArray(history) ? history : [],
       message,
-      config: { ...modelConfig, caseId, instructorId, sectionId, purpose: 'student_chat' },
+      config: { caseId, instructorId, sectionId, caseChatId: caseChatId || null, purpose: 'student_chat' },
     });
     const durationMs = Date.now() - startTime;
+
+    if (backup && caseChatId && studentId) {
+      recordBackupReply(caseChatId, studentId, modelIdUsed);
+    }
 
     // Log prompt if enabled (async, non-blocking)
     if (studentId && caseId) {
@@ -349,7 +373,7 @@ router.post('/chat', async (req, res) => {
         logType: 'chat',
         studentId,
         caseId,
-        modelId,
+        modelId: modelIdUsed,
         systemPrompt,
         history: Array.isArray(history) ? history : [],
         currentMessage: message,
@@ -359,7 +383,7 @@ router.post('/chat', async (req, res) => {
       }).catch(() => {}); // Fire and forget - errors handled internally
     }
 
-    res.json({ data: { text, meta }, error: null });
+    res.json({ data: { text, meta: { ...meta, model_id: modelIdUsed, backup } }, error: null });
   } catch (error) {
     if (error?.code === 'INSTRUCTOR_SETUP_INCOMPLETE') {
       return res.status(409).json({ data: null, error: { code: error.code, message: "This section isn't ready yet — your instructor still needs to finish setup.", provider: error.provider } });

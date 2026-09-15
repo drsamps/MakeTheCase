@@ -15,6 +15,7 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
 import { getEffectiveInstructorId, hasAdminVision } from '../services/resourceAccess.js';
 import { getWeeklyUsage, currentWeekBounds } from '../services/usageGuard.js';
+import { getModelFailuresCleanupStatus } from '../jobs/pruneModelFailures.js';
 
 const router = express.Router();
 
@@ -290,6 +291,27 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
       [offsetHours, ...scopeParams]
     );
 
+    // Chat model failures (rate limits, timeouts, ...) from services/chatFallback.js. One row per
+    // failed attempt; served_by_model_id says whether a backup model answered that reply.
+    const [failureRows] = await pool.execute(
+      `SELECT mf.model_id, m.model_name,
+              COUNT(*) AS failures,
+              SUM(CASE WHEN mf.error_kind = 'rate_limit' THEN 1 ELSE 0 END) AS rate_limit,
+              SUM(CASE WHEN mf.error_kind = 'timeout' THEN 1 ELSE 0 END) AS timeout,
+              SUM(CASE WHEN mf.error_kind = 'server_error' THEN 1 ELSE 0 END) AS server_error,
+              SUM(CASE WHEN mf.error_kind IN ('empty_reply', 'other') THEN 1 ELSE 0 END) AS other,
+              SUM(CASE WHEN mf.served_by_model_id IS NOT NULL THEN 1 ELSE 0 END) AS answered_by_backup,
+              SUM(CASE WHEN mf.served_by_model_id IS NULL THEN 1 ELSE 0 END) AS unanswered,
+              MAX(mf.created_at) AS last_failure_at
+         FROM model_failures mf
+         LEFT JOIN models m ON m.model_id = mf.model_id
+        WHERE ${scopeClause.replace(/(?<![\w.])(created_at|instructor_id)/g, 'mf.$1')}
+        GROUP BY mf.model_id, m.model_name
+        ORDER BY failures DESC
+        LIMIT 50`,
+      scopeParams
+    );
+
     // Admin "all instructors" leaderboard
     let byInstructor = null;
     if (isGlobalAdminView) {
@@ -338,6 +360,32 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
         })),
         daily: fillDailyRange(start, end, daily),
         byInstructor,
+        modelFailures: failureRows.map(r => ({
+          model_id: r.model_id,
+          model_name: r.model_name || r.model_id,
+          failures: Number(r.failures),
+          rate_limit: Number(r.rate_limit),
+          timeout: Number(r.timeout),
+          server_error: Number(r.server_error),
+          other: Number(r.other),
+          answered_by_backup: Number(r.answered_by_backup),
+          unanswered: Number(r.unanswered),
+          last_failure_at: r.last_failure_at,
+        })),
+        // Daily retention job (jobs/pruneModelFailures.js). The error text is DB-level detail,
+        // so only the global admin view gets it; everyone else sees that the run failed.
+        modelFailuresCleanup: (() => {
+          const { retentionDays, lastRun } = getModelFailuresCleanupStatus();
+          return {
+            retentionDays,
+            lastRun: lastRun && {
+              at: lastRun.at,
+              deleted: lastRun.deleted,
+              failed: Boolean(lastRun.error),
+              error: isGlobalAdminView ? lastRun.error : null,
+            },
+          };
+        })(),
       },
       error: null,
     });

@@ -18,14 +18,6 @@ export interface Transcript {
   section_title?: string;
 }
 
-export interface TranscriptListResponse {
-  data: Transcript[];
-  total: number;
-  limit: number;
-  offset: number;
-  error: null | { message: string };
-}
-
 /**
  * Save a transcript for a case_chat
  */
@@ -120,46 +112,6 @@ export const deleteTranscript = async (
     console.error('Error deleting transcript:', error);
     return {
       data: null,
-      error: error.response?.data?.error || { message: error.message }
-    };
-  }
-};
-
-/**
- * List transcripts with filters (admin only)
- */
-export const listTranscripts = async (filters: {
-  section_id?: string;
-  case_id?: string;
-  is_anonymized?: boolean;
-  older_than_days?: number;
-  limit?: number;
-  offset?: number;
-}): Promise<TranscriptListResponse> => {
-  try {
-    const params = new URLSearchParams();
-    if (filters.section_id) params.set('section_id', filters.section_id);
-    if (filters.case_id) params.set('case_id', filters.case_id);
-    if (filters.is_anonymized !== undefined) params.set('is_anonymized', String(filters.is_anonymized));
-    if (filters.older_than_days) params.set('older_than_days', String(filters.older_than_days));
-    if (filters.limit) params.set('limit', String(filters.limit));
-    if (filters.offset) params.set('offset', String(filters.offset));
-
-    const response = await api.get(`/transcripts?${params.toString()}`);
-    return {
-      data: response.data,
-      total: response.total,
-      limit: response.limit,
-      offset: response.offset,
-      error: null
-    };
-  } catch (error: any) {
-    console.error('Error listing transcripts:', error);
-    return {
-      data: [],
-      total: 0,
-      limit: 0,
-      offset: 0,
       error: error.response?.data?.error || { message: error.message }
     };
   }

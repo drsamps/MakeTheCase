@@ -19,6 +19,19 @@ interface ByModel { model_id: string; provider: string; calls: number; cost: num
 interface BySection { section_id: string; section_title: string | null; course_name: string | null; calls: number; cost: number; }
 interface DailyPoint { day: string; calls: number; cost: number; }
 interface ByInstructor { instructor_id: string | null; email: string | null; full_name: string | null; calls: number; cost: number; }
+/** Failed student-chat attempts per model (server/services/chatFallback.js → model_failures). */
+interface ModelFailure {
+  model_id: string;
+  model_name: string;
+  failures: number;
+  rate_limit: number;
+  timeout: number;
+  server_error: number;
+  other: number;
+  answered_by_backup: number;
+  unanswered: number;
+  last_failure_at: string | null;
+}
 
 interface UsageDetail {
   scope: 'instructor' | 'global';
@@ -39,6 +52,12 @@ interface UsageDetail {
   bySection: BySection[];
   daily: DailyPoint[];
   byInstructor: ByInstructor[] | null;
+  modelFailures?: ModelFailure[];
+  /** Status of the daily job that deletes old model_failures rows (server/jobs/pruneModelFailures.js). */
+  modelFailuresCleanup?: {
+    retentionDays: number;
+    lastRun: { at: string; deleted: number; failed: boolean; error: string | null } | null;
+  };
 }
 
 interface WeeklyStatus {
@@ -399,11 +418,81 @@ const AiUsagePanel: React.FC = () => {
               />
             )}
           </div>
+
+          <ModelFailuresTable rows={detail.modelFailures || []} cleanup={detail.modelFailuresCleanup} />
         </>
       )}
     </div>
   );
 };
+
+const ModelFailuresCleanupNote: React.FC<{ cleanup?: UsageDetail['modelFailuresCleanup'] }> = ({ cleanup }) => {
+  if (!cleanup) return null;
+  const { retentionDays, lastRun } = cleanup;
+  let lastText = 'The first cleanup runs shortly after the server starts.';
+  if (lastRun?.failed) {
+    lastText = `Last cleanup failed ${new Date(lastRun.at).toLocaleString()}${lastRun.error ? `: ${lastRun.error}` : ''}. It retries daily.`;
+  } else if (lastRun) {
+    lastText = `Last cleanup ${new Date(lastRun.at).toLocaleString()}: removed ${lastRun.deleted.toLocaleString()} ${lastRun.deleted === 1 ? 'record' : 'records'}.`;
+  }
+  return (
+    <div className={`text-xs mt-3 pt-2 border-t border-gray-100 ${lastRun?.failed ? 'text-red-600' : 'text-gray-400'}`}>
+      Failure records older than {retentionDays} days are deleted automatically once a day. {lastText}
+    </div>
+  );
+};
+
+const ModelFailuresTable: React.FC<{ rows: ModelFailure[]; cleanup?: UsageDetail['modelFailuresCleanup'] }> = ({ rows, cleanup }) => (
+  <div className="bg-white border border-gray-200 rounded-lg p-4">
+    <div className="text-sm font-medium text-gray-700">Chat model failures</div>
+    <div className="text-xs text-gray-500 mb-2">
+      Failed student chat replies, by the model that failed. When a backup model is ranked in Admin &gt; Models
+      (#2, #3, …), the student&apos;s reply comes from the first backup that works.
+    </div>
+    {rows.length === 0 ? (
+      <div className="text-sm text-gray-400 py-4">No chat model failures in this period.</div>
+    ) : (
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs text-gray-500 uppercase">
+              <th className="text-left font-medium pb-1">Model</th>
+              <th className="text-right font-medium pb-1">Failures</th>
+              <th className="text-right font-medium pb-1" title="HTTP 429 / provider quota">Rate limit</th>
+              <th className="text-right font-medium pb-1">Timeout</th>
+              <th className="text-right font-medium pb-1" title="HTTP 5xx / provider overloaded">Server</th>
+              <th className="text-right font-medium pb-1" title="Empty reply or other error">Other</th>
+              <th className="text-right font-medium pb-1">Backup answered</th>
+              <th className="text-right font-medium pb-1">Not answered</th>
+              <th className="text-right font-medium pb-1">Last</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.model_id} className="border-t border-gray-100">
+                <td className="py-1.5">
+                  <div className="text-gray-900 truncate" title={r.model_id}>{r.model_name}</div>
+                  {r.model_name !== r.model_id && <div className="text-xs text-gray-400">{r.model_id}</div>}
+                </td>
+                <td className="text-right font-mono text-gray-900">{r.failures.toLocaleString()}</td>
+                <td className="text-right font-mono text-gray-600">{r.rate_limit || '—'}</td>
+                <td className="text-right font-mono text-gray-600">{r.timeout || '—'}</td>
+                <td className="text-right font-mono text-gray-600">{r.server_error || '—'}</td>
+                <td className="text-right font-mono text-gray-600">{r.other || '—'}</td>
+                <td className="text-right font-mono text-green-700">{r.answered_by_backup || '—'}</td>
+                <td className={`text-right font-mono ${r.unanswered ? 'text-red-600' : 'text-gray-600'}`}>{r.unanswered || '—'}</td>
+                <td className="text-right text-xs text-gray-500 whitespace-nowrap">
+                  {r.last_failure_at ? new Date(r.last_failure_at).toLocaleString() : ''}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+    <ModelFailuresCleanupNote cleanup={cleanup} />
+  </div>
+);
 
 interface StatProps { label: string; value: string; sub?: string; mono?: boolean; }
 const Stat: React.FC<StatProps> = ({ label, value, sub, mono }) => (

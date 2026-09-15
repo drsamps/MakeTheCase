@@ -50,6 +50,7 @@ import contentRoutes from './routes/content.js';
 import usageRoutes from './routes/usage.js';
 import backupsRoutes from './routes/backups.js';
 import { startTruncateOldRawUsageJob } from './jobs/truncateOldRawUsage.js';
+import { startPruneModelFailuresJob } from './jobs/pruneModelFailures.js';
 
 // Load environment variables
 // Use absolute path to ensure .env.local is found regardless of working directory
@@ -144,6 +145,7 @@ app.use((err, req, res, next) => {
 async function start() {
   await testConnection();
   startTruncateOldRawUsageJob();
+  startPruneModelFailuresJob();
   app.listen(PORT, () => {
     console.log(`✓ API server running on http://localhost:${PORT}`);
   });

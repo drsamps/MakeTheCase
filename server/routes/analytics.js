@@ -85,6 +85,8 @@ async function buildPositionsScope(req, baseConditions) {
  * - section_ids: comma-separated list of section_ids, or "all" (default: "all")
  * - case_ids: comma-separated list of case_ids, or "all" (default: "all")
  * - statuses: comma-separated list of statuses (completed, in_progress, not_started), or "all" (default: "all")
+ * - chat_models: comma-separated list of case_chats.chat_model values, or "all" (default: "all")
+ * - backup: "used" (some replies came from a backup model), "none", or "all" (default: "all")
  * - limit: number of student records to return (default: 20)
  * - offset: number of records to skip (default: 0)
  * - sort_by: column to sort by (default: "completion_time")
@@ -97,6 +99,8 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
       case_ids = 'all',
       statuses = 'all',
       student_search = '',
+      chat_models = 'all',
+      backup = 'all',
       limit = 20,
       offset = 0,
       sort_by = 'completion_time',
@@ -160,7 +164,9 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
       'hints': 'cc.hints_used',
       'helpful': 'e.helpful',
       'completion_time': 'cc.end_time',
-      'time_minutes': 'TIMESTAMPDIFF(MINUTE, cc.start_time, cc.end_time)'
+      'time_minutes': 'TIMESTAMPDIFF(MINUTE, cc.start_time, cc.end_time)',
+      'chat_model': 'cc.chat_model',
+      'backup': '(cc.backup_models_used IS NOT NULL)'
     };
     const sortColumn = validSortColumns[sort_by] || 'cc.end_time';
 
@@ -206,6 +212,21 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
     if (student_search && student_search.trim()) {
       whereConditions.push('s.full_name LIKE ?');
       params.push(`%${student_search.trim()}%`);
+    }
+
+    // Chat model comparisons. chat_model is the model assigned at chat start;
+    // backup_models_used is NULL unless a ranked backup answered some replies.
+    if (chat_models !== 'all' && String(chat_models).trim()) {
+      const modelList = String(chat_models).split(',').map(m => m.trim()).filter(Boolean);
+      if (modelList.length > 0) {
+        whereConditions.push(`cc.chat_model IN (${modelList.map(() => '?').join(',')})`);
+        params.push(...modelList);
+      }
+    }
+    if (backup === 'used') {
+      whereConditions.push('cc.backup_models_used IS NOT NULL');
+    } else if (backup === 'none') {
+      whereConditions.push('cc.backup_models_used IS NULL');
     }
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
@@ -347,6 +368,40 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
       }));
     }
 
+    // ============ BREAKDOWN BY CHAT MODEL ============
+    // Always returned: comparing models is the point. "Clean" figures exclude chats where a
+    // backup model answered some replies (backup_models_used IS NOT NULL).
+
+    const modelBreakdownQuery = `
+      SELECT
+        cc.chat_model,
+        COUNT(DISTINCT cc.id) as chats,
+        COUNT(e.id) as completions,
+        AVG(e.score) as avg_score,
+        COUNT(DISTINCT CASE WHEN cc.backup_models_used IS NOT NULL THEN cc.id END) as backup_chats,
+        AVG(CASE WHEN cc.backup_models_used IS NULL THEN e.score END) as avg_score_no_backup
+      FROM students s
+      LEFT JOIN student_sections ss ON s.id = ss.student_id
+      JOIN sections sec ON (ss.section_id = sec.section_id OR s.section_id = sec.section_id)
+      JOIN section_cases sc ON sec.section_id = sc.section_id
+      JOIN cases c ON sc.case_id = c.case_id
+      JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
+      LEFT JOIN evaluations e ON e.case_chat_id = cc.id
+      ${whereClause}
+      GROUP BY cc.chat_model
+      ORDER BY cc.chat_model
+    `;
+
+    const [modelRows] = await pool.execute(modelBreakdownQuery, params);
+    const modelBreakdown = modelRows.map(row => ({
+      chat_model: row.chat_model,
+      chats: parseInt(row.chats) || 0,
+      completions: parseInt(row.completions) || 0,
+      avg_score: row.avg_score ? parseFloat(row.avg_score) : null,
+      backup_chats: parseInt(row.backup_chats) || 0,
+      avg_score_no_backup: row.avg_score_no_backup ? parseFloat(row.avg_score_no_backup) : null
+    }));
+
     // ============ STUDENT DETAILS ============
 
     // Get total count for pagination
@@ -390,6 +445,8 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
         e.allow_rechat,
         e.liked,
         e.improve,
+        cc.chat_model,
+        cc.backup_models_used,
         COALESCE(r.total_points, 15) as out_of
       FROM students s
       LEFT JOIN student_sections ss ON s.id = ss.student_id
@@ -429,7 +486,12 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
       completion_time: row.completion_time,
       allow_rechat: !!row.allow_rechat,
       liked: row.liked || null,
-      improve: row.improve || null
+      improve: row.improve || null,
+      chat_model: row.chat_model || null,
+      // mysql2 returns JSON columns parsed; tolerate a string just in case.
+      backup_models_used: typeof row.backup_models_used === 'string'
+        ? JSON.parse(row.backup_models_used)
+        : (row.backup_models_used || null)
     }));
 
     // ============ RESPONSE ============
@@ -440,7 +502,8 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
           ...summary,
           scoreDistribution,
           sectionBreakdown,
-          caseBreakdown
+          caseBreakdown,
+          modelBreakdown
         },
         students,
         total: parseInt(totalRecords),
@@ -464,7 +527,7 @@ router.get('/filters', verifyToken, requireAdminOrInstructor, async (req, res) =
   try {
     const scopedSectionIds = await resolveScopedSectionIds(req);
     if (scopedSectionIds !== null && scopedSectionIds.length === 0) {
-      return res.json({ data: { sections: [], cases: [] }, error: null });
+      return res.json({ data: { sections: [], cases: [], chat_models: [], model_names: {} }, error: null });
     }
 
     let sectionsQuery = `
@@ -494,6 +557,25 @@ router.get('/filters', verifyToken, requireAdminOrInstructor, async (req, res) =
     casesQuery += ' ORDER BY c.case_title';
     const [cases] = await pool.execute(casesQuery, casesParams);
 
+    // Chat models used by chats in scope (for the Model filter), plus every model's display
+    // name so the client can label backup models that were never a section's chat model.
+    let chatModelsQuery = `
+      SELECT DISTINCT cc.chat_model, m.model_name
+      FROM case_chats cc
+      LEFT JOIN models m ON m.model_id = cc.chat_model
+      WHERE cc.chat_model IS NOT NULL
+    `;
+    const chatModelsParams = [];
+    if (scopedSectionIds !== null) {
+      chatModelsQuery += ` AND cc.section_id IN (${scopedSectionIds.map(() => '?').join(',')})`;
+      chatModelsParams.push(...scopedSectionIds);
+    }
+    chatModelsQuery += ' ORDER BY cc.chat_model';
+    const [[chatModels], [allModels]] = await Promise.all([
+      pool.execute(chatModelsQuery, chatModelsParams),
+      pool.execute('SELECT model_id, model_name FROM models'),
+    ]);
+
     res.json({
       data: {
         sections: sections.map(s => ({
@@ -505,7 +587,12 @@ router.get('/filters', verifyToken, requireAdminOrInstructor, async (req, res) =
         cases: cases.map(c => ({
           case_id: c.case_id,
           case_title: c.case_title
-        }))
+        })),
+        chat_models: chatModels.map(m => ({
+          model_id: m.chat_model,
+          model_name: m.model_name || m.chat_model
+        })),
+        model_names: Object.fromEntries(allModels.map(m => [m.model_id, m.model_name]))
       },
       error: null
     });

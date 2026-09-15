@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Message, MessageRole, ConversationPhase, EvaluationResult, Section, CaseChat, ChatStatus, RubricForPrompt } from './types';
-import { createChatSession, getEvaluation } from './services/llmService';
+import { createChatSession, getEvaluation, type LLMChatReply } from './services/llmService';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
 import { api, getApiBaseUrl, refreshAuthToken } from './services/apiClient';
@@ -22,7 +22,7 @@ interface Model {
     model_id: string;
     model_name: string;
     enabled?: boolean;
-    default?: boolean;
+    default?: number; // rank: 1 = the default model, 2+ = backup defaults
     cpm_input?: number | null;
     cpm_output?: number | null;
 }
@@ -149,6 +149,8 @@ const App: React.FC = () => {
   const [models, setModels] = useState<Model[]>([]);
   const [defaultModel, setDefaultModel] = useState<string | null>(null);
   const [selectedChatModel, setSelectedChatModel] = useState<string | null>(null);
+  // Model that answered the latest reply; differs from selectedChatModel when a backup answered.
+  const [lastReply, setLastReply] = useState<Pick<LLMChatReply, 'modelId' | 'backup'> | null>(null);
   const [selectedSuperModel, setSelectedSuperModel] = useState<string | null>(null);
   const [activeCaseData, setActiveCaseData] = useState<CaseData | null>(null);
   const [isLoadingCase, setIsLoadingCase] = useState(false);
@@ -357,7 +359,8 @@ const App: React.FC = () => {
             }
         } else if (data) {
             setModels(data as Model[]);
-            const defaultM = (data as any[]).find(m => m.default);
+            // models.default is a rank (1 = the default, 2+ = backups), so match 1 exactly.
+            const defaultM = (data as any[]).find(m => Number(m.default) === 1);
             let initialModelId = null;
             if (defaultM) {
                 initialModelId = defaultM.model_id;
@@ -758,10 +761,13 @@ const App: React.FC = () => {
     }
   }, [currentCaseChatId, conversationPhase]);
 
-  const startConversation = useCallback(async (name: string, personaId: string, modelId: string, studentId?: string) => {
+  // caseChatId is passed explicitly: the caller has just created the case_chat, so
+  // currentCaseChatId state is not visible inside this closure yet.
+  const startConversation = useCallback(async (name: string, personaId: string, modelId: string, studentId?: string, caseChatId?: string | null) => {
     setIsLoading(true);
     setError(null);
     setHintsUsed(0);  // Reset hint counter at start of conversation
+    setLastReply(null);
     try {
       // Use active case data or default
       let caseData = activeCaseData || DEFAULT_CASE_DATA;
@@ -832,7 +838,8 @@ const App: React.FC = () => {
         initialHistory,
         caseData,
         { freeHints, chatbotPersonality, personaData },
-        studentId || studentDBId || undefined
+        studentId || studentDBId || undefined,
+        caseChatId
       );
       setChatSession(session);
       setMessages(initialHistory);
@@ -957,6 +964,7 @@ const App: React.FC = () => {
                 retryTimeoutRef.current = null;
             }
             const response = await chatSession.sendMessage({ message: userMessage });
+            setLastReply(response);
             const modelMessage: Message = { role: MessageRole.MODEL, content: response.text };
             setMessages((prev) => [...prev, modelMessage]);
 
@@ -990,6 +998,7 @@ const App: React.FC = () => {
                 if (!chatSession) return;
                 try {
                     const retryResponse = await chatSession.sendMessage({ message: userMessage });
+                    setLastReply(retryResponse);
                     // Success - remove the "interrupted" message and add success messages
                     setMessages((prev) => {
                         const withoutError = prev.slice(0, -1); // Remove the "interrupted" message
@@ -1164,10 +1173,11 @@ const App: React.FC = () => {
     if (chatSession) {
       setIsLoading(true);
       try {
-        const response = await chatSession.sendMessage(position.position);
+        const response = await chatSession.sendMessage({ message: position.position });
+        setLastReply(response);
         const modelMessage: Message = {
           role: MessageRole.MODEL,
-          content: response.response.text(),
+          content: response.text,
         };
         setMessages(prev => [...prev, modelMessage]);
       } catch (err) {
@@ -1347,6 +1357,7 @@ const App: React.FC = () => {
       setStudentFirstName(trimmedFirstName);
 
       // Create case_chat record to track this chat session
+      let newCaseChatId: string | null = null;
       try {
         const caseChatPayload: Record<string, any> = {
           student_id: studentId,
@@ -1379,6 +1390,7 @@ const App: React.FC = () => {
           return;
         }
         if (caseChatResult.data?.id) {
+          newCaseChatId = caseChatResult.data.id;
           setCurrentCaseChatId(caseChatResult.data.id);
         }
       } catch (err) {
@@ -1386,7 +1398,7 @@ const App: React.FC = () => {
         // Continue anyway - chat tracking is optional
       }
 
-      await startConversation(trimmedFirstName, selectedPersonaId, selectedChatModel, studentId);
+      await startConversation(trimmedFirstName, selectedPersonaId, selectedChatModel, studentId, newCaseChatId);
     } finally {
       setIsLoading(false);
     }
@@ -2088,7 +2100,9 @@ const App: React.FC = () => {
     );
   }
 
-  const chatModelName = models.find(m => m.model_id === selectedChatModel)?.model_name || selectedChatModel;
+  const answeringModelId = lastReply?.backup ? lastReply.modelId : selectedChatModel;
+  const answeringModelName = models.find(m => m.model_id === answeringModelId)?.model_name || answeringModelId;
+  const chatModelName = lastReply?.backup ? `${answeringModelName} (backup)` : answeringModelName;
   const superModelName = models.find(m => m.model_id === selectedSuperModel)?.model_name || selectedSuperModel;
 
   // Check if case content should be shown (defaults to true if not specified)

@@ -107,6 +107,33 @@ function trackUsageAsync({
 }
 
 /**
+ * Fire-and-forget: record a chat call that chatFallback.js abandoned at its timeout. The
+ * provider may still finish and bill it, but no usage comes back, so without this row the
+ * weekly cap and AI Usage would miss it. Input tokens are estimated (~4 chars/token) and
+ * costed at cpm_input; output is unknown and not counted. raw_usage marks the row as an
+ * estimate: { abandoned: true, estimated_input_tokens }.
+ */
+export function trackAbandonedChat({ modelId, vendor = null, systemPrompt = '', history = [], message = '', config = {} }) {
+  const provider = detectProvider(modelId, vendor);
+  const ctx = usageContext(config, 'student_chat');
+  const chars = (systemPrompt || '').length + (message || '').length
+    + history.reduce((n, h) => n + (h?.content?.length || 0), 0);
+  const estimatedInputTokens = Math.ceil(chars / 4);
+  (async () => {
+    const useSystemKey = await lookupUseSystemKey(ctx.instructorId);
+    const pricing = await getModelPricing(modelId);
+    const estCost = pricing.cpm_input != null
+      ? (estimatedInputTokens * Number(pricing.cpm_input)) / 1_000_000
+      : null;
+    await writeModelUsage({
+      ...ctx, modelId, provider, useSystemKey,
+      cacheHit: false, estCostUsd: estCost,
+      rawUsage: { abandoned: true, estimated_input_tokens: estimatedInputTokens },
+    });
+  })().catch(e => console.error('[MODEL_USAGE_TRACK_FAILED]', e.message));
+}
+
+/**
  * Build the {purpose, caseId, ...} context object from a call's `config` arg.
  * Defaults purpose to a per-function fallback when the caller didn't set it.
  */
@@ -153,7 +180,7 @@ function legacyCacheMetrics(provider, raw) {
 // Provider detection + helpers
 // ---------------------------------------------------------------------------
 
-const detectProvider = (modelId = '', vendor = null) => {
+export const detectProvider = (modelId = '', vendor = null) => {
   if (vendor && typeof vendor === 'string') {
     const v = vendor.toLowerCase();
     if (v === 'openai' || v === 'anthropic' || v === 'google' || v === 'openrouter') return v;
@@ -166,7 +193,21 @@ const detectProvider = (modelId = '', vendor = null) => {
   return 'google';
 };
 
-async function callOpenRouter({ modelId, messages, runtimeParams = {}, maxTokens, responseFormat, apiKey }) {
+const PROVIDER_LABELS = { openrouter: 'OpenRouter', openai: 'OpenAI', anthropic: 'Anthropic', google: 'Gemini' };
+
+/**
+ * Error from a provider call, carrying the HTTP status so chatFallback.js can tell a rate
+ * limit (429) or overload (5xx/529) from other failures. The message keeps the historical
+ * "<Provider> error: <body>" shape that callers log.
+ */
+function providerError(provider, status, text) {
+  const err = new Error(`${PROVIDER_LABELS[provider] || provider} error: ${text}`);
+  err.status = Number(status) || null;
+  err.provider = provider;
+  return err;
+}
+
+async function callOpenRouter({ modelId, messages, runtimeParams = {}, maxTokens, responseFormat, apiKey, signal }) {
   if (!apiKey) throw new Error('OpenRouter API key is required');
   const payload = {
     model: modelId,
@@ -182,14 +223,27 @@ async function callOpenRouter({ modelId, messages, runtimeParams = {}, maxTokens
     method: 'POST',
     headers: buildOpenRouterHeaders(apiKey),
     body: JSON.stringify(payload),
+    signal,
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`OpenRouter error: ${text}`);
+    throw providerError('openrouter', response.status, text);
   }
   const data = await response.json();
+  // OpenRouter can answer 200 with an error body when the upstream provider fails
+  // (e.g. rate-limited mid-request). Without this the caller gets an empty reply.
+  if (data?.error) {
+    throw providerError('openrouter', data.error.code, data.error.message || JSON.stringify(data.error));
+  }
   const text = data?.choices?.[0]?.message?.content?.trim() || '';
   return { text, raw: data, rawUsage: data?.usage || null };
+}
+
+function emptyReplyError(provider, modelId) {
+  const err = new Error(`${PROVIDER_LABELS[provider] || provider} returned an empty reply from ${modelId}`);
+  err.code = 'EMPTY_REPLY';
+  err.provider = provider;
+  return err;
 }
 
 const mapHistoryForOpenAI = (history = []) =>
@@ -213,6 +267,9 @@ const isOpenAIReasoning = (modelId = '') => {
 // chatWithLLM
 // ---------------------------------------------------------------------------
 
+// config.signal (optional AbortSignal) bounds the provider call; chatFallback.js uses it to
+// give up on a stalled model in time to try a backup. Provider failures throw with .status;
+// an empty reply throws code EMPTY_REPLY.
 export async function chatWithLLM({ modelId, vendor = null, systemPrompt, history = [], message, config = {} }) {
   const provider = detectProvider(modelId, vendor);
   // Weekly cost cap (no-op unless instructor uses system key + has a cap set)
@@ -221,6 +278,7 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
   const temperature = runtimeParams.temperature ?? config.temperature ?? null;
   const reasoningEffort = runtimeParams.reasoning_effort ?? config.reasoning_effort ?? null;
   const ctx = usageContext(config, 'student_chat');
+  const signal = config.signal || undefined;
 
   if (provider === 'openrouter') {
     const apiKey = await resolveProviderKey('openrouter', config.instructorId);
@@ -239,8 +297,10 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
       runtimeParams: mergedParams,
       maxTokens: config.maxTokens,
       apiKey,
+      signal,
     });
     trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
+    if (!text) throw emptyReplyError(provider, modelId);
     return {
       text,
       meta: {
@@ -281,15 +341,17 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(payload),
+      signal,
     });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`OpenAI error: ${text}`);
+      throw providerError('openai', response.status, text);
     }
     const data = await response.json();
     const text = data?.choices?.[0]?.message?.content?.trim() || '';
     const rawUsage = data?.usage || null;
     trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
+    if (!text) throw emptyReplyError(provider, modelId);
     return { text, meta: { ...appliedParams, cacheMetrics: legacyCacheMetrics(provider, rawUsage) } };
   }
 
@@ -320,15 +382,17 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
         ],
         ...(temperature !== null && temperature !== undefined ? { temperature: Number(temperature) } : {}),
       }),
+      signal,
     });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`Anthropic error: ${text}`);
+      throw providerError('anthropic', response.status, text);
     }
     const data = await response.json();
     const text = data?.content?.[0]?.text?.trim() || '';
     const rawUsage = data?.usage || null;
     trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
+    if (!text) throw emptyReplyError(provider, modelId);
     return {
       text,
       meta: {
@@ -354,11 +418,14 @@ export async function chatWithLLM({ modelId, vendor = null, systemPrompt, histor
       systemInstruction: systemPrompt,
       ...(temperature !== null && temperature !== undefined ? { temperature: Number(temperature) } : {}),
       topP: 0.9,
+      // Chat-level, not per-message: a per-message config replaces (does not merge with) this one.
+      ...(signal ? { abortSignal: signal } : {}),
     },
   });
   const response = await chat.sendMessage({ message });
   const rawUsage = response.usageMetadata || response.response?.usageMetadata || null;
   trackUsageAsync({ ...ctx, modelId, provider, rawUsage });
+  if (!response.text) throw emptyReplyError(provider, modelId);
   return {
     text: response.text,
     meta: {

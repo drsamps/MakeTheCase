@@ -50,6 +50,59 @@ function toJsonOrNull(value) {
   return JSON.stringify(value);
 }
 
+// ---------------------------------------------------------------------------
+// Default rank. models.default_model is a RANK, not a flag (exposed to clients as `default`):
+//   0 = not a default, 1 = THE default model, 2+ = backup defaults that
+//   services/chatFallback.js tries in order when a student's chat model fails.
+// Every rank change goes through setDefaultRank so ranks stay unique and gap-free; never
+// write default_model directly, and test "is the default" with = 1, never truthiness.
+// ---------------------------------------------------------------------------
+const MAX_DEFAULT_RANK = 100;
+
+/** Move modelId to `rank` (1-based; 0 removes it), shifting the others and renumbering 1..k. */
+export async function setDefaultRank(modelId, rank) {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [ranked] = await conn.execute(
+      'SELECT model_id FROM models WHERE default_model > 0 ORDER BY default_model, model_id FOR UPDATE'
+    );
+    const order = ranked.map((r) => r.model_id).filter((id) => id !== modelId);
+    if (rank > 0) order.splice(Math.min(rank, order.length + 1) - 1, 0, modelId);
+    await conn.execute('UPDATE models SET default_model = 0 WHERE default_model > 0');
+    for (let i = 0; i < order.length; i++) {
+      await conn.execute('UPDATE models SET default_model = ? WHERE model_id = ?', [i + 1, order[i]]);
+    }
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
+/**
+ * Read the requested rank from a create/update body.
+ *   default_rank: integer 0..MAX_DEFAULT_RANK (preferred)
+ *   default: legacy boolean -- true = make #1; false clears only the #1 model, so an older
+ *            client saving a backup model's form can't erase its backup rank.
+ * @returns {{ rank?: number, error?: string }} rank undefined = no change
+ */
+export function requestedDefaultRank(body, currentRank = 0) {
+  if (body.default_rank !== undefined && body.default_rank !== null) {
+    const n = Number(body.default_rank);
+    if (!Number.isInteger(n) || n < 0 || n > MAX_DEFAULT_RANK) {
+      return { error: `default_rank must be an integer from 0 to ${MAX_DEFAULT_RANK}` };
+    }
+    return { rank: n };
+  }
+  if (body.default === undefined || body.default === null) return {};
+  if (typeof body.default === 'number') return requestedDefaultRank({ default_rank: body.default });
+  if (body.default) return { rank: Number(currentRank) === 1 ? undefined : 1 };
+  return { rank: Number(currentRank) === 1 ? 0 : undefined };
+}
+
 async function fetchModelRow(modelId) {
   const [rows] = await pool.execute(
     `SELECT ${MODEL_FIELDS} FROM models WHERE model_id = ?`,
@@ -292,7 +345,6 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('models'
       model_name,
       vendor,
       enabled = true,
-      default: isDefault = false,
       cpm_input,
       cpm_input_cache,
       cpm_output,
@@ -320,7 +372,11 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('models'
       return res.status(409).json({ data: null, error: { message: 'Model ID already exists' } });
     }
 
-    if (isDefault) await pool.execute('UPDATE models SET default_model = 0');
+    const { rank, error: rankError } = requestedDefaultRank(req.body);
+    if (rankError) return res.status(400).json({ data: null, error: { message: rankError } });
+    if (rank > 0 && !enabled) {
+      return res.status(400).json({ data: null, error: { message: 'A disabled model cannot be a default or backup model.' } });
+    }
 
     await pool.execute(
       `INSERT INTO models
@@ -333,7 +389,7 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('models'
         model_name,
         vendor,
         enabled ? 1 : 0,
-        isDefault ? 1 : 0,
+        0, // rank is set below through setDefaultRank
         cpm_input ?? null,
         cpm_input_cache ?? null,
         cpm_output ?? null,
@@ -346,6 +402,7 @@ router.post('/', verifyToken, requireRole(['admin']), requirePermission('models'
         toJsonOrNull(parameter_settings),
       ]
     );
+    if (rank > 0) await setDefaultRank(model_id, rank);
 
     const row = await fetchModelRow(model_id);
     res.status(201).json({ data: row, error: null });
@@ -398,9 +455,11 @@ router.patch('/:id', verifyToken, requireRole(['admin']), requirePermission('mod
       setClauses.push('vendor = ?');
       params.push(updates.vendor);
     }
-    if ('default' in updates) {
-      setClauses.push('default_model = ?');
-      params.push(updates.default ? 1 : 0);
+    const { rank, error: rankError } = requestedDefaultRank(updates, existing.default);
+    if (rankError) return res.status(400).json({ data: null, error: { message: rankError } });
+    const willBeEnabled = 'enabled' in updates ? Boolean(updates.enabled) : Boolean(existing.enabled);
+    if (rank > 0 && !willBeEnabled) {
+      return res.status(400).json({ data: null, error: { message: 'Enable this model before making it a default or backup model.' } });
     }
     if ('enabled' in updates) {
       setClauses.push('enabled = ?');
@@ -432,17 +491,20 @@ router.patch('/:id', verifyToken, requireRole(['admin']), requirePermission('mod
       params.push(val);
     }
 
-    if (setClauses.length === 0) {
+    if (setClauses.length === 0 && rank === undefined) {
       return res.status(400).json({ data: null, error: { message: 'No valid fields to update' } });
     }
 
-    if (updates.default) await pool.execute('UPDATE models SET default_model = 0');
+    if (setClauses.length > 0) {
+      params.push(id);
+      await pool.execute(`UPDATE models SET ${setClauses.join(', ')} WHERE model_id = ?`, params);
+    }
 
-    params.push(id);
-    await pool.execute(`UPDATE models SET ${setClauses.join(', ')} WHERE model_id = ?`, params);
-
-    if (updates.enabled === false) {
-      await pool.execute('UPDATE models SET default_model = 0 WHERE model_id = ?', [id]);
+    // A disabled model drops out of the default/backup order; the rest renumber.
+    if (!willBeEnabled && Number(existing.default) > 0) {
+      await setDefaultRank(id, 0);
+    } else if (rank !== undefined) {
+      await setDefaultRank(id, rank);
     }
 
     const row = await fetchModelRow(id);
@@ -541,10 +603,10 @@ router.delete('/:id', verifyToken, requireRole(['admin']), requirePermission('mo
     if (existing.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Model not found' } });
     }
-    if (existing[0].default_model) {
+    if (Number(existing[0].default_model) === 1) {
       return res.status(409).json({
         data: null,
-        error: { message: 'This is the default model. Make another model the default before deleting it.' },
+        error: { message: 'This is the #1 default model. Make another model #1 before deleting it.' },
       });
     }
 
@@ -559,6 +621,8 @@ router.delete('/:id', verifyToken, requireRole(['admin']), requirePermission('mo
       });
     }
 
+    // A backup model leaves the order first so the remaining ranks renumber without a gap.
+    if (Number(existing[0].default_model) > 0) await setDefaultRank(id, 0);
     await pool.execute('DELETE FROM models WHERE model_id = ?', [id]);
     res.json({ data: { deleted: true }, error: null });
   } catch (error) {
