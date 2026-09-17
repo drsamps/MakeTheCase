@@ -2275,6 +2275,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
+  // sectionCasesList is shared by the Assignments section panel and the Chat Options editor.
+  // Re-fetch it after anything outside those screens (e.g. the Scenario Manager) changes a
+  // scenario, so notes derived from scenario data don't go stale.
+  const refreshOpenSectionCases = () => {
+    const sectionId = chatOptionsSection && chatOptionsSection !== '__global_default__'
+      ? chatOptionsSection
+      : expandedAssignmentSection;
+    if (sectionId) fetchSectionCases(sectionId);
+  };
+
   const handleAssignCaseToSection = async (sectionId: string, caseId: string) => {
     try {
       const { error } = await api.from(`sections/${sectionId}/cases`).insert({ case_id: caseId, active: false });
@@ -5366,6 +5376,92 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     return sectionCasesList.find((sc: any) => sc.case_id === chatOptionsCase);
   };
 
+  const goToCaseScenarios = (sectionCase?: { case_id: string; case_title?: string } | null) => {
+    setPrimaryTab('content');
+    setContentSubTab('cases');
+    if (casesList.length === 0) fetchCases();
+    if (sectionCase?.case_id) {
+      setManagingScenarioCase({
+        case_id: sectionCase.case_id,
+        case_title: sectionCase.case_title || sectionCase.case_id,
+        enabled: true,
+      } as Case);
+      setShowScenarioManager(true);
+    }
+  };
+
+  // Every scenario write route is requireRole(['admin']) (server/routes/scenarios.js), so only
+  // link admins into the editor — an instructor following the link would 403 on save.
+  const renderScenariosLocationLink = (sectionCase?: { case_id: string; case_title?: string } | null) => {
+    if (user?.role !== 'admin') {
+      return <strong>Content &gt; Cases &gt; Scenarios</strong>;
+    }
+    return (
+      <button
+        type="button"
+        onClick={() => goToCaseScenarios(sectionCase || null)}
+        className="text-blue-600 hover:underline"
+      >
+        Content &gt; Cases &gt; Scenarios
+      </button>
+    );
+  };
+
+  const renderChatOptionsTimeLimitNote = () => {
+    const selectedCase = !isEditingDefault ? getSelectedChatOptionsCase() : null;
+    const assignedScenarios = Array.isArray(selectedCase?.scenarios) ? selectedCase.scenarios : [];
+    const usesScenarios = isEnabledFlag(selectedCase?.use_scenarios);
+    const hasTimedScenario = assignedScenarios.some((s: any) => Number(s.chat_time_limit) > 0);
+    // Auto-end is fired by ChatTimer's onTimeUp, and App.tsx only mounts ChatTimer when
+    // show_timer !== false — so timeout_chat is inert while the countdown is hidden.
+    const autoEndNeedsTimer = editingChatOptions?.timeout_chat === true && editingChatOptions?.show_timer === false;
+
+    return (
+      <div className="ml-6 mt-1 space-y-1">
+        <p className="text-xs text-gray-500">
+          Time limits are set on each case scenario ({renderScenariosLocationLink(selectedCase)}), not here.
+        </p>
+        {selectedCase && (
+          usesScenarios ? (
+            assignedScenarios.length > 0 ? (
+              <>
+                <ul className="text-xs text-gray-600 space-y-0.5">
+                  {assignedScenarios.map((s: any) => {
+                    const minutes = Number(s.chat_time_limit) || 0;
+                    return (
+                      <li key={s.scenario_id || s.id}>
+                        {s.scenario_name || 'Untitled scenario'} — {minutes > 0 ? `${minutes} min` : 'no limit'}
+                      </li>
+                    );
+                  })}
+                </ul>
+                {!hasTimedScenario && (
+                  <p className="text-xs text-gray-500">
+                    No time limit is set on assigned scenarios. Auto-end will have no effect.
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-amber-600">
+                No scenarios are enabled for this case in this section, so students cannot start a chat.
+              </p>
+            )
+          ) : (
+            <p className="text-xs text-gray-500">
+              This assignment is not using scenarios, so chats have no time limit.
+            </p>
+          )
+        )}
+        {autoEndNeedsTimer && (
+          <p className="text-xs text-amber-600">
+            Auto-end also needs <strong>Show countdown timer during chat</strong> (under Display &amp; Flow)
+            turned on — the countdown is what ends the chat.
+          </p>
+        )}
+      </div>
+    );
+  };
+
   // Handle bulk copy chat options
   const handleBulkCopyChatOptions = async (target: 'section' | 'all') => {
     if (!chatOptionsSection || !chatOptionsCase) return;
@@ -5910,20 +6006,26 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, show_case: applicableDefault?.show_case ?? true})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
                     )}
                   </div>
-                  <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('show_timer', editingChatOptions.show_timer, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={editingChatOptions.show_timer ?? true}
-                        onChange={(e) => setEditingChatOptions({...editingChatOptions, show_timer: e.target.checked})}
-                        disabled={!isEditingDefault && useDefaultOptions}
-                        className="rounded border-gray-300"
-                      />
-                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Show countdown timer during chat</span>
-                    </label>
-                    {!useDefaultOptions && isOptionModified('show_timer', editingChatOptions.show_timer, applicableDefault) && (
-                      <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, show_timer: applicableDefault?.show_timer ?? true})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
-                    )}
+                  <div>
+                    <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('show_timer', editingChatOptions.show_timer, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={editingChatOptions.show_timer ?? true}
+                          onChange={(e) => setEditingChatOptions({...editingChatOptions, show_timer: e.target.checked})}
+                          disabled={!isEditingDefault && useDefaultOptions}
+                          className="rounded border-gray-300"
+                        />
+                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Show countdown timer during chat</span>
+                      </label>
+                      {!useDefaultOptions && isOptionModified('show_timer', editingChatOptions.show_timer, applicableDefault) && (
+                        <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, show_timer: applicableDefault?.show_timer ?? true})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500 ml-6 mt-1">
+                      The countdown only appears when the assigned scenario has a time limit
+                      ({renderScenariosLocationLink(!isEditingDefault ? getSelectedChatOptionsCase() : null)}).
+                    </p>
                   </div>
                   <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('do_evaluation', editingChatOptions.do_evaluation, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
                     <label className="flex items-center gap-2 text-sm">
@@ -6092,20 +6194,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, allow_repeat: applicableDefault?.allow_repeat ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
                       )}
                     </div>
-                    <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('timeout_chat', editingChatOptions.timeout_chat, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
-                      <label className="flex items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={editingChatOptions.timeout_chat ?? false}
-                          onChange={(e) => setEditingChatOptions({...editingChatOptions, timeout_chat: e.target.checked})}
-                          disabled={!isEditingDefault && useDefaultOptions}
-                          className="rounded border-gray-300"
-                        />
-                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Auto-end chat when time limit expires</span>
-                      </label>
-                      {!useDefaultOptions && isOptionModified('timeout_chat', editingChatOptions.timeout_chat, applicableDefault) && (
-                        <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, timeout_chat: applicableDefault?.timeout_chat ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
-                      )}
+                    <div>
+                      <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('timeout_chat', editingChatOptions.timeout_chat, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={editingChatOptions.timeout_chat ?? false}
+                            onChange={(e) => setEditingChatOptions({...editingChatOptions, timeout_chat: e.target.checked})}
+                            disabled={!isEditingDefault && useDefaultOptions}
+                            className="rounded border-gray-300"
+                          />
+                          <span className={useDefaultOptions ? 'text-gray-500' : ''}>Auto-end chat when time limit expires</span>
+                        </label>
+                        {!useDefaultOptions && isOptionModified('timeout_chat', editingChatOptions.timeout_chat, applicableDefault) && (
+                          <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, timeout_chat: applicableDefault?.timeout_chat ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                        )}
+                      </div>
+                      {renderChatOptionsTimeLimitNote()}
                     </div>
                     <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('allow_finish_button', editingChatOptions.allow_finish_button, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
                       <label className="flex items-center gap-2 text-sm">
@@ -10045,9 +10150,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             setShowScenarioManager(false);
             setManagingScenarioCase(null);
             fetchCases();
+            refreshOpenSectionCases();
           }}
           onScenariosChanged={() => {
             fetchCases();
+            refreshOpenSectionCases();
           }}
         />
       )}

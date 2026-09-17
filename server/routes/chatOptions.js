@@ -108,7 +108,7 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     label: 'Show Timer',
     type: 'boolean',
     default: true,
-    description: 'Display countdown timer during chat',
+    description: 'Display countdown timer during chat. The countdown only appears if the assigned scenario has a time limit. The countdown also drives Auto-End on Timeout, so turning this off disables auto-end too.',
     category: 'display'
   },
   {
@@ -167,7 +167,7 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     label: 'Auto-End on Timeout',
     type: 'boolean',
     default: false,
-    description: 'Automatically end chat when time limit expires',
+    description: 'Automatically end chat when the scenario time limit expires. Minutes are set on each case scenario, not here. Requires Show Timer to be on.',
     category: 'chat_control'
   },
   {

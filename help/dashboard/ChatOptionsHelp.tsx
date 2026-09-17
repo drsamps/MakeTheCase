@@ -74,7 +74,7 @@ const ChatOptionsHelp: React.FC = () => (
     <h4>Display & Flow</h4>
     <ul>
       <li><strong>Show Case Content</strong> - Display case in left panel during chat</li>
-      <li><strong>Show Timer</strong> - Display countdown timer during chat</li>
+      <li><strong>Show Timer</strong> - Display countdown timer during chat. The countdown only appears if the assigned scenario has a time limit (set under Content &gt; Cases &gt; Scenarios). The countdown also drives <strong>Auto-end on Timeout</strong>, so turning this off disables auto-end too.</li>
       <li><strong>Run Evaluation</strong> - Run AI evaluation after chat completes</li>
       <li><strong>Show Evaluation Details</strong> - Show full criteria breakdown (vs just overall score)</li>
       <li><strong>Ask for Feedback</strong> - Request student feedback at chat end</li>
@@ -95,7 +95,7 @@ const ChatOptionsHelp: React.FC = () => (
     <h4>Chat Controls</h4>
     <ul>
       <li><strong>Allow Repeat</strong> - Allow students to repeat the chat multiple times</li>
-      <li><strong>Auto-end on Timeout</strong> - Automatically end chat when time expires</li>
+      <li><strong>Auto-end on Timeout</strong> - Automatically end the chat when the scenario time limit hits zero. The minutes are set on each case scenario (Content &gt; Cases &gt; Scenarios); this checkbox only auto-submits when that timer expires. It also requires <strong>Show Timer</strong> to be on — the visible countdown is what triggers the auto-end.</li>
       <li><strong>Allow Finish Button</strong> - Provide students a "Finish Chat" button to conclude the chat when done (only shows after Minimum Exchanges requirement is met)</li>
       <li><strong>Allow Restart</strong> - Provide students a "Restart Chat" button to restart the current case chat</li>
       <li><strong>Allow Exit</strong> - Provide students a "Cancel Chat" button to cancel and perhaps start over</li>
