@@ -28,38 +28,85 @@ function parseSemesterId(req) {
   return parseInt(raw, 10) || null;
 }
 
+// The status values case_chats.status actually holds. It is a varchar(20), not an
+// ENUM, so the whitelist lives here. 'not_started' is deliberately absent: it is a
+// computed "no case_chats row" bucket in /results and cannot apply to a chat that
+// has a position.
+const POSITION_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'killed', 'completed'];
+
+// Parse ?statuses=a,b against the whitelist. Defaults to completed-only, which is
+// what these endpoints did unconditionally before the filter was wired up.
+// Returns null when an unknown value is supplied so the caller can 400.
+function parsePositionStatuses(req) {
+  const raw = req.query.statuses;
+  if (raw == null || raw === '' || raw === 'all') return ['completed'];
+  const list = String(raw).split(',').map(s => s.trim()).filter(Boolean);
+  if (list.length === 0) return ['completed'];
+  if (list.some(s => !POSITION_STATUSES.includes(s))) return null;
+  return list;
+}
+
+// Parse ?section_ids=a,b (preferred) or the legacy single ?section_id=.
+// Returns an array, or null for "no explicit section filter".
+function parseSectionIds(req) {
+  const { section_ids, section_id } = req.query;
+  if (section_ids && section_ids !== 'all') {
+    const list = String(section_ids).split(',').map(s => s.trim()).filter(Boolean);
+    return list.length > 0 ? list : null;
+  }
+  if (section_id) return [section_id];
+  return null;
+}
+
 // Build the WHERE clause for the /positions* endpoints, including section
 // scoping for instructors / impersonating admins.
-// Returns { whereClause, params, denied } where denied=true means the caller
-// has zero matching sections and the handler should short-circuit.
+//
+// Returns { whereClause, params, denied, sectionIds, semesterId }. denied=true means the
+// caller has zero matching sections and the handler should short-circuit. `sectionIds` is
+// the post-intersection section list, which the comparison endpoints need in order
+// to render a row per section (including sections with no chats). `semesterId` is the
+// semester condition as actually applied here (null when the caller named sections);
+// a handler running its own section-list query MUST apply it too, or that list — and any
+// section ids the client derives from it — silently escape the Semester selector.
+//
+// NOTE: params does NOT include placeholders from `baseConditions`. Those bind first
+// in the SQL string, so a caller passing a parameterized base condition must prepend
+// its own values: [...statuses, ...scope.params].
 async function buildPositionsScope(req, baseConditions) {
-  const { section_id, case_id, scenario_id } = req.query;
+  const { case_id, scenario_id } = req.query;
   const semesterId = parseSemesterId(req);
   const whereConditions = [...baseConditions];
   const params = [];
+
+  const requestedSectionIds = parseSectionIds(req);
+  let effectiveSectionIds = requestedSectionIds;
 
   const scopedSectionIds = await resolveScopedSectionIds(req);
   if (scopedSectionIds !== null) {
     if (scopedSectionIds.length === 0) {
       return { denied: true };
     }
-    if (section_id) {
-      if (!scopedSectionIds.includes(section_id)) {
+    if (requestedSectionIds) {
+      // Intersect rather than trust: a section_ids outside the caller's scope is
+      // dropped, and a request that is *entirely* outside scope is denied.
+      const scopedSet = new Set(scopedSectionIds);
+      effectiveSectionIds = requestedSectionIds.filter(id => scopedSet.has(id));
+      if (effectiveSectionIds.length === 0) {
         return { denied: true };
       }
-      whereConditions.push('cc.section_id = ?');
-      params.push(section_id);
     } else {
-      whereConditions.push(`cc.section_id IN (${scopedSectionIds.map(() => '?').join(',')})`);
-      params.push(...scopedSectionIds);
+      effectiveSectionIds = scopedSectionIds;
     }
-  } else if (section_id) {
-    whereConditions.push('cc.section_id = ?');
-    params.push(section_id);
   }
 
-  // A specific section already pins the semester; apply the semester only to "all sections".
-  if (semesterId && !section_id) {
+  if (effectiveSectionIds) {
+    whereConditions.push(`cc.section_id IN (${effectiveSectionIds.map(() => '?').join(',')})`);
+    params.push(...effectiveSectionIds);
+  }
+
+  // An explicit section already pins the semester; apply the semester only when the
+  // caller did not name sections themselves.
+  if (semesterId && !requestedSectionIds) {
     whereConditions.push('cc.section_id IN (SELECT section_id FROM sections WHERE semester_id = ?)');
     params.push(semesterId);
   }
@@ -74,7 +121,46 @@ async function buildPositionsScope(req, baseConditions) {
     params.push(scenario_id);
   }
 
-  return { whereClause: whereConditions.join(' AND '), params, denied: false };
+  return {
+    whereClause: whereConditions.join(' AND '),
+    params,
+    denied: false,
+    sectionIds: effectiveSectionIds,
+    // The semester condition exactly as it was applied to the chat clause above, so
+    // sibling queries in the same handler (section lists, per-section settings) narrow
+    // identically. null when the caller named sections, which already pin the semester.
+    semesterId: (semesterId && !requestedSectionIds) ? semesterId : null,
+  };
+}
+
+// Count enabled scenarios on a case. Positions hang off scenarios, not cases, so a
+// case with more than one enabled scenario has no single position set and the
+// caller must pin a scenario.
+async function countEnabledScenarios(caseId) {
+  const [rows] = await pool.execute(
+    'SELECT COUNT(*) AS n FROM case_scenarios WHERE case_id = ? AND enabled = TRUE',
+    [caseId]
+  );
+  return rows[0]?.n ?? 0;
+}
+
+// Shared guard for the three single-case position endpoints. Returns an error
+// object to send, or null when the request is acceptable.
+async function requireCaseAndScenario(req) {
+  const { case_id, scenario_id } = req.query;
+  if (!case_id) {
+    return { status: 400, message: 'case_id is required' };
+  }
+  if (!scenario_id) {
+    const n = await countEnabledScenarios(case_id);
+    if (n > 1) {
+      return {
+        status: 400,
+        message: `scenario_id is required: case "${case_id}" has ${n} enabled scenarios, each with its own positions`,
+      };
+    }
+  }
+  return null;
 }
 
 /**
@@ -543,19 +629,97 @@ router.get('/filters', verifyToken, requireAdminOrInstructor, async (req, res) =
     sectionsQuery += ' ORDER BY sec.section_title';
     const [sections] = await pool.execute(sectionsQuery, sectionsParams);
 
+    // Cases, with the per-case reductions Position Analytics needs to narrow its picker
+    // and apply its auto-pick rule in one round trip.
+    //
+    // open_date / close_date / active live on section_cases, so a case open in one
+    // section and closed in another has no single value. Reduce explicitly:
+    //   is_open_now  = open in ANY in-scope section (active, within its window,
+    //                  honoring manual_status)
+    //   latest_open_date / latest_close_date = the most recent across in-scope sections
+    // The `none` sentinel section_id is excluded — it is not a real section.
     let casesQuery = `
-      SELECT DISTINCT c.case_id, c.case_title
+      SELECT
+        c.case_id,
+        c.case_title,
+        MAX(
+          CASE WHEN sc.manual_status = 'manually_opened' THEN 1
+               WHEN sc.manual_status = 'manually_closed' THEN 0
+               WHEN sc.active = 1
+                    AND (sc.open_date IS NULL OR sc.open_date <= NOW())
+                    AND (sc.close_date IS NULL OR sc.close_date >= NOW())
+               THEN 1
+               ELSE 0 END
+        ) AS is_open_now,
+        MAX(sc.open_date) AS latest_open_date,
+        MAX(sc.close_date) AS latest_close_date
       FROM cases c
       JOIN section_cases sc ON c.case_id = sc.case_id
       WHERE c.enabled = TRUE
+        AND sc.section_id <> 'none'
     `;
     const casesParams = [];
     if (scopedSectionIds !== null) {
       casesQuery += ` AND sc.section_id IN (${scopedSectionIds.map(() => '?').join(',')})`;
       casesParams.push(...scopedSectionIds);
     }
-    casesQuery += ' ORDER BY c.case_title';
+    casesQuery += ' GROUP BY c.case_id, c.case_title ORDER BY c.case_title';
     const [cases] = await pool.execute(casesQuery, casesParams);
+
+    // case_id -> [section_id, ...] so the client can narrow the case picker to the
+    // sections actually selected, without a second fetch.
+    let caseSectionsQuery = `
+      SELECT sc.case_id, sc.section_id
+      FROM section_cases sc
+      JOIN cases c ON c.case_id = sc.case_id
+      WHERE c.enabled = TRUE
+        AND sc.section_id <> 'none'
+    `;
+    const caseSectionsParams = [];
+    if (scopedSectionIds !== null) {
+      caseSectionsQuery += ` AND sc.section_id IN (${scopedSectionIds.map(() => '?').join(',')})`;
+      caseSectionsParams.push(...scopedSectionIds);
+    }
+    const [caseSectionRows] = await pool.execute(caseSectionsQuery, caseSectionsParams);
+
+    // Enabled scenarios per case. Positions belong to scenarios, so the client must
+    // pin one whenever a case has more than one. chat_count drives the client's
+    // scenario auto-pick ("the one most students actually ran").
+    let scenarioQuery = `
+      SELECT cs.case_id, cs.id AS scenario_id, cs.scenario_name, cs.protagonist,
+             cs.protagonist_role, cs.chat_question,
+             (SELECT COUNT(*) FROM case_chats cc
+               WHERE cc.scenario_id = cs.id
+    `;
+    const scenarioParams = [];
+    if (scopedSectionIds !== null) {
+      scenarioQuery += ` AND cc.section_id IN (${scopedSectionIds.map(() => '?').join(',')})`;
+      scenarioParams.push(...scopedSectionIds);
+    }
+    scenarioQuery += `
+             ) AS chat_count
+         FROM case_scenarios cs
+         JOIN cases c ON c.case_id = cs.case_id
+        WHERE cs.enabled = TRUE AND c.enabled = TRUE
+        ORDER BY cs.case_id, cs.id`;
+    const [scenarioRows] = await pool.execute(scenarioQuery, scenarioParams);
+
+    // Which cases actually have position data in scope, so auto-pick can prefer one
+    // that will render something rather than an empty screen.
+    let positionDataQuery = `
+      SELECT cc.case_id, COUNT(*) AS n
+      FROM case_chats cc
+      WHERE (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL
+             OR cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+    `;
+    const positionDataParams = [];
+    if (scopedSectionIds !== null) {
+      positionDataQuery += ` AND cc.section_id IN (${scopedSectionIds.map(() => '?').join(',')})`;
+      positionDataParams.push(...scopedSectionIds);
+    }
+    positionDataQuery += ' GROUP BY cc.case_id';
+    const [positionDataRows] = await pool.execute(positionDataQuery, positionDataParams);
+    const casesWithPositionData = new Set(positionDataRows.map(r => r.case_id));
 
     // Chat models used by chats in scope (for the Model filter), plus every model's display
     // name so the client can label backup models that were never a section's chat model.
@@ -586,8 +750,26 @@ router.get('/filters', verifyToken, requireAdminOrInstructor, async (req, res) =
         })),
         cases: cases.map(c => ({
           case_id: c.case_id,
-          case_title: c.case_title
+          case_title: c.case_title,
+          is_open_now: Number(c.is_open_now) === 1,
+          latest_open_date: c.latest_open_date,
+          latest_close_date: c.latest_close_date,
+          has_position_data: casesWithPositionData.has(c.case_id),
+          scenarios: scenarioRows
+            .filter(s => s.case_id === c.case_id)
+            .map(s => ({
+              scenario_id: s.scenario_id,
+              scenario_name: s.scenario_name,
+              protagonist: s.protagonist,
+              protagonist_role: s.protagonist_role,
+              chat_question: s.chat_question,
+              chat_count: Number(s.chat_count) || 0
+            }))
         })),
+        case_sections: caseSectionRows.reduce((acc, row) => {
+          (acc[row.case_id] ||= []).push(row.section_id);
+          return acc;
+        }, {}),
         chat_models: chatModels.map(m => ({
           model_id: m.chat_model,
           model_name: m.model_name || m.chat_model
@@ -620,7 +802,22 @@ router.get('/positions', verifyToken, requireAdminOrInstructor, async (req, res)
   try {
     const { case_id, scenario_id } = req.query;
 
-    const scope = await buildPositionsScope(req, ["cc.status = 'completed'"]);
+    const guard = await requireCaseAndScenario(req);
+    if (guard) {
+      return res.status(guard.status).json({ data: null, error: { message: guard.message } });
+    }
+
+    const statuses = parsePositionStatuses(req);
+    if (statuses === null) {
+      return res.status(400).json({
+        data: null,
+        error: { message: `statuses must be a comma-separated subset of: ${POSITION_STATUSES.join(', ')}` }
+      });
+    }
+
+    const scope = await buildPositionsScope(req, [
+      `cc.status IN (${statuses.map(() => '?').join(',')})`
+    ]);
     if (scope.denied) {
       return res.json({
         data: {
@@ -632,7 +829,9 @@ router.get('/positions', verifyToken, requireAdminOrInstructor, async (req, res)
         error: null
       });
     }
-    const { whereClause, params } = scope;
+    // The status placeholders come from baseConditions, so they bind first.
+    const { whereClause } = scope;
+    const params = [...statuses, ...scope.params];
 
     // Get summary statistics
     const [summaryRows] = await pool.execute(
@@ -691,45 +890,42 @@ router.get('/positions', verifyToken, requireAdminOrInstructor, async (req, res)
 
     const [allPositions] = await pool.execute(allPositionsQuery, allPositionsParams);
 
-    // Get position distribution (using position names for grouping)
-    const [positionRows] = await pool.execute(
-      `SELECT
-        COALESCE(cc.initial_position, cc.final_position, sp_init.position_name, sp_final.position_name) as position_name,
-        COALESCE(cc.initial_position_id, cc.final_position_id, sp_init.position_id, sp_final.position_id) as position_id,
-        SUM(CASE WHEN cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL THEN 1 ELSE 0 END) as initial_count,
-        SUM(CASE WHEN cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL THEN 1 ELSE 0 END) as final_count
+    // Position distribution: initial and final are counted separately, each grouped by its
+    // own position. (Grouping by the initial/final pair and keying the result by name kept
+    // only one pair per position, so every bar showed a single pair's count.)
+    const [initialRows] = await pool.execute(
+      `SELECT COALESCE(cc.initial_position, sp.position_name) as position_name, COUNT(*) as n
        FROM case_chats cc
-       LEFT JOIN scenario_positions sp_init ON cc.initial_position_id = sp_init.position_id
-       LEFT JOIN scenario_positions sp_final ON cc.final_position_id = sp_final.position_id
+       LEFT JOIN scenario_positions sp ON cc.initial_position_id = sp.position_id
        WHERE ${whereClause}
-         AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL
-              OR cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
-       GROUP BY
-         cc.initial_position, cc.final_position, sp_init.position_name, sp_final.position_name,
-         cc.initial_position_id, cc.final_position_id, sp_init.position_id, sp_final.position_id`,
+         AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
+       GROUP BY cc.initial_position, sp.position_name`,
+      params
+    );
+    const [finalRows] = await pool.execute(
+      `SELECT COALESCE(cc.final_position, sp.position_name) as position_name, COUNT(*) as n
+       FROM case_chats cc
+       LEFT JOIN scenario_positions sp ON cc.final_position_id = sp.position_id
+       WHERE ${whereClause}
+         AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+       GROUP BY cc.final_position, sp.position_name`,
       params
     );
 
-    // Create a map of position counts from actual data
     const positionCountMap = new Map();
-    positionRows.forEach(row => {
-      positionCountMap.set(row.position_name, {
-        position_id: row.position_id,
-        initial_count: row.initial_count,
-        final_count: row.final_count
-      });
-    });
+    const countsFor = (name) => {
+      if (!positionCountMap.has(name)) positionCountMap.set(name, { initial_count: 0, final_count: 0 });
+      return positionCountMap.get(name);
+    };
+    initialRows.forEach(row => { countsFor(row.position_name).initial_count += Number(row.n); });
+    finalRows.forEach(row => { countsFor(row.position_name).final_count += Number(row.n); });
 
     // Build by_position array including ALL defined positions
     const byPosition = allPositions.map(pos => {
-      const counts = positionCountMap.get(pos.position_name) || {
-        position_id: pos.position_id,
-        initial_count: 0,
-        final_count: 0
-      };
+      const counts = positionCountMap.get(pos.position_name) || { initial_count: 0, final_count: 0 };
 
       return {
-        position_id: counts.position_id,
+        position_id: pos.position_id,
         position_name: pos.position_name,
         initial_count: counts.initial_count,
         initial_percentage: totalWithPositions > 0
@@ -848,6 +1044,15 @@ router.get('/positions', verifyToken, requireAdminOrInstructor, async (req, res)
  */
 router.get('/positions/correlation', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
+    const guard = await requireCaseAndScenario(req);
+    if (guard) {
+      return res.status(guard.status).json({ data: null, error: { message: guard.message } });
+    }
+
+    // Score metrics stay pinned to completed chats even when the caller asked to
+    // include incomplete ones: evaluations are LEFT JOINed, so an incomplete chat
+    // would raise the count without raising the score sum and silently drag every
+    // average down. The client labels this denominator via `score_scope`.
     const scope = await buildPositionsScope(req, ["cc.status = 'completed'"]);
     if (scope.denied) {
       return res.json({
@@ -858,7 +1063,8 @@ router.get('/positions/correlation', verifyToken, requireAdminOrInstructor, asyn
             unchanged_avg_score: null, unchanged_count: 0,
             unspecified_avg_score: null, unspecified_count: 0
           },
-          max_score: 15
+          max_score: 15,
+          score_scope: 'completed_only'
         },
         error: null
       });
@@ -957,7 +1163,8 @@ router.get('/positions/correlation', verifyToken, requireAdminOrInstructor, asyn
       data: {
         position_score_correlation: positionScoreCorrelation,
         change_score_correlation: changeScoreCorrelation,
-        max_score: maxScore
+        max_score: maxScore,
+        score_scope: 'completed_only'
       },
       error: null
     });
@@ -979,9 +1186,15 @@ router.get('/positions/correlation', verifyToken, requireAdminOrInstructor, asyn
  */
 router.get('/positions/score-distribution', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
+    const guard = await requireCaseAndScenario(req);
+    if (guard) {
+      return res.status(guard.status).json({ data: null, error: { message: guard.message } });
+    }
+
+    // Completed-only for the same reason as /correlation above.
     const scope = await buildPositionsScope(req, ["cc.status = 'completed'"]);
     if (scope.denied) {
-      return res.json({ data: { by_position: {}, max_score: 15 }, error: null });
+      return res.json({ data: { by_position: {}, max_score: 15, score_scope: 'completed_only' }, error: null });
     }
     const { whereClause, params } = scope;
 
@@ -1029,12 +1242,319 @@ router.get('/positions/score-distribution', verifyToken, requireAdminOrInstructo
     res.json({
       data: {
         by_position: byPosition,
-        max_score: maxScore
+        max_score: maxScore,
+        score_scope: 'completed_only'
       },
       error: null
     });
   } catch (error) {
     console.error('Error fetching score distribution:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+/**
+ * GET /api/analytics/positions/by-section
+ * Compare ONE case+scenario across sections. Valid precisely because the case and
+ * scenario are pinned, so every row shares one position set.
+ *
+ * Each row carries its own n and one of three distinct non-data states, which must
+ * never be flattened into a zero:
+ *   tracking_off         - section_cases.position_tracking_enabled = 0
+ *   scenario_not_offered - the pinned scenario is not enabled for that section
+ *   no_chats             - tracking on, scenario offered, nobody has chatted yet
+ *
+ * Query: case_id (required), scenario_id (required when the case has >1 enabled
+ * scenario), section_ids, statuses, semester_id
+ */
+router.get('/positions/by-section', verifyToken, requireAdminOrInstructor, async (req, res) => {
+  try {
+    const guard = await requireCaseAndScenario(req);
+    if (guard) {
+      return res.status(guard.status).json({ data: null, error: { message: guard.message } });
+    }
+
+    const statuses = parsePositionStatuses(req);
+    if (statuses === null) {
+      return res.status(400).json({
+        data: null,
+        error: { message: `statuses must be a comma-separated subset of: ${POSITION_STATUSES.join(', ')}` }
+      });
+    }
+
+    const { case_id } = req.query;
+    const scope = await buildPositionsScope(req, [
+      `cc.status IN (${statuses.map(() => '?').join(',')})`
+    ]);
+    if (scope.denied) {
+      return res.json({ data: { rows: [], positions: [], scenario_id: null }, error: null });
+    }
+    const params = [...statuses, ...scope.params];
+
+    // Resolve the scenario actually in play: explicit, else the case's single enabled one.
+    let scenarioId = req.query.scenario_id ? parseInt(req.query.scenario_id, 10) : null;
+    if (!scenarioId) {
+      const [only] = await pool.execute(
+        'SELECT id FROM case_scenarios WHERE case_id = ? AND enabled = TRUE LIMIT 1',
+        [case_id]
+      );
+      scenarioId = only[0]?.id ?? null;
+    }
+
+    // The position universe for this scenario — the column set every row shares.
+    const [positions] = await pool.execute(
+      `SELECT position_id, position_name, position, position_order
+         FROM scenario_positions
+        WHERE scenario_id = ? AND position_enabled = TRUE
+        ORDER BY position_order, position_id`,
+      [scenarioId]
+    );
+
+    // The sections we render rows for. A section with tracking off still gets a
+    // labeled row rather than vanishing from the comparison.
+    const sectionIds = scope.sectionIds;
+    let sectionsQuery = `
+      SELECT s.section_id, s.section_title, s.year_term,
+             sc.position_tracking_enabled, sc.track_position_change, sc.position_capture_method,
+             EXISTS (
+               SELECT 1 FROM section_case_scenarios scs
+                WHERE scs.section_case_id = sc.id AND scs.scenario_id = ?
+                  AND scs.enabled = TRUE
+             ) AS scenario_offered,
+             (SELECT COUNT(*) FROM section_case_scenarios scs2 WHERE scs2.section_case_id = sc.id) AS scenario_rows
+        FROM sections s
+        JOIN section_cases sc ON sc.section_id = s.section_id AND sc.case_id = ?
+       WHERE s.enabled = TRUE AND s.section_id <> 'none'
+    `;
+    const sectionsParams = [scenarioId, case_id];
+    if (sectionIds) {
+      sectionsQuery += ` AND s.section_id IN (${sectionIds.map(() => '?').join(',')})`;
+      sectionsParams.push(...sectionIds);
+    }
+    // The same narrowing the chat clause got. Without it the header Semester selector is
+    // ignored here — and, because the client feeds this list back as section_ids, ignored
+    // on every other tab too for a case taught in more than one semester.
+    if (scope.semesterId) {
+      sectionsQuery += ' AND s.semester_id = ?';
+      sectionsParams.push(scope.semesterId);
+    }
+    sectionsQuery += ' ORDER BY s.section_title';
+    const [sections] = await pool.execute(sectionsQuery, sectionsParams);
+
+    // Per-section totals.
+    const [chatRows] = await pool.execute(
+      `SELECT cc.section_id,
+              COUNT(*) AS n,
+              SUM(CASE WHEN cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL THEN 1 ELSE 0 END) AS with_initial,
+              SUM(CASE WHEN cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL THEN 1 ELSE 0 END) AS with_final,
+              SUM(CASE
+                    WHEN (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
+                     AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+                     AND (cc.initial_position != cc.final_position OR cc.initial_position_id != cc.final_position_id)
+                    THEN 1 ELSE 0 END) AS changes
+         FROM case_chats cc
+        WHERE ${scope.whereClause}
+        GROUP BY cc.section_id`,
+      params
+    );
+    const bySection = new Map(chatRows.map(r => [r.section_id, r]));
+
+    // Final-position distribution per section. Grouped by the real columns behind the
+    // COALESCE, per ONLY_FULL_GROUP_BY.
+    const [distRows] = await pool.execute(
+      `SELECT cc.section_id,
+              COALESCE(sp.position_name, cc.final_position) AS position_name,
+              COUNT(*) AS n
+         FROM case_chats cc
+         LEFT JOIN scenario_positions sp ON sp.position_id = cc.final_position_id
+        WHERE ${scope.whereClause}
+          AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+        GROUP BY cc.section_id, sp.position_name, cc.final_position`,
+      params
+    );
+
+    const rows = sections.map(sec => {
+      const counts = bySection.get(sec.section_id);
+      const n = counts ? Number(counts.n) : 0;
+      const withFinal = counts ? Number(counts.with_final) : 0;
+      const withInitial = counts ? Number(counts.with_initial) : 0;
+      const changes = counts ? Number(counts.changes) : 0;
+      const trackedBase = Math.max(withInitial, withFinal);
+
+      // A section_case with no scenario rows at all offers whatever the case defines,
+      // so absence of rows means "offered", not "not offered".
+      const scenarioOffered = Number(sec.scenario_rows) === 0 || Number(sec.scenario_offered) === 1;
+
+      let state = 'ok';
+      if (Number(sec.position_tracking_enabled) !== 1) state = 'tracking_off';
+      else if (!scenarioOffered) state = 'scenario_not_offered';
+      else if (n === 0) state = 'no_chats';
+
+      const distribution = {};
+      for (const p of positions) distribution[p.position_name] = 0;
+      for (const d of distRows) {
+        if (d.section_id !== sec.section_id || !d.position_name) continue;
+        distribution[d.position_name] = (distribution[d.position_name] || 0) + Number(d.n);
+      }
+
+      return {
+        section_id: sec.section_id,
+        section_title: sec.section_title,
+        year_term: sec.year_term,
+        state,
+        position_tracking_enabled: Number(sec.position_tracking_enabled) === 1,
+        track_position_change: Number(sec.track_position_change) === 1,
+        position_capture_method: sec.position_capture_method,
+        n,
+        n_with_positions: trackedBase,
+        // null rather than 0 when the section does not track changes, so the client
+        // renders an em dash instead of what looks like a finding.
+        change_rate: Number(sec.track_position_change) === 1 && trackedBase > 0
+          ? Number((changes / trackedBase * 100).toFixed(1))
+          : null,
+        distribution
+      };
+    });
+
+    // Which positions are switched off for which sections (section_case_positions).
+    // A position with zero students because an instructor disabled it is a setting,
+    // not a finding, so the client labels it rather than showing a bare 0.
+    // Scoped to the sections that actually produced rows above, not to scope.sectionIds:
+    // that list is narrowed by neither semester nor case assignment, so an admin viewing
+    // "ALL Sections" would get disabled-position rows for sections this table never shows
+    // and the client would count them in "not offered in N selected sections".
+    const renderedSectionIds = sections.map(s => s.section_id);
+    let disabledRows = [];
+    if (renderedSectionIds.length > 0) {
+      const [rows] = await pool.execute(
+        `SELECT scp.position_id, sc.section_id
+           FROM section_case_positions scp
+           JOIN section_cases sc ON sc.id = scp.section_case_id
+          WHERE sc.case_id = ? AND scp.enabled = 0
+            AND sc.section_id IN (${renderedSectionIds.map(() => '?').join(',')})`,
+        [case_id, ...renderedSectionIds]
+      );
+      disabledRows = rows;
+    }
+    const positionSectionDisabled = disabledRows.reduce((acc, r) => {
+      (acc[r.position_id] ||= []).push(r.section_id);
+      return acc;
+    }, {});
+
+    res.json({
+      data: {
+        scenario_id: scenarioId,
+        positions: positions.map(p => ({
+          position_id: p.position_id,
+          position_name: p.position_name,
+          position: p.position
+        })),
+        position_section_disabled: positionSectionDisabled,
+        rows
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching positions by section:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+/**
+ * GET /api/analytics/positions/compare-cases
+ * Compare cases within the selected section(s) using ONLY case-agnostic metrics.
+ * Positions are never merged across cases: two cases that both use "Yes"/"No" are
+ * asking different questions, so only rates and scores are comparable.
+ *
+ * Query: section_ids, statuses, semester_id
+ */
+router.get('/positions/compare-cases', verifyToken, requireAdminOrInstructor, async (req, res) => {
+  try {
+    const statuses = parsePositionStatuses(req);
+    if (statuses === null) {
+      return res.status(400).json({
+        data: null,
+        error: { message: `statuses must be a comma-separated subset of: ${POSITION_STATUSES.join(', ')}` }
+      });
+    }
+
+    const scope = await buildPositionsScope(req, [
+      `cc.status IN (${statuses.map(() => '?').join(',')})`
+    ]);
+    if (scope.denied) {
+      return res.json({ data: { rows: [], score_scope: 'completed_only' }, error: null });
+    }
+    const params = [...statuses, ...scope.params];
+
+    // Scores are computed from completed chats only (evaluations are LEFT JOINed), via
+    // an explicit status condition inside the aggregate rather than the caller's filter.
+    const [rows] = await pool.execute(
+      `SELECT
+          cc.case_id,
+          c.case_title,
+          COUNT(*) AS n,
+          SUM(CASE WHEN cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL THEN 1 ELSE 0 END) AS with_initial,
+          SUM(CASE WHEN cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL THEN 1 ELSE 0 END) AS with_final,
+          SUM(CASE
+                WHEN (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
+                 AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+                 AND (cc.initial_position != cc.final_position OR cc.initial_position_id != cc.final_position_id)
+                THEN 1 ELSE 0 END) AS changes,
+          AVG(CASE WHEN cc.status = 'completed' THEN e.score END) AS avg_score,
+          AVG(CASE
+                WHEN cc.status = 'completed'
+                 AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
+                 AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+                 AND (cc.initial_position != cc.final_position OR cc.initial_position_id != cc.final_position_id)
+                THEN e.score END) AS avg_score_changed,
+          AVG(CASE
+                WHEN cc.status = 'completed'
+                 AND (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL)
+                 AND (cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+                 AND cc.initial_position <=> cc.final_position
+                 AND cc.initial_position_id <=> cc.final_position_id
+                THEN e.score END) AS avg_score_unchanged,
+          MAX(sc.track_position_change) AS any_track_change,
+          MAX(sc.position_tracking_enabled) AS any_tracking,
+          MAX(sc.open_date) AS latest_open_date
+        FROM case_chats cc
+        JOIN cases c ON c.case_id = cc.case_id
+        LEFT JOIN evaluations e ON e.case_chat_id = cc.id
+        LEFT JOIN section_cases sc ON sc.case_id = cc.case_id AND sc.section_id = cc.section_id
+       WHERE ${scope.whereClause}
+       GROUP BY cc.case_id, c.case_title
+       ORDER BY latest_open_date DESC, c.case_title`,
+      params
+    );
+
+    res.json({
+      data: {
+        score_scope: 'completed_only',
+        rows: rows.map(r => {
+          const trackedBase = Math.max(Number(r.with_initial), Number(r.with_final));
+          const tracksChange = Number(r.any_track_change) === 1;
+          return {
+            case_id: r.case_id,
+            case_title: r.case_title,
+            n: Number(r.n),
+            n_with_positions: trackedBase,
+            position_tracking_enabled: Number(r.any_tracking) === 1,
+            track_position_change: tracksChange,
+            // null, not 0 — "this case does not track change" is not "nobody changed".
+            change_rate: tracksChange && trackedBase > 0
+              ? Number((Number(r.changes) / trackedBase * 100).toFixed(1))
+              : null,
+            avg_score: r.avg_score === null ? null : Number(Number(r.avg_score).toFixed(2)),
+            avg_score_changed: r.avg_score_changed === null ? null : Number(Number(r.avg_score_changed).toFixed(2)),
+            avg_score_unchanged: r.avg_score_unchanged === null ? null : Number(Number(r.avg_score_unchanged).toFixed(2)),
+            latest_open_date: r.latest_open_date
+          };
+        })
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error comparing cases:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

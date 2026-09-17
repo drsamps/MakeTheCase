@@ -1,14 +1,10 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api } from '../services/apiClient';
 import MultiSelect, { MultiSelectOption } from './ui/MultiSelect';
 import { getApiBaseUrl } from '../services/apiClient';
 import { SemesterScopeNote, useSemesterFilter } from './courses/semesterFilter';
-
-interface PositionAnalyticsProps {
-  sectionId?: string;
-  caseId?: string;
-  scenarioId?: number;
-}
+import HelpTooltip from './ui/HelpTooltip';
+import { PositionAnalyticsHelp } from '../help/dashboard';
 
 interface FilterOption {
   section_id: string;
@@ -17,16 +13,49 @@ interface FilterOption {
   semester_id?: number | null;
 }
 
+interface ScenarioOption {
+  scenario_id: number;
+  scenario_name: string;
+  protagonist: string | null;
+  protagonist_role: string | null;
+  chat_question: string | null;
+  chat_count: number;
+}
+
 interface CaseOption {
   case_id: string;
   case_title: string;
+  is_open_now: boolean;
+  latest_open_date: string | null;
+  latest_close_date: string | null;
+  has_position_data: boolean;
+  scenarios: ScenarioOption[];
 }
 
-const STATUS_OPTIONS = [
-  { value: 'completed', label: 'Completed' },
-  { value: 'in_progress', label: 'In Progress' },
-  { value: 'not_started', label: 'Not Started' },
-];
+// Results are drawn from completed chats. "Include incomplete chats" adds everything
+// else case_chats.status can hold; 'not_started' is deliberately absent because it is a
+// computed "no chat row" bucket elsewhere and cannot carry a position.
+const INCOMPLETE_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'killed'];
+
+const LS_INCLUDE_UNTRACKED = 'mtc_pa_include_untracked';
+const LS_SCENARIO_PANEL = 'mtc_pa_scenario_panel_open';
+
+function readFlag(key: string, fallback: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === null ? fallback : raw === '1';
+  } catch {
+    return fallback;
+  }
+}
+
+function writeFlag(key: string, value: boolean) {
+  try {
+    localStorage.setItem(key, value ? '1' : '0');
+  } catch {
+    /* private mode / blocked storage — the control still works for this session */
+  }
+}
 
 interface PositionSummary {
   total_chats: number;
@@ -91,18 +120,82 @@ interface ScoreDistributionData {
   max_score: number;
 }
 
-const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
-  sectionId,
-  caseId,
-  scenarioId
-}) => {
+// One row per section for the pinned case+scenario. `state` distinguishes the three
+// reasons a row can be empty — never collapse them into a zero.
+type SectionState = 'ok' | 'tracking_off' | 'scenario_not_offered' | 'no_chats';
+
+interface SectionRow {
+  section_id: string;
+  section_title: string;
+  year_term?: string;
+  state: SectionState;
+  position_tracking_enabled: boolean;
+  track_position_change: boolean;
+  position_capture_method: string | null;
+  n: number;
+  n_with_positions: number;
+  change_rate: number | null;
+  distribution: Record<string, number>;
+}
+
+interface ScenarioPosition {
+  position_id: number;
+  position_name: string;
+  position: string;
+}
+
+interface BySectionData {
+  scenario_id: number | null;
+  positions: ScenarioPosition[];
+  position_section_disabled: Record<string, string[]>;
+  rows: SectionRow[];
+}
+
+interface CompareCaseRow {
+  case_id: string;
+  case_title: string;
+  n: number;
+  n_with_positions: number;
+  position_tracking_enabled: boolean;
+  track_position_change: boolean;
+  change_rate: number | null;
+  avg_score: number | null;
+  avg_score_changed: number | null;
+  avg_score_unchanged: number | null;
+  latest_open_date: string | null;
+}
+
+// Full position detail for the "About this scenario" panel, including the arguments
+// that never appear anywhere else in Results.
+interface ScenarioPositionDetail extends ScenarioPosition {
+  position_order: number;
+  position_enabled: number | boolean;
+  arguments_for: string | null;
+  arguments_against: string | null;
+}
+
+const STATE_LABELS: Record<Exclude<SectionState, 'ok'>, string> = {
+  tracking_off: 'Tracking off',
+  scenario_not_offered: 'Scenario not offered',
+  no_chats: 'No chats yet',
+};
+
+const STATE_HINTS: Record<Exclude<SectionState, 'ok'>, string> = {
+  tracking_off: 'Position tracking is disabled for this section’s copy of the assignment, so no positions were recorded.',
+  scenario_not_offered: 'This section runs a different scenario of this case.',
+  no_chats: 'Tracking is on and the scenario is offered, but no chats match the current filters.',
+};
+
+const PositionAnalytics: React.FC = () => {
   // Header Semester selector: limits the section picker, and "ALL Sections" means that semester's.
   const { inScope, semesterId } = useSemesterFilter();
+
   const [isLoading, setIsLoading] = useState(true);
+  const [filtersLoaded, setFiltersLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
   const [correlationData, setCorrelationData] = useState<CorrelationData | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'scoreByPosition' | 'positionChanges'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'scoreByPosition' | 'positionChanges' | 'bySection' | 'byCase'>('overview');
   const [scoreDistributionData, setScoreDistributionData] = useState<ScoreDistributionData | null>(null);
   const [maxScore, setMaxScore] = useState<number>(15);
   const [summaryExpanded, setSummaryExpanded] = useState<boolean>(false);
@@ -111,127 +204,137 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
   // Filter options (populated from API)
   const [sectionOptions, setSectionOptions] = useState<FilterOption[]>([]);
   const [caseOptions, setCaseOptions] = useState<CaseOption[]>([]);
+  const [caseSections, setCaseSections] = useState<Record<string, string[]>>({});
 
-  // Selected filters
+  // Selected filters. Case and scenario are single-select: positions are defined per
+  // scenario, so pooling across either produces meaningless axes.
   const [selectedSections, setSelectedSections] = useState<string[]>(['all']);
-  const [selectedCases, setSelectedCases] = useState<string[]>(['all']);
-  const [selectedStatuses, setSelectedStatuses] = useState<string[]>(['completed']);
+  const [selectedCase, setSelectedCase] = useState<string>('');
+  const [selectedScenario, setSelectedScenario] = useState<number | null>(null);
+  const [includeIncomplete, setIncludeIncomplete] = useState<boolean>(false);
+  const [includeUntracked, setIncludeUntracked] = useState<boolean>(() => readFlag(LS_INCLUDE_UNTRACKED, false));
+
+  // Per-section metadata for the pinned case+scenario. Powers both the By Section tab
+  // and the mixed-tracking banner shown above every tab.
+  const [sectionMeta, setSectionMeta] = useState<BySectionData | null>(null);
+  const [compareCases, setCompareCases] = useState<CompareCaseRow[] | null>(null);
+
+  // "About this scenario" panel
+  // Monotonic id for the main analytics fetch. Every entry into fetchData bumps it, so a
+  // response whose id is stale (superseded by a newer fetch, or by a guard that cleared
+  // the screen) is dropped instead of overwriting fresher state.
+  const fetchSeq = useRef(0);
+
+  const [scenarioPanelOpen, setScenarioPanelOpen] = useState<boolean>(() => readFlag(LS_SCENARIO_PANEL, false));
+  const [scenarioPositions, setScenarioPositions] = useState<ScenarioPositionDetail[] | null>(null);
+
+  const statusesParam = useMemo(
+    () => (includeIncomplete ? ['completed', ...INCOMPLETE_STATUSES].join(',') : 'completed'),
+    [includeIncomplete]
+  );
 
   // Fetch filter options on mount
   useEffect(() => {
     const fetchFilters = async () => {
       try {
         const response = await api.get('/analytics/filters');
-        if (response.data) {
+        // api.get RESOLVES on an HTTP error with { data: null, error } — it does not
+        // throw — so the catch below never sees a 4xx/5xx. Read .error or a failed
+        // request silently renders as "no sections, no cases".
+        if (response.error) {
+          setError(response.error.message || 'Failed to load filters');
+        } else if (response.data) {
           setSectionOptions(response.data.sections || []);
           setCaseOptions(response.data.cases || []);
+          setCaseSections(response.data.case_sections || {});
         }
-      } catch (error) {
-        console.error('Failed to fetch filter options:', error);
+      } catch (err) {
+        console.error('Failed to fetch filter options:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load filters');
+      } finally {
+        // Resolve loading even when the caller has no sections and no cases, otherwise
+        // the screen sits on a spinner forever.
+        setFiltersLoaded(true);
+        setIsLoading(false);
       }
     };
     fetchFilters();
   }, []);
 
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
+  const sectionsInScope = useMemo(
+    () => sectionOptions.filter(s => inScope(s)),
+    [sectionOptions, inScope]
+  );
 
-    try {
-      const params = new URLSearchParams();
-      
-      // Use filter selections if available, otherwise use props
-      if (!selectedSections.includes('all') && selectedSections.length > 0) {
-        // For now, the API only supports single section_id
-        params.append('section_id', selectedSections[0]);
-      } else if (sectionId) {
-        params.append('section_id', sectionId);
-      } else if (semesterId != null) {
-        params.append('semester_id', String(semesterId));
-      }
+  // Explicit section picks, or null for "ALL Sections" (the server applies the caller's
+  // own access scope, narrowed by semester_id).
+  const pickedSectionIds = useMemo(
+    () => (selectedSections.includes('all') ? null : selectedSections),
+    [selectedSections]
+  );
 
-      if (!selectedCases.includes('all') && selectedCases.length > 0) {
-        // For now, the API only supports single case_id
-        params.append('case_id', selectedCases[0]);
-      } else if (caseId) {
-        params.append('case_id', caseId);
-      }
+  // Cases available for the current section picks. Narrowing here is what stops the
+  // picker offering a case that none of the chosen sections were assigned.
+  const casesForPicks = useMemo(() => {
+    const visible = caseOptions.filter(c => {
+      const sections = caseSections[c.case_id] || [];
+      // Keep cases whose sections are within the header semester scope. A section missing
+      // from sectionOptions is disabled (/filters lists only enabled ones); inScope(undefined)
+      // keeps it only under "All semesters", so it can't leak a case into another semester.
+      return sections.some(id => inScope(sectionOptions.find(s => s.section_id === id)));
+    });
+    if (!pickedSectionIds) return visible;
+    return visible.filter(c => {
+      const sections = caseSections[c.case_id] || [];
+      return pickedSectionIds.some(id => sections.includes(id));
+    });
+  }, [caseOptions, caseSections, pickedSectionIds, sectionOptions, inScope]);
 
-      if (scenarioId) params.append('scenario_id', String(scenarioId));
+  const selectedCaseOption = useMemo(
+    () => casesForPicks.find(c => c.case_id === selectedCase) || null,
+    [casesForPicks, selectedCase]
+  );
 
-      const queryString = params.toString();
+  const scenariosForCase = selectedCaseOption?.scenarios ?? [];
+  const needsScenarioPick = scenariosForCase.length > 1;
 
-      const [analyticsRes, correlationRes] = await Promise.all([
-        api.get(`/analytics/positions${queryString ? `?${queryString}` : ''}`),
-        api.get(`/analytics/positions/correlation${queryString ? `?${queryString}` : ''}`)
-      ]);
+  const selectedScenarioOption = useMemo(
+    () => scenariosForCase.find(s => s.scenario_id === selectedScenario) || null,
+    [scenariosForCase, selectedScenario]
+  );
 
-      if (analyticsRes.data) {
-        setAnalyticsData(analyticsRes.data);
-      }
-      if (correlationRes.data) {
-        setCorrelationData(correlationRes.data);
-        // Update max score from correlation data if available
-        if (correlationRes.data.max_score) {
-          setMaxScore(correlationRes.data.max_score);
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching position analytics:', err);
-      setError(err instanceof Error ? err.message : 'Failed to load analytics');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [sectionId, caseId, scenarioId, selectedSections, selectedCases, semesterId]);
-
-  const fetchScoreDistribution = useCallback(async () => {
-    try {
-      const params = new URLSearchParams();
-
-      // Use filter selections if available, otherwise use props
-      if (!selectedSections.includes('all') && selectedSections.length > 0) {
-        params.append('section_id', selectedSections[0]);
-      } else if (sectionId) {
-        params.append('section_id', sectionId);
-      } else if (semesterId != null) {
-        params.append('semester_id', String(semesterId));
-      }
-
-      if (!selectedCases.includes('all') && selectedCases.length > 0) {
-        params.append('case_id', selectedCases[0]);
-      } else if (caseId) {
-        params.append('case_id', caseId);
-      }
-
-      if (scenarioId) params.append('scenario_id', String(scenarioId));
-
-      const queryString = params.toString();
-      const token = localStorage.getItem('admin_auth_token');
-
-      const response = await fetch(
-        `${getApiBaseUrl()}/analytics/positions/score-distribution${queryString ? `?${queryString}` : ''}`,
-        {
-          headers: { 'Authorization': `Bearer ${token}` }
-        }
-      );
-
-      const result = await response.json();
-      if (result.data) {
-        setScoreDistributionData(result.data);
-        if (result.data.max_score) {
-          setMaxScore(result.data.max_score);
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching score distribution:', error);
-    }
-  }, [sectionId, caseId, scenarioId, selectedSections, selectedCases, semesterId]);
-
+  // Auto-pick a case on arrival: prefer one that actually has position data, then one
+  // that is currently open, then the most recent by date. Landing on a case with no
+  // position data would show an empty screen that looks broken.
   useEffect(() => {
-    if (sectionOptions.length > 0 || caseOptions.length > 0) {
-      fetchData();
+    if (!filtersLoaded || casesForPicks.length === 0) return;
+    if (selectedCase && casesForPicks.some(c => c.case_id === selectedCase)) return;
+
+    const recency = (c: CaseOption) => {
+      const dates = [c.latest_open_date, c.latest_close_date]
+        .filter(Boolean)
+        .map(d => new Date(d as string).getTime());
+      return dates.length ? Math.max(...dates) : 0;
+    };
+    const ranked = [...casesForPicks].sort((a, b) =>
+      (Number(b.has_position_data) - Number(a.has_position_data)) ||
+      (Number(b.is_open_now) - Number(a.is_open_now)) ||
+      (recency(b) - recency(a)) ||
+      a.case_title.localeCompare(b.case_title)
+    );
+    setSelectedCase(ranked[0].case_id);
+  }, [filtersLoaded, casesForPicks, selectedCase]);
+
+  // Auto-pick the scenario students actually ran, and keep it valid when the case changes.
+  useEffect(() => {
+    if (scenariosForCase.length === 0) {
+      if (selectedScenario !== null) setSelectedScenario(null);
+      return;
     }
-  }, [fetchData, sectionOptions.length, caseOptions.length]);
+    if (selectedScenario !== null && scenariosForCase.some(s => s.scenario_id === selectedScenario)) return;
+    const best = [...scenariosForCase].sort((a, b) => b.chat_count - a.chat_count)[0];
+    setSelectedScenario(best.scenario_id);
+  }, [scenariosForCase, selectedScenario]);
 
   // Drop picked sections that are outside the header semester.
   useEffect(() => {
@@ -245,160 +348,577 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
     }
   }, [inScope, selectedSections, sectionOptions]);
 
-  useEffect(() => {
-    if (activeTab === 'scoreByPosition') {
-      fetchScoreDistribution();
+  // --- Mixed tracking -------------------------------------------------------------
+  // Sections where the assignment never recorded positions. Pooling them into the
+  // change rate puts it over the wrong denominator, so they are excluded by default.
+  const untrackedSectionIds = useMemo(
+    () => new Set((sectionMeta?.rows ?? []).filter(r => r.state === 'tracking_off').map(r => r.section_id)),
+    [sectionMeta]
+  );
+  const trackedSectionIds = useMemo(
+    () => (sectionMeta?.rows ?? []).filter(r => r.state !== 'tracking_off').map(r => r.section_id),
+    [sectionMeta]
+  );
+  const hasMixedTracking = untrackedSectionIds.size > 0 && trackedSectionIds.length > 0;
+  const allUntracked = (sectionMeta?.rows.length ?? 0) > 0 && trackedSectionIds.length === 0;
+
+  // The section list actually sent to the analytics endpoints.
+  const effectiveSectionIds = useMemo<string[] | null>(() => {
+    if (includeUntracked || !sectionMeta) return pickedSectionIds;
+    const base = pickedSectionIds ?? sectionMeta.rows.map(r => r.section_id);
+    const kept = base.filter(id => !untrackedSectionIds.has(id));
+    // Every section is untracked: return an empty list so the caller can show the
+    // explanatory empty state instead of silently falling back to "all sections".
+    return kept;
+  }, [includeUntracked, sectionMeta, pickedSectionIds, untrackedSectionIds]);
+
+  const noTrackedSections = !includeUntracked && effectiveSectionIds !== null && effectiveSectionIds.length === 0 && !!sectionMeta;
+
+  const buildParams = useCallback((opts?: { sections?: string[] | null; includeScenario?: boolean }) => {
+    const params = new URLSearchParams();
+    const sections = opts?.sections !== undefined ? opts.sections : effectiveSectionIds;
+
+    if (sections && sections.length > 0) {
+      params.append('section_ids', sections.join(','));
+    } else if (semesterId != null) {
+      // A named section already pins the semester; only "ALL Sections" needs it.
+      params.append('semester_id', String(semesterId));
     }
+
+    if (selectedCase) params.append('case_id', selectedCase);
+    if ((opts?.includeScenario ?? true) && selectedScenario != null) {
+      params.append('scenario_id', String(selectedScenario));
+    }
+    params.append('statuses', statusesParam);
+    return params;
+  }, [effectiveSectionIds, semesterId, selectedCase, selectedScenario, statusesParam]);
+
+  // Per-section metadata drives the banner and the By Section tab, and determines which
+  // sections the main fetch may use, so it runs first and on its own section list.
+  useEffect(() => {
+    if (!selectedCase) { setSectionMeta(null); return; }
+    if (needsScenarioPick && selectedScenario == null) return;
+
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const params = new URLSearchParams();
+        if (pickedSectionIds && pickedSectionIds.length > 0) {
+          params.append('section_ids', pickedSectionIds.join(','));
+        } else if (semesterId != null) {
+          params.append('semester_id', String(semesterId));
+        }
+        params.append('case_id', selectedCase);
+        if (selectedScenario != null) params.append('scenario_id', String(selectedScenario));
+        params.append('statuses', statusesParam);
+
+        const res = await api.get(`/analytics/positions/by-section?${params.toString()}`);
+        if (cancelled) return;
+        if (res.error) {
+          // This endpoint 400s on a missing/ambiguous scenario_id. Swallowing that left
+          // the previous case's section metadata driving the banner and the section list.
+          setSectionMeta(null);
+          setError(res.error.message || 'Failed to load section details');
+          return;
+        }
+        setSectionMeta(res.data || null);
+      } catch (err) {
+        console.error('Error fetching section metadata:', err);
+        if (!cancelled) setSectionMeta(null);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [selectedCase, selectedScenario, needsScenarioPick, pickedSectionIds, semesterId, statusesParam]);
+
+  const fetchData = useCallback(async () => {
+    // Filters can change while a request is in flight; without this the slower response
+    // for case A can land after case B's and render A's numbers under B's heading. Bumped
+    // before the guards below so they also invalidate anything already in flight.
+    const seq = ++fetchSeq.current;
+
+    if (!selectedCase) { setAnalyticsData(null); setCorrelationData(null); setIsLoading(false); return; }
+    if (needsScenarioPick && selectedScenario == null) { setIsLoading(false); return; }
+    if (noTrackedSections) { setAnalyticsData(null); setCorrelationData(null); setIsLoading(false); return; }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const queryString = buildParams().toString();
+      const [analyticsRes, correlationRes] = await Promise.all([
+        api.get(`/analytics/positions?${queryString}`),
+        api.get(`/analytics/positions/correlation?${queryString}`)
+      ]);
+      if (seq !== fetchSeq.current) return;
+
+      // api.get RESOLVES on an HTTP error with { data: null, error } — it does not throw.
+      // Testing only `.data` left a 400 (e.g. "scenario_id is required") showing the
+      // PREVIOUS case's charts under the new case's title, with no error and no spinner.
+      const failure = analyticsRes.error || correlationRes.error;
+      if (failure) {
+        setAnalyticsData(null);
+        setCorrelationData(null);
+        setError(failure.message || 'Failed to load analytics');
+        return;
+      }
+
+      setAnalyticsData(analyticsRes.data);
+      setCorrelationData(correlationRes.data);
+      if (correlationRes.data?.max_score) setMaxScore(correlationRes.data.max_score);
+    } catch (err) {
+      if (seq !== fetchSeq.current) return;
+      console.error('Error fetching position analytics:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load analytics');
+    } finally {
+      if (seq === fetchSeq.current) setIsLoading(false);
+    }
+  }, [buildParams, selectedCase, selectedScenario, needsScenarioPick, noTrackedSections]);
+
+  const fetchScoreDistribution = useCallback(async () => {
+    if (!selectedCase) return;
+    if (needsScenarioPick && selectedScenario == null) return;
+    try {
+      const queryString = buildParams().toString();
+      const token = localStorage.getItem('admin_auth_token');
+      const response = await fetch(
+        `${getApiBaseUrl()}/analytics/positions/score-distribution?${queryString}`,
+        { headers: { 'Authorization': `Bearer ${token}` } }
+      );
+      const result = await response.json();
+      if (!response.ok || result?.error) {
+        setScoreDistributionData(null);
+        setError(result?.error?.message || 'Failed to load score distribution');
+        return;
+      }
+      if (result.data) {
+        setScoreDistributionData(result.data);
+        if (result.data.max_score) setMaxScore(result.data.max_score);
+      }
+    } catch (err) {
+      console.error('Error fetching score distribution:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load score distribution');
+    }
+  }, [buildParams, selectedCase, selectedScenario, needsScenarioPick]);
+
+  // Deliberately uses the instructor's own section picks, NOT effectiveSectionIds.
+  // effectiveSectionIds is derived from the pinned case's section metadata, so using it
+  // here would silently hide every case that isn't assigned to the pinned case's
+  // sections — exactly the cases you opened this tab to compare against. Untracked
+  // sections aren't excluded either: tracking is per section-case, and the endpoint
+  // already returns per-case flags and nulls the change rate where it doesn't apply.
+  const fetchCompareCases = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      if (pickedSectionIds && pickedSectionIds.length > 0) {
+        params.append('section_ids', pickedSectionIds.join(','));
+      } else if (semesterId != null) {
+        params.append('semester_id', String(semesterId));
+      }
+      params.append('statuses', statusesParam);
+
+      const res = await api.get(`/analytics/positions/compare-cases?${params.toString()}`);
+      if (res.error) {
+        // Without this a failed request is indistinguishable from "no other cases".
+        setCompareCases(null);
+        setError(res.error.message || 'Failed to compare cases');
+        return;
+      }
+      setCompareCases(res.data?.rows || []);
+    } catch (err) {
+      console.error('Error comparing cases:', err);
+      setCompareCases([]);
+    }
+  }, [pickedSectionIds, semesterId, statusesParam]);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
+
+  useEffect(() => {
+    if (activeTab === 'scoreByPosition') fetchScoreDistribution();
   }, [activeTab, fetchScoreDistribution]);
 
-  // Convert options for MultiSelect - MUST be before any conditional returns (Rules of Hooks)
+  useEffect(() => {
+    if (activeTab === 'byCase') fetchCompareCases();
+  }, [activeTab, fetchCompareCases]);
+
+  // Full position text for the "About this scenario" panel. Chart axes show the short
+  // position_name; this is the only place the student-facing wording appears.
+  useEffect(() => {
+    if (!scenarioPanelOpen || !selectedCase || selectedScenario == null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get(`/cases/${encodeURIComponent(selectedCase)}/scenarios/${selectedScenario}/positions`);
+        const rows = res.data ?? res;
+        if (!cancelled) setScenarioPositions(Array.isArray(rows) ? rows : (rows?.positions ?? []));
+      } catch (err) {
+        console.error('Error loading scenario positions:', err);
+        if (!cancelled) setScenarioPositions([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [scenarioPanelOpen, selectedCase, selectedScenario]);
+
   const sectionSelectOptions: MultiSelectOption[] = useMemo(() =>
-    sectionOptions.filter(s => inScope(s)).map(s => ({
+    sectionsInScope.map(s => ({
       value: s.section_id,
       label: s.section_title,
       subtitle: s.year_term
-    })), [sectionOptions, inScope]
+    })), [sectionsInScope]
   );
 
-  const caseSelectOptions: MultiSelectOption[] = useMemo(() =>
-    caseOptions.map(c => ({
-      value: c.case_id,
-      label: c.case_title
-    })), [caseOptions]
-  );
+  const toggleIncludeUntracked = (next: boolean) => {
+    setIncludeUntracked(next);
+    writeFlag(LS_INCLUDE_UNTRACKED, next);
+  };
 
-  const statusSelectOptions: MultiSelectOption[] = useMemo(() =>
-    STATUS_OPTIONS.map(s => ({
-      value: s.value,
-      label: s.label
-    })), []
-  );
+  const toggleScenarioPanel = (next: boolean) => {
+    setScenarioPanelOpen(next);
+    writeFlag(LS_SCENARIO_PANEL, next);
+  };
 
-  if (isLoading) {
+  // Scores always come from completed chats: an incomplete chat has no evaluation, so
+  // including it would raise the count without raising the score sum and drag every
+  // average down. Say so whenever the two scopes differ.
+  const renderScoreScopeNote = () => {
+    if (!includeIncomplete) return null;
     return (
-      <div className="flex items-center justify-center p-8">
-        <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full"></div>
-        <span className="ml-3 text-gray-600">Loading position analytics...</span>
+      <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 text-sm text-blue-900">
+        Score figures below cover <strong>completed chats only</strong>, even though
+        “Include incomplete chats” is ticked — incomplete chats have no evaluation to score.
+      </div>
+    );
+  };
+
+  // ---------------------------------------------------------------------------
+  // Filters — rendered once and reused by every state below, so a new control can
+  // never be added to one copy and forgotten in the other.
+  // ---------------------------------------------------------------------------
+  const renderFilters = () => (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
+      <div className="flex flex-wrap gap-4 items-end">
+        <div className="min-w-56">
+          <label className="block text-xs font-medium text-gray-700 mb-1">Course Sections</label>
+          <MultiSelect
+            options={sectionSelectOptions}
+            selected={selectedSections}
+            onChange={setSelectedSections}
+            placeholder="Select sections..."
+            allLabel="ALL Sections"
+          />
+          <SemesterScopeNote className="mt-1" />
+        </div>
+
+        <div className="min-w-56">
+          <label className="block text-xs font-medium text-gray-700 mb-1">Case</label>
+          <select
+            value={selectedCase}
+            onChange={(e) => { setSelectedCase(e.target.value); setSelectedScenario(null); }}
+            className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm bg-white focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option value="">Select a case…</option>
+            {casesForPicks.map(c => (
+              <option key={c.case_id} value={c.case_id}>
+                {c.case_title}{c.has_position_data ? '' : ' (no position data)'}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {needsScenarioPick && (
+          <div className="min-w-56">
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Scenario <span className="text-amber-600">*</span>
+            </label>
+            <select
+              value={selectedScenario ?? ''}
+              onChange={(e) => setSelectedScenario(e.target.value ? Number(e.target.value) : null)}
+              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm bg-white focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="">Select a scenario…</option>
+              {scenariosForCase.map(s => (
+                <option key={s.scenario_id} value={s.scenario_id}>
+                  {s.scenario_name} ({s.chat_count} chats)
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-gray-500">This case has {scenariosForCase.length} scenarios, each with its own positions.</p>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 pb-2">
+          <input
+            type="checkbox"
+            id="includeIncomplete"
+            checked={includeIncomplete}
+            onChange={(e) => setIncludeIncomplete(e.target.checked)}
+            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+          />
+          <label htmlFor="includeIncomplete" className="text-sm text-gray-700 cursor-pointer">
+            Include incomplete chats
+          </label>
+        </div>
+
+        <div className="flex items-center gap-2 pb-2">
+          <input
+            type="checkbox"
+            id="showSummary"
+            checked={summaryExpanded}
+            onChange={(e) => setSummaryExpanded(e.target.checked)}
+            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+          />
+          <label htmlFor="showSummary" className="text-sm text-gray-700 cursor-pointer">
+            Show Summary Statistics
+          </label>
+        </div>
+
+        <div className="pb-1 ml-auto">
+          <HelpTooltip title="Position Analytics">
+            <PositionAnalyticsHelp />
+          </HelpTooltip>
+        </div>
+      </div>
+
+      {renderScenarioPanel()}
+    </div>
+  );
+
+  // Chart axes label positions with the short position_name. This panel is the only
+  // place the wording students actually saw is visible.
+  const renderScenarioPanel = () => {
+    if (!selectedCaseOption || selectedScenario == null) return null;
+    const disabledMap = sectionMeta?.position_section_disabled ?? {};
+
+    return (
+      <details
+        open={scenarioPanelOpen}
+        onToggle={(e) => toggleScenarioPanel((e.currentTarget as HTMLDetailsElement).open)}
+        className="border border-gray-200 rounded-lg bg-gray-50"
+      >
+        <summary className="cursor-pointer select-none px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg">
+          About this scenario — what the position labels mean
+        </summary>
+        <div className="px-4 pb-4 pt-2 space-y-4 text-sm">
+          <div>
+            <p className="font-semibold text-gray-900">
+              {selectedScenarioOption?.scenario_name || selectedCaseOption.case_title}
+            </p>
+            {selectedScenarioOption?.protagonist && (
+              <p className="text-gray-600">
+                Protagonist: {selectedScenarioOption.protagonist}
+                {selectedScenarioOption.protagonist_role ? `, ${selectedScenarioOption.protagonist_role}` : ''}
+              </p>
+            )}
+            {selectedScenarioOption?.chat_question && (
+              <p className="mt-2 text-gray-700 italic">“{selectedScenarioOption.chat_question}”</p>
+            )}
+          </div>
+
+          {scenarioPositions === null ? (
+            <p className="text-gray-500">Loading positions…</p>
+          ) : scenarioPositions.length === 0 ? (
+            <p className="text-gray-500">
+              No positions are defined for this scenario, which is why the charts are empty.
+              Add positions under Content → Scenarios to enable position tracking.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {scenarioPositions.map(p => {
+                const disabledIn = disabledMap[String(p.position_id)] || [];
+                const retired = Number(p.position_enabled) === 0;
+                return (
+                  <div key={p.position_id} className="bg-white border border-gray-200 rounded-md p-3">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded font-mono">{p.position_name}</code>
+                      {retired && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">retired</span>
+                      )}
+                      {disabledIn.length > 0 && (
+                        <span
+                          className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-800"
+                          title={`Disabled in: ${disabledIn.join(', ')}`}
+                        >
+                          not offered in {disabledIn.length} selected section{disabledIn.length === 1 ? '' : 's'}
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-1 text-gray-800">{p.position}</p>
+                    {(p.arguments_for || p.arguments_against) && (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-700">
+                          Arguments for / against
+                        </summary>
+                        <div className="mt-2 space-y-2 text-xs text-gray-700">
+                          {p.arguments_for && (
+                            <div><span className="font-semibold">For:</span> {p.arguments_for}</div>
+                          )}
+                          {p.arguments_against && (
+                            <div><span className="font-semibold">Against:</span> {p.arguments_against}</div>
+                          )}
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </details>
+    );
+  };
+
+  // Shown above every tab: pooling tracked and untracked sections puts the change rate
+  // over the wrong denominator, so say so and let the instructor choose.
+  const renderTrackingBanner = () => {
+    if (!hasMixedTracking) return null;
+    const untrackedTitles = (sectionMeta?.rows ?? [])
+      .filter(r => r.state === 'tracking_off')
+      .map(r => r.section_title);
+
+    return (
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex flex-wrap items-center gap-3">
+        <div className="flex-1 min-w-64 text-sm text-amber-900">
+          <span className="font-medium">Mixed position tracking.</span>{' '}
+          {trackedSectionIds.length} of {sectionMeta?.rows.length} selected sections track positions.
+          {untrackedTitles.length > 0 && (
+            <> Not tracked: {untrackedTitles.join(', ')}.</>
+          )}{' '}
+          {includeUntracked
+            ? 'Untracked sections are included, so the change rate is computed over students who were never asked for a position.'
+            : 'Untracked sections are excluded from these numbers.'}
+        </div>
+        <label className="flex items-center gap-2 text-sm text-amber-900 cursor-pointer whitespace-nowrap">
+          <input
+            type="checkbox"
+            checked={includeUntracked}
+            onChange={(e) => toggleIncludeUntracked(e.target.checked)}
+            className="w-4 h-4 text-amber-600 border-amber-300 rounded focus:ring-amber-500"
+          />
+          Include untracked sections
+        </label>
+      </div>
+    );
+  };
+
+  // ---------------------------------------------------------------------------
+  // States before the tabs are worth rendering
+  // ---------------------------------------------------------------------------
+  if (isLoading && !analyticsData) {
+    return (
+      <div className="space-y-6">
+        {filtersLoaded && renderFilters()}
+        <div className="flex items-center justify-center p-8">
+          <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full"></div>
+          <span className="ml-3 text-gray-600">Loading position analytics...</span>
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
-        <p className="text-red-700">{error}</p>
-        <button
-          onClick={fetchData}
-          className="mt-2 text-sm text-red-600 hover:text-red-800 underline"
-        >
-          Try again
-        </button>
+      <div className="space-y-6">
+        {renderFilters()}
+        <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+          <p className="text-red-700">{error}</p>
+          <button onClick={fetchData} className="mt-2 text-sm text-red-600 hover:text-red-800 underline">
+            Try again
+          </button>
+        </div>
       </div>
     );
   }
 
-  if (!analyticsData || analyticsData.summary.total_chats_with_positions === 0) {
+  if (!selectedCase) {
     return (
       <div className="space-y-6">
-        {/* Filters */}
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
-          <div className="flex flex-wrap gap-4">
-            <div className="min-w-56">
-              <label className="block text-xs font-medium text-gray-700 mb-1">Course Sections</label>
-              <MultiSelect
-                options={sectionSelectOptions}
-                selected={selectedSections}
-                onChange={setSelectedSections}
-                placeholder="Select sections..."
-                allLabel="ALL Sections"
-              />
-              <SemesterScopeNote className="mt-1" />
-            </div>
-            <div className="min-w-56">
-              <label className="block text-xs font-medium text-gray-700 mb-1">Cases</label>
-              <MultiSelect
-                options={caseSelectOptions}
-                selected={selectedCases}
-                onChange={setSelectedCases}
-                placeholder="Select cases..."
-                allLabel="ALL Cases"
-              />
-            </div>
-            <div className="min-w-44">
-              <label className="block text-xs font-medium text-gray-700 mb-1">Status</label>
-              <MultiSelect
-                options={statusSelectOptions}
-                selected={selectedStatuses}
-                onChange={setSelectedStatuses}
-                placeholder="Select statuses..."
-                allLabel="All Statuses"
-              />
-            </div>
-          </div>
-        </div>
-
+        {renderFilters()}
         <div className="p-6 bg-gray-50 border border-gray-200 rounded-lg text-center">
-          <p className="text-gray-600">No position tracking data available.</p>
+          <p className="text-gray-700 font-medium">Pick a case to see position analytics.</p>
           <p className="text-sm text-gray-500 mt-2">
-            Position tracking must be enabled for assignments and students must have selected positions.
+            Positions are defined per scenario, so results are shown one case at a time —
+            adding them across cases would merge answers to different questions.
           </p>
         </div>
       </div>
     );
   }
 
+  if (needsScenarioPick && selectedScenario == null) {
+    return (
+      <div className="space-y-6">
+        {renderFilters()}
+        <div className="p-6 bg-gray-50 border border-gray-200 rounded-lg text-center">
+          <p className="text-gray-700 font-medium">Pick a scenario.</p>
+          <p className="text-sm text-gray-500 mt-2">
+            “{selectedCaseOption?.case_title}” has {scenariosForCase.length} scenarios, each with
+            its own question and its own set of positions.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Every selected section has tracking switched off. Say which setting to change
+  // rather than showing a screen of zeros.
+  if (noTrackedSections || (allUntracked && !includeUntracked)) {
+    return (
+      <div className="space-y-6">
+        {renderFilters()}
+        <div className="p-6 bg-gray-50 border border-gray-200 rounded-lg text-center">
+          <p className="text-gray-700 font-medium">Position tracking is off for every selected section.</p>
+          <p className="text-sm text-gray-500 mt-2">
+            Turn it on under <strong>Assignments</strong> → the section’s copy of this case →
+            <strong> Enable position tracking</strong>, or tick “Include untracked sections” to see
+            the chats anyway (they will have no positions).
+          </p>
+          <label className="mt-4 inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={includeUntracked}
+              onChange={(e) => toggleIncludeUntracked(e.target.checked)}
+              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+            />
+            Include untracked sections
+          </label>
+        </div>
+      </div>
+    );
+  }
+
+  if (!analyticsData) {
+    return (
+      <div className="space-y-6">
+        {renderFilters()}
+        {renderTrackingBanner()}
+        <div className="p-6 bg-gray-50 border border-gray-200 rounded-lg text-center">
+          <p className="text-gray-600">No chats match these filters yet.</p>
+        </div>
+      </div>
+    );
+  }
+
   const { summary, by_position, change_matrix, by_student } = analyticsData;
+  const noPositionData = summary.total_chats_with_positions === 0;
 
   return (
     <div className="space-y-6">
-      {/* Filters */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
-        <div className="flex flex-wrap gap-4 items-end">
-          <div className="min-w-56">
-            <label className="block text-xs font-medium text-gray-700 mb-1">Course Sections</label>
-            <MultiSelect
-              options={sectionSelectOptions}
-              selected={selectedSections}
-              onChange={setSelectedSections}
-              placeholder="Select sections..."
-              allLabel="ALL Sections"
-            />
-            <SemesterScopeNote className="mt-1" />
-          </div>
-          <div className="min-w-56">
-            <label className="block text-xs font-medium text-gray-700 mb-1">Cases</label>
-            <MultiSelect
-              options={caseSelectOptions}
-              selected={selectedCases}
-              onChange={setSelectedCases}
-              placeholder="Select cases..."
-              allLabel="ALL Cases"
-            />
-          </div>
-          <div className="min-w-44">
-            <label className="block text-xs font-medium text-gray-700 mb-1">Status</label>
-            <MultiSelect
-              options={statusSelectOptions}
-              selected={selectedStatuses}
-              onChange={setSelectedStatuses}
-              placeholder="Select statuses..."
-              allLabel="All Statuses"
-            />
-          </div>
-          <div className="flex items-center gap-2 pb-2">
-            <input
-              type="checkbox"
-              id="showSummary"
-              checked={summaryExpanded}
-              onChange={(e) => setSummaryExpanded(e.target.checked)}
-              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-            />
-            <label htmlFor="showSummary" className="text-sm text-gray-700 cursor-pointer">
-              Show Summary Statistics
-            </label>
-          </div>
+      {renderFilters()}
+      {renderTrackingBanner()}
+
+      {noPositionData && (
+        <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
+          <p className="text-gray-700">
+            {summary.total_chats} chat{summary.total_chats === 1 ? '' : 's'} match these filters, but
+            none recorded a position.
+          </p>
+          <p className="text-sm text-gray-500 mt-1">
+            Either the scenario has no positions defined, or students were never asked for one.
+            Expand “About this scenario” above to check which positions exist.
+          </p>
         </div>
-      </div>
+      )}
 
       {/* Summary Cards */}
       {summaryExpanded && (
@@ -419,6 +939,7 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
             <div className="bg-gray-50 p-4 rounded-lg">
               <p className="text-sm text-gray-500">Change Rate</p>
               <p className="text-2xl font-bold text-purple-600">{summary.change_rate}%</p>
+              <p className="text-xs text-gray-500 mt-1">of {summary.total_chats_with_positions} chats with positions</p>
             </div>
           </div>
         </div>
@@ -431,7 +952,9 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
             { id: 'overview', label: 'Overview' },
             { id: 'students', label: 'Students' },
             { id: 'scoreByPosition', label: 'Score by Position' },
-            { id: 'positionChanges', label: 'Position Changes' }
+            { id: 'positionChanges', label: 'Position Changes' },
+            { id: 'bySection', label: 'By Section' },
+            { id: 'byCase', label: 'By Case' }
           ].map(tab => (
             <button
               key={tab.id}
@@ -616,6 +1139,7 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
 
       {activeTab === 'scoreByPosition' && (
         <div className="space-y-6">
+          {renderScoreScopeNote()}
           {scoreDistributionData && (
             <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
               {Object.keys(scoreDistributionData.by_position).filter(name => name && name.toLowerCase() !== 'null').length === 0 ? (
@@ -726,6 +1250,7 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
 
       {activeTab === 'positionChanges' && (
         <div className="space-y-6">
+          {renderScoreScopeNote()}
           {/* Score Changed vs Unchanged cards and Transition Matrix */}
           {correlationData && (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -882,6 +1407,174 @@ const PositionAnalytics: React.FC<PositionAnalyticsProps> = ({
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* By Section — one case+scenario compared across sections. Valid because the
+          case and scenario are pinned, so every row shares one position set. */}
+      {activeTab === 'bySection' && (
+        <div className="space-y-4">
+          <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
+            <h3 className="font-semibold text-gray-900 mb-1">
+              {selectedCaseOption?.case_title}
+              {selectedScenarioOption ? ` — ${selectedScenarioOption.scenario_name}` : ''}
+            </h3>
+            <p className="text-xs text-gray-500 mb-4">
+              Final-position distribution per section. Sections that never recorded positions are
+              labeled rather than counted as zeros, and are excluded from any comparison.
+            </p>
+
+            {!sectionMeta || sectionMeta.rows.length === 0 ? (
+              <p className="text-gray-500 text-sm">No sections are assigned this case.</p>
+            ) : sectionMeta.positions.length === 0 ? (
+              <p className="text-gray-500 text-sm">
+                This scenario has no positions defined, so there is nothing to distribute.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Section</th>
+                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider" title="Chats matching the current filters">n</th>
+                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider" title="Chats that recorded a position">With positions</th>
+                      {sectionMeta.positions.map(p => (
+                        <th key={p.position_id} className="px-3 py-3 text-center text-xs font-medium text-gray-500 tracking-wider" title={p.position}>
+                          {p.position_name}
+                        </th>
+                      ))}
+                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Change rate</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {sectionMeta.rows.map(row => {
+                      const isNonData = row.state !== 'ok';
+                      return (
+                        <tr key={row.section_id} className={isNonData ? 'bg-gray-50' : 'hover:bg-gray-50'}>
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <div className="font-medium text-gray-900">{row.section_title}</div>
+                            {row.year_term && <div className="text-xs text-gray-500">{row.year_term}</div>}
+                          </td>
+                          {isNonData ? (
+                            <td
+                              colSpan={3 + sectionMeta.positions.length}
+                              className="px-3 py-3 text-center text-gray-500 italic"
+                              title={STATE_HINTS[row.state as Exclude<SectionState, 'ok'>]}
+                            >
+                              {STATE_LABELS[row.state as Exclude<SectionState, 'ok'>]}
+                              {row.state === 'no_chats' ? '' : ` — ${STATE_HINTS[row.state as Exclude<SectionState, 'ok'>]}`}
+                            </td>
+                          ) : (
+                            <>
+                              <td className="px-3 py-3 text-center text-gray-900">{row.n}</td>
+                              <td className="px-3 py-3 text-center text-gray-600">{row.n_with_positions}</td>
+                              {sectionMeta.positions.map(p => {
+                                const count = row.distribution[p.position_name] ?? 0;
+                                const pct = row.n_with_positions > 0
+                                  ? Math.round((count / row.n_with_positions) * 100)
+                                  : null;
+                                return (
+                                  <td key={p.position_id} className="px-3 py-3 text-center">
+                                    <span className="font-medium text-gray-900">{count}</span>
+                                    {pct !== null && <span className="text-xs text-gray-500 ml-1">({pct}%)</span>}
+                                  </td>
+                                );
+                              })}
+                              <td className="px-3 py-3 text-center">
+                                {row.change_rate === null ? (
+                                  <span className="text-gray-400" title="This assignment does not track position change">—</span>
+                                ) : (
+                                  <span className="font-medium text-gray-900">{row.change_rate}%</span>
+                                )}
+                              </td>
+                            </>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          <p className="text-xs text-gray-500 italic">
+            Each row shows its own n. When students choose among several scenarios within a
+            section, pinning one scenario legitimately reduces n — that is selection, not attrition.
+          </p>
+        </div>
+      )}
+
+      {/* By Case — case-agnostic measures only. Positions are never merged across cases:
+          two cases sharing a position label are answering different questions. */}
+      {activeTab === 'byCase' && (
+        <div className="space-y-4">
+          <div className="bg-white p-4 rounded-lg shadow border border-gray-200">
+            <h3 className="font-semibold text-gray-900 mb-1">Compare cases</h3>
+            <p className="text-xs text-gray-500 mb-4">
+              Only measures that mean the same thing across cases are shown — no position
+              distributions, because each case asks a different question. Sorted by assignment date.
+              Score columns cover completed chats only.
+            </p>
+
+            {compareCases === null ? (
+              <p className="text-gray-500 text-sm">Loading…</p>
+            ) : compareCases.length === 0 ? (
+              <p className="text-gray-500 text-sm">No chats match these filters.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Case</th>
+                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Chats</th>
+                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">With positions</th>
+                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Change rate</th>
+                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Avg score</th>
+                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider" title="Average score of students who changed position">Changed</th>
+                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider" title="Average score of students who kept their position">Unchanged</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {compareCases.map(row => (
+                      <tr
+                        key={row.case_id}
+                        className={`hover:bg-gray-50 ${row.case_id === selectedCase ? 'bg-blue-50' : ''}`}
+                      >
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => { setSelectedCase(row.case_id); setSelectedScenario(null); setActiveTab('overview'); }}
+                            className="font-medium text-blue-600 hover:text-blue-800 hover:underline text-left"
+                            title="Open this case in Position Analytics"
+                          >
+                            {row.case_title}
+                          </button>
+                          {!row.position_tracking_enabled && (
+                            <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">tracking off</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-center text-gray-900">{row.n}</td>
+                        <td className="px-3 py-3 text-center text-gray-600">{row.n_with_positions}</td>
+                        <td className="px-3 py-3 text-center">
+                          {row.change_rate === null ? (
+                            <span className="text-gray-400" title="This case does not track position change — not the same as nobody changing">—</span>
+                          ) : (
+                            <span className="font-medium text-gray-900">{row.change_rate}%</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-center font-medium text-gray-900">{row.avg_score ?? '—'}</td>
+                        <td className="px-3 py-3 text-center text-gray-700">{row.avg_score_changed ?? '—'}</td>
+                        <td className="px-3 py-3 text-center text-gray-700">{row.avg_score_unchanged ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          <p className="text-xs text-gray-500 italic">
+            An em dash in Change rate means the assignment does not track position change — which is
+            not the same as nobody changing their mind.
+          </p>
         </div>
       )}
     </div>

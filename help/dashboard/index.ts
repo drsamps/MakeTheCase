@@ -16,6 +16,7 @@
 export { default as ChatOptionsHelp } from './ChatOptionsHelp';
 export { default as CourseAssignmentsHelp } from './CourseAssignmentsHelp';
 export { default as PersonasHelp } from './PersonasHelp';
+export { default as PositionAnalyticsHelp } from './PositionAnalyticsHelp';
 export { default as ResultsHelp } from './ResultsHelp';
 export { default as TeamsHelp } from './TeamsHelp';
 export { default as ApiKeysHelp } from './ApiKeysHelp';
