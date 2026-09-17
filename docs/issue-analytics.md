@@ -91,6 +91,40 @@ student counts once per theme: the lean shown is their first mention that has on
   1.3-2.3k tokens per transcript. The estimate uses 2,000 per transcript, 4,000 for
   clustering and 800 per re-scan.
 
+### Sampling (migration 081)
+
+`sample_size` (a count) makes a run analyze a sample of the scope's usable transcripts
+instead of all of them. `drawSample()` in `scope.js` does the draw, called from `planRun()`:
+
+- **Only usable chats are drawn** (those with a transcript that parses), so a sample of N
+  analyzes N. Chats that are not drawn are **not** written to `issue_analysis_run_chats`.
+  Writing them as skipped would be wrong, because the runner recomputes `chats_skipped` from
+  that table.
+- **Proportional by section.** Slots are handed out one at a time to whichever section is
+  currently most under-represented, with sections that have nothing yet served first — so
+  when N ≥ the number of sections, every section gets at least one.
+  **Allocating one slot at a time is load-bearing, not a style choice.** It is what makes the
+  draw for N a subset of the draw for N+1. The original largest-remainder version computed
+  all N slots from a quota and was non-monotone (the Alabama paradox): with a 60/45/30/5 pool
+  the small section held 2 slots at N=38 and 1 at N=39, so raising the size dropped a
+  transcript that had already been analysed and paid for. Keep any rewrite monotone in N.
+- **Deterministic.** Within a section, chats are ordered by `sha256(seed:case_chat_id)`.
+  The estimate and `POST /runs` are separate requests and must pick the same chats, so never
+  use `Math.random()` here. The default seed is `case_id:scenario_id`, so a repeated sample is
+  fully cached, and a larger N with the same seed keeps the smaller sample — as long as the
+  pool itself has not changed, since a newly completed chat joins its section's hash order and
+  can displace a transcript from the first N. The client's
+  "Draw a different sample" sends a random `sample_seed`, and Start sends back the size and
+  seed from the estimate it confirmed.
+- N ≥ the pool means no sampling: `sample_size` is stored as NULL.
+- The run stores `sample_size`, `sample_seed` and `sample_pool` (the number of usable
+  transcripts drawn from). Prevalence stays "of analyzed" (the sample). The UI says
+  "sampled" and shows an approximate 95% margin with finite-population correction
+  (`marginOfError()` in `components/issueAnalytics/types.ts`).
+- Pass 3 re-scans only `state = 'done'` chats, so it covers the sample automatically.
+- The estimate also returns `full_chats_to_process` / `full_est_cost_usd` (all usable
+  transcripts) for comparison, and `skip_reasons` always covers the whole scope.
+
 ## Access and privacy
 
 - `issue_analytics` is in `BASE_FUNCTIONS` in **both** `utils/permissions.ts` and
@@ -107,8 +141,6 @@ student counts once per theme: the lean shown is their first mention that has on
 
 ## Not done / open
 
-- **Consent copy** (`App.tsx` developer-sharing messages still promise anonymization) and
-  what `saved_with_permission` should mean afterwards. This needs a decision; see the plan.
 - `PUT /api/transcripts/chat/:caseChatId` has no auth middleware (it predates this feature).
   Anyone who can reach the API can rewrite a transcript. Issue Analytics detects that as
   staleness, but the route itself should be hardened.

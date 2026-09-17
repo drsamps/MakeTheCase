@@ -51,6 +51,32 @@ const IssueAnalyticsHelp: React.FC = () => (
       </li>
     </ul>
 
+    <h4>Analyzing a sample</h4>
+    <p>
+      With a large class, choose <strong>Sample of</strong> a number under
+      <strong> Transcripts to analyze</strong> to read only that many transcripts. Time and cost
+      shrink in proportion: 40 of 144 is about a quarter of each. The estimate shows what
+      analyzing all of them would cost, for comparison.
+    </p>
+    <ul>
+      <li>
+        Each section contributes its share of the sample, so every section is represented.
+        Only transcripts that can be analyzed are drawn, so a sample of 40 reads 40.
+      </li>
+      <li>
+        The same settings draw the same transcripts every time, so running a sample again costs
+        nothing. Raising the size keeps the earlier transcripts and only pays for the new ones —
+        unless more students have finished in the meantime, since new transcripts join the pool
+        and can change which ones are drawn.
+        <strong> Draw a different sample</strong> picks a new set.
+      </li>
+      <li>
+        Percentages then describe the sample, so they are approximate. The run shows a margin
+        (for example ±13 points for 40 of 138), and small differences between themes or between
+        semesters may just be chance. Themes raised by only a few students may not appear at all.
+      </li>
+    </ul>
+
     <h4>Editing the themes</h4>
     <ul>
       <li>Untick a theme to leave it out of Present, Markdown, CSV and the printed handout.</li>

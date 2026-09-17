@@ -1,5 +1,5 @@
 import { getApiBaseUrl, getImpersonationId } from '../../services/apiClient';
-import { RunView, TYPE_META, ThemeType, prevalenceText } from './types';
+import { RunView, TYPE_META, ThemeType, coverageText, prevalenceText } from './types';
 
 /** Markdown for pasting into slides or notes. Follows the current Show-names state. */
 export function runToMarkdown(view: RunView): string {
@@ -7,7 +7,7 @@ export function runToMarkdown(view: RunView): string {
   const lines: string[] = [];
   lines.push(`# ${run.case_title}${run.scenario_name ? ` — ${run.scenario_name}` : ''}`);
   lines.push('');
-  lines.push(`${run.chats_done} transcripts analyzed${run.semester_label ? ` · ${run.semester_label}` : ''} · ${run.section_ids.join(', ')}`);
+  lines.push(`${coverageText(run)}${run.semester_label ? ` · ${run.semester_label}` : ''} · ${run.section_ids.join(', ')}`);
   for (const type of ['topic', 'argument', 'friction'] as ThemeType[]) {
     const themes = view.themes.filter(t => t.selected && t.theme_type === type);
     if (themes.length === 0) continue;

@@ -257,12 +257,98 @@ function costOf(model, inputTokens, outputTokens) {
   return ((cin || 0) * inputTokens + (cout || 0) * outputTokens) / 1_000_000;
 }
 
+/** sample_size: absent / '' / 0 = every transcript; otherwise a positive integer. */
+function parseSampleSize(raw) {
+  if (raw == null || raw === '' || raw === 0 || raw === '0' || raw === 'all') return null;
+  const s = String(raw).trim();
+  if (!/^\d+$/.test(s) || parseInt(s, 10) < 1) {
+    throw new HttpError(400, 'Sample size must be a whole number of transcripts');
+  }
+  return parseInt(s, 10);
+}
+
+function parseSampleSeed(raw, fallback) {
+  if (raw == null || raw === '') return fallback;
+  const s = String(raw);
+  if (s.length > 64) throw new HttpError(400, 'Sample seed is too long');
+  return s;
+}
+
+/**
+ * Draw n entries, proportional by section (every section with usable chats gets at least one
+ * when n allows). Within a section, entries are ordered by sha256(seed:case_chat_id), so the
+ * draw is reproducible — the estimate and the run are separate requests and must pick the
+ * same chats. Never use Math.random() here.
+ *
+ * Slots are handed out ONE AT A TIME, and that is load-bearing: it makes the draw for n a
+ * subset of the draw for n+1, so raising the sample size keeps every transcript already
+ * analysed (cached, so free) instead of re-drawing from scratch. Computing all n slots at
+ * once from a quota — largest remainder, as this did until 2026-09-17 — does NOT have that
+ * property: it is the Alabama paradox, and it cost a section a slot at n=39 that it held at
+ * n=38 (pool 60/45/30/5), silently dropping an analysed transcript out of the run. Any
+ * rewrite here must keep allocations monotone in n; the cheap way is to keep deciding slot
+ * n+1 only after slots 1..n are placed, which makes it true by construction.
+ *
+ * Monotonicity assumes the same seed and the same pool. New chats finishing between two runs
+ * change a section's hash order, so a transcript can still fall out then.
+ */
+export function drawSample(entries, n, seed) {
+  const bySection = new Map();
+  for (const e of entries) {
+    const key = e.chat.section_id;
+    if (!bySection.has(key)) bySection.set(key, []);
+    bySection.get(key).push({ e, order: sha256(`${seed}:${e.chat.case_chat_id}`) });
+  }
+  const groups = [...bySection.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([sectionId, list]) => {
+      list.sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : 0));
+      return { sectionId, list, alloc: 0 };
+    });
+
+  // Each slot goes to the section that is currently most under-represented (D'Hondt:
+  // usable / (drawn + 1)), except that sections with nothing yet are served first, which is
+  // what gives every section at least one when n allows. Ties break on the larger section,
+  // then section_id, so the result never depends on Map or query order.
+  let remaining = Math.min(n, entries.length);
+  while (remaining > 0) {
+    const open = groups.filter(g => g.alloc < g.list.length);
+    if (open.length === 0) break;
+    const unseated = open.filter(g => g.alloc === 0);
+    const contenders = unseated.length > 0 ? unseated : open;
+    let best = contenders[0];
+    for (const g of contenders) {
+      const pg = g.list.length / (g.alloc + 1);
+      const pb = best.list.length / (best.alloc + 1);
+      if (pg > pb
+        || (pg === pb && g.list.length > best.list.length)
+        || (pg === pb && g.list.length === best.list.length && g.sectionId < best.sectionId)) {
+        best = g;
+      }
+    }
+    best.alloc++;
+    remaining--;
+  }
+
+  const drawn = [];
+  const bySectionCounts = {};
+  for (const g of groups) {
+    drawn.push(...g.list.slice(0, g.alloc).map(x => x.e));
+    bySectionCounts[g.sectionId] = { drawn: g.alloc, usable: g.list.length };
+  }
+  return { drawn, bySection: bySectionCounts };
+}
+
 /**
  * Classify every chat in scope (analyse / cached / skip) and price the work.
  * Used by both the estimate endpoint and run creation so they cannot disagree.
+ * With input.sample_size, only a proportional-by-section sample of the usable chats is
+ * planned (see drawSample); chats not drawn are left out of the plan entirely.
  */
 export async function planRun(req, input) {
+  const requestedSample = parseSampleSize(input.sample_size);
   const scope = await resolveRunScope(req, input);
+  const sampleSeed = parseSampleSeed(input.sample_seed, `${scope.caseId}:${scope.scenarioId ?? ''}`);
   const billedInstructorId = await resolveBilledInstructor(req, scope.sectionIds);
   const model = await resolveModel(input.model_id || null, billedInstructorId);
   const extract = await loadPrompt('issue_analytics.extract_facts');
@@ -284,13 +370,9 @@ export async function planRun(req, input) {
   const fixedPromptChars = extract.template.length
     + Object.values(context.promptVars).reduce((n, v) => n + String(v).length, 0);
 
-  const planned = [];
-  let toProcess = 0;
-  let cachedCount = 0;
-  let skipped = 0;
-  let inputTokens = 0;
+  const all = [];
   for (const chat of chats) {
-    const entry = { chat, hash: null, state: 'pending', skip_reason: null, cached: false };
+    const entry = { chat, hash: null, state: 'pending', skip_reason: null, cached: false, inputTokens: 0 };
     if (!chat.transcript || !chat.transcript.trim()) {
       entry.state = 'skipped';
       entry.skip_reason = 'No saved transcript';
@@ -302,21 +384,40 @@ export async function planRun(req, input) {
         entry.skip_reason = prepared.error;
       } else if (cached.has(`${chat.case_chat_id}:${entry.hash}`)) {
         entry.cached = true;
-        cachedCount++;
       } else {
-        toProcess++;
-        inputTokens += Math.ceil((fixedPromptChars + prepared.xml.length) / CHARS_PER_TOKEN);
+        entry.inputTokens = Math.ceil((fixedPromptChars + prepared.xml.length) / CHARS_PER_TOKEN);
       }
     }
-    if (entry.state === 'skipped') skipped++;
-    planned.push(entry);
+    all.push(entry);
   }
 
-  const analysable = planned.filter(p => p.state === 'pending').length;
-  const clusterInput = Math.ceil(cluster.template.length / CHARS_PER_TOKEN) + analysable * ITEMS_PER_CHAT * RECORD_TOKENS;
-  const extractCost = costOf(model, inputTokens, toProcess * EXTRACT_OUTPUT_TOKENS);
-  const clusterCost = analysable > 0 ? costOf(model, clusterInput, CLUSTER_OUTPUT_TOKENS) : 0;
-  const estCost = extractCost == null || clusterCost == null ? null : extractCost + clusterCost;
+  // Sample only the usable chats, so a sample of N means N transcripts analysed.
+  const usable = all.filter(p => p.state === 'pending');
+  const sampling = requestedSample != null && requestedSample < usable.length;
+  const sample = sampling ? drawSample(usable, requestedSample, sampleSeed) : null;
+  const planned = sampling ? sample.drawn : all;
+
+  const price = (entries) => {
+    const pending = entries.filter(p => p.state === 'pending');
+    const fresh = pending.filter(p => !p.cached);
+    const inputTokens = fresh.reduce((n, p) => n + p.inputTokens, 0);
+    const clusterInput = Math.ceil(cluster.template.length / CHARS_PER_TOKEN) + pending.length * ITEMS_PER_CHAT * RECORD_TOKENS;
+    const extractCost = costOf(model, inputTokens, fresh.length * EXTRACT_OUTPUT_TOKENS);
+    const clusterCost = pending.length > 0 ? costOf(model, clusterInput, CLUSTER_OUTPUT_TOKENS) : 0;
+    return {
+      toProcess: fresh.length,
+      cached: pending.length - fresh.length,
+      skipped: entries.length - pending.length,
+      cost: extractCost == null || clusterCost == null ? null : extractCost + clusterCost,
+    };
+  };
+  const planPrice = price(planned);
+  const fullPrice = sampling ? price(all) : planPrice;
+  const toProcess = planPrice.toProcess;
+  const cachedCount = planPrice.cached;
+  const skipped = planPrice.skipped;
+  const estCost = planPrice.cost;
+  const round = (v) => (v == null ? null : Number(v.toFixed(4)));
 
   const usage = await getWeeklyUsage(billedInstructorId);
   const capRemaining = usage.capActive ? Math.max(0, usage.cap - usage.costUsed) : null;
@@ -327,6 +428,11 @@ export async function planRun(req, input) {
     billedInstructorId,
     extractVersion: extract.versionTag,
     planned,
+    sample: {
+      size: sampling ? planned.length : null,
+      seed: sampling ? sampleSeed : null,
+      pool: usable.length,
+    },
     summary: {
       case_id: scope.caseId,
       scenario_id: scope.scenarioId,
@@ -336,7 +442,16 @@ export async function planRun(req, input) {
       chats_cached: cachedCount,
       chats_skipped: skipped,
       chats_to_process: toProcess,
-      est_cost_usd: estCost == null ? null : Number(estCost.toFixed(4)),
+      est_cost_usd: round(estCost),
+      sample_requested: requestedSample,
+      sample_size: sampling ? planned.length : null,
+      sample_seed: sampleSeed,
+      sample_pool: usable.length,
+      sample_by_section: sample ? sample.bySection : null,
+      pool_chats_skipped: all.length - usable.length,
+      full_chats_to_process: fullPrice.toProcess,
+      full_chats_cached: fullPrice.cached,
+      full_est_cost_usd: round(fullPrice.cost),
       model_id: model.model_id,
       model_name: model.model_name,
       model_priced: estCost != null,
@@ -347,7 +462,7 @@ export async function planRun(req, input) {
       cap_used_usd: usage.capActive ? Number(usage.costUsed.toFixed(4)) : null,
       cap_remaining_usd: capRemaining == null ? null : Number(capRemaining.toFixed(4)),
       exceeds_cap: capRemaining != null && estCost != null && estCost > capRemaining,
-      skip_reasons: tally(planned.filter(p => p.skip_reason).map(p => p.skip_reason)),
+      skip_reasons: tally(all.filter(p => p.skip_reason).map(p => p.skip_reason)),
     },
   };
 }

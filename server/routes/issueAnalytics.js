@@ -61,7 +61,7 @@ function parseTargets(body) {
   return { min, max };
 }
 
-/** GET /estimate?case_id=&scenario_id=&section_ids=&semester_id=&model_id= */
+/** GET /estimate?case_id=&scenario_id=&section_ids=&semester_id=&model_id=&sample_size=&sample_seed= */
 router.get('/estimate', async (req, res) => {
   try {
     const plan = await planRun(req, req.query);
@@ -147,12 +147,14 @@ router.post('/runs', async (req, res) => {
         `INSERT INTO issue_analysis_runs
            (case_id, scenario_id, section_ids, semester_id, statuses, theme_target_min, theme_target_max,
             model_id, prompt_version, status, chats_completed_in_scope, chats_total, chats_skipped,
+            sample_size, sample_seed, sample_pool,
             est_cost_usd, billed_instructor_id, heartbeat_at, created_by_user_id, created_by_role)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, NOW(), ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?)`,
         [s.case_id, s.scenario_id, JSON.stringify(s.section_ids), plan.scope.semesterId,
          JSON.stringify(plan.scope.statuses), targets.min, targets.max,
          plan.model.model_id, plan.extractVersion,
          s.chats_completed, s.chats_total, s.chats_skipped,
+         plan.sample.size, plan.sample.seed, plan.sample.pool,
          s.est_cost_usd, plan.billedInstructorId, req.user.id, req.user.role]
       );
       runId = ins.insertId;
@@ -173,7 +175,10 @@ router.post('/runs', async (req, res) => {
 
     writeAudit(req, {
       action: 'issue_analytics.run_start', resourceType: 'issue_analysis_run', resourceId: String(runId),
-      details: { case_id: s.case_id, sections: s.section_ids.length, est_cost_usd: s.est_cost_usd, billed: plan.billedInstructorId },
+      details: {
+        case_id: s.case_id, sections: s.section_ids.length, est_cost_usd: s.est_cost_usd,
+        billed: plan.billedInstructorId, sample_size: plan.sample.size,
+      },
     });
     startRun(runId);
     const [[run]] = await pool.execute('SELECT * FROM issue_analysis_runs WHERE id = ?', [runId]);
@@ -299,7 +304,7 @@ router.get('/runs/:id/quotes.csv', async (req, res) => {
       details: { names },
     });
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="issue-analytics-${run.case_id}-run${run.id}${names ? '-named' : ''}.csv"`);
+    res.setHeader('Content-Disposition', `attachment; filename="issue-analytics-${run.case_id}-run${run.id}${run.sample_size ? `-sample${run.sample_size}` : ''}${names ? '-named' : ''}.csv"`);
     res.send(csv);
   } catch (err) {
     send(res, err);

@@ -12,7 +12,7 @@ import LeanBar from './issueAnalytics/LeanBar';
 import { downloadQuotesCsv, runToMarkdown } from './issueAnalytics/exportUtils';
 import {
   ACTIVE_STATUSES, Estimate, Quote, RunStatusPoll, RunSummary, RunView, ThemeType, ThemeView,
-  TYPE_META, money,
+  TYPE_META, coverageText, isSampled, money, unusableInScope,
 } from './issueAnalytics/types';
 
 /**
@@ -30,6 +30,8 @@ interface CaseOption { case_id: string; case_title: string; is_open_now: boolean
 interface ModelOption { model_id: string; model_name: string; enabled: boolean; default: number; available?: boolean }
 
 const LS_NAMES = 'mtc_ia_show_names';
+const LS_SAMPLE = 'mtc_ia_sample';
+const DEFAULT_SAMPLE_SIZE = 40;
 const POLL_MS = 2000;
 
 function readFlag(key: string): boolean {
@@ -37,6 +39,18 @@ function readFlag(key: string): boolean {
 }
 function writeFlag(key: string, v: boolean) {
   try { localStorage.setItem(key, v ? '1' : '0'); } catch { /* storage blocked */ }
+}
+
+/** Last "Transcripts to analyze" choice: { on, n }. */
+function readSample(): { on: boolean; n: number } {
+  try {
+    const v = JSON.parse(localStorage.getItem(LS_SAMPLE) || 'null');
+    if (v && typeof v.on === 'boolean' && Number.isInteger(v.n) && v.n > 0) return v;
+  } catch { /* storage blocked or bad value */ }
+  return { on: false, n: DEFAULT_SAMPLE_SIZE };
+}
+function writeSample(v: { on: boolean; n: number }) {
+  try { localStorage.setItem(LS_SAMPLE, JSON.stringify(v)); } catch { /* storage blocked */ }
 }
 
 const PRINT_CSS = `
@@ -75,6 +89,10 @@ const IssueAnalytics: React.FC = () => {
   const [themeMin, setThemeMin] = useState(6);
   const [themeMax, setThemeMax] = useState(12);
   const [modelId, setModelId] = useState('');
+  const [sampleOn, setSampleOn] = useState(() => readSample().on);
+  const [sampleN, setSampleN] = useState(() => readSample().n);
+  // null = the server's stable per-scope seed; set by "Draw a different sample".
+  const [sampleSeed, setSampleSeed] = useState<string | null>(null);
 
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [estimating, setEstimating] = useState(false);
@@ -164,17 +182,24 @@ const IssueAnalytics: React.FC = () => {
   }, [inScope, selectedSections, sectionOptions]);
 
   // Any scope change invalidates the estimate.
-  useEffect(() => { setEstimate(null); }, [selectedCase, selectedScenario, selectedSections, semesterId, modelId]);
+  useEffect(() => { setEstimate(null); }, [selectedCase, selectedScenario, selectedSections, semesterId, modelId, sampleOn, sampleN, sampleSeed]);
+  // A different case or scenario goes back to its own stable sample.
+  useEffect(() => { setSampleSeed(null); }, [selectedCase, selectedScenario]);
+  useEffect(() => { writeSample({ on: sampleOn, n: sampleN }); }, [sampleOn, sampleN]);
 
-  const scopeParams = useCallback(() => {
+  const scopeParams = useCallback((seed: string | null = sampleSeed) => {
     const p = new URLSearchParams();
     p.set('case_id', selectedCase);
     if (selectedScenario != null) p.set('scenario_id', String(selectedScenario));
     if (pickedSectionIds) p.set('section_ids', pickedSectionIds.join(','));
     else if (semesterId != null) p.set('semester_id', String(semesterId));
     if (modelId) p.set('model_id', modelId);
+    if (sampleOn) {
+      p.set('sample_size', String(sampleN));
+      if (seed) p.set('sample_seed', seed);
+    }
     return p;
-  }, [selectedCase, selectedScenario, pickedSectionIds, semesterId, modelId]);
+  }, [selectedCase, selectedScenario, pickedSectionIds, semesterId, modelId, sampleOn, sampleN, sampleSeed]);
 
   // --- Runs -------------------------------------------------------------------------
   const loadRuns = useCallback(async () => {
@@ -256,12 +281,18 @@ const IssueAnalytics: React.FC = () => {
     try { await fn(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   };
 
-  const getEstimate = () => {
+  const getEstimate = (seed: string | null = sampleSeed) => {
     setEstimating(true);
     setError(null);
-    api.get<Estimate>(`/issue-analytics/estimate?${scopeParams()}`)
+    api.get<Estimate>(`/issue-analytics/estimate?${scopeParams(seed)}`)
       .then(r => (r.error ? setError(r.error.message) : setEstimate(r.data)))
       .finally(() => setEstimating(false));
+  };
+
+  const redrawSample = () => {
+    const seed = Math.random().toString(36).slice(2, 12);
+    setSampleSeed(seed);
+    getEstimate(seed);
   };
 
   const startRun = () => {
@@ -276,6 +307,13 @@ const IssueAnalytics: React.FC = () => {
       model_id: modelId || undefined,
       confirmed: true,
     };
+    // Start exactly what was estimated: the same size request and the same draw. Keyed on
+    // sample_size, not sample_requested — a request that resolved to a full run (N >= the pool)
+    // must stay full, or a chat finished between Estimate and Start silently makes it a sample.
+    if (estimate.sample_size != null) {
+      body.sample_size = estimate.sample_requested;
+      body.sample_seed = estimate.sample_seed;
+    }
     if (pickedSectionIds) body.section_ids = pickedSectionIds;
     else if (semesterId != null) body.semester_id = semesterId;
     api.post<RunSummary>('/issue-analytics/runs', body)
@@ -395,7 +433,26 @@ const IssueAnalytics: React.FC = () => {
             {models.map(m => <option key={m.model_id} value={m.model_id}>{m.model_name}{m.default === 1 ? ' (default)' : ''}</option>)}
           </select>
         </div>
-        <button type="button" onClick={getEstimate}
+        <div>
+          <label className="block text-xs font-medium text-gray-700 mb-1">Transcripts to analyze</label>
+          <div className="flex items-center gap-3 text-sm py-2">
+            <label className="flex items-center gap-1">
+              <input type="radio" name="ia-sample" checked={!sampleOn} onChange={() => setSampleOn(false)} />
+              All
+            </label>
+            <label className="flex items-center gap-1">
+              <input type="radio" name="ia-sample" checked={sampleOn} onChange={() => setSampleOn(true)} />
+              Sample of
+            </label>
+            {/* Disabled under All: focusing the field must not switch the mode (and so
+                invalidate the estimate) just because someone tabbed in to read the number. */}
+            <input type="number" min={1} max={9999} value={sampleN} aria-label="Number of transcripts to sample"
+              disabled={!sampleOn}
+              onChange={e => setSampleN(Math.max(1, Math.min(9999, Math.floor(Number(e.target.value)) || 1)))}
+              className="w-20 border border-gray-300 rounded-md px-2 py-1 disabled:bg-gray-100 disabled:text-gray-400" />
+          </div>
+        </div>
+        <button type="button" onClick={() => getEstimate()}
           disabled={!selectedCase || (needsScenario && selectedScenario == null) || themeMin > themeMax || estimating}
           className="px-4 py-2 rounded-md bg-blue-600 text-white text-sm font-medium disabled:opacity-50">
           {estimating ? 'Estimating…' : 'Estimate new analysis'}
@@ -420,22 +477,52 @@ const IssueAnalytics: React.FC = () => {
   const renderEstimate = (e: Estimate) => {
     const nothing = e.chats_total - e.chats_skipped === 0;
     const skipReasons = Object.entries(e.skip_reasons);
+    const sampled = e.sample_size != null;
     return (
       <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm space-y-2">
-        <p className="text-gray-900">
-          <strong>{e.chats_completed}</strong> completed chat{e.chats_completed === 1 ? '' : 's'} in {e.section_ids.length} section{e.section_ids.length === 1 ? '' : 's'}:{' '}
-          {e.chats_to_process} to analyze, {e.chats_cached} already analyzed (free), {e.chats_skipped} skipped.
-        </p>
+        {sampled ? (
+          <p className="text-gray-900">
+            <strong>{e.chats_completed}</strong> completed chat{e.chats_completed === 1 ? '' : 's'} in {e.section_ids.length} section{e.section_ids.length === 1 ? '' : 's'},{' '}
+            {e.sample_pool} with a usable transcript. <strong>Sample of {e.sample_size}</strong>:{' '}
+            {e.chats_to_process} to analyze, {e.chats_cached} already analyzed (free).
+          </p>
+        ) : (
+          <p className="text-gray-900">
+            <strong>{e.chats_completed}</strong> completed chat{e.chats_completed === 1 ? '' : 's'} in {e.section_ids.length} section{e.section_ids.length === 1 ? '' : 's'}:{' '}
+            {e.chats_to_process} to analyze, {e.chats_cached} already analyzed (free), {e.chats_skipped} skipped.
+          </p>
+        )}
+        {sampled && e.sample_by_section && (
+          <p className="text-xs text-gray-600">
+            Drawn in proportion to each section:{' '}
+            {Object.entries(e.sample_by_section).map(([id, c]) => `${id} ${c.drawn} of ${c.usable}`).join(' · ')}.{' '}
+            <button type="button" onClick={redrawSample} disabled={estimating} className="text-blue-700 hover:underline">
+              Draw a different sample
+            </button>
+          </p>
+        )}
+        {!sampled && e.sample_requested != null && (
+          <p className="text-xs text-gray-600">
+            A sample of {e.sample_requested} would cover every usable transcript here ({e.sample_pool}), so all of them are analyzed.
+          </p>
+        )}
         {skipReasons.length > 0 && (
-          <p className="text-xs text-gray-600">Skipped: {skipReasons.map(([k, n]) => `${k} (${n})`).join('; ')}</p>
+          <p className="text-xs text-gray-600">
+            {sampled ? 'Not eligible for the sample' : 'Skipped'}: {skipReasons.map(([k, n]) => `${k} (${n})`).join('; ')}
+          </p>
         )}
         <p className="text-gray-900">
           Estimated cost: <strong>{money(e.est_cost_usd)}</strong> with {e.model_name}.{' '}
           Billed to <strong>{e.billed_instructor_name || 'the system key (no instructor budget applies)'}</strong>
           {e.cap_active && <> — {money(e.cap_remaining_usd)} left of this week’s {money(e.cap_usd)} budget</>}.
         </p>
+        {sampled && (
+          <p className="text-xs text-gray-600">
+            Analyzing all {e.sample_pool} would take {e.full_chats_to_process} AI call{e.full_chats_to_process === 1 ? '' : 's'} and cost about {money(e.full_est_cost_usd)}.
+          </p>
+        )}
         {!e.model_priced && <p className="text-amber-800">This model has no price set, so the cost cannot be estimated.</p>}
-        {e.exceeds_cap && <p className="text-red-700 font-medium">The estimate is more than is left of this week’s budget. Pick fewer sections or a cheaper model.</p>}
+        {e.exceeds_cap && <p className="text-red-700 font-medium">The estimate is more than is left of this week’s budget. Pick fewer sections, a smaller sample, or a cheaper model.</p>}
         {nothing && <p className="text-red-700">No completed chat here has a usable transcript.</p>}
         <div className="flex gap-2 pt-1">
           <button type="button" onClick={startRun} disabled={starting || e.exceeds_cap || nothing}
@@ -468,7 +555,10 @@ const IssueAnalytics: React.FC = () => {
                 </td>
                 <td className="px-2">{r.semester_label || '—'}</td>
                 <td className="px-2 text-xs text-gray-600" title={r.section_ids.join(', ')}>{r.section_ids.length}</td>
-                <td className="px-2">{r.chats_done} of {r.chats_completed_in_scope}</td>
+                <td className="px-2">
+                  {r.chats_done} of {r.chats_completed_in_scope}
+                  {isSampled(r) && <span className="ml-1 text-xs text-gray-500">(sample)</span>}
+                </td>
                 <td className="px-2">{r.theme_count}</td>
                 <td className="px-2">
                   {STATUS_LABEL[r.status] || r.status}
@@ -551,14 +641,18 @@ const IssueAnalytics: React.FC = () => {
   const renderThemes = (v: RunView) => {
     const r = v.run;
     const skipped = v.skipped.reduce((n, s) => n + s.count, 0);
+    // A sampled run has no skipped rows (undrawn chats are not written), so the transcripts
+    // that could not be read are invisible unless they are derived from the pool.
+    const unusable = unusableInScope(r);
     return (
       <div className="ia-print-region bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="text-lg font-semibold text-gray-900">{r.case_title}{r.scenario_name ? ` — ${r.scenario_name}` : ''}</h3>
             <p className="text-sm text-gray-600">
-              {r.chats_done} of {r.chats_completed_in_scope} completed chats analyzed
+              {coverageText(r)}
               {skipped > 0 && <> · {skipped} not analyzed</>}
+              {skipped === 0 && unusable > 0 && <> · {unusable} could not be read</>}
               {r.semester_label && <> · {r.semester_label}</>} · {r.section_ids.join(', ')}
             </p>
             <p className="text-xs text-gray-500 ia-no-print">
@@ -567,6 +661,12 @@ const IssueAnalytics: React.FC = () => {
             {skipped > 0 && (
               <p className="text-xs text-gray-500 ia-no-print">
                 Not analyzed: {v.skipped.map(s => `${s.reason || s.state} (${s.count})`).join('; ')}
+              </p>
+            )}
+            {skipped === 0 && unusable > 0 && (
+              <p className="text-xs text-gray-500 ia-no-print">
+                {unusable} completed chat{unusable === 1 ? '' : 's'} had no readable transcript, so
+                {unusable === 1 ? ' it was' : ' they were'} left out of the {r.sample_pool} the sample was drawn from.
               </p>
             )}
           </div>
@@ -651,7 +751,9 @@ const IssueAnalytics: React.FC = () => {
     const col = (v: RunView) => (
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold text-gray-900">{v.run.semester_label || 'No semester'} · {new Date(v.run.created_at).toLocaleDateString()}</p>
-        <p className="text-xs text-gray-500">{v.run.chats_done} analyzed · {v.run.section_ids.join(', ')}</p>
+        <p className="text-xs text-gray-500">
+          {v.run.chats_done} {isSampled(v.run) ? `sampled of ${v.run.sample_pool}` : 'analyzed'} · {v.run.section_ids.join(', ')}
+        </p>
         <ul className="mt-2 space-y-2">
           {[...v.themes].filter(t => t.selected).sort((x, y) => (y.prevalence_pct ?? 0) - (x.prevalence_pct ?? 0)).map((t: ThemeView) => (
             <li key={t.id} className="text-sm">
@@ -671,7 +773,10 @@ const IssueAnalytics: React.FC = () => {
           <h4 className="text-sm font-semibold text-gray-800">Compare analyses (share of analyzed students)</h4>
           <button type="button" onClick={() => setCompareRunId(null)} className="text-xs text-gray-600 hover:underline">Close</button>
         </div>
-        <p className="text-xs text-gray-500">Themes are named separately in each analysis, so match them by meaning rather than by exact name.</p>
+        <p className="text-xs text-gray-500">
+          Themes are named separately in each analysis, so match them by meaning rather than by exact name.
+          {(isSampled(a.run) || isSampled(b.run)) && ' Percentages from a sample are approximate, so treat small differences as noise.'}
+        </p>
         <div className="mt-3 flex gap-6">{col(a)}{col(b)}</div>
       </div>
     );

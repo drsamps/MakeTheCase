@@ -24,6 +24,11 @@ export interface RunSummary {
   chats_done: number;
   chats_skipped: number;
   chats_failed: number;
+  /** Transcripts drawn; null = every usable transcript. */
+  sample_size: number | null;
+  sample_seed: string | null;
+  /** Usable transcripts the sample was drawn from. */
+  sample_pool: number | null;
   est_cost_usd: number | null;
   billed_instructor_id: string | null;
   billed_instructor_name?: string | null;
@@ -45,6 +50,16 @@ export interface Estimate {
   chats_skipped: number;
   chats_to_process: number;
   est_cost_usd: number | null;
+  sample_requested: number | null;
+  /** Null when every usable transcript is analyzed (no sample asked, or N >= pool). */
+  sample_size: number | null;
+  sample_seed: string;
+  sample_pool: number;
+  sample_by_section: Record<string, { drawn: number; usable: number }> | null;
+  pool_chats_skipped: number;
+  full_chats_to_process: number;
+  full_chats_cached: number;
+  full_est_cost_usd: number | null;
   model_id: string;
   model_name: string;
   model_priced: boolean;
@@ -136,11 +151,47 @@ export const ACTIVE_STATUSES: RunStatus[] = ['running', 'clustering'];
 export const LEAN_COLORS = ['#2563eb', '#16a34a', '#d97706', '#9333ea', '#0891b2', '#dc2626', '#65a30d', '#db2777'];
 export const NO_LEAN_COLOR = '#d1d5db';
 
-/** "19 students · 41% of 47 analyzed (of 52 completed)" */
+export function isSampled(run: Pick<RunSummary, 'sample_size'>): boolean {
+  return run.sample_size != null;
+}
+
+/**
+ * Approximate 95% margin of error, in percentage points, for a share measured on a sample
+ * (worst case p = 0.5, with the finite-population correction). Null for a full run.
+ */
+export function marginOfError(run: Pick<RunSummary, 'sample_size' | 'sample_pool' | 'chats_done'>): number | null {
+  if (run.sample_size == null || !run.sample_pool) return null;
+  const n = run.chats_done || run.sample_size;
+  const N = run.sample_pool;
+  if (n <= 0 || N <= 1 || n >= N) return null;
+  return 100 * 1.96 * Math.sqrt(0.25 / n) * Math.sqrt((N - n) / (N - 1));
+}
+
+/**
+ * Completed chats in scope whose transcript could not be analysed (missing or unparseable),
+ * so they were never eligible for the sample. On a full run these are the run's skipped
+ * chats; on a sampled run the undrawn chats are deliberately not written to
+ * `issue_analysis_run_chats`, so `chats_skipped` is 0 and this is the only way to see them.
+ */
+export function unusableInScope(run: Pick<RunSummary, 'sample_size' | 'sample_pool' | 'chats_completed_in_scope'>): number {
+  if (run.sample_size == null || run.sample_pool == null) return 0;
+  return Math.max(0, run.chats_completed_in_scope - run.sample_pool);
+}
+
+/** "40 sampled of 144 completed chats · percentages ±13 points" */
+export function coverageText(run: RunSummary): string {
+  if (!isSampled(run)) return `${run.chats_done} of ${run.chats_completed_in_scope} completed chats analyzed`;
+  const moe = marginOfError(run);
+  return `${run.chats_done} sampled of ${run.chats_completed_in_scope} completed chats analyzed`
+    + (moe != null ? ` · percentages ±${Math.round(moe)} points` : '');
+}
+
+/** "19 students · 41% of 47 analyzed (of 52 completed)"; "… of 40 sampled …" on a sampled run. */
 export function prevalenceText(theme: ThemeView, run: RunSummary): string {
   const pct = theme.prevalence_pct == null ? '—' : `${Math.round(theme.prevalence_pct)}%`;
   const of = run.chats_completed_in_scope !== run.chats_done ? ` (of ${run.chats_completed_in_scope} completed)` : '';
-  return `${theme.students} student${theme.students === 1 ? '' : 's'} · ${pct} of ${run.chats_done} analyzed${of}`;
+  const verb = isSampled(run) ? 'sampled' : 'analyzed';
+  return `${theme.students} student${theme.students === 1 ? '' : 's'} · ${pct} of ${run.chats_done} ${verb}${of}`;
 }
 
 export function money(v: number | null | undefined): string {
