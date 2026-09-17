@@ -4,8 +4,8 @@
 -- AI Usage panel. Costs are approximate (CPM from models table when present).
 -- Not for production billing.
 --
--- Dev database (see CLAUDE.md):
---   "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat_prod_copy < server/scripts/test-backfill-model-usage.sql
+-- Dev database (see CLAUDE.md) -- local `ceochat`, renamed from ceochat_prod_copy 2026-09-16:
+--   "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat < server/scripts/test-backfill-model-usage.sql
 --
 -- Re-run safe: skips rows already backfilled (matched by _source_id in raw_usage).
 -- To wipe and re-run:

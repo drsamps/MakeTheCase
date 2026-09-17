@@ -58,6 +58,13 @@ interface UsageDetail {
     retentionDays: number;
     lastRun: { at: string; deleted: number; failed: boolean; error: string | null } | null;
   };
+  /** Status of the daily job that deletes expired Issue Analytics runs (server/jobs/issueAnalyticsMaintenance.js). */
+  issueAnalyticsCleanup?: {
+    lastRun: {
+      at: string; retentionDays: number; runs: number; facts: number;
+      failed: boolean; error: string | null;
+    } | null;
+  };
 }
 
 interface WeeklyStatus {
@@ -117,6 +124,7 @@ const PURPOSE_LABELS: Record<string, string> = {
   case_writer: 'Case Writer',
   case_prep: 'Case Prep',
   position_inference: 'Position inference',
+  issue_analytics: 'Issue analytics',
   feedback_summary: 'Feedback summaries',
   model_test: 'Model tests',
 };
@@ -420,6 +428,7 @@ const AiUsagePanel: React.FC = () => {
           </div>
 
           <ModelFailuresTable rows={detail.modelFailures || []} cleanup={detail.modelFailuresCleanup} />
+          <IssueAnalyticsCleanupNote cleanup={detail.issueAnalyticsCleanup} />
         </>
       )}
     </div>
@@ -439,6 +448,20 @@ const ModelFailuresCleanupNote: React.FC<{ cleanup?: UsageDetail['modelFailuresC
     <div className={`text-xs mt-3 pt-2 border-t border-gray-100 ${lastRun?.failed ? 'text-red-600' : 'text-gray-400'}`}>
       Failure records older than {retentionDays} days are deleted automatically once a day. {lastText}
     </div>
+  );
+};
+
+const IssueAnalyticsCleanupNote: React.FC<{ cleanup?: UsageDetail['issueAnalyticsCleanup'] }> = ({ cleanup }) => {
+  if (!cleanup) return null;
+  const { lastRun } = cleanup;
+  let text = 'Expired Issue Analytics runs are deleted automatically once a day. The first cleanup runs shortly after the server starts.';
+  if (lastRun?.failed) {
+    text = `Issue Analytics cleanup failed ${new Date(lastRun.at).toLocaleString()}${lastRun.error ? `: ${lastRun.error}` : ''}. It retries daily — until it succeeds, analysed quotes stay past the ${lastRun.retentionDays}-day retention window.`;
+  } else if (lastRun) {
+    text = `Issue Analytics runs older than ${lastRun.retentionDays} days are deleted automatically once a day. Last cleanup ${new Date(lastRun.at).toLocaleString()}: removed ${lastRun.runs.toLocaleString()} ${lastRun.runs === 1 ? 'run' : 'runs'} and ${lastRun.facts.toLocaleString()} cached ${lastRun.facts === 1 ? 'extraction' : 'extractions'}.`;
+  }
+  return (
+    <div className={`text-xs mt-3 ${lastRun?.failed ? 'text-red-600' : 'text-gray-400'}`}>{text}</div>
   );
 };
 

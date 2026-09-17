@@ -1488,6 +1488,11 @@ router.get('/positions/compare-cases', verifyToken, requireAdminOrInstructor, as
 
     // Scores are computed from completed chats only (evaluations are LEFT JOINed), via
     // an explicit status condition inside the aggregate rather than the caller's filter.
+    // evaluations has only a non-unique idx_case_chat_id, so nothing enforces one row per chat
+    // (none exist today). The join is pre-aggregated to one score per chat because joining the
+    // raw table would count a twice-evaluated chat twice in n, with_initial, with_final and
+    // changes, while leaving avg_score correct — an inflation with no visible symptom.
+    // (section_cases is unique on (section_id, case_id), so that LEFT JOIN cannot multiply.)
     const [rows] = await pool.execute(
       `SELECT
           cc.case_id,
@@ -1519,7 +1524,8 @@ router.get('/positions/compare-cases', verifyToken, requireAdminOrInstructor, as
           MAX(sc.open_date) AS latest_open_date
         FROM case_chats cc
         JOIN cases c ON c.case_id = cc.case_id
-        LEFT JOIN evaluations e ON e.case_chat_id = cc.id
+        LEFT JOIN (SELECT case_chat_id, AVG(score) AS score
+                     FROM evaluations GROUP BY case_chat_id) e ON e.case_chat_id = cc.id
         LEFT JOIN section_cases sc ON sc.case_id = cc.case_id AND sc.section_id = cc.section_id
        WHERE ${scope.whereClause}
        GROUP BY cc.case_id, c.case_title

@@ -92,19 +92,23 @@ The `getApiBaseUrl()` function returns `/api` in development and `/makethecase/a
 
 For one-off direct application, use the dev credentials (user: `claudecode@localhost`, password: `fordevonly`).
 
-**Database naming:**
-- **Development:** `ceochat_prod_copy` (local dev server)
-- **Production:** `ceochat` (production server)
+**Database naming (changed 2026-09-16 — the dev database is no longer `ceochat_prod_copy`):**
+- **Development:** `ceochat` on **localhost** — a copy of production synced 2026-09-16. This is what `.env.local` points at and what every command on this machine should use.
+- **Production:** `ceochat` on `services.byu.edu`, reachable **only over SSH** (the sync script runs `mysqldump` on the remote box because MySQL there is not exposed to the network). A local `mysql` client cannot reach it.
+- The two share the name `ceochat`. **The host separates them, not the name** — anything run here without `-h` defaults to localhost and so hits the dev copy.
+- `ceochat_prod_copy` still exists locally but is **stale** (data through 2026-04-04), kept only as a fallback. Do not read current data from it. Its ids diverge from the live copy: `f26` is semester id **6** there, **5** in `ceochat`.
+
+To refresh dev from production, run `C:\Users\ses3\Documents\dumps\DOWN-SYNC-ceochat-db-from-prod.ps1`. Read its variables before editing it — `$DEV_DB` is the database name **on the production server** and `$PROD_DB` is the **local** target, the reverse of what the names suggest.
 
 **MySQL full path on this machine:**
 ```bash
-"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat_prod_copy < server/migrations/018_example.sql
+"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat < server/migrations/018_example.sql
 ```
 
 Example migration sequence (using dev database):
 ```bash
-"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat_prod_copy < docs/mysql-database-structure-Oct2025.sql
-"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat_prod_copy < server/migrations/add_admin_auth.sql
+"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat < docs/mysql-database-structure-Oct2025.sql
+"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u claudecode -pfordevonly ceochat < server/migrations/add_admin_auth.sql
 # ... continue with numbered migrations in order
 ```
 
@@ -186,6 +190,15 @@ Student chat turns (`/api/llm/chat` → `server/services/chatFallback.js`) fall 
 
 ### AI Usage Tracking
 Every LLM call is logged to the `model_usage` table with dollar cost, scope (instructor/section/case), and cache-hit flag via `server/services/modelUsageWriter.js`. Per-instructor weekly dollar caps (Mon 00:00 America/Denver) are enforced by `server/services/usageGuard.js` before student chats and AI features run. `allowed_vendors` on `instructors` (defaults to `["openrouter"]` for new rows) restricts which providers an instructor can pick. Reporting is served by `/api/usage*` (`server/routes/usage.js`) and shown in the **Monitor → AI Usage** panel (`components/AiUsagePanel.tsx`) plus a sticky warning banner. Raw token payloads in `raw_usage` are pruned after 90 days. See `docs/ai-usage-tracking.md` for full details.
+
+### Issue Analytics (Results → Issue Analytics, migration 080)
+AI themes from one case + scenario's completed transcripts: pass 1 per transcript (cached in `issue_analysis_chat_facts` by transcript hash + model + prompt-text hash), pass 2 clusters the compact facts, and pass 3 re-scans only for instructor-added themes. The runner is in-process (`server/services/issueAnalytics/runner.js`, concurrency 2, heartbeat + reaper in `server/jobs/issueAnalyticsMaintenance.js`), and the client polls. Full design: `docs/issue-analytics.md`. Rules that fail silently:
+- **Every transcript writer goes through `utils/transcriptFormat.js#formatTranscript`** (`[STUDENT …]` / `[PROTAGONIST …]` markers, with markers neutralised inside message text so a student cannot forge a turn). Both `App.tsx` builders share `buildTranscript()`; the final save overwrites the auto-save, so they must not diverge.
+- **Staleness is keyed on transcript TEXT (hash), never `transcripts.is_anonymized`**: bulk-anonymize sets the flag without changing the text, and rewrites can arrive via the plain upsert.
+- **Quotes must be verbatim from a student turn** (`verifyQuote`); text that repeats a position's wording is rejected.
+- **Render Issue Analytics prompts with `renderOnce()`**, not `renderPrompt()`, which substitutes sequentially and would expand `{placeholders}` found inside transcripts.
+- **`POST /runs` requires the estimate to be confirmed and within the billed instructor's remaining weekly cap.** Billing: launcher-if-owner → first in-scope section owner → launcher; `null` only for admins on unowned sections.
+- A run is visible only to callers who can see **all** its sections. Names are hidden by default, and a names-off CSV has no identifying columns.
 
 ### Database Backup
 **Admin > Backup** (`components/BackupManager.tsx`, `/api/admin/backups` in `server/routes/backups.js`, `server/services/databaseBackup.js`) takes a gzipped `mysqldump` into `backups/` (gitignored, outside `dist/`), keeps the newest 10 `pre-rollover` and the newest 10 other backups (counted separately), and lists/downloads/deletes them. Gated by the grantable `backups` admin permission (superusers always). Rollover's "Take a database backup first" (`backup_first`, execute only) takes a `pre-rollover` backup before the transaction and refuses the rollover if it fails. Four rules in the service header are load-bearing: **password only in a temp 0600 option file passed as the first arg `--defaults-extra-file`** (never `-p`), `backups/` never web-served, **download/delete names must equal a listed name (never joined into a path)**, paths from `PROJECT_ROOT` not cwd. Dev needs `MYSQLDUMP_PATH` in `.env.local`. No restore from the UI. See `docs/database-backup.md`.

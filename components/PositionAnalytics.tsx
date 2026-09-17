@@ -373,6 +373,11 @@ const PositionAnalytics: React.FC = () => {
   }, [includeUntracked, sectionMeta, pickedSectionIds, untrackedSectionIds]);
 
   const noTrackedSections = !includeUntracked && effectiveSectionIds !== null && effectiveSectionIds.length === 0 && !!sectionMeta;
+  // Same empty result, different cause: /positions/by-section returns no rows at all when the
+  // case has no section in scope (it filters s.enabled = TRUE, which the client's caseSections
+  // map does not), and telling the instructor to switch on tracking for sections that do not
+  // exist is a dead end. Message only — the control flow above is unchanged.
+  const noSectionsForCase = noTrackedSections && (sectionMeta?.rows.length ?? 0) === 0;
 
   const buildParams = useCallback((opts?: { sections?: string[] | null; includeScenario?: boolean }) => {
     const params = new URLSearchParams();
@@ -854,6 +859,22 @@ const PositionAnalytics: React.FC = () => {
           <p className="text-sm text-gray-500 mt-2">
             “{selectedCaseOption?.case_title}” has {scenariosForCase.length} scenarios, each with
             its own question and its own set of positions.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // No section in scope is assigned this case at all — nothing to switch on.
+  if (noSectionsForCase) {
+    return (
+      <div className="space-y-6">
+        {renderFilters()}
+        <div className="p-6 bg-gray-50 border border-gray-200 rounded-lg text-center">
+          <p className="text-gray-700 font-medium">No active section in this semester is assigned this case.</p>
+          <p className="text-sm text-gray-500 mt-2">
+            Pick another semester, or assign the case to a section under <strong>Assignments</strong>.
+            Sections that have been disabled are not counted here.
           </p>
         </div>
       </div>

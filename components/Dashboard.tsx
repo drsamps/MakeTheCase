@@ -43,6 +43,7 @@ import DashboardHome from './DashboardHome';
 import WelcomeScreen from './WelcomeScreen';
 import Analytics from './Analytics';
 import PositionAnalytics from './PositionAnalytics';
+import IssueAnalytics from './IssueAnalytics';
 import SectionResultsSummary from './SectionResultsSummary';
 import HelpTooltip from './ui/HelpTooltip';
 import ModelsList, { defaultRank, defaultRankLabel, type Model, type ModelTestOutcome, type ModelUsage } from './models/ModelsList';
@@ -92,7 +93,7 @@ const ASSIGNMENTS_VIEW_KEY = 'mtc_assignments_view';
 type CoursesSubTab = 'semesters' | 'course-setup' | 'sections' | 'students';
 type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live' | 'ai-usage';
-type ResultsSubTab = 'responses' | 'positions' | 'section-results';
+type ResultsSubTab = 'responses' | 'positions' | 'issues' | 'section-results';
 type SetupSubTab = 'personas' | 'apikeys' | 'teams' | 'rubrics';
 type AdminSubTab = 'instructors' | 'settings' | 'models' | 'prompts' | 'admins' | 'logging' | 'backup' | 'shadow';
 type RubricsSubTab = 'criteria' | 'rubrics';
@@ -358,7 +359,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     };
     const MONITOR: Record<MonitorSubTab, string> = { chats: 'Chats', cache: 'Cache', live: 'Live', 'ai-usage': 'AI Usage' };
     const RESULTS: Record<ResultsSubTab, string> = {
-      responses: 'Student Results', positions: 'Position Analytics', 'section-results': 'Section Results',
+      responses: 'Student Results', positions: 'Position Analytics', issues: 'Issue Analytics', 'section-results': 'Section Results',
     };
     const COURSES: Record<CoursesSubTab, string> = {
       semesters: 'Semesters', 'course-setup': 'Course Setup', sections: 'Sections', students: 'Students',
@@ -854,7 +855,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         // Recognized sub-tab names switch the active sub-tab; section_id / case_id
         // pre-filter the destination view. Anything else is treated as a legacy
         // section_id (DashboardHome uses this form).
-        if (subTab && ['responses', 'positions', 'section-results'].includes(subTab)) {
+        if (subTab && ['responses', 'positions', 'issues', 'section-results'].includes(subTab)) {
           setResultsSubTab(subTab as ResultsSubTab);
           setResultsInitialSectionId(options?.section_id);
           setResultsInitialCaseId(options?.case_id);
@@ -5978,7 +5979,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         disabled={!isEditingDefault && useDefaultOptions}
                         className="rounded border-gray-300"
                       />
-                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Ask to save anonymized transcript</span>
+                      <span className={useDefaultOptions ? 'text-gray-500' : ''}>Ask to share transcript with developers</span>
                     </label>
                     {!useDefaultOptions && isOptionModified('ask_save_transcript', editingChatOptions.ask_save_transcript, applicableDefault) && (
                       <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, ask_save_transcript: applicableDefault?.ask_save_transcript ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
@@ -7891,6 +7892,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               >
                 Position Analytics
               </button>
+              {hasAccess(user, 'issue_analytics') && (
+                <button
+                  onClick={() => setResultsSubTab('issues')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    resultsSubTab === 'issues'
+                      ? 'bg-blue-100 text-blue-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Issue Analytics
+                </button>
+              )}
             </div>
           )}
 
@@ -8153,6 +8166,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <div className="p-6 max-w-7xl mx-auto">
               <h2 className="text-xl font-semibold text-gray-900 mb-4">Position Analytics</h2>
               <PositionAnalytics />
+            </div>
+          ) : resultsSubTab === 'issues' && hasAccess(user, 'issue_analytics') ? (
+            <div className="p-6 max-w-7xl mx-auto">
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">Issue Analytics</h2>
+              <IssueAnalytics />
             </div>
           ) : resultsSubTab === 'section-results' ? (
             <SectionResultsSummary initialSectionId={resultsInitialSectionId} onNavigate={handleNavigate} />
@@ -9661,7 +9679,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                   onChange={(e) => setEditingChatOptions({...editingChatOptions, ask_save_transcript: e.target.checked})}
                                   className="rounded border-gray-300"
                                 />
-                                Ask to save anonymized transcript
+                                Ask to share transcript with developers
                               </label>
                               <label className="flex items-center gap-2 text-sm">
                                 <input

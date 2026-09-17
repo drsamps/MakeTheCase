@@ -16,6 +16,7 @@ import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
 import { getEffectiveInstructorId, hasAdminVision } from '../services/resourceAccess.js';
 import { getWeeklyUsage, currentWeekBounds } from '../services/usageGuard.js';
 import { getModelFailuresCleanupStatus } from '../jobs/pruneModelFailures.js';
+import { getIssueAnalyticsCleanupStatus } from '../jobs/issueAnalyticsMaintenance.js';
 
 const router = express.Router();
 
@@ -383,6 +384,22 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
               deleted: lastRun.deleted,
               failed: Boolean(lastRun.error),
               error: isGlobalAdminView ? lastRun.error : null,
+            },
+          };
+        })(),
+        // Daily retention job (jobs/issueAnalyticsMaintenance.js). Same error-visibility rule.
+        // Runs hold student quotes outside the transcript, so a retention job that keeps
+        // failing is a disclosure problem — it needs to be visible somewhere.
+        issueAnalyticsCleanup: (() => {
+          const { lastRetentionRun } = getIssueAnalyticsCleanupStatus();
+          return {
+            lastRun: lastRetentionRun && {
+              at: lastRetentionRun.at,
+              retentionDays: lastRetentionRun.days,
+              runs: lastRetentionRun.runs,
+              facts: lastRetentionRun.facts,
+              failed: Boolean(lastRetentionRun.error),
+              error: isGlobalAdminView ? lastRetentionRun.error : null,
             },
           };
         })(),

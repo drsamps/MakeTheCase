@@ -1,9 +1,17 @@
 Migrations 28-42
 
+NOTE (2026-09-16): everything below that says "production (ceochat)" means the database named
+ceochat ON THE PRODUCTION SERVER. Since 2026-09-16 the LOCAL dev database is also named ceochat
+(it is a synced copy of production), so the name alone no longer tells you which one you are on
+— the host does. Check MYSQL_HOST before running any of these steps. The old local dev database
+ceochat_prod_copy still exists but is stale and unused. See CLAUDE.md § Database Migrations.
+
 
 
 Bootstrap done
-- All 45 current files have been marked applied on ceochat_prod_copy. Future migrations added to the folder will be picked up automatically by npm run migrate.
+- All 45 current files were marked applied on the local dev database (then named ceochat_prod_copy;
+  now ceochat on localhost). Future migrations added to the folder will be picked up automatically
+  by npm run migrate.
 
 For prod deployment: on the prod DB, run 
 npm run migrate -- --mark-applied --only 0

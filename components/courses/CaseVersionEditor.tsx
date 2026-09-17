@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../services/apiClient';
 import HelpTooltip from '../ui/HelpTooltip';
 import { ChatOptionsHelp } from '../../help/dashboard';
@@ -13,6 +13,14 @@ import { formatAllowedPersonas, personasForDefaultDropdown, resolveAllowedPerson
  */
 
 export type VersionEditorPart = 'options' | 'rubric' | 'scenarios' | 'positions';
+
+/** A section that follows this version. Listed in the header so "N sections" can be checked. */
+export interface FollowerSection {
+  section_id: string;
+  semester_id: number | null;
+  semester_code: string | null;
+  semester_name: string | null;
+}
 
 /** Persona fields get the section form's "All enabled personas" control, not the generic renderer. */
 const PERSONA_KEYS = new Set(['allowed_personas', 'default_persona']);
@@ -32,7 +40,8 @@ interface SchemaField {
 interface Props {
   versionId: number;
   canEdit: boolean;
-  followerCount: number;
+  /** Every section following this version, in every semester -- not just the semester in view. */
+  followers: FollowerSection[];
   /** Scroll to this part when the editor opens. */
   initialPart?: VersionEditorPart;
   onClose: () => void;
@@ -62,7 +71,7 @@ const MoveButtons: React.FC<{ disabled: boolean; canUp: boolean; canDown: boolea
   </span>
 );
 
-const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followerCount, initialPart, onClose, onChanged }) => {
+const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, initialPart, onClose, onChanged }) => {
   const [version, setVersion] = useState<any>(null);
   const [schema, setSchema] = useState<SchemaField[]>([]);
   const [options, setOptions] = useState<Record<string, any> | null>(null);
@@ -82,6 +91,19 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followerCount,
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showFollowers, setShowFollowers] = useState(false);
+  const followerCount = followers.length;
+  /** Followers grouped by semester, so a count that looks too high can be checked against the list. */
+  const followerGroups = useMemo(() => {
+    const groups: { label: string; sectionIds: string[] }[] = [];
+    for (const f of followers) {
+      const label = f.semester_name ? `${f.semester_name} (${f.semester_code})` : 'No semester';
+      let g = groups.find((x) => x.label === label);
+      if (!g) { g = { label, sectionIds: [] }; groups.push(g); }
+      g.sectionIds.push(f.section_id);
+    }
+    return groups;
+  }, [followers]);
   const partRefs = {
     options: useRef<HTMLDivElement>(null),
     rubric: useRef<HTMLDivElement>(null),
@@ -310,8 +332,26 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followerCount,
             <p className="text-sm text-gray-600">
               {isMain ? 'Main settings' : `${version.semester_name} copy`}
               {' · '}
-              {followerCount} section{followerCount === 1 ? '' : 's'} follow{followerCount === 1 ? 's' : ''} this version
+              {followerCount === 0 ? (
+                'no sections follow this version'
+              ) : (
+                <button type="button" onClick={() => setShowFollowers(!showFollowers)} aria-expanded={showFollowers}
+                  className="text-indigo-700 hover:underline" title="Show the sections a save here changes">
+                  {followerCount} section{followerCount === 1 ? '' : 's'} follow{followerCount === 1 ? 's' : ''} this version {showFollowers ? '▴' : '▾'}
+                </button>
+              )}
             </p>
+            {showFollowers && followerCount > 0 && (
+              <div className="mt-1 max-h-32 overflow-y-auto text-xs text-gray-600 space-y-0.5">
+                {followerGroups.map((g) => (
+                  <div key={g.label}>
+                    <span className="text-gray-500">{g.label}:</span>{' '}
+                    <span className="font-mono">{g.sectionIds.join(', ')}</span>
+                  </div>
+                ))}
+                <p className="text-gray-500 pt-0.5">Saving here changes all of them, including any outside the semester you are viewing.</p>
+              </div>
+            )}
             {!canEdit && <p className="text-xs text-amber-700 mt-1">View only — the course owner or an admin can edit these settings.</p>}
           </div>
           <button onClick={onClose} className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg" aria-label="Close">✕</button>

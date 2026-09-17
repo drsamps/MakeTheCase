@@ -78,7 +78,7 @@ const ChatOptionsHelp: React.FC = () => (
       <li><strong>Run Evaluation</strong> - Run AI evaluation after chat completes</li>
       <li><strong>Show Evaluation Details</strong> - Show full criteria breakdown (vs just overall score)</li>
       <li><strong>Ask for Feedback</strong> - Request student feedback at chat end</li>
-      <li><strong>Ask to Save Transcript</strong> - Request permission to save anonymized transcript</li>
+      <li><strong>Ask to Share Transcript with Developers</strong> - At the end of the chat, ask the student whether the transcript may be shared with the developers to improve the tool. The answer is recorded with the transcript. Transcripts are saved for your review either way, as the chat disclosure says.</li>
     </ul>
 
     <h4>Persona</h4>

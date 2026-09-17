@@ -14,6 +14,7 @@ const BASE_FUNCTIONS = [
   'apikeys',   // per-instructor API keys
   'rubrics',   // owned + system + team-shared
   'personas',  // system defaults (read-only) + per-instructor + team-shared — no " *" on Admin sub-tab
+  'issue_analytics', // Results > Issue Analytics (section-scoped); keep server/middleware/permissions.js in step
 ];
 
 // Superuser-only functions by default (Admin sub-tabs show a trailing " *" in the UI)

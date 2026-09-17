@@ -102,7 +102,7 @@ export async function getModelPricing(modelId) {
  * Insert a model_usage row. Fire-and-forget — never throws.
  *
  * @param {object} params
- * @param {string} params.purpose — student_chat | evaluation | case_writer | case_prep | position_inference | model_test
+ * @param {string} params.purpose — student_chat | evaluation | case_writer | case_prep | position_inference | model_test | issue_analytics
  * @param {string|null} params.caseId
  * @param {string|null} params.projectId
  * @param {string|null} params.sectionId

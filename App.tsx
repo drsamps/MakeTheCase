@@ -6,6 +6,7 @@ import { createChatSession, getEvaluation, type LLMChatReply } from './services/
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
 import { api, getApiBaseUrl, refreshAuthToken } from './services/apiClient';
+import { formatTranscript } from './utils/transcriptFormat.js';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
 import MessageInput from './components/MessageInput';
@@ -35,6 +36,14 @@ const isEnabledFlag = (value: unknown): boolean =>
 
 const isDisabledFlag = (value: unknown): boolean =>
   value === false || value === 0 || value === '0' || value === 'false';
+
+/** The stored transcript blob, with [STUDENT]/[PROTAGONIST] turn markers (see utils/transcriptFormat.js). */
+function buildTranscript(msgs: Message[], studentName: string, protagonistName?: string): string {
+  return formatTranscript(
+    msgs.map(m => ({ role: m.role === MessageRole.USER ? 'student' : 'protagonist', content: m.content })),
+    { studentName, protagonistName: protagonistName || 'CEO' }
+  );
+}
 
 /** Yes/no for feedback/transcript permission replies. Avoids substring false positives (e.g. includes('y') matches "today"). */
 function isAffirmativeConsentReply(message: string): boolean {
@@ -912,7 +921,7 @@ const App: React.FC = () => {
                 // Skip feedback, ask for transcript permission
                 const ceoTranscriptRequest: Message = {
                     role: MessageRole.MODEL,
-                    content: `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** The conversation will be completely anonymized (your name will be removed).`
+                    content: `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?**`
                 };
                 setMessages(prev => [...prev, finalUserMessage, ceoTranscriptRequest]);
                 setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
@@ -971,12 +980,8 @@ const App: React.FC = () => {
             // Auto-save transcript after each successful exchange
             if ((chatOptions?.auto_save_transcript ?? true) && currentCaseChatId) {
               const fullName = sessionUser?.full_name || studentFirstName || 'Student';
-              const protagonistLabel = activeCaseData?.protagonist || 'CEO';
               const allMessages = [...messages, newUserMessage, modelMessage];
-              const transcript = allMessages.map(msg => {
-                const speaker = msg.role === MessageRole.USER ? fullName : protagonistLabel;
-                return `${speaker}: ${msg.content}`;
-              }).join('\n\n');
+              const transcript = buildTranscript(allMessages, fullName, activeCaseData?.protagonist);
               fetch(`${getApiBaseUrl()}/transcripts/chat/${currentCaseChatId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
@@ -1038,7 +1043,7 @@ const App: React.FC = () => {
             if (askSaveTranscript) {
                 const ceoTranscriptRequest: Message = {
                     role: MessageRole.MODEL,
-                    content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** The conversation will be completely anonymized (your name will be removed). This would be **a big help** in developing this AI chat case teaching tool 😊."
+                    content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** This would be **a big help** in developing this AI chat case teaching tool 😊."
                 };
                 setMessages(prev => [...prev, ceoTranscriptRequest]);
                 setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
@@ -1091,7 +1096,7 @@ const App: React.FC = () => {
         if (askSaveTranscript) {
             const ceoTranscriptRequest: Message = {
                 role: MessageRole.MODEL,
-                content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** The conversation will be completely anonymized (your name will be removed). This would be **a big help** in developing this AI chat case teaching tool 😊.",
+                content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** This would be **a big help** in developing this AI chat case teaching tool 😊.",
             };
             setMessages(prev => [...prev, userImproveReply, ceoTranscriptRequest]);
             setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
@@ -1215,10 +1220,9 @@ const App: React.FC = () => {
         if (shouldSaveTranscript) {
           // Save the ORIGINAL transcript (NOT anonymized)
           // Anonymization happens at display time, not save time
-          transcriptToSave = messages.map(msg => {
-            const speaker = msg.role === MessageRole.USER ? fullName : 'CEO';
-            return `${speaker}: ${msg.content}`;
-          }).join('\n\n');
+          // Same builder as the per-turn auto-save: this PUT overwrites that copy, so a
+          // different format here would erase the turn markers at the end of every chat.
+          transcriptToSave = buildTranscript(messages, fullName, protagonistLabel);
         }
 
         const finishedTimestamp = new Date();
@@ -1251,6 +1255,8 @@ const App: React.FC = () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   transcript: transcriptToSave,
+                  // Consent to share this transcript with the developers. Instructors can see and
+                  // analyse transcripts regardless (see the disclosure under the chat).
                   saved_with_permission: shouldSaveTranscript && shareTranscript
                 })
               });

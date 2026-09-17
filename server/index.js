@@ -33,6 +33,7 @@ import settingsRoutes from './routes/settings.js';
 import adminsRoutes from './routes/admins.js';
 import studentSectionsRoutes from './routes/studentSections.js';
 import analyticsRoutes from './routes/analytics.js';
+import issueAnalyticsRoutes from './routes/issueAnalytics.js';
 import positionTemplatesRoutes from './routes/positionTemplates.js';
 import semestersRoutes from './routes/semesters.js';
 import coursesRoutes from './routes/courses.js';
@@ -51,6 +52,7 @@ import usageRoutes from './routes/usage.js';
 import backupsRoutes from './routes/backups.js';
 import { startTruncateOldRawUsageJob } from './jobs/truncateOldRawUsage.js';
 import { startPruneModelFailuresJob } from './jobs/pruneModelFailures.js';
+import { startIssueAnalyticsMaintenance } from './jobs/issueAnalyticsMaintenance.js';
 
 // Load environment variables
 // Use absolute path to ensure .env.local is found regardless of working directory
@@ -97,6 +99,7 @@ app.use('/api/admins', adminsRoutes); // Instructor management (superuser only)
 app.use('/api/student-sections', studentSectionsRoutes); // Student self-enrollment
 app.use('/api/analytics', analyticsRoutes); // Consolidated results analytics
 console.log('✓ Analytics routes mounted at /api/analytics');
+app.use('/api/issue-analytics', issueAnalyticsRoutes); // Results > Issue Analytics (AI themes from transcripts)
 app.use('/api/position-templates', positionTemplatesRoutes); // Position templates management
 console.log('✓ Position templates routes mounted at /api/position-templates');
 app.use('/api/semesters', semestersRoutes); // Semester management (includes /api/semesters/:id/courses)
@@ -146,6 +149,7 @@ async function start() {
   await testConnection();
   startTruncateOldRawUsageJob();
   startPruneModelFailuresJob();
+  startIssueAnalyticsMaintenance();
   app.listen(PORT, () => {
     console.log(`✓ API server running on http://localhost:${PORT}`);
   });

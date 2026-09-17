@@ -10,6 +10,7 @@ const BASE_FUNCTIONS = [
   'teams',     // self-service Teams membership / sharing
   'apikeys',   // per-instructor API keys
   'rubrics',   // instructors manage their own rubrics
+  'issue_analytics', // Results > Issue Analytics (section-scoped); keep utils/permissions.ts in step
 ];
 
 // Superuser-only functions by default

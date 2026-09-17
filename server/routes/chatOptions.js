@@ -81,10 +81,10 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
   },
   {
     key: 'ask_save_transcript',
-    label: 'Ask to Save Transcript',
+    label: 'Ask to Share Transcript with Developers',
     type: 'boolean',
     default: false,
-    description: 'Ask permission to save anonymized transcript',
+    description: 'Ask the student for permission to share the transcript with the developers (recorded in transcripts.saved_with_permission). Transcripts are saved for instructor review either way.',
     category: 'feedback'
   },
   {

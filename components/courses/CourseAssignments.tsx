@@ -4,7 +4,7 @@ import { caseLabel } from '../../utils/confirmLabels';
 import type { Course, CourseSection } from '../../types';
 import HelpTooltip from '../ui/HelpTooltip';
 import { CourseAssignmentsHelp } from '../../help/dashboard';
-import CaseVersionEditor, { type VersionEditorPart } from './CaseVersionEditor';
+import CaseVersionEditor, { type FollowerSection, type VersionEditorPart } from './CaseVersionEditor';
 import ScheduleCasesModal from './ScheduleCasesModal';
 import {
   AddCaseModal,
@@ -116,7 +116,7 @@ const CourseAssignments: React.FC<Props> = ({ isAdmin, userId, selectedCourseId,
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const [editing, setEditing] = useState<{ versionId: number; followers: number; part: VersionEditorPart } | null>(null);
+  const [editing, setEditing] = useState<{ versionId: number; followers: FollowerSection[]; part: VersionEditorPart } | null>(null);
   const [adding, setAdding] = useState<{ initialCaseId?: string; fromSectionId?: string } | null>(null);
   const [copying, setCopying] = useState<{ row: CourseCaseRow; from: VersionRow } | null>(null);
   const [followers, setFollowers] = useState<CourseCaseRow | null>(null);
@@ -545,10 +545,10 @@ const CourseAssignments: React.FC<Props> = ({ isAdmin, userId, selectedCourseId,
                     <option value="">Default Rubric</option>
                     {rubrics.map((r) => <option key={r.rubric_id} value={r.rubric_id}>{r.rubric_name}{r.total_points ? ` (${r.total_points}pts)` : ''}</option>)}
                   </select>
-                  <button onClick={() => setEditing({ versionId: v.version_id, followers: v.sections.length, part: 'options' })} className={btn}>
+                  <button onClick={() => setEditing({ versionId: v.version_id, followers: v.sections, part: 'options' })} className={btn}>
                     Options
                   </button>
-                  <button onClick={() => setEditing({ versionId: v.version_id, followers: v.sections.length, part: 'scenarios' })} className={btn}>
+                  <button onClick={() => setEditing({ versionId: v.version_id, followers: v.sections, part: 'scenarios' })} className={btn}>
                     Scenarios and Positions
                   </button>
                   {canManage && (
@@ -732,7 +732,7 @@ const CourseAssignments: React.FC<Props> = ({ isAdmin, userId, selectedCourseId,
         <CaseVersionEditor
           versionId={editing.versionId}
           canEdit={canManage}
-          followerCount={editing.followers}
+          followers={editing.followers}
           initialPart={editing.part}
           onClose={() => { setEditing(null); refresh(); }}
           onChanged={() => onChanged?.()}
