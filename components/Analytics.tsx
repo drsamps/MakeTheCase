@@ -254,7 +254,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
   // Handle initial section selection from navigation
   useEffect(() => {
     if (initialSectionId && sectionOptions.length > 0) {
-      setSelectedSections([initialSectionId]);
+      // May be a comma-separated list (Section Results with several sections picked).
+      setSelectedSections(initialSectionId.split(',').map(s => s.trim()).filter(Boolean));
     }
   }, [initialSectionId, sectionOptions]);
 
@@ -347,11 +348,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
   };
 
   // Score color helper
-  const getScoreColor = (score: number | null) => {
-    if (score === null) return 'text-gray-400';
-    if (score >= 12) return 'text-green-600';
-    if (score >= 9) return 'text-blue-600';
-    if (score >= 6) return 'text-amber-600';
+  // Bands are fractions of the rubric total (the old 12/9/6 of 15).
+  const getScoreColor = (score: number | null | undefined, outOf: number = 15) => {
+    if (score === null || score === undefined) return 'text-gray-400';
+    const pct = score / (outOf > 0 ? outOf : 15);
+    if (pct >= 0.8) return 'text-green-600';
+    if (pct >= 0.6) return 'text-blue-600';
+    if (pct >= 0.4) return 'text-amber-600';
     return 'text-red-600';
   };
 
@@ -732,6 +735,17 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     })), []
   );
 
+  // Rubric total for the summary figures. Interim until the server returns it with the
+  // summary: the loaded rows are only one page, so they are trusted only when one case is
+  // selected (cases differ in rubric; a single case normally does not) and every scored row
+  // on the page agrees. Otherwise null, and no denominator is shown.
+  const scoreOutOf = useMemo(() => {
+    const cases = selectedCases.filter(c => c !== 'all');
+    if (cases.length !== 1) return null;
+    const totals = new Set(students.filter(s => s.score !== null && s.score !== undefined).map(s => s.out_of));
+    return totals.size === 1 ? [...totals][0] : null;
+  }, [students, selectedCases]);
+
   // Score distribution as array
   const scoreDistributionArray = useMemo(() => {
     if (!summary?.scoreDistribution) return Array(16).fill(0);
@@ -969,9 +983,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
             </div>
             <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
               <p className="text-sm font-medium text-gray-500">Average Score</p>
-              <p className={`text-3xl font-bold ${getScoreColor(summary.avgScore)}`}>
+              <p className={`text-3xl font-bold ${getScoreColor(summary.avgScore, scoreOutOf ?? 15)}`}>
                 {summary.avgScore?.toFixed(1) || '-'}
-                <span className="text-lg text-gray-400">/15</span>
+                {scoreOutOf !== null && <span className="text-lg text-gray-400">/{scoreOutOf}</span>}
               </p>
             </div>
             <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
@@ -991,7 +1005,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
           {/* Score Distribution */}
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Score Distribution</h3>
-            <ScoreChart distribution={scoreDistributionArray} />
+            <ScoreChart distribution={scoreDistributionArray} maxScore={scoreOutOf !== null && scoreOutOf < 15 ? scoreOutOf : 15} />
           </div>
 
           {/* Section Breakdown */}
@@ -1019,7 +1033,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                         </td>
                         <td className="px-5 py-4 text-center text-sm text-gray-900">{section.total_students}</td>
                         <td className="px-5 py-4 text-center text-sm text-gray-900">{section.completions}</td>
-                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(section.avg_score)}`}>
+                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(section.avg_score, scoreOutOf ?? 15)}`}>
                           {section.avg_score?.toFixed(1) || '-'}
                         </td>
                       </tr>
@@ -1052,7 +1066,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                           <p className="font-medium text-gray-900">{caseItem.case_title}</p>
                         </td>
                         <td className="px-5 py-4 text-center text-sm text-gray-900">{caseItem.completions}</td>
-                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(caseItem.avg_score)}`}>
+                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(caseItem.avg_score, scoreOutOf ?? 15)}`}>
                           {caseItem.avg_score?.toFixed(1) || '-'}
                         </td>
                       </tr>
@@ -1096,7 +1110,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                         </td>
                         <td className="px-5 py-4 text-center text-sm text-gray-900">{row.chats}</td>
                         <td className="px-5 py-4 text-center text-sm text-gray-900">{row.completions}</td>
-                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(row.avg_score)}`}>
+                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(row.avg_score, scoreOutOf ?? 15)}`}>
                           {row.avg_score?.toFixed(1) || '-'}
                         </td>
                         <td className="px-5 py-4 text-center text-sm">
@@ -1104,7 +1118,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                             ? <span className="text-amber-700 font-medium">{row.backup_chats}</span>
                             : <span className="text-gray-400">0</span>}
                         </td>
-                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(row.avg_score_no_backup)}`}>
+                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(row.avg_score_no_backup, scoreOutOf ?? 15)}`}>
                           {row.avg_score_no_backup?.toFixed(1) || '-'}
                         </td>
                       </tr>
@@ -1349,7 +1363,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                     {visibleColumns.has('score') && (
                       <td className="p-3 whitespace-nowrap text-sm">
                         {student.score !== null ? (
-                          <span className={`font-medium ${getScoreColor(student.score)}`}>
+                          <span className={`font-medium ${getScoreColor(student.score, student.out_of)}`}>
                             {student.score}
                           </span>
                         ) : <span className="text-gray-400">-</span>}
@@ -1582,7 +1596,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                         <span className="text-3xl font-bold text-gray-400">/{evaluationData.criteria?.reduce((sum: number, c: any) => sum + (c.max_score || 5), 0) || 15}</span>
                       </div>
                     ) : (
-                      <div className={`text-3xl font-bold ${getScoreColor(evaluationData.score)}`}>
+                      <div className={`text-3xl font-bold ${getScoreColor(evaluationData.score, evaluationData.criteria?.reduce((sum: number, c: any) => sum + (c.max_score || 5), 0) || 15)}`}>
                         {evaluationData.score}/{evaluationData.criteria?.reduce((sum: number, c: any) => sum + (c.max_score || 5), 0) || 15}
                       </div>
                     )}
@@ -1844,7 +1858,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                   <div className="grid grid-cols-2 gap-4">
                     <div className="bg-gray-50 p-4 rounded-lg">
                       <div className="text-xs text-gray-500 uppercase mb-1">Original</div>
-                      <span className={`text-2xl font-bold ${getScoreColor(originalEvaluation?.score)}`}>
+                      <span className={`text-2xl font-bold ${getScoreColor(originalEvaluation?.score, originalEvaluation?.criteria?.reduce((sum: number, c: any) => sum + (c.max_score || 0), 0) || 15)}`}>
                         {originalEvaluation?.score ?? '—'}/{originalEvaluation?.criteria?.reduce((sum: number, c: any) => sum + (c.max_score || 0), 0) || 15}
                       </span>
                       <div className="text-xs text-gray-500 mt-2">
@@ -1883,7 +1897,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                         </div>
                       ) : (
                         <>
-                          <span className={`text-2xl font-bold ${getScoreColor(reEvalResult.score)}`}>
+                          <span className={`text-2xl font-bold ${getScoreColor(reEvalResult.score, selectedRubricDetails?.total_points || 15)}`}>
                             {reEvalResult.score}/{selectedRubricDetails?.total_points || 15}
                           </span>
                           {reEvalResult.score !== originalEvaluation?.score && (

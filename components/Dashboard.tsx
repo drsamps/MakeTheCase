@@ -13,6 +13,8 @@ import { CaseFilesManager } from './CaseFilesManager';
 import { CacheMetrics } from './CacheMetrics';
 import AiUsagePanel from './AiUsagePanel';
 import AiUsageWarningBanner from './AiUsageWarningBanner';
+import LiveSessionMonitor from './LiveSessionMonitor';
+import { formatAgo } from '../utils/timeAgo';
 import { ScenarioManager } from './ScenarioManager';
 import InstructorManager from './InstructorManager';
 import ShadowOwnershipManager from './ShadowOwnershipManager';
@@ -615,17 +617,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [showChatTranscriptModal, setShowChatTranscriptModal] = useState(false);
   const [selectedCaseChat, setSelectedCaseChat] = useState<any | null>(null);
 
-  // Live Session Monitor state
-  const [liveSessionSection, setLiveSessionSection] = useState<string>('');
-  const [liveSessionCase, setLiveSessionCase] = useState<string>('');
-  const [liveSessionCases, setLiveSessionCases] = useState<any[]>([]);
-  const [isLoadingLiveSessionCases, setIsLoadingLiveSessionCases] = useState(false);
-  const [liveSessionData, setLiveSessionData] = useState<any[]>([]);
-  const [liveSessionSummary, setLiveSessionSummary] = useState<{ total: number; completed: number; in_progress: number; not_started: number }>({ total: 0, completed: 0, in_progress: 0, not_started: 0 });
-  const [isLoadingLiveSession, setIsLoadingLiveSession] = useState(false);
-  const [liveAutoRefresh, setLiveAutoRefresh] = useState(true);
-  const [lastLiveRefresh, setLastLiveRefresh] = useState<Date | null>(null);
+  // Live Session Monitor deep link (state lives in LiveSessionMonitor)
+  const [liveMonitorInitial, setLiveMonitorInitial] = useState<{ section_id?: string; case_id?: string; nonce: number } | null>(null);
   const [chatsAutoRefresh, setChatsAutoRefresh] = useState(false);
+  // Re-renders the Latest Chats "Ago" column each minute.
+  const [chatsNow, setChatsNow] = useState(Date.now());
 
   // Chat options editing (Phase 2)
   const [expandedCaseOptions, setExpandedCaseOptions] = useState<string | null>(null);
@@ -836,12 +832,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           setMonitorSubTab('live');
           // Pre-select section and case if provided
           if (options?.section_id) {
-            setLiveSessionSection(options.section_id);
-            // Case will be set after section's cases are fetched
-            if (options?.case_id) {
-              // Store case_id to set after cases load
-              setTimeout(() => setLiveSessionCase(options.case_id!), 500);
-            }
+            setLiveMonitorInitial({ section_id: options.section_id, case_id: options.case_id, nonce: Date.now() });
           }
         } else if (subTab === 'chats') {
           setMonitorSubTab('chats');
@@ -6813,90 +6804,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     if (chatOptionsSection !== '__global_default__' && outOfScope(chatOptionsSection, assignmentsSectionsList)) {
       handleChatOptionsSectionChange('');
     }
-    if (outOfScope(liveSessionSection, sectionStats)) {
-      setLiveSessionSection('');
-      setLiveSessionCase('');
-      setLiveSessionCases([]);
-      setLiveSessionData([]);
-      setLiveSessionSummary({ total: 0, completed: 0, in_progress: 0, not_started: 0 });
-    }
     if (caseChatsFilter.section_id !== 'all' && outOfScope(caseChatsFilter.section_id, sectionStats)) {
       setCaseChatsFilter(prev => ({ ...prev, section_id: 'all' }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [semesterFilter.selection, semesterInScope, selectedAssignmentSection, chatOptionsSection, assignmentsSectionsList, liveSessionSection, sectionStats, caseChatsFilter.section_id]);
-
-  // Fetch cases for live session when section changes
-  const fetchLiveSessionCases = useCallback(async (sectionId: string) => {
-    if (!sectionId) {
-      setLiveSessionCases([]);
-      return;
-    }
-
-    setIsLoadingLiveSessionCases(true);
-    try {
-      const response = await fetch(
-        `${getApiBaseUrl()}/sections/${sectionId}/cases`,
-        {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`
-          }
-        }
-      );
-      const result = await response.json();
-      if (result.data) {
-        setLiveSessionCases(result.data || []);
-      }
-    } catch (err) {
-      console.error('Error fetching live session cases:', err);
-      setLiveSessionCases([]);
-    } finally {
-      setIsLoadingLiveSessionCases(false);
-    }
-  }, []);
-
-  // Fetch live session data
-  const fetchLiveSession = useCallback(async () => {
-    if (!liveSessionSection || !liveSessionCase) return;
-
-    setIsLoadingLiveSession(true);
-    try {
-      const response = await fetch(
-        `${getApiBaseUrl()}/sections/${liveSessionSection}/cases/${liveSessionCase}/live-session`,
-        {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('admin_auth_token')}`
-          }
-        }
-      );
-      const result = await response.json();
-      if (result.data) {
-        setLiveSessionData(result.data.students || []);
-        setLiveSessionSummary(result.data.summary || { total: 0, completed: 0, in_progress: 0, not_started: 0 });
-        setLastLiveRefresh(new Date());
-      }
-    } catch (err) {
-      console.error('Error fetching live session:', err);
-    } finally {
-      setIsLoadingLiveSession(false);
-    }
-  }, [liveSessionSection, liveSessionCase]);
-
-  // Auto-refresh live session data every 30 seconds
-  useEffect(() => {
-    if (primaryTab === 'monitor' && monitorSubTab === 'live' && liveAutoRefresh && liveSessionSection && liveSessionCase) {
-      fetchLiveSession();
-      const interval = setInterval(fetchLiveSession, 30000);
-      return () => clearInterval(interval);
-    }
-  }, [primaryTab, monitorSubTab, liveAutoRefresh, liveSessionSection, liveSessionCase, fetchLiveSession]);
-
-  // Fetch when section or case changes
-  useEffect(() => {
-    if (liveSessionSection && liveSessionCase) {
-      fetchLiveSession();
-    }
-  }, [liveSessionSection, liveSessionCase, fetchLiveSession]);
+  }, [semesterFilter.selection, semesterInScope, selectedAssignmentSection, chatOptionsSection, assignmentsSectionsList, sectionStats, caseChatsFilter.section_id]);
 
   // Auto-refresh chat sessions every 30 seconds when enabled
   useEffect(() => {
@@ -6905,6 +6817,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       return () => clearInterval(interval);
     }
   }, [primaryTab, monitorSubTab, chatsAutoRefresh, fetchCaseChats]);
+
+  // Tick the Latest Chats "Ago" column while that screen is showing
+  useEffect(() => {
+    if (primaryTab !== 'monitor' || monitorSubTab !== 'chats') return;
+    setChatsNow(Date.now());
+    const interval = setInterval(() => setChatsNow(Date.now()), 60000);
+    return () => clearInterval(interval);
+  }, [primaryTab, monitorSubTab]);
 
   // Kill a chat session
   const handleKillChat = async (chat: { id: string; student_name?: string | null; case_title?: string | null; case_id?: string | null; section_title?: string | null }) => {
@@ -7001,199 +6921,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         )}
       </div>
     </th>
-  );
-
-  const renderLiveSession = () => (
-    <div className="p-6 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Live Session Monitor</h2>
-          <p className="text-sm text-gray-500">Real-time view of student progress during an active case session</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={liveAutoRefresh}
-              onChange={(e) => setLiveAutoRefresh(e.target.checked)}
-              className="rounded border-gray-300"
-            />
-            Auto-refresh (30s)
-          </label>
-          <button
-            onClick={fetchLiveSession}
-            disabled={isLoadingLiveSession || !liveSessionSection || !liveSessionCase}
-            aria-label="Refresh results"
-            title="Refresh results"
-            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ${isLoadingLiveSession ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-          </button>
-        </div>
-      </div>
-
-      {/* Section and Case Selectors */}
-      <div className="flex flex-wrap gap-3 mb-4">
-        <select
-          value={liveSessionSection}
-          onChange={(e) => {
-            const newSection = e.target.value;
-            setLiveSessionSection(newSection);
-            setLiveSessionCase(''); // Reset case when section changes
-            setLiveSessionCases([]); // Clear cases
-            setLiveSessionData([]);
-            setLiveSessionSummary({ total: 0, completed: 0, in_progress: 0, not_started: 0 });
-            if (newSection) {
-              fetchLiveSessionCases(newSection);
-            }
-          }}
-          className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-green-500 focus:border-green-500"
-        >
-          <option value="">Select Section...</option>
-          {sectionStats.filter(s => s.section_id !== 'unassigned' && semesterInScope(s)).map(s => (
-            <option key={s.section_id} value={s.section_id}>{s.section_title}</option>
-          ))}
-        </select>
-        <select
-          value={liveSessionCase}
-          onChange={(e) => setLiveSessionCase(e.target.value)}
-          disabled={!liveSessionSection || isLoadingLiveSessionCases}
-          className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-green-500 focus:border-green-500 disabled:opacity-50"
-        >
-          <option value="">{isLoadingLiveSessionCases ? 'Loading cases...' : 'Select Case...'}</option>
-          {liveSessionCases.map((sc: any) => (
-            <option key={sc.case_id} value={sc.case_id}>{sc.case_title}</option>
-          ))}
-        </select>
-        <SemesterScopeNote className="self-center" />
-        {lastLiveRefresh && (
-          <span className="text-xs text-gray-500 self-center">
-            Last updated: {lastLiveRefresh.toLocaleTimeString()}
-          </span>
-        )}
-      </div>
-
-      {/* Summary Stats Bar */}
-      {liveSessionSection && liveSessionCase && (
-        <div className="grid grid-cols-4 gap-4 mb-6">
-          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-            <div className="text-2xl font-bold text-gray-800">{liveSessionSummary.total}</div>
-            <div className="text-xs text-gray-500 uppercase tracking-wide">Total Students</div>
-          </div>
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
-            <div className="text-2xl font-bold text-green-600">{liveSessionSummary.completed}</div>
-            <div className="text-xs text-green-600 uppercase tracking-wide">Completed</div>
-          </div>
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
-            <div className="text-2xl font-bold text-blue-600">{liveSessionSummary.in_progress}</div>
-            <div className="text-xs text-blue-600 uppercase tracking-wide">In Progress</div>
-          </div>
-          <div className="bg-gray-100 border border-gray-300 rounded-lg p-4 text-center">
-            <div className="text-2xl font-bold text-gray-500">{liveSessionSummary.not_started}</div>
-            <div className="text-xs text-gray-500 uppercase tracking-wide">Not Started</div>
-          </div>
-        </div>
-      )}
-
-      {/* Student List */}
-      {!liveSessionSection || !liveSessionCase ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
-          <p className="text-gray-500">Select a section and case to view live session data.</p>
-        </div>
-      ) : isLoadingLiveSession && liveSessionData.length === 0 ? (
-        <div className="text-center py-12">
-          <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-green-500 border-t-transparent"></div>
-          <p className="mt-2 text-gray-500">Loading session data...</p>
-        </div>
-      ) : liveSessionData.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
-          <p className="text-gray-500">No students enrolled in this section.</p>
-        </div>
-      ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <table className="w-full">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Student</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Chat Topic</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Position</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Duration</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Score</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {liveSessionData.map((student: any) => (
-                <tr
-                  key={student.student_id}
-                  className={`${
-                    student.status === 'completed' ? 'bg-green-50' :
-                    student.status === 'in_progress' ? 'bg-blue-50' :
-                    student.status === 'abandoned' ? 'bg-orange-50' :
-                    'bg-white'
-                  } hover:bg-gray-100`}
-                >
-                  <td className="px-4 py-3">
-                    <div className="text-sm font-medium text-gray-900">{student.student_name}</div>
-                    <div className="text-xs text-gray-500">{student.email}</div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                      student.status === 'completed' ? 'bg-green-100 text-green-700' :
-                      student.status === 'in_progress' ? 'bg-blue-100 text-blue-700' :
-                      student.status === 'abandoned' ? 'bg-orange-100 text-orange-700' :
-                      'bg-gray-100 text-gray-600'
-                    }`}>
-                      {student.status === 'not_started' ? 'Not Started' :
-                       student.status === 'in_progress' ? 'In Progress' :
-                       student.status === 'abandoned' ? 'Abandoned' :
-                       'Completed'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">
-                    {student.chat_topic ? (
-                      <span>{student.chat_topic}</span>
-                    ) : (
-                      <span className="text-gray-400">-</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-sm">
-                    {student.position ? (
-                      <div className="flex flex-col gap-0.5">
-                        <span className="text-gray-700">{student.position}</span>
-                        {student.position_changed && student.final_position && (
-                          <span className="text-xs text-amber-600">Changed to: {student.final_position}</span>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-gray-400">-</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">
-                    {student.duration_minutes !== null ? (
-                      <span>{student.duration_minutes} min</span>
-                    ) : (
-                      <span className="text-gray-400">-</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-sm">
-                    {student.evaluation_score !== null ? (
-                      <span className="font-medium text-gray-700">
-                        {student.evaluation_score}
-                      </span>
-                    ) : (
-                      <span className="text-gray-400">-</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
   );
 
   const renderChatsTab = () => (
@@ -7295,10 +7022,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               <tr>
                 <ChatsSortableHeader label="Student" sortKey="student_name" />
                 <ChatsSortableHeader label="Case" sortKey="case_title" />
-                <ChatsSortableHeader label="Section" sortKey="section_title" />
+                <ChatsSortableHeader label="Section" sortKey="section_id" />
                 <ChatsSortableHeader label="Status" sortKey="status" />
                 <ChatsSortableHeader label="Position" sortKey="initial_position" />
                 <ChatsSortableHeader label="Started" sortKey="start_time" />
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Ago</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Duration</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
               </tr>
@@ -7308,7 +7036,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 <tr key={chat.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 text-sm font-medium text-gray-900">{chat.student_name || 'Unknown'}</td>
                   <td className="px-4 py-3 text-sm text-gray-700">{chat.case_title || chat.case_id}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{chat.section_title || chat.section_id || '-'}</td>
+                  <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap" title={chat.section_title || undefined}>{chat.section_id || chat.section_title || '-'}</td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-1 text-xs font-medium rounded-full ${
                       chat.status === 'completed' ? 'bg-green-100 text-green-700' :
@@ -7344,6 +7072,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">
                     {new Date(chat.start_time).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
+                    {formatAgo(chat.start_time, chatsNow)}
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">
                     {formatDuration(chat.start_time, chat.end_time)}
@@ -8284,7 +8015,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           )
         ) : primaryTab === 'monitor' ? (
           monitorSubTab === 'live' ? (
-            renderLiveSession()
+            <LiveSessionMonitor
+              sections={sectionStats.filter(s => s.section_id !== 'unassigned')}
+              initial={liveMonitorInitial}
+            />
           ) : monitorSubTab === 'cache' ? (
             <CacheMetrics />
           ) : monitorSubTab === 'ai-usage' ? (
