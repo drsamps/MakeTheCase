@@ -9,7 +9,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import { pool } from '../db.js';
 import { resolveProviderKey } from './keyResolver.js';
 import { assertWithinCostCap, getWeeklyUsage } from './usageGuard.js';
-import { writeModelUsage, computeEstCost, getModelPricing } from './modelUsageWriter.js';
+import { writeModelUsage, computeEstCost, getModelPricing, normalizeUsageTokens } from './modelUsageWriter.js';
 
 const OPENROUTER_HTTP_REFERER = process.env.OPENROUTER_HTTP_REFERER;
 const OPENROUTER_X_TITLE = process.env.OPENROUTER_X_TITLE;
@@ -149,13 +149,17 @@ function usageContext(config, defaultPurpose) {
 
 // Backwards-compatible cacheMetrics object for callers that still read meta.cacheMetrics
 function legacyCacheMetrics(provider, raw) {
-  if (!raw) return { cache_hit: false, input_tokens: 0, cached_tokens: 0, output_tokens: 0 };
+  // reasoning_tokens is null, not 0, when the provider reports no such count at all —
+  // consumers render null as "N/A" and 0 as a real "no reasoning used" measurement.
+  if (!raw) return { cache_hit: false, input_tokens: 0, cached_tokens: 0, output_tokens: 0, reasoning_tokens: null };
   if (provider === 'anthropic') {
     return {
       cache_hit: (raw.cache_read_input_tokens || 0) > 0,
       input_tokens: raw.input_tokens || 0,
       cached_tokens: (raw.cache_creation_input_tokens || 0) + (raw.cache_read_input_tokens || 0),
       output_tokens: raw.output_tokens || 0,
+      // Anthropic folds extended-thinking tokens into output_tokens with no separate count.
+      reasoning_tokens: null,
     };
   }
   if (provider === 'google') {
@@ -164,6 +168,7 @@ function legacyCacheMetrics(provider, raw) {
       input_tokens: raw.promptTokenCount || 0,
       cached_tokens: raw.cachedContentTokenCount || 0,
       output_tokens: raw.candidatesTokenCount || 0,
+      reasoning_tokens: normalizeUsageTokens('google', raw).reasoning,
     };
   }
   // openai + openrouter
@@ -173,6 +178,7 @@ function legacyCacheMetrics(provider, raw) {
     input_tokens: raw.prompt_tokens || 0,
     cached_tokens: cached,
     output_tokens: raw.completion_tokens || 0,
+    reasoning_tokens: normalizeUsageTokens(provider, raw).reasoning,
   };
 }
 

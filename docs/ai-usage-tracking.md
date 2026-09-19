@@ -60,6 +60,35 @@ each LLM provider wrapper after a response returns. Two cost sources:
 
 Writes are **fire-and-forget** — the LLM caller doesn't await the insert.
 
+### Token overlap rules (get these wrong and costs are silently inflated)
+
+Providers disagree about whether the reasoning and cached counts are *subsets*
+of the main counts or reported *separately*. `computeEstCost` is provider-aware
+for this reason; all four rules below were verified against live API responses
+on 2026-09-18:
+
+| Provider | reasoning vs output | cached vs input |
+|---|---|---|
+| openai / openrouter | `reasoning_tokens` is **inside** `completion_tokens` — must NOT be added (prompt 41 + completion 141 = total 182, with reasoning 128 inside the 141) | `cached_tokens` is **inside** `prompt_tokens` — charge only the uncached remainder (prompt 1621 with cached 1408 inside it) |
+| google | `thoughtsTokenCount` is **separate** from `candidatesTokenCount` — must be added (prompt 38 + candidates 5 + thoughts 394 = total 437) | `cachedContentTokenCount` handling is **unverified**; left as the plain sum pending a live cached Gemini call |
+| anthropic | no separate reasoning count (always 0) | `input_tokens` already **excludes** cache reads, so the plain sum is correct |
+
+When no `cpm_input_cache` is configured, cached tokens are never free: the rate
+falls back to `cpm_input` times the provider's published cache discount
+(anthropic 0.10, openai/openrouter 0.50, google 1.0 — the same approximation
+`promptLogger.js#calculateCost` uses). An explicit `cpm_input_cache`, including
+`0`, always wins. Setting the column per model is still the real fix.
+
+**Known history (fixed 2026-09-18):** before this fix, `computeEstCost` added
+reasoning tokens on top of `completion_tokens` and charged cached tokens on top
+of the full `prompt_tokens`, so `est_cost_usd` was **overstated** for direct
+`vendor='openai'` rows — by ~88% on a measured reasoning call and ~247% on a
+cache-heavy one. OpenRouter rows are unaffected in the normal case because they
+short-circuit on the authoritative `usage.cost`. Historical rows were
+deliberately **not** rewritten, so pre-2026-09-18 direct-OpenAI figures in the
+Monitor → AI Usage panel (and any weekly cap that was hit using them) read high.
+`raw_usage` is pruned after 90 days, so older rows could not be recomputed anyway.
+
 ## Cap enforcement
 
 `server/services/usageGuard.js` exports:

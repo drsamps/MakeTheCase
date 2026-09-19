@@ -227,6 +227,9 @@ function calculateCost(meta, pricing) {
   const totalInputTokens = meta.cacheMetrics.input_tokens || 0;
   const cachedTokens = meta.cacheMetrics.cached_tokens || 0;
   const uncachedInputTokens = Math.max(0, totalInputTokens - cachedTokens);
+  // Do NOT add reasoning_tokens here: for openai/openrouter they are already counted
+  // inside completion_tokens (verified against OpenRouter's own cost breakdown), so
+  // adding them would bill the same tokens twice.
   const outputTokens = meta.cacheMetrics.output_tokens || 0;
 
   return (uncachedInputTokens * inputCostPerToken)
@@ -262,8 +265,9 @@ function formatTokenUsage(meta, durationMs, pricing) {
   // Output tokens
   lines.push(`Output tokens:    ${formatNumber(outputTokens).padStart(10)}`);
 
-  // Reasoning tokens (N/A for most models - could be extended for OpenAI o1 models)
-  lines.push(`Reasoning tokens: ${'N/A'.padStart(10)}`);
+  // null/undefined means the provider reports no reasoning-token count (formatNumber renders
+  // that as "N/A"); 0 means it reported none used.
+  lines.push(`Reasoning tokens: ${formatNumber(cm.reasoning_tokens).padStart(10)}`);
 
   // Duration
   lines.push(`Duration:         ${formatDuration(durationMs).padStart(10)}`);

@@ -11,6 +11,10 @@
  */
 import { pool } from '../db.js';
 
+// Cache-read price as a fraction of the input rate, used ONLY when a model row has no
+// cpm_input_cache configured. Published vendor discounts; unlisted providers pay full rate.
+const CACHE_DISCOUNT_FALLBACK = { anthropic: 0.10, openai: 0.50, openrouter: 0.50, google: 1.0 };
+
 /**
  * Normalize a provider's raw usage payload into {input, cached, output, reasoning}
  * token counts. Field names differ per provider; this is the single point where
@@ -53,7 +57,8 @@ export function normalizeUsageTokens(provider, raw) {
 /**
  * Compute est_cost_usd at call time.
  *   - OpenRouter: use raw.cost when present (authoritative, includes their margin)
- *   - Direct providers: tokens times cpm_* divided by 1M, summed across input/cached/output+reasoning
+ *   - Direct providers: tokens times cpm_* divided by 1M, summed across input/cached/output
+ *     (plus reasoning for google only — see billableOutput below)
  *   - Returns null when no pricing is configured (caller stores NULL)
  *
  * @param {string} provider — openai | anthropic | google | openrouter
@@ -73,10 +78,35 @@ export function computeEstCost(provider, rawUsage, modelConfig = {}) {
   if (cpmIn == null && cpmOut == null) return null;
 
   const tokens = normalizeUsageTokens(provider, rawUsage);
+  const isOpenAIFamily = provider === 'openai' || provider === 'openrouter';
+
+  // openai/openrouter report cached_tokens as a SUBSET of prompt_tokens (verified live:
+  // 1408 cached inside 1621 prompt), so only the uncached remainder may be charged at the
+  // full input rate — otherwise the cached tokens are billed twice.
+  // anthropic's input_tokens already EXCLUDES cache reads, and google's cached path is
+  // unverified, so both keep the original plain sum.
+  const billableInput = isOpenAIFamily ? Math.max(0, tokens.input - tokens.cached) : tokens.input;
+  // Cached tokens must never be silently free. When cpm_input_cache is unset, fall back to
+  // the input rate times the provider's published cache discount (same approximation used
+  // in promptLogger.js#calculateCost) — configuring cpm_input_cache is still the real fix.
+  const cacheDiscount = CACHE_DISCOUNT_FALLBACK[provider] ?? 1;
+  const cacheRate = cpmCache ?? (cpmIn != null ? cpmIn * cacheDiscount : 0);
+
+  // Whether reasoning tokens are already inside the output count is provider-specific,
+  // so they can only be added for the providers that report them separately:
+  //   google — thoughtsTokenCount is EXCLUDED from candidatesTokenCount, so it must be
+  //     added (verified live: prompt 38 + candidates 5 + thoughts 394 = total 437).
+  //   openai/openrouter — reasoning_tokens is a SUBSET of completion_tokens, so adding
+  //     it would bill the same tokens twice (verified live: prompt 41 + completion 141
+  //     = total 182, with reasoning_tokens 128 inside that 141).
+  //   anthropic — reports no separate reasoning count (always 0 here).
+  const billableOutput = provider === 'google'
+    ? tokens.output + tokens.reasoning
+    : tokens.output;
   const cost =
-    (tokens.input  * (cpmIn    ?? 0)) +
-    (tokens.cached * (cpmCache ?? 0)) +
-    ((tokens.output + tokens.reasoning) * (cpmOut ?? 0));
+    (billableInput  * (cpmIn ?? 0)) +
+    (tokens.cached  * cacheRate) +
+    (billableOutput * (cpmOut ?? 0));
   return cost / 1_000_000;
 }
 
