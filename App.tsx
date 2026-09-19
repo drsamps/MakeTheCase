@@ -379,8 +379,6 @@ const App: React.FC = () => {
             
             if (initialModelId) {
                 setDefaultModel(initialModelId);
-                setSelectedChatModel(initialModelId);
-                setSelectedSuperModel(initialModelId);
             }
         }
     };
@@ -390,6 +388,18 @@ const App: React.FC = () => {
         fetchSections();
     }
   }, [conversationPhase, view]);
+
+  // The section's chat/supervisor models (Courses > Sections) apply however the section was
+  // chosen: dropdown, saved enrollment, or legacy students.section_id. Only before a chat starts,
+  // so a running chat keeps the model it was assigned. Empty section model = the default model.
+  useEffect(() => {
+    if (conversationPhase !== ConversationPhase.PRE_CHAT || !defaultModel) return;
+    const section = selectedSection && selectedSection !== 'other'
+      ? sections.find(s => s.section_id === selectedSection)
+      : undefined;
+    setSelectedChatModel(section?.chat_model || defaultModel);
+    setSelectedSuperModel(section?.super_model || defaultModel);
+  }, [conversationPhase, selectedSection, sections, defaultModel]);
 
   // Ensure enrolled sections still appear even if the section is disabled (so the student's saved section shows up)
   useEffect(() => {
@@ -1448,8 +1458,7 @@ const App: React.FC = () => {
     setLikedFeedback(null);
     setImproveFeedback(null);
     setShareTranscript(false);
-    setSelectedChatModel(defaultModel);
-    setSelectedSuperModel(defaultModel);
+    // Chat/supervisor models are re-derived from the section by the PRE_CHAT effect.
     // Reset scenario state
     setAvailableScenarios([]);
     setSelectedScenarioId(null);
@@ -1471,17 +1480,7 @@ const App: React.FC = () => {
       setAvailableScenarios([]);
       setSelectedScenarioId(null);
       setUseScenarios(false);
-
-      if (sectionId === 'other' || !sectionId) {
-          setSelectedChatModel(defaultModel);
-          setSelectedSuperModel(defaultModel);
-      } else {
-          const section = sections.find(s => s.section_id === sectionId);
-          if (section) {
-              setSelectedChatModel(section.chat_model || defaultModel);
-              setSelectedSuperModel(section.super_model || defaultModel);
-          }
-      }
+      // Chat/supervisor models follow selectedSection via the PRE_CHAT effect.
 
       // For multi-section students, persist the chosen section as primary in the DB
       const hasEnabledData = Object.keys(enrolledSectionEnabledMap).length > 0;

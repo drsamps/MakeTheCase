@@ -24,6 +24,7 @@ router.get('/public', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT s.section_id, s.section_title, s.year_term, s.accept_new_students,
+             s.chat_model, s.super_model,
              (s.enrollment_key IS NOT NULL AND s.enrollment_key <> '') AS requires_enrollment_key
       FROM sections s
       LEFT JOIN courses co ON s.course_id = co.id
