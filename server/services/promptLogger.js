@@ -7,6 +7,7 @@ import { pool } from '../db.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { turnLabel } from '../../utils/transcriptFormat.js';
 
 // Get project root directory (one level up from server/)
 const __filename = fileURLToPath(import.meta.url);
@@ -145,9 +146,22 @@ async function stripCaseContentIfNeeded(prompt) {
   return stripCaseContent(prompt);
 }
 
+/** "[12 after 3.52m]" (or "[12]" when a time is missing); never throws. */
+function safeTurnLabel(n, prevAt, at) {
+  try {
+    return `[${turnLabel(n, prevAt, at)}]`;
+  } catch {
+    return `[${n}]`;
+  }
+}
+
 /**
- * Format conversation history for logging
- * @param {Array<{role: string, content: string}>} history
+ * Format conversation history for logging. Entries sent by the student app carry `at`
+ * (epoch ms, client clock), which adds the minutes since the prior turn. Numbers count only
+ * messages sent to the model, so they can trail the saved transcript's turn numbers, which
+ * also count app-generated messages (hint refusals, retry notices). Use the transcript for
+ * timing analysis.
+ * @param {Array<{role: string, content: string, at?: number}>} history
  * @returns {string}
  */
 function formatHistory(history) {
@@ -157,7 +171,7 @@ function formatHistory(history) {
 
   return history.map((msg, i) => {
     const roleLabel = msg.role === 'user' ? 'STUDENT' : 'AI';
-    return `[${i + 1}] ${roleLabel}:\n${msg.content}`;
+    return `${safeTurnLabel(i + 1, history[i - 1]?.at, msg.at)} ${roleLabel}:\n${msg.content}`;
   }).join('\n\n');
 }
 
@@ -303,9 +317,10 @@ function formatResponseHeader(modelId, meta) {
  * @param {Object} [meta] - Meta object with cacheMetrics and provider
  * @param {number} [durationMs] - Duration in milliseconds
  * @param {Object} [pricing] - Model pricing from database
+ * @param {number} [currentMessageAt] - When the current student message was sent (epoch ms)
  * @returns {string}
  */
-function formatLogContent(logType, metadata, systemPrompt, history, currentMessage, response, meta, durationMs, pricing) {
+function formatLogContent(logType, metadata, systemPrompt, history, currentMessage, response, meta, durationMs, pricing, currentMessageAt) {
   const headerType = logType === 'chat' ? 'CASE CHAT LOG' : 'TRANSCRIPT EVALUATION LOG';
   const separator = '='.repeat(60);
 
@@ -353,7 +368,7 @@ ${systemPrompt}
 
 ${formatHistory(history)}
 
-=== CURRENT STUDENT MESSAGE ===
+=== CURRENT STUDENT MESSAGE ${safeTurnLabel((history?.length || 0) + 1, history?.[history.length - 1]?.at, currentMessageAt)} ===
 
 ${currentMessage || '(No message)'}
 
@@ -433,11 +448,12 @@ async function logError(error, context = {}) {
  * @param {string} params.systemPrompt - The system prompt
  * @param {Array<{role: string, content: string}>} [params.history] - Conversation history (chat only)
  * @param {string} [params.currentMessage] - Current student message (chat only)
+ * @param {number} [params.currentMessageAt] - When the current message was sent, epoch ms (chat only)
  * @param {string} params.response
  * @param {Object} [params.meta] - Meta object with cacheMetrics and provider
  * @param {number} [params.durationMs] - Request duration in milliseconds
  */
-export async function logPromptIfEnabled({ logType, studentId, caseId, modelId, systemPrompt, history, currentMessage, response, meta, durationMs }) {
+export async function logPromptIfEnabled({ logType, studentId, caseId, modelId, systemPrompt, history, currentMessage, currentMessageAt, response, meta, durationMs }) {
   try {
     // Check if logging is enabled
     const enabled = await isLoggingEnabled(logType);
@@ -471,7 +487,7 @@ export async function logPromptIfEnabled({ logType, studentId, caseId, modelId, 
       modelId,
       timestamp: new Date().toISOString()
     };
-    const content = formatLogContent(logType, metadata, processedSystemPrompt, history, currentMessage, response, meta, durationMs, pricing);
+    const content = formatLogContent(logType, metadata, processedSystemPrompt, history, currentMessage, response, meta, durationMs, pricing, currentMessageAt);
 
     // Write log file
     const filePath = path.join(LOG_DIR, filename);

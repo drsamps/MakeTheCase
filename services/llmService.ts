@@ -47,6 +47,9 @@ export const createChatSession = (
 
   return {
     async sendMessage({ message }: { message: string }) {
+      // `at` / `messageAt` (client clock) only label turns in the prompt log; the server
+      // passes {role, content} alone to the model.
+      const messageAt = Date.now();
       const response = await fetch(`${getApiBaseUrl()}/llm/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -55,6 +58,7 @@ export const createChatSession = (
           systemPrompt,
           history: currentHistory,
           message,
+          messageAt,
           caseId: caseData?.case_id,  // Pass caseId for metrics tracking
           studentId,  // Pass studentId for logging
           caseChatId: caseChatId || undefined,  // Records replies served by a backup model
@@ -70,8 +74,8 @@ export const createChatSession = (
       const text = result.data?.text || '';
       currentHistory = [
         ...currentHistory,
-        { role: 'user', content: message },
-        { role: 'model', content: text },
+        { role: 'user', content: message, at: messageAt },
+        { role: 'model', content: text, at: Date.now() },
       ];
       return {
         text,

@@ -252,6 +252,9 @@ function emptyReplyError(provider, modelId) {
   return err;
 }
 
+// History entries carry an `at` timestamp for the prompt log. Every provider mapping here
+// (and the Gemini one below) must copy role + content only — never spread `...h` — so turn
+// timing cannot reach the model.
 const mapHistoryForOpenAI = (history = []) =>
   history.map((h) => ({
     role: h.role === 'model' ? 'assistant' : 'user',

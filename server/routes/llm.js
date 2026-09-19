@@ -340,7 +340,7 @@ function recordBackupReply(caseChatId, studentId, modelIdUsed) {
 
 router.post('/chat', async (req, res) => {
   try {
-    const { modelId, systemPrompt, history, message, caseId, studentId, caseChatId } = req.body || {};
+    const { modelId, systemPrompt, history, message, messageAt, caseId, studentId, caseChatId } = req.body || {};
     if (!modelId || !systemPrompt || !message) {
       return res.status(400).json({ data: null, error: { message: 'modelId, systemPrompt, and message are required' } });
     }
@@ -377,6 +377,7 @@ router.post('/chat', async (req, res) => {
         systemPrompt,
         history: Array.isArray(history) ? history : [],
         currentMessage: message,
+        currentMessageAt: messageAt,
         response: text,
         meta,
         durationMs

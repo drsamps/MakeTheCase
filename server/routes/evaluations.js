@@ -5,6 +5,7 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
 import { inferPositionFromTranscript } from '../services/positionInference.js';
 import { buildCoachPrompt } from '../services/promptBuilder.js';
+import { stripTurnTiming } from '../../utils/transcriptFormat.js';
 import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
@@ -352,7 +353,8 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
 
     // 5. Build evaluation prompt
     console.log('[Re-evaluate] Step 5: Building prompt...');
-    const prompt = buildCoachPrompt(transcript, full_name, caseData, 0, rubric);
+    // Turn timing ("| 12 after 3.52m") is for instructors; the evaluator must not see it.
+    const prompt = buildCoachPrompt(stripTurnTiming(transcript), full_name, caseData, 0, rubric);
     console.log('[Re-evaluate] Step 5: Built prompt, length:', prompt.length);
 
     // 6. Call LLM for evaluation
@@ -467,7 +469,7 @@ router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, r
 
     console.log('[Preview-prompt] Step 5: Building prompt...');
     const prompt = buildCoachPrompt(
-      transcriptRows[0].transcript,
+      stripTurnTiming(transcriptRows[0].transcript),
       full_name,
       caseData || {},  // Handle null case data
       0,

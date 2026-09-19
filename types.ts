@@ -6,6 +6,8 @@ export enum MessageRole {
 export interface Message {
   role: MessageRole;
   content: string;
+  /** Epoch ms when the message entered the chat; drives transcript turn timing. */
+  at?: number;
 }
 
 export enum ConversationPhase {

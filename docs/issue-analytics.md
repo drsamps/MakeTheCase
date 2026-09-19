@@ -59,6 +59,13 @@ student counts once per theme: the lean shown is their first mention that has on
   `[PROTAGONIST` inside message text so a student cannot forge a turn. Both builders in
   `App.tsx` (per-turn auto-save and the final save, which overwrites it) share
   `buildTranscript()`.
+- **Turn timing (2026-09-19).** Chats started after this date carry a turn number and the
+  minutes since the prior turn inside each marker: `[STUDENT Sadie Smith | 12 after 3.52m]`
+  (`| 1` alone on the opening turn). `parseTranscript()` returns a clean `speaker` plus
+  `turnNumber` / `elapsedMinutes` (null for older transcripts); content offsets are
+  unchanged. Issue Analytics sends only turn content, so the timing never reaches its
+  prompts. Anything else that sends a stored transcript to an LLM must call
+  `stripTurnTiming()` (Re-evaluate, Preview prompt and position inference do).
 - **Legacy transcripts.** `parseTranscript()` reads the marked format and the older
   `Name: ` paragraphs: student full name, protagonist, `CEO`, `STUDENT` (after admin
   anonymization), and, as a last resort, the most frequent other label (a CAS display name

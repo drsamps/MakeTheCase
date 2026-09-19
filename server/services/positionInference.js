@@ -10,6 +10,7 @@
 import { pool } from '../db.js';
 import { chatWithLLM } from './llmRouter.js';
 import { resolveInstructorForCaseChat, resolveSectionForCaseChat } from './keyResolver.js';
+import { stripTurnTiming } from '../../utils/transcriptFormat.js';
 
 /**
  * Build the system prompt for position inference
@@ -150,7 +151,8 @@ export async function inferPositionsFromChat(caseChatId, modelId = 'gemini-1.5-f
   const systemPrompt = buildInferencePrompt(chat.chat_question, positions);
 
   // Call the LLM
-  const userMessage = `CONVERSATION TRANSCRIPT:\n\n${chat.transcript}\n\nAnalyze this conversation and provide your position inference as JSON.`;
+  // Turn timing is for instructors only; it must not influence the inference.
+  const userMessage = `CONVERSATION TRANSCRIPT:\n\n${stripTurnTiming(chat.transcript)}\n\nAnalyze this conversation and provide your position inference as JSON.`;
 
   const instructorId = await resolveInstructorForCaseChat(caseChatId);
   const sectionId = await resolveSectionForCaseChat(caseChatId);
@@ -287,7 +289,7 @@ ${caseData.arguments_for ? `ARGUMENTS FOR:\n${caseData.arguments_for}\n` : ''}
 ${caseData.arguments_against ? `ARGUMENTS AGAINST:\n${caseData.arguments_against}\n` : ''}
 
 TRANSCRIPT:
-${transcript}
+${stripTurnTiming(transcript)}
 
 Based on the student's statements and conclusions, determine their position.
 Available positions: ${optionsStr}

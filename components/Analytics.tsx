@@ -6,6 +6,7 @@ import SortableHeader from './ui/SortableHeader';
 import StatusBadge, { StatusType } from './ui/StatusBadge';
 import ScoreChart from './ui/ScoreChart';
 import { SemesterScopeNote, useSemesterFilter } from './courses/semesterFilter';
+import { rewriteOutsideTurnTiming } from '../utils/transcriptFormat.js';
 
 interface AnalyticsProps {
   onNavigate?: (section: string, subTab?: string) => void;
@@ -420,13 +421,14 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     setIsAnonymizing(true);
     try {
       // Create anonymized version of the transcript
-      const anonymizedText = transcriptContent.replace(
+      // Leave "| 12 after 3.52m" turn timing alone: a title word like "After" would corrupt it.
+      const anonymizedText = rewriteOutsideTurnTiming(transcriptContent, (part: string) => part.replace(
         new RegExp(`\\b${studentName.split(/\s+/).join('\\b|\\b')}\\b`, 'gi'),
         'STUDENT'
       ).replace(
         new RegExp(`\\b${caseTitle.split(/\s+/).join('\\b|\\b')}\\b`, 'gi'),
         'CASE'
-      );
+      ));
 
       // Send the anonymized transcript to the server
       const response = await api.patch(`/transcripts/${transcriptId}/anonymize`, {

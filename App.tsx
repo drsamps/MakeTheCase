@@ -37,10 +37,13 @@ const isEnabledFlag = (value: unknown): boolean =>
 const isDisabledFlag = (value: unknown): boolean =>
   value === false || value === 0 || value === '0' || value === 'false';
 
-/** The stored transcript blob, with [STUDENT]/[PROTAGONIST] turn markers (see utils/transcriptFormat.js). */
+/**
+ * The stored transcript blob, with [STUDENT]/[PROTAGONIST] turn markers (see utils/transcriptFormat.js).
+ * Every Message literal in this file carries `at: Date.now()`, which adds "| n after m.mmm" turn timing.
+ */
 function buildTranscript(msgs: Message[], studentName: string, protagonistName?: string): string {
   return formatTranscript(
-    msgs.map(m => ({ role: m.role === MessageRole.USER ? 'student' : 'protagonist', content: m.content })),
+    msgs.map(m => ({ role: m.role === MessageRole.USER ? 'student' : 'protagonist', content: m.content, at: m.at })),
     { studentName, protagonistName: protagonistName || 'CEO' }
   );
 }
@@ -834,7 +837,7 @@ const App: React.FC = () => {
       // Build first message using case protagonist and question
       const roleDescription = caseData.protagonist_role || 'the protagonist';
       const firstMessageContent = `Hello ${name}, I am ${caseData.protagonist}, ${roleDescription} of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
-      const initialHistory: Message[] = [{ role: MessageRole.MODEL, content: firstMessageContent }];
+      const initialHistory: Message[] = [{ role: MessageRole.MODEL, at: Date.now(), content: firstMessageContent }];
 
       // Create chat session with case data for cache-optimized prompts
       const freeHints = chatOptions?.free_hints ?? 1;
@@ -907,13 +910,13 @@ const App: React.FC = () => {
             const userMessageCount = messages.filter(m => m.role === MessageRole.USER).length;
             if (minExchanges > 0 && userMessageCount < minExchanges) {
               const ceoWarning: Message = {
-                role: MessageRole.MODEL,
+                role: MessageRole.MODEL, at: Date.now(),
                 content: `I appreciate your time management, but we haven't had enough of a discussion yet. Let's continue our conversation a bit longer - I'd like to hear more of your analysis before we wrap up.`
               };
-              setMessages(prev => [...prev, { role: MessageRole.USER, content: userMessage }, ceoWarning]);
+              setMessages(prev => [...prev, { role: MessageRole.USER, at: Date.now(), content: userMessage }, ceoWarning]);
               return;
             }
-            const finalUserMessage: Message = { role: MessageRole.USER, content: userMessage };
+            const finalUserMessage: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
 
             // Check chat options to determine next phase
             const askForFeedback = chatOptions?.ask_for_feedback ?? false;
@@ -922,7 +925,7 @@ const App: React.FC = () => {
             if (askForFeedback) {
                 // Ask for feedback (existing behavior)
                 const ceoPermissionRequest: Message = {
-                    role: MessageRole.MODEL,
+                    role: MessageRole.MODEL, at: Date.now(),
                     content: `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. **Would you be willing to provide feedback by answering a few questions about our interaction?**`
                 };
                 setMessages(prev => [...prev, finalUserMessage, ceoPermissionRequest]);
@@ -930,7 +933,7 @@ const App: React.FC = () => {
             } else if (askSaveTranscript) {
                 // Skip feedback, ask for transcript permission
                 const ceoTranscriptRequest: Message = {
-                    role: MessageRole.MODEL,
+                    role: MessageRole.MODEL, at: Date.now(),
                     content: `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?**`
                 };
                 setMessages(prev => [...prev, finalUserMessage, ceoTranscriptRequest]);
@@ -938,7 +941,7 @@ const App: React.FC = () => {
             } else {
                 // Skip both feedback and transcript permission
                 const ceoFarewell: Message = {
-                    role: MessageRole.MODEL,
+                    role: MessageRole.MODEL, at: Date.now(),
                     content: `${studentFirstName}, thank you for meeting with me today. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. Click the button below to proceed to the evaluation.`
                 };
                 setMessages(prev => [...prev, finalUserMessage, ceoFarewell]);
@@ -953,9 +956,9 @@ const App: React.FC = () => {
         
         if (isHintRequest && hintsUsed >= hintsAllowed) {
             // Hint limit reached - refuse the hint
-            const newUserMessage: Message = { role: MessageRole.USER, content: userMessage };
+            const newUserMessage: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
             const refusalMessage: Message = {
-                role: MessageRole.MODEL,
+                role: MessageRole.MODEL, at: Date.now(),
                 content: hintsAllowed === 0 
                     ? "I'm sorry, but hints have been disabled for this conversation. Please try to work through this on your own using the case materials."
                     : `I'm sorry, but you've already used all ${hintsAllowed} of your allowed hints. You'll need to work through this on your own now.`
@@ -966,7 +969,7 @@ const App: React.FC = () => {
 
         if (!chatSession) return;
 
-        const newUserMessage: Message = { role: MessageRole.USER, content: userMessage };
+        const newUserMessage: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
         setMessages((prev) => [...prev, newUserMessage]);
         setIsLoading(true);
         setError(null);
@@ -984,7 +987,7 @@ const App: React.FC = () => {
             }
             const response = await chatSession.sendMessage({ message: userMessage });
             setLastReply(response);
-            const modelMessage: Message = { role: MessageRole.MODEL, content: response.text };
+            const modelMessage: Message = { role: MessageRole.MODEL, at: Date.now(), content: response.text };
             setMessages((prev) => [...prev, modelMessage]);
 
             // Auto-save transcript after each successful exchange
@@ -1003,7 +1006,7 @@ const App: React.FC = () => {
             playErrorSound();
             setError("Sorry, there is a delay in AI model response. Please wait 30 seconds.");
             const errorMessage: Message = {
-                role: MessageRole.MODEL,
+                role: MessageRole.MODEL, at: Date.now(),
                 content: "Sorry, I have been interrupted for a moment taking care of another matter. Can you please hold on for about 30 seconds and I will get back with you.",
             };
             setMessages((prev) => [...prev, errorMessage]);
@@ -1019,8 +1022,8 @@ const App: React.FC = () => {
                         const withoutError = prev.slice(0, -1); // Remove the "interrupted" message
                         return [
                             ...withoutError,
-                            { role: MessageRole.MODEL, content: "Thank you for your patience." },
-                            { role: MessageRole.MODEL, content: retryResponse.text }
+                            { role: MessageRole.MODEL, at: Date.now(), content: "Thank you for your patience." },
+                            { role: MessageRole.MODEL, at: Date.now(), content: retryResponse.text }
                         ];
                     });
                     setError(null);
@@ -1034,14 +1037,14 @@ const App: React.FC = () => {
             setIsLoading(false);
         }
     } else if (conversationPhase === ConversationPhase.AWAITING_HELPFUL_PERMISSION) {
-        const userReply: Message = { role: MessageRole.USER, content: userMessage };
+        const userReply: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
         setMessages(prev => [...prev, userReply]);
         
         const affirmative = isAffirmativeConsentReply(userMessage);
 
         if (affirmative) {
             const ceoScoreRequest: Message = {
-                role: MessageRole.MODEL,
+                role: MessageRole.MODEL, at: Date.now(),
                 content: "Great! On a scale of 1 to 5, how helpful was our conversation in your thinking through this case situation? (1=not helpful, 5=extremely helpful)"
             };
             setMessages(prev => [...prev, ceoScoreRequest]);
@@ -1052,7 +1055,7 @@ const App: React.FC = () => {
             
             if (askSaveTranscript) {
                 const ceoTranscriptRequest: Message = {
-                    role: MessageRole.MODEL,
+                    role: MessageRole.MODEL, at: Date.now(),
                     content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** This would be **a big help** in developing this AI chat case teaching tool 😊."
                 };
                 setMessages(prev => [...prev, ceoTranscriptRequest]);
@@ -1060,7 +1063,7 @@ const App: React.FC = () => {
             } else {
                 // Skip transcript permission
                 const ceoFarewell: Message = {
-                    role: MessageRole.MODEL,
+                    role: MessageRole.MODEL, at: Date.now(),
                     content: "It has been a delight talking with you today. Click the button below to proceed to the evaluation."
                 };
                 setMessages(prev => [...prev, ceoFarewell]);
@@ -1068,7 +1071,7 @@ const App: React.FC = () => {
             }
         }
     } else if (conversationPhase === ConversationPhase.AWAITING_HELPFUL_SCORE) {
-        const userScoreReply: Message = { role: MessageRole.USER, content: userMessage };
+        const userScoreReply: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
         
         const numberMatch = userMessage.match(/\d(\.\d+)?/);
         let score: number | null = null;
@@ -1081,23 +1084,23 @@ const App: React.FC = () => {
         setHelpfulScore(score);
 
         const ceoLikedRequest: Message = {
-            role: MessageRole.MODEL,
+            role: MessageRole.MODEL, at: Date.now(),
             content: "Thank you. What did you **like most** about this simulated conversation?",
         };
         setMessages(prev => [...prev, userScoreReply, ceoLikedRequest]);
         setConversationPhase(ConversationPhase.AWAITING_LIKED_FEEDBACK);
     } else if (conversationPhase === ConversationPhase.AWAITING_LIKED_FEEDBACK) {
-        const userLikedReply: Message = { role: MessageRole.USER, content: userMessage };
+        const userLikedReply: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
         setLikedFeedback(userMessage);
 
         const ceoImproveRequest: Message = {
-            role: MessageRole.MODEL,
+            role: MessageRole.MODEL, at: Date.now(),
             content: "That's helpful. What way do you think this simulated conversation **might be improved**?",
         };
         setMessages(prev => [...prev, userLikedReply, ceoImproveRequest]);
         setConversationPhase(ConversationPhase.AWAITING_IMPROVE_FEEDBACK);
     } else if (conversationPhase === ConversationPhase.AWAITING_IMPROVE_FEEDBACK) {
-        const userImproveReply: Message = { role: MessageRole.USER, content: userMessage };
+        const userImproveReply: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
         setImproveFeedback(userMessage);
 
         // Check if we should ask for transcript permission
@@ -1105,7 +1108,7 @@ const App: React.FC = () => {
         
         if (askSaveTranscript) {
             const ceoTranscriptRequest: Message = {
-                role: MessageRole.MODEL,
+                role: MessageRole.MODEL, at: Date.now(),
                 content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** This would be **a big help** in developing this AI chat case teaching tool 😊.",
             };
             setMessages(prev => [...prev, userImproveReply, ceoTranscriptRequest]);
@@ -1113,14 +1116,14 @@ const App: React.FC = () => {
         } else {
             // Skip transcript permission
             const ceoFarewell: Message = {
-                role: MessageRole.MODEL,
+                role: MessageRole.MODEL, at: Date.now(),
                 content: "Thank you for your valuable feedback! Click the button below to proceed to the evaluation.",
             };
             setMessages(prev => [...prev, userImproveReply, ceoFarewell]);
             setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
         }
     } else if (conversationPhase === ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION) {
-        const userTranscriptReply: Message = { role: MessageRole.USER, content: userMessage };
+        const userTranscriptReply: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
         
         const affirmative = isAffirmativeConsentReply(userMessage);
         if (affirmative) {
@@ -1128,7 +1131,7 @@ const App: React.FC = () => {
         }
 
         const ceoGoodbyeMessage: Message = {
-            role: MessageRole.MODEL,
+            role: MessageRole.MODEL, at: Date.now(),
             content: `Thank you for your time, ${studentFirstName}. Goodbye and have a nice day. I am going to turn this over to the AI Supervisor to give you feedback.`,
         };
         setMessages(prev => [...prev, userTranscriptReply, ceoGoodbyeMessage]);
@@ -1179,7 +1182,7 @@ const App: React.FC = () => {
 
     // Add position as user message and trigger AI response
     const userPositionMessage: Message = {
-      role: MessageRole.USER,
+      role: MessageRole.USER, at: Date.now(),
       content: position.position
     };
     setMessages(prev => [...prev, userPositionMessage]);
@@ -1191,14 +1194,14 @@ const App: React.FC = () => {
         const response = await chatSession.sendMessage({ message: position.position });
         setLastReply(response);
         const modelMessage: Message = {
-          role: MessageRole.MODEL,
+          role: MessageRole.MODEL, at: Date.now(),
           content: response.text,
         };
         setMessages(prev => [...prev, modelMessage]);
       } catch (err) {
         console.error('Failed to get AI response:', err);
         const errorMessage: Message = {
-          role: MessageRole.MODEL,
+          role: MessageRole.MODEL, at: Date.now(),
           content: "Okay, can you explain why you recommend that action?"
         };
         setMessages(prev => [...prev, errorMessage]);
