@@ -163,6 +163,58 @@ async function requireCaseAndScenario(req) {
   return null;
 }
 
+// --- Rubric totals behind averaged scores ---------------------------------
+// Scores are raw points, so an average says nothing without the total it is out
+// of. 15 is the fallback the per-student `out_of` column already uses (an
+// evaluation with no rubric_id, or whose rubric row is gone).
+const RUBRIC_TOTAL_SQL = 'COALESCE(r.total_points, 15)';
+// Only scored rows count: the breakdown queries LEFT JOIN evaluations, so a
+// not-started chat would otherwise contribute a phantom 15.
+const SCORED_RUBRIC_TOTAL_SQL = `CASE WHEN e.score IS NOT NULL THEN ${RUBRIC_TOTAL_SQL} END`;
+
+// Drop into any aggregate over `evaluations e LEFT JOIN rubrics r`:
+//   out_of_min / out_of_max - equal when every scored evaluation in the group
+//     shares one rubric total (resolved by sharedOutOf below)
+//   avg_pct - mean of score/total, the only figure comparable across rubrics
+const RUBRIC_AGGREGATES_SQL = [
+  `MIN(${SCORED_RUBRIC_TOTAL_SQL}) as out_of_min`,
+  `MAX(${SCORED_RUBRIC_TOTAL_SQL}) as out_of_max`,
+  `AVG(e.score / NULLIF(${RUBRIC_TOTAL_SQL}, 0)) * 100 as avg_pct`
+].join(',\n        ');
+
+const RUBRIC_JOIN_SQL = 'LEFT JOIN rubrics r ON e.rubric_id = r.rubric_id';
+
+/** The group's one rubric total, or null when the group mixes rubrics. */
+function sharedOutOf(row) {
+  const min = row.out_of_min === null || row.out_of_min === undefined ? null : parseInt(row.out_of_min);
+  const max = row.out_of_max === null || row.out_of_max === undefined ? null : parseInt(row.out_of_max);
+  if (min === null || max === null || min !== max) return null;
+  return min;
+}
+
+/** Average score as a percentage of each evaluation's own rubric total. */
+function avgPctOf(row) {
+  return row.avg_pct === null || row.avg_pct === undefined ? null : parseFloat(row.avg_pct);
+}
+
+/**
+ * Score histogram running 0..(largest rubric total in scope), zero-filled.
+ * Falls back to 0..15 when nothing in scope is scored yet.
+ */
+function buildScoreDistribution(rows, maxRubricTotal) {
+  // An evaluation row can carry a NULL score; it belongs in no bucket.
+  const counts = new Map(
+    rows.filter(r => r.score !== null && r.score !== undefined)
+      .map(r => [Number(r.score), parseInt(r.count)])
+  );
+  const highestScore = counts.size > 0 ? Math.max(...counts.keys()) : 0;
+  const top = Math.max(
+    Number.isFinite(maxRubricTotal) && maxRubricTotal > 0 ? maxRubricTotal : 15,
+    highestScore
+  );
+  return Array.from({ length: top + 1 }, (_, score) => ({ score, count: counts.get(score) || 0 }));
+}
+
 /**
  * GET /api/analytics/results
  * Consolidated results endpoint for the streamlined Results section
@@ -209,10 +261,12 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
               completedStudents: 0,
               totalCompletions: 0,
               avgScore: null,
+              outOf: null,
+              avgPct: null,
               avgHints: null,
               avgHelpful: null,
               completionRate: 0,
-              scoreDistribution: Array.from({ length: 16 }, (_, score) => ({ score, count: 0 })),
+              scoreDistribution: buildScoreDistribution([], null),
               sectionBreakdown: null,
               caseBreakdown: null
             },
@@ -328,7 +382,8 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
         COUNT(e.id) as total_completions,
         AVG(e.score) as avg_score,
         AVG(cc.hints_used) as avg_hints,
-        AVG(e.helpful) as avg_helpful
+        AVG(e.helpful) as avg_helpful,
+        ${RUBRIC_AGGREGATES_SQL}
       FROM students s
       LEFT JOIN student_sections ss ON s.id = ss.student_id
       JOIN sections sec ON (ss.section_id = sec.section_id OR s.section_id = sec.section_id)
@@ -336,6 +391,7 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
       JOIN cases c ON sc.case_id = c.case_id
       JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
       LEFT JOIN evaluations e ON e.case_chat_id = cc.id
+      ${RUBRIC_JOIN_SQL}
       ${whereClause}
     `;
 
@@ -347,6 +403,9 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
       completedStudents: stats.completed_students || 0,
       totalCompletions: stats.total_completions || 0,
       avgScore: stats.avg_score ? parseFloat(stats.avg_score) : null,
+      // null = the scope mixes rubrics with different totals; show avgPct then.
+      outOf: sharedOutOf(stats),
+      avgPct: avgPctOf(stats),
       avgHints: stats.avg_hints ? parseFloat(stats.avg_hints) : null,
       avgHelpful: stats.avg_helpful ? parseFloat(stats.avg_helpful) : null,
       completionRate: stats.total_students > 0
@@ -372,15 +431,11 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
 
     const [distributionRows] = await pool.execute(distributionQuery, params);
 
-    // Fill in missing scores with 0 count
-    const scoreDistribution = [];
-    for (let score = 0; score <= 15; score++) {
-      const found = distributionRows.find(r => r.score === score);
-      scoreDistribution.push({
-        score,
-        count: found ? parseInt(found.count) : 0
-      });
-    }
+    // Sized to the largest rubric total in scope, not a fixed 15.
+    const scoreDistribution = buildScoreDistribution(
+      distributionRows,
+      stats.out_of_max === null || stats.out_of_max === undefined ? null : parseInt(stats.out_of_max)
+    );
 
     // ============ BREAKDOWN BY SECTION (if multiple sections) ============
 
@@ -393,7 +448,8 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
           sec.year_term,
           COUNT(DISTINCT s.id) as total_students,
           COUNT(e.id) as completions,
-          AVG(e.score) as avg_score
+          AVG(e.score) as avg_score,
+          ${RUBRIC_AGGREGATES_SQL}
         FROM sections sec
         JOIN students s ON (
           EXISTS (SELECT 1 FROM student_sections WHERE student_id = s.id AND section_id = sec.section_id)
@@ -403,6 +459,7 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
         JOIN cases c ON sc.case_id = c.case_id
         JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
         LEFT JOIN evaluations e ON e.case_chat_id = cc.id
+        ${RUBRIC_JOIN_SQL}
         ${whereClause}
         GROUP BY sec.section_id, sec.section_title, sec.year_term
         ORDER BY sec.section_title
@@ -415,7 +472,9 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
         year_term: row.year_term,
         total_students: parseInt(row.total_students) || 0,
         completions: parseInt(row.completions) || 0,
-        avg_score: row.avg_score ? parseFloat(row.avg_score) : null
+        avg_score: row.avg_score ? parseFloat(row.avg_score) : null,
+        outOf: sharedOutOf(row),
+        avgPct: avgPctOf(row)
       }));
     }
 
@@ -429,7 +488,8 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
           c.case_title,
           COUNT(DISTINCT s.id) as started_students,
           COUNT(e.id) as completions,
-          AVG(e.score) as avg_score
+          AVG(e.score) as avg_score,
+          ${RUBRIC_AGGREGATES_SQL}
         FROM cases c
         JOIN section_cases sc ON c.case_id = sc.case_id
         JOIN sections sec ON sc.section_id = sec.section_id
@@ -439,6 +499,7 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
         )
         JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
         LEFT JOIN evaluations e ON e.case_chat_id = cc.id
+        ${RUBRIC_JOIN_SQL}
         ${whereClause}
         GROUP BY c.case_id, c.case_title
         ORDER BY c.case_title
@@ -450,7 +511,9 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
         case_title: row.case_title,
         started_students: parseInt(row.started_students) || 0,
         completions: parseInt(row.completions) || 0,
-        avg_score: row.avg_score ? parseFloat(row.avg_score) : null
+        avg_score: row.avg_score ? parseFloat(row.avg_score) : null,
+        outOf: sharedOutOf(row),
+        avgPct: avgPctOf(row)
       }));
     }
 
@@ -465,7 +528,9 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
         COUNT(e.id) as completions,
         AVG(e.score) as avg_score,
         COUNT(DISTINCT CASE WHEN cc.backup_models_used IS NOT NULL THEN cc.id END) as backup_chats,
-        AVG(CASE WHEN cc.backup_models_used IS NULL THEN e.score END) as avg_score_no_backup
+        AVG(CASE WHEN cc.backup_models_used IS NULL THEN e.score END) as avg_score_no_backup,
+        AVG(CASE WHEN cc.backup_models_used IS NULL THEN e.score / NULLIF(${RUBRIC_TOTAL_SQL}, 0) END) * 100 as avg_pct_no_backup,
+        ${RUBRIC_AGGREGATES_SQL}
       FROM students s
       LEFT JOIN student_sections ss ON s.id = ss.student_id
       JOIN sections sec ON (ss.section_id = sec.section_id OR s.section_id = sec.section_id)
@@ -473,6 +538,7 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
       JOIN cases c ON sc.case_id = c.case_id
       JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
       LEFT JOIN evaluations e ON e.case_chat_id = cc.id
+      ${RUBRIC_JOIN_SQL}
       ${whereClause}
       GROUP BY cc.chat_model
       ORDER BY cc.chat_model
@@ -485,7 +551,12 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
       completions: parseInt(row.completions) || 0,
       avg_score: row.avg_score ? parseFloat(row.avg_score) : null,
       backup_chats: parseInt(row.backup_chats) || 0,
-      avg_score_no_backup: row.avg_score_no_backup ? parseFloat(row.avg_score_no_backup) : null
+      avg_score_no_backup: row.avg_score_no_backup ? parseFloat(row.avg_score_no_backup) : null,
+      outOf: sharedOutOf(row),
+      avgPct: avgPctOf(row),
+      avgPctNoBackup: row.avg_pct_no_backup === null || row.avg_pct_no_backup === undefined
+        ? null
+        : parseFloat(row.avg_pct_no_backup)
     }));
 
     // ============ STUDENT DETAILS ============

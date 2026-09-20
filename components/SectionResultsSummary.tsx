@@ -17,6 +17,10 @@ interface CaseBreakdownRow {
   started_students: number;
   completions: number;
   avg_score: number | null;
+  /** Rubric total every scored evaluation in the row shares; null = mixed rubrics. */
+  outOf: number | null;
+  /** Mean of score/rubric-total as a percentage - the figure that survives mixed rubrics. */
+  avgPct: number | null;
 }
 
 interface SectionBreakdownRow {
@@ -26,6 +30,8 @@ interface SectionBreakdownRow {
   total_students: number;
   completions: number;
   avg_score: number | null;
+  outOf: number | null;
+  avgPct: number | null;
 }
 
 interface SectionResultsSummaryProps {
@@ -40,6 +46,16 @@ interface SectionResultsSummaryProps {
 // Per-section sub-rows cost one extra request per section; beyond this the combined
 // table plus "Performance by Section" is shown without them.
 const MAX_SECTIONS_FOR_SUBROWS = 12;
+
+// "12.34 / 15". Rows spanning rubrics with different totals arrive with outOf: null,
+// and then only the percentage is comparable. Neither field means a server that
+// predates them, so show the bare average rather than blanking the column.
+const formatAvgScore = (row: { avg_score: number | null; outOf?: number | null; avgPct?: number | null }) => {
+  if (row.avg_score == null) return '—';
+  if (row.outOf != null) return `${row.avg_score.toFixed(2)} / ${row.outOf}`;
+  if (row.avgPct != null) return `${Math.round(row.avgPct)}%`;
+  return row.avg_score.toFixed(2);
+};
 
 const fetchResults = (sectionIds: string[]) => {
   const params = new URLSearchParams();
@@ -315,7 +331,7 @@ const SectionResultsSummary: React.FC<SectionResultsSummaryProps> = ({
                         <td className={`${numCell} text-gray-900 font-semibold`}>{row.completions}</td>
                         <td className={`${numCell} text-gray-600`}>{inProgress}</td>
                         <td className={`${numCell} text-gray-700`}>
-                          {row.avg_score != null ? row.avg_score.toFixed(2) : '—'}
+                          {formatAvgScore(row)}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-right">
                           <button
@@ -338,7 +354,7 @@ const SectionResultsSummary: React.FC<SectionResultsSummaryProps> = ({
                             <td className={`${numCell} py-2 text-gray-700`}>{sub.completions}</td>
                             <td className={`${numCell} py-2 text-gray-500`}>{Math.max(sub.started_students - sub.completions, 0)}</td>
                             <td className={`${numCell} py-2 text-gray-600`}>
-                              {sub.avg_score != null ? sub.avg_score.toFixed(2) : '—'}
+                              {formatAvgScore(sub)}
                             </td>
                             <td className="px-4 py-2 whitespace-nowrap text-right">
                               <button
@@ -382,7 +398,7 @@ const SectionResultsSummary: React.FC<SectionResultsSummaryProps> = ({
                       </td>
                       <td className={`${numCell} text-gray-700`}>{s.total_students}</td>
                       <td className={`${numCell} text-gray-900 font-semibold`}>{s.completions}</td>
-                      <td className={`${numCell} text-gray-700`}>{s.avg_score != null ? s.avg_score.toFixed(2) : '—'}</td>
+                      <td className={`${numCell} text-gray-700`}>{formatAvgScore(s)}</td>
                     </tr>
                   ))}
                 </tbody>

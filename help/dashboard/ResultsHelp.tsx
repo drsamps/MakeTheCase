@@ -25,10 +25,10 @@ const ResultsHelp: React.FC = () => (
     <p>When enabled, shows:</p>
     <ul>
       <li><strong>Completions</strong> - Total completed evaluations and student count</li>
-      <li><strong>Average Score</strong> - Mean score, shown out of the rubric's total points when a single case is selected (no total is shown for several cases, since their rubrics can differ)</li>
+      <li><strong>Average Score</strong> - Mean score out of the rubric's total points (for example <code>11.4/15</code>). When the selection spans cases whose rubrics have different totals, raw points are not comparable, so the average is shown as a percentage of each student's own rubric total instead (for example <code>72%</code>, marked &quot;mixed rubrics&quot;). The same rule applies to the per-section, per-case and per-model breakdown tables.</li>
       <li><strong>Average Hints</strong> - Mean hints requested per chat</li>
       <li><strong>Completion Rate</strong> - Percentage of students who completed</li>
-      <li><strong>Score Distribution</strong> - Histogram showing the distribution of scores (0 to the rubric total)</li>
+      <li><strong>Score Distribution</strong> - Histogram of raw scores, running from 0 to the largest rubric total in the selection</li>
     </ul>
     <p>When multiple sections or cases are selected, additional breakdown tables show performance by each section and case.</p>
 

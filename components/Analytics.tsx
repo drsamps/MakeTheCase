@@ -19,6 +19,10 @@ interface SummaryData {
   completedStudents: number;
   totalCompletions: number;
   avgScore: number | null;
+  /** Rubric total every scored evaluation in scope shares; null = mixed rubrics. */
+  outOf: number | null;
+  /** Mean of score/rubric-total as a percentage - the figure that survives mixed rubrics. */
+  avgPct: number | null;
   avgHints: number | null;
   avgHelpful: number | null;
   completionRate: number;
@@ -30,12 +34,16 @@ interface SummaryData {
     total_students: number;
     completions: number;
     avg_score: number | null;
+    outOf: number | null;
+    avgPct: number | null;
   }> | null;
   caseBreakdown: Array<{
     case_id: string;
     case_title: string;
     completions: number;
     avg_score: number | null;
+    outOf: number | null;
+    avgPct: number | null;
   }> | null;
   modelBreakdown?: Array<{
     chat_model: string | null;
@@ -46,6 +54,10 @@ interface SummaryData {
     backup_chats: number;
     /** Average score over chats answered only by chat_model. */
     avg_score_no_backup: number | null;
+    outOf: number | null;
+    avgPct: number | null;
+    /** avgPct over chats answered only by chat_model. */
+    avgPctNoBackup: number | null;
   }>;
 }
 
@@ -357,6 +369,37 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     if (pct >= 0.6) return 'text-blue-600';
     if (pct >= 0.4) return 'text-amber-600';
     return 'text-red-600';
+  };
+
+  // An average is meaningless without the total it is out of. The server sends
+  // outOf: null when the group spans rubrics with different totals; only the
+  // percentage compares across them, and getScoreColor already reads one (out of 100).
+  const getAvgScoreColor = (
+    avg: number | null | undefined,
+    outOf: number | null | undefined,
+    pct: number | null | undefined
+  ) => {
+    if (outOf != null) return getScoreColor(avg, outOf);
+    if (pct != null) return getScoreColor(pct, 100);
+    // Older server: neither field exists, so fall back to getScoreColor's own
+    // 15-point default, which is what this cell used before outOf shipped.
+    return getScoreColor(avg);
+  };
+
+  /**
+   * "12.3" when one rubric total covers the group, else "72%".
+   * Falls back to the bare average when neither arrives: a server that predates
+   * these fields sends no outOf/avgPct, and dropping a score we were handed would
+   * blank the column out rather than degrade it.
+   */
+  const formatAvgScore = (
+    avg: number | null | undefined,
+    outOf: number | null | undefined,
+    pct: number | null | undefined
+  ) => {
+    if (outOf != null) return avg != null ? avg.toFixed(1) : '-';
+    if (pct != null) return `${Math.round(pct)}%`;
+    return avg != null ? avg.toFixed(1) : '-';
   };
 
   // Duration format helper
@@ -737,23 +780,15 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     })), []
   );
 
-  // Rubric total for the summary figures. Interim until the server returns it with the
-  // summary: the loaded rows are only one page, so they are trusted only when one case is
-  // selected (cases differ in rubric; a single case normally does not) and every scored row
-  // on the page agrees. Otherwise null, and no denominator is shown.
-  const scoreOutOf = useMemo(() => {
-    const cases = selectedCases.filter(c => c !== 'all');
-    if (cases.length !== 1) return null;
-    const totals = new Set(students.filter(s => s.score !== null && s.score !== undefined).map(s => s.out_of));
-    return totals.size === 1 ? [...totals][0] : null;
-  }, [students, selectedCases]);
-
-  // Score distribution as array
+  // Score distribution as array. Its length follows the server's histogram, which
+  // runs 0..largest rubric total in scope rather than a fixed 0..15.
   const scoreDistributionArray = useMemo(() => {
-    if (!summary?.scoreDistribution) return Array(16).fill(0);
-    const arr = Array(16).fill(0);
-    summary.scoreDistribution.forEach(({ score, count }) => {
-      if (score >= 0 && score <= 15) {
+    const distribution = summary?.scoreDistribution;
+    if (!distribution || distribution.length === 0) return Array(16).fill(0);
+    const top = Math.max(...distribution.map(d => d.score));
+    const arr = Array(top + 1).fill(0);
+    distribution.forEach(({ score, count }) => {
+      if (score >= 0 && score <= top) {
         arr[score] = count;
       }
     });
@@ -985,10 +1020,21 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
             </div>
             <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
               <p className="text-sm font-medium text-gray-500">Average Score</p>
-              <p className={`text-3xl font-bold ${getScoreColor(summary.avgScore, scoreOutOf ?? 15)}`}>
-                {summary.avgScore?.toFixed(1) || '-'}
-                {scoreOutOf !== null && <span className="text-lg text-gray-400">/{scoreOutOf}</span>}
+              {/* `!= null` on purpose: an older server sends no outOf/avgPct at all, and
+                  a strict `!== null` would render "/undefined" against one. */}
+              <p className={`text-3xl font-bold ${getAvgScoreColor(summary.avgScore, summary.outOf, summary.avgPct)}`}>
+                {summary.outOf != null ? (
+                  <>
+                    {summary.avgScore != null ? summary.avgScore.toFixed(1) : '-'}
+                    <span className="text-lg text-gray-400">/{summary.outOf}</span>
+                  </>
+                ) : (
+                  summary.avgPct != null ? `${Math.round(summary.avgPct)}%` : '-'
+                )}
               </p>
+              {summary.outOf == null && summary.avgPct != null && (
+                <p className="text-xs text-gray-400">mixed rubrics</p>
+              )}
             </div>
             <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm">
               <p className="text-sm font-medium text-gray-500">Average Hints</p>
@@ -1007,7 +1053,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
           {/* Score Distribution */}
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Score Distribution</h3>
-            <ScoreChart distribution={scoreDistributionArray} maxScore={scoreOutOf !== null && scoreOutOf < 15 ? scoreOutOf : 15} />
+            <ScoreChart distribution={scoreDistributionArray} maxScore={scoreDistributionArray.length - 1} />
           </div>
 
           {/* Section Breakdown */}
@@ -1035,8 +1081,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                         </td>
                         <td className="px-5 py-4 text-center text-sm text-gray-900">{section.total_students}</td>
                         <td className="px-5 py-4 text-center text-sm text-gray-900">{section.completions}</td>
-                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(section.avg_score, scoreOutOf ?? 15)}`}>
-                          {section.avg_score?.toFixed(1) || '-'}
+                        <td className={`px-5 py-4 text-center text-sm font-medium ${getAvgScoreColor(section.avg_score, section.outOf, section.avgPct)}`}>
+                          {formatAvgScore(section.avg_score, section.outOf, section.avgPct)}
                         </td>
                       </tr>
                     ))}
@@ -1068,8 +1114,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                           <p className="font-medium text-gray-900">{caseItem.case_title}</p>
                         </td>
                         <td className="px-5 py-4 text-center text-sm text-gray-900">{caseItem.completions}</td>
-                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(caseItem.avg_score, scoreOutOf ?? 15)}`}>
-                          {caseItem.avg_score?.toFixed(1) || '-'}
+                        <td className={`px-5 py-4 text-center text-sm font-medium ${getAvgScoreColor(caseItem.avg_score, caseItem.outOf, caseItem.avgPct)}`}>
+                          {formatAvgScore(caseItem.avg_score, caseItem.outOf, caseItem.avgPct)}
                         </td>
                       </tr>
                     ))}
@@ -1112,16 +1158,16 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                         </td>
                         <td className="px-5 py-4 text-center text-sm text-gray-900">{row.chats}</td>
                         <td className="px-5 py-4 text-center text-sm text-gray-900">{row.completions}</td>
-                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(row.avg_score, scoreOutOf ?? 15)}`}>
-                          {row.avg_score?.toFixed(1) || '-'}
+                        <td className={`px-5 py-4 text-center text-sm font-medium ${getAvgScoreColor(row.avg_score, row.outOf, row.avgPct)}`}>
+                          {formatAvgScore(row.avg_score, row.outOf, row.avgPct)}
                         </td>
                         <td className="px-5 py-4 text-center text-sm">
                           {row.backup_chats > 0
                             ? <span className="text-amber-700 font-medium">{row.backup_chats}</span>
                             : <span className="text-gray-400">0</span>}
                         </td>
-                        <td className={`px-5 py-4 text-center text-sm font-medium ${getScoreColor(row.avg_score_no_backup, scoreOutOf ?? 15)}`}>
-                          {row.avg_score_no_backup?.toFixed(1) || '-'}
+                        <td className={`px-5 py-4 text-center text-sm font-medium ${getAvgScoreColor(row.avg_score_no_backup, row.outOf, row.avgPctNoBackup)}`}>
+                          {formatAvgScore(row.avg_score_no_backup, row.outOf, row.avgPctNoBackup)}
                         </td>
                       </tr>
                     ))}
