@@ -1,7 +1,10 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api } from '../services/apiClient';
 import MultiSelect, { MultiSelectOption } from './ui/MultiSelect';
-import Pagination from './ui/Pagination';
+import Pagination, { PageSizeOption } from './ui/Pagination';
+import { buildCsv, csvDateTime, saveCsv } from '../utils/csv';
+import { netIdFromStudentId } from '../utils/studentIdentity';
+import { filenameSlug } from './caseWriter/download';
 import SortableHeader from './ui/SortableHeader';
 import StatusBadge, { StatusType } from './ui/StatusBadge';
 import ScoreChart from './ui/ScoreChart';
@@ -71,16 +74,19 @@ type BackupFilter = 'all' | 'used' | 'none';
 interface StudentResult {
   student_id: string;
   student_name: string;
+  /** NULL for a CAS student who never set one; their login id is the net id in `student_id`. */
+  email: string | null;
   section_id: string;
   section_title: string;
   case_id: string;
   case_title: string;
-  status: StatusType;
+  status: StatusType | string;
   initial_position: string | null;
   final_position: string | null;
   persona: string | null;
   score: number | null;
-  out_of: number;
+  /** Rubric total behind `score`; null whenever there is no score to be out of. */
+  out_of: number | null;
   hints: number | null;
   helpful: number | null;
   time_minutes: number | null;
@@ -108,12 +114,18 @@ interface CaseOption {
   case_title: string;
 }
 
-type SortKey = 'student_name' | 'section_title' | 'case_id' | 'case_title' | 'status' | 'initial_position' | 'final_position' | 'persona' | 'score' | 'hints' | 'helpful' | 'completion_time' | 'time_minutes' | 'chat_model' | 'backup';
+type SortKey = 'student_name' | 'email' | 'student_id' | 'section_id' | 'section_title' | 'case_id' | 'case_title' | 'status' | 'initial_position' | 'final_position' | 'persona' | 'score' | 'hints' | 'helpful' | 'completion_time' | 'time_minutes' | 'chat_model' | 'backup';
 
 const backupReplyCount = (used: Record<string, number> | null) =>
   used ? Object.values(used).reduce((sum, n) => sum + (Number(n) || 0), 0) : 0;
 
 const COLUMN_OPTIONS = [
+  // Identity first: these are the columns an instructor joins against an LMS
+  // gradebook, so they belong next to the always-on Student column.
+  { key: 'net_id', label: 'Net ID' },
+  { key: 'email', label: 'Email' },
+  { key: 'student_id', label: 'Student ID' },
+  { key: 'section_id', label: 'Section ID' },
   { key: 'section_title', label: 'Section' },
   { key: 'case_id', label: 'Case ID' },
   { key: 'case_title', label: 'Case' },
@@ -133,14 +145,90 @@ const COLUMN_OPTIONS = [
   { key: 'time_minutes', label: 'Duration' },
 ];
 
-const DEFAULT_COLUMNS = ['section_title', 'case_id', 'status', 'score'];
-const DEFAULT_VISIBLE_COLUMNS = new Set(DEFAULT_COLUMNS);
+// Section ID rather than Section: the full title ("GSCM 401 - Ops Mgt - Sec 3
+// (12:30pm)") is several times wider for the same information. The title stays
+// available in the picker.
+const DEFAULT_COLUMNS = ['section_id', 'case_id', 'status', 'score'];
 
+const COLUMN_KEYS = new Set(COLUMN_OPTIONS.map(c => c.key));
+
+/**
+ * Every status the server can return, in lifecycle order.
+ *
+ * No 'not_started' entry: the results query INNER JOINs case_chats, so a student
+ * with no chat produces no row at all and the server's `cc.status IS NULL`
+ * branch can never match. The option was offered for years and matched nothing.
+ */
 const STATUS_OPTIONS = [
-  { value: 'completed', label: 'Completed' },
+  { value: 'started', label: 'Started' },
   { value: 'in_progress', label: 'In Progress' },
-  { value: 'not_started', label: 'Not Started' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'abandoned', label: 'Abandoned' },
+  { value: 'canceled', label: 'Canceled' },
+  { value: 'killed', label: 'Ended by Instructor' },
 ];
+
+/**
+ * The Student column stays put while the table scrolls sideways. A sticky cell
+ * needs its own background (the row's would scroll out from under it) and a
+ * box-shadow rather than a border-r, which does not paint reliably when stuck.
+ */
+const STICKY_FIRST_HEAD_CELL = 'p-3 sticky left-0 z-10 bg-gray-50 shadow-[1px_0_0_0_rgb(229,231,235)]';
+
+/** Chats still open; these rows get a tinted background. */
+const IN_FLIGHT_STATUSES: string[] = ['started', 'in_progress'];
+
+/** Must match MAX_RESULTS_LIMIT in server/routes/analytics.js. */
+const MAX_RESULTS_LIMIT = 5000;
+
+const PAGE_SIZE_OPTIONS: PageSizeOption[] = [10, 20, 50, 100, 250, 'all'];
+
+const COLUMNS_STORAGE_KEY = 'mtc_results_columns';
+const PAGE_SIZE_STORAGE_KEY = 'mtc_results_page_size';
+
+/** Stored column choice, dropping keys that no longer exist. Falls back to the defaults. */
+function loadStoredColumns(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLUMNS_STORAGE_KEY);
+    if (raw) {
+      const keys = (JSON.parse(raw) as string[]).filter(k => COLUMN_KEYS.has(k));
+      if (keys.length > 0) return new Set(keys);
+    }
+  } catch {
+    // Private window or blocked storage: fall through to the defaults.
+  }
+  return new Set(DEFAULT_COLUMNS);
+}
+
+/**
+ * Ceiling on a page size restored from a previous visit.
+ *
+ * Picking "All" stores a row count, not the word 'all'. Without this cap an
+ * instructor who chose All over 4,000 records would have every later visit open
+ * Results rendering 4,000 rows before they touched anything -- a screen entered
+ * with one click. Re-picking All is one click too, so bound the restored value
+ * at the largest listed finite option and let them ask for more deliberately.
+ */
+const RESTORED_PAGE_SIZE_CAP = 250;
+
+function loadStoredPageSize(): number {
+  try {
+    const raw = localStorage.getItem(PAGE_SIZE_STORAGE_KEY);
+    const n = parseInt(raw || '');
+    if (Number.isFinite(n) && n > 0) return Math.min(n, RESTORED_PAGE_SIZE_CAP);
+  } catch {
+    // ignore
+  }
+  return 20;
+}
+
+function storeSetting(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+}
 
 const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, initialCaseId }) => {
   // Header Semester selector: limits the section picker, and "ALL Sections" means that semester's.
@@ -167,11 +255,16 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
   const [showSummaryStats, setShowSummaryStats] = useState(false);
   const [showStudentDetails, setShowStudentDetails] = useState(true);
 
+  // Export CSV: the default action fetches every matching record, so it can be slow.
+  const [isExportingAll, setIsExportingAll] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+
   // Column visibility
-  const [visibleColumns, setVisibleColumns] = useState<Set<string>>(DEFAULT_VISIBLE_COLUMNS);
+  const [visibleColumns, setVisibleColumns] = useState<Set<string>>(loadStoredColumns);
 
   // Pagination
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(loadStoredPageSize);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalRecords, setTotalRecords] = useState(0);
 
@@ -242,6 +335,25 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     fetchSettings();
   }, []);
 
+  // Dismiss the export menu on an outside click or Escape.
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setExportMenuOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExportMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [exportMenuOpen]);
+
   // Fetch rubrics and models for re-evaluation
   useEffect(() => {
     const fetchRubrics = async () => {
@@ -292,25 +404,35 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
   }, [initialCaseId, caseOptions]);
 
   // Fetch results data
+  /**
+   * The current filters and sort as query params. Shared by the table fetch and
+   * the export-all fetch so the CSV can never disagree with what is on screen;
+   * only `limit`/`offset` differ between them.
+   */
+  const buildQueryParams = useCallback((limit: number, offset: number) => {
+    const params = new URLSearchParams();
+    params.set('section_ids', selectedSections.includes('all') ? 'all' : selectedSections.join(','));
+    if (selectedSections.includes('all') && semesterId != null) {
+      params.set('semester_id', String(semesterId));
+    }
+    params.set('case_ids', selectedCases.includes('all') ? 'all' : selectedCases.join(','));
+    params.set('statuses', selectedStatuses.includes('all') ? 'all' : selectedStatuses.join(','));
+    if (studentSearch.trim()) {
+      params.set('student_search', studentSearch.trim());
+    }
+    params.set('chat_models', selectedChatModels.includes('all') ? 'all' : selectedChatModels.join(','));
+    params.set('backup', backupFilter);
+    params.set('limit', limit.toString());
+    params.set('offset', offset.toString());
+    params.set('sort_by', sortKey);
+    params.set('sort_dir', sortDirection);
+    return params;
+  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, selectedChatModels, backupFilter, sortKey, sortDirection, semesterId]);
+
   const fetchResults = useCallback(async () => {
     setIsLoading(true);
     try {
-      const params = new URLSearchParams();
-      params.set('section_ids', selectedSections.includes('all') ? 'all' : selectedSections.join(','));
-      if (selectedSections.includes('all') && semesterId != null) {
-        params.set('semester_id', String(semesterId));
-      }
-      params.set('case_ids', selectedCases.includes('all') ? 'all' : selectedCases.join(','));
-      params.set('statuses', selectedStatuses.includes('all') ? 'all' : selectedStatuses.join(','));
-      if (studentSearch.trim()) {
-        params.set('student_search', studentSearch.trim());
-      }
-      params.set('chat_models', selectedChatModels.includes('all') ? 'all' : selectedChatModels.join(','));
-      params.set('backup', backupFilter);
-      params.set('limit', pageSize.toString());
-      params.set('offset', ((currentPage - 1) * pageSize).toString());
-      params.set('sort_by', sortKey);
-      params.set('sort_dir', sortDirection);
+      const params = buildQueryParams(pageSize, (currentPage - 1) * pageSize);
 
       const response = await api.get(`/analytics/results?${params.toString()}`);
       if (response.data) {
@@ -323,7 +445,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     } finally {
       setIsLoading(false);
     }
-  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, selectedChatModels, backupFilter, pageSize, currentPage, sortKey, sortDirection, semesterId]);
+  }, [buildQueryParams, pageSize, currentPage]);
 
   useEffect(() => {
     if (sectionOptions.length > 0 || caseOptions.length > 0) {
@@ -686,68 +808,147 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
           .join('; ')
       : '', [modelLabel]);
 
-  // Export CSV
-  const handleExportCSV = () => {
-    const headers = ['Student'];
-    if (visibleColumns.has('section_title')) headers.push('Section');
-    if (visibleColumns.has('case_id')) headers.push('Case ID');
-    if (visibleColumns.has('case_title')) headers.push('Case');
-    if (visibleColumns.has('status')) headers.push('Status');
-    if (visibleColumns.has('initial_position')) headers.push('Initial Position');
-    if (visibleColumns.has('final_position')) headers.push('Final Position');
-    if (visibleColumns.has('persona')) headers.push('Persona');
-    if (visibleColumns.has('chat_model')) headers.push('Model');
-    if (visibleColumns.has('backup')) headers.push('Backup Replies', 'Backup Models');
-    if (visibleColumns.has('score')) headers.push('Score');
-    if (visibleColumns.has('out_of')) headers.push('Out Of');
-    if (visibleColumns.has('hints')) headers.push('Hints');
-    if (visibleColumns.has('helpful')) headers.push('Helpful');
-    if (visibleColumns.has('liked')) headers.push('Liked');
-    if (visibleColumns.has('improve')) headers.push('Improve');
-    if (visibleColumns.has('completion_time')) headers.push('Time');
-    if (visibleColumns.has('time_minutes')) headers.push('Duration');
+  // Generate filter description for headings
+  const getFilterDescription = useMemo(() => {
+    let sectionText = selectedSemester ? `all ${selectedSemester.semester_name} sections` : 'all sections';
+    let caseText = 'all cases';
 
-    const rows = [headers.join(',')];
-    students.forEach(s => {
-      const row = [`"${s.student_name}"`];
-      if (visibleColumns.has('section_title')) row.push(`"${s.section_title}"`);
-      if (visibleColumns.has('case_id')) row.push(`"${s.case_id}"`);
-      if (visibleColumns.has('case_title')) row.push(`"${s.case_title}"`);
-      if (visibleColumns.has('status')) row.push(s.status);
-      if (visibleColumns.has('initial_position')) row.push(s.initial_position || '');
-      if (visibleColumns.has('final_position')) row.push(s.final_position || '');
-      if (visibleColumns.has('persona')) row.push(s.persona || '');
-      if (visibleColumns.has('chat_model')) row.push(`"${modelLabel(s.chat_model).replace(/"/g, '""')}"`);
-      if (visibleColumns.has('backup')) {
-        row.push(s.backup_models_used ? backupReplyCount(s.backup_models_used).toString() : '');
-        row.push(`"${backupSummary(s.backup_models_used).replace(/"/g, '""')}"`);
+    if (!selectedSections.includes('all') && selectedSections.length > 0) {
+      if (selectedSections.length === 1) {
+        const section = sectionOptions.find(s => s.section_id === selectedSections[0]);
+        sectionText = section ? section.section_title : selectedSections[0];
+      } else {
+        sectionText = `${selectedSections.length} sections`;
       }
-      if (visibleColumns.has('score')) row.push(s.score !== null ? s.score.toString() : '');
-      if (visibleColumns.has('out_of')) row.push(s.out_of.toString());
-      if (visibleColumns.has('hints')) row.push(s.hints?.toString() || '');
-      if (visibleColumns.has('helpful')) row.push(s.helpful !== null ? s.helpful.toFixed(1) : '');
-      if (visibleColumns.has('liked')) {
-        // Replace line breaks with | and escape quotes
-        const liked = s.liked ? s.liked.replace(/\r?\n/g, '|').replace(/"/g, '""') : '';
-        row.push(`"${liked}"`);
-      }
-      if (visibleColumns.has('improve')) {
-        // Replace line breaks with | and escape quotes
-        const improve = s.improve ? s.improve.replace(/\r?\n/g, '|').replace(/"/g, '""') : '';
-        row.push(`"${improve}"`);
-      }
-      if (visibleColumns.has('completion_time')) row.push(s.completion_time ? new Date(s.completion_time).toLocaleString() : '');
-      if (visibleColumns.has('time_minutes')) row.push(s.time_minutes !== null ? s.time_minutes.toString() : '');
-      rows.push(row.join(','));
-    });
+    }
 
-    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `results-${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    if (!selectedCases.includes('all') && selectedCases.length > 0) {
+      if (selectedCases.length === 1) {
+        const caseItem = caseOptions.find(c => c.case_id === selectedCases[0]);
+        caseText = caseItem ? caseItem.case_title : selectedCases[0];
+      } else {
+        caseText = `${selectedCases.length} cases`;
+      }
+    }
+
+    return { sectionText, caseText };
+  }, [selectedSections, selectedCases, sectionOptions, caseOptions, selectedSemester]);
+
+  /**
+   * Header row + data rows for the given students, honouring the visible columns.
+   *
+   * Every cell is handed over raw: `buildCsv` quotes and escapes all of them.
+   * The old builder interpolated values into `"${...}"` by hand and picked which
+   * fields to escape, which corrupted any row holding a quote or a comma.
+   */
+  const buildExportTable = useCallback((rowsIn: StudentResult[]): { headers: string[]; rows: unknown[][] } => {
+    const cols: { key: string; header: string; value: (s: StudentResult) => unknown }[] = [];
+    const col = (key: string, header: string, value: (s: StudentResult) => unknown) => {
+      if (visibleColumns.has(key)) cols.push({ key, header, value });
+    };
+
+    // Student is always on, like the table's first column.
+    cols.push({ key: 'student_name', header: 'Student', value: s => s.student_name });
+    // Net ID is the bare net id: the `cas:` prefix must not reach the file.
+    col('net_id', 'Net ID', s => netIdFromStudentId(s.student_id));
+    col('email', 'Email', s => s.email || '');
+    col('student_id', 'Student ID', s => s.student_id);
+    col('section_id', 'Section ID', s => s.section_id);
+    col('section_title', 'Section', s => s.section_title);
+    col('case_id', 'Case ID', s => s.case_id);
+    col('case_title', 'Case', s => s.case_title);
+    col('status', 'Status', s => s.status);
+    col('initial_position', 'Initial Position', s => s.initial_position || '');
+    col('final_position', 'Final Position', s => s.final_position || '');
+    col('persona', 'Persona', s => s.persona || '');
+    col('chat_model', 'Model', s => modelLabel(s.chat_model));
+    if (visibleColumns.has('backup')) {
+      cols.push({ key: 'backup_replies', header: 'Backup Replies', value: s => s.backup_models_used ? backupReplyCount(s.backup_models_used) : '' });
+      cols.push({ key: 'backup_models', header: 'Backup Models', value: s => backupSummary(s.backup_models_used) });
+    }
+    col('score', 'Score', s => s.score !== null ? s.score : '');
+    col('out_of', 'Out Of', s => s.out_of !== null ? s.out_of : '');
+    col('hints', 'Hints', s => s.hints !== null ? s.hints : '');
+    col('helpful', 'Helpful', s => s.helpful !== null ? s.helpful.toFixed(1) : '');
+    col('liked', 'Liked', s => s.liked || '');
+    col('improve', 'Improve', s => s.improve || '');
+    col('completion_time', 'Time', s => csvDateTime(s.completion_time));
+    col('time_minutes', 'Duration', s => s.time_minutes !== null ? s.time_minutes : '');
+
+    return {
+      headers: cols.map(c => c.header),
+      rows: rowsIn.map(r => cols.map(c => c.value(r)))
+    };
+  }, [visibleColumns, modelLabel, backupSummary]);
+
+  /**
+   * `results-f26-gscm401-3-malawis-pizza-2026-09-19.csv` -- names what was exported.
+   *
+   * Uses the ids, not `getFilterDescription`: that text is written for a heading
+   * and holds the full section title, which slugs into ~80 characters of
+   * `gscm-401---ops-mgt---sec-3-(1230pm)`.
+   */
+  const exportFilename = useCallback(() => {
+    const pickedSections = selectedSections.includes('all') ? [] : selectedSections;
+    const pickedCases = selectedCases.includes('all') ? [] : selectedCases;
+    const sectionPart = pickedSections.length === 1
+      ? pickedSections[0]
+      : pickedSections.length > 1
+        ? `${pickedSections.length}-sections`
+        : (selectedSemester?.semester_code || 'all-sections');
+    const casePart = pickedCases.length === 1
+      ? pickedCases[0]
+      : pickedCases.length > 1
+        ? `${pickedCases.length}-cases`
+        : 'all-cases';
+    const parts = ['results', filenameSlug(sectionPart, 'sections'), filenameSlug(casePart, 'cases')];
+    return `${parts.join('-').toLowerCase()}-${new Date().toISOString().split('T')[0]}.csv`;
+  }, [selectedSections, selectedCases, selectedSemester]);
+
+  const downloadCsv = useCallback((rowsIn: StudentResult[]) => {
+    const { headers, rows } = buildExportTable(rowsIn);
+    saveCsv(buildCsv(headers, rows), exportFilename());
+  }, [buildExportTable, exportFilename]);
+
+  /** Export only what the table is currently showing. */
+  const handleExportPage = () => {
+    setExportMenuOpen(false);
+    downloadCsv(students);
+  };
+
+  /**
+   * Export every record matching the current filters, not just this page.
+   *
+   * Pagination is server-side, so the client only ever holds one page; this
+   * refetches the whole set in a single request. The server caps `limit` at
+   * MAX_RESULTS_LIMIT, so a very large selection comes back truncated and we say so.
+   */
+  const handleExportAll = async () => {
+    setExportMenuOpen(false);
+    setIsExportingAll(true);
+    try {
+      const params = buildQueryParams(Math.max(1, Math.min(totalRecords || 1, MAX_RESULTS_LIMIT)), 0);
+      const response = await api.get(`/analytics/results?${params.toString()}`);
+      // apiClient resolves a non-ok response to { data: null, error } rather than
+      // throwing, so without this the catch below never runs and a 403 (say, an
+      // instructor whose section scope resolves to none) would save a CSV holding
+      // only a header row -- indistinguishable from "no students matched".
+      if (response.error || !response.data) {
+        alert(`Could not export: ${response.error?.message || 'the server returned no data'}`);
+        return;
+      }
+      const rowsIn: StudentResult[] = response.data.students || [];
+      downloadCsv(rowsIn);
+      const total = response.data.total ?? rowsIn.length;
+      if (rowsIn.length < total) {
+        alert(`Exported the first ${rowsIn.length.toLocaleString()} of ${total.toLocaleString()} records.\n\nNarrow the filters to export the rest.`);
+      }
+    } catch (error) {
+      console.error('Failed to export all results:', error);
+      alert('Could not export all records. Please try again.');
+    } finally {
+      setIsExportingAll(false);
+    }
   };
 
   // Convert options for MultiSelect
@@ -810,38 +1011,20 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
 
   // Handle column selection change
   const handleColumnsChange = (selected: string[]) => {
-    if (selected.includes('all') || selected.length === 0) {
-      setVisibleColumns(new Set(COLUMN_OPTIONS.map(c => c.key)));
-    } else {
-      setVisibleColumns(new Set(selected));
-    }
+    const next = (selected.includes('all') || selected.length === 0)
+      ? COLUMN_OPTIONS.map(c => c.key)
+      : selected;
+    setVisibleColumns(new Set(next));
+    storeSetting(COLUMNS_STORAGE_KEY, JSON.stringify(next));
   };
 
-  // Generate filter description for headings
-  const getFilterDescription = useMemo(() => {
-    let sectionText = selectedSemester ? `all ${selectedSemester.semester_name} sections` : 'all sections';
-    let caseText = 'all cases';
+  /** Page size is remembered, so the screen reopens the way it was left. */
+  const handlePageSizeChange = (size: number) => {
+    setPageSize(size);
+    setCurrentPage(1);
+    storeSetting(PAGE_SIZE_STORAGE_KEY, String(size));
+  };
 
-    if (!selectedSections.includes('all') && selectedSections.length > 0) {
-      if (selectedSections.length === 1) {
-        const section = sectionOptions.find(s => s.section_id === selectedSections[0]);
-        sectionText = section ? section.section_title : selectedSections[0];
-      } else {
-        sectionText = `${selectedSections.length} sections`;
-      }
-    }
-
-    if (!selectedCases.includes('all') && selectedCases.length > 0) {
-      if (selectedCases.length === 1) {
-        const caseItem = caseOptions.find(c => c.case_id === selectedCases[0]);
-        caseText = caseItem ? caseItem.case_title : selectedCases[0];
-      } else {
-        caseText = `${selectedCases.length} cases`;
-      }
-    }
-
-    return { sectionText, caseText };
-  }, [selectedSections, selectedCases, sectionOptions, caseOptions, selectedSemester]);
 
   if (isLoading && students.length === 0) {
     return (
@@ -953,19 +1136,18 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
-        </div>
 
-        <div className="flex flex-wrap items-center gap-6 pt-2 border-t border-gray-100">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showSummaryStats}
-              onChange={(e) => setShowSummaryStats(e.target.checked)}
-              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
-            <span className="text-sm text-gray-700">Show summary statistics</span>
-          </label>
-          <div className="flex items-center gap-3">
+          {/* Display toggles share the filter row rather than taking a line of their own. */}
+          <div className="flex flex-wrap items-center gap-4 self-end pb-1">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showSummaryStats}
+                onChange={(e) => setShowSummaryStats(e.target.checked)}
+                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-700 whitespace-nowrap">Show summary statistics</span>
+            </label>
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -973,7 +1155,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                 onChange={(e) => setShowStudentDetails(e.target.checked)}
                 className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
-              <span className="text-sm text-gray-700">Show student details</span>
+              <span className="text-sm text-gray-700 whitespace-nowrap">Show student details</span>
             </label>
             {showStudentDetails && (
               <>
@@ -989,15 +1171,65 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                     defaultValues={DEFAULT_COLUMNS}
                   />
                 </div>
-                <button
-                  onClick={handleExportCSV}
-                  className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
-                  </svg>
-                  Export CSV
-                </button>
+                {/* Split button: the body runs the default (export everything
+                    matching the filters); the chevron offers this page only. */}
+                <div className="relative flex" ref={exportMenuRef}>
+                  <button
+                    onClick={handleExportAll}
+                    disabled={isExportingAll || totalRecords === 0}
+                    title="Export every record matching the current filters"
+                    className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-l-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isExportingAll ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                    <span className="whitespace-nowrap">
+                      {isExportingAll ? 'Exporting...' : `Export all ${totalRecords.toLocaleString()} records`}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => setExportMenuOpen(o => !o)}
+                    disabled={isExportingAll}
+                    aria-haspopup="menu"
+                    aria-expanded={exportMenuOpen}
+                    aria-label="Export options"
+                    className="px-2 py-2 text-gray-700 bg-white border border-l-0 border-gray-300 rounded-r-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                    </svg>
+                  </button>
+                  {exportMenuOpen && (
+                    <div role="menu" className="absolute right-0 top-full mt-1 z-30 w-64 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+                      {/* Same guards as the main button: with nothing to export
+                          these would save a header-only CSV, and during an export
+                          they would start a second concurrent fetch. */}
+                      <button
+                        role="menuitem"
+                        onClick={handleExportAll}
+                        disabled={isExportingAll || totalRecords === 0}
+                        className="w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                      >
+                        Export all {totalRecords.toLocaleString()} records
+                      </button>
+                      <button
+                        role="menuitem"
+                        onClick={handleExportPage}
+                        disabled={isExportingAll || students.length === 0}
+                        className="w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                      >
+                        Only the {students.length.toLocaleString()} showing
+                      </button>
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -1188,10 +1420,26 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
           </h3>
 
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          {/* Table */}
-          <div className="overflow-x-auto">
+          {/* Pagination sits above the table: with a long page, controls at the
+              bottom are a scroll away from the rows they govern. */}
+          {totalRecords > 0 && (
+            <Pagination
+              currentPage={currentPage}
+              totalItems={totalRecords}
+              pageSize={pageSize}
+              pageSizeOptions={PAGE_SIZE_OPTIONS}
+              maxPageSize={MAX_RESULTS_LIMIT}
+              position="top"
+              onPageChange={setCurrentPage}
+              onPageSizeChange={handlePageSizeChange}
+            />
+          )}
+
+          {/* Table. The height cap gives `sticky top-0` a scroll container --
+              needed now that "All" can render thousands of rows. */}
+          <div className="overflow-auto max-h-[70vh]">
             <table className="w-full">
-              <thead className="bg-gray-50">
+              <thead className="bg-gray-50 sticky top-0 z-20">
                 <tr>
                   <SortableHeader
                     label="Student"
@@ -1199,7 +1447,44 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                     currentSortKey={sortKey}
                     sortDirection={sortDirection}
                     onSort={handleSort}
+                    cellClassName={STICKY_FIRST_HEAD_CELL}
                   />
+                  {visibleColumns.has('net_id') && (
+                    <th
+                      className="p-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                      title="CAS net id, with the cas: prefix removed"
+                    >
+                      Net ID
+                    </th>
+                  )}
+                  {visibleColumns.has('email') && (
+                    <SortableHeader
+                      label="Email"
+                      sortKey="email"
+                      currentSortKey={sortKey}
+                      sortDirection={sortDirection}
+                      onSort={handleSort}
+                    />
+                  )}
+                  {visibleColumns.has('student_id') && (
+                    <SortableHeader
+                      label="Student ID"
+                      sortKey="student_id"
+                      currentSortKey={sortKey}
+                      sortDirection={sortDirection}
+                      onSort={handleSort}
+                      title="The raw database key: cas:{netid} for CAS students, a UUID otherwise"
+                    />
+                  )}
+                  {visibleColumns.has('section_id') && (
+                    <SortableHeader
+                      label="Section ID"
+                      sortKey="section_id"
+                      currentSortKey={sortKey}
+                      sortDirection={sortDirection}
+                      onSort={handleSort}
+                    />
+                  )}
                   {visibleColumns.has('section_title') && (
                     <SortableHeader
                       label="Section"
@@ -1339,14 +1624,31 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {students.map((student, idx) => (
+                {students.map((student, idx) => {
+                  const inFlight = IN_FLIGHT_STATUSES.includes(student.status);
+                  // The frozen Student cell paints its own background, so the row's
+                  // hover and in-flight tints have to be repeated on it by hand.
+                  const stickyCellBg = inFlight ? 'bg-yellow-50' : 'bg-white group-hover:bg-gray-50';
+                  return (
                   <tr
                     key={`${student.student_id}-${student.case_id}-${idx}`}
-                    className={`hover:bg-gray-50 ${student.status === 'in_progress' ? 'bg-yellow-50' : ''}`}
+                    className={`group hover:bg-gray-50 ${inFlight ? 'bg-yellow-50' : ''}`}
                   >
-                    <td className="p-3 whitespace-nowrap">
+                    <td className={`p-3 whitespace-nowrap sticky left-0 z-10 ${stickyCellBg} shadow-[1px_0_0_0_rgb(229,231,235)]`}>
                       <div className="text-sm font-medium text-gray-900">{student.student_name}</div>
                     </td>
+                    {visibleColumns.has('net_id') && (
+                      <td className="p-3 whitespace-nowrap text-sm text-gray-600 font-mono">{netIdFromStudentId(student.student_id)}</td>
+                    )}
+                    {visibleColumns.has('email') && (
+                      <td className="p-3 whitespace-nowrap text-sm text-gray-600">{student.email || ''}</td>
+                    )}
+                    {visibleColumns.has('student_id') && (
+                      <td className="p-3 whitespace-nowrap text-sm text-gray-600 font-mono">{student.student_id}</td>
+                    )}
+                    {visibleColumns.has('section_id') && (
+                      <td className="p-3 whitespace-nowrap text-sm text-gray-600 font-mono">{student.section_id}</td>
+                    )}
                     {visibleColumns.has('section_title') && (
                       <td className="p-3 whitespace-nowrap text-sm text-gray-600">{student.section_title}</td>
                     )}
@@ -1411,7 +1713,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                     {visibleColumns.has('score') && (
                       <td className="p-3 whitespace-nowrap text-sm">
                         {student.score !== null ? (
-                          <span className={`font-medium ${getScoreColor(student.score, student.out_of)}`}>
+                          <span className={`font-medium ${getScoreColor(student.score, student.out_of ?? undefined)}`}>
                             {student.score}
                           </span>
                         ) : <span className="text-gray-400">-</span>}
@@ -1419,7 +1721,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                     )}
                     {visibleColumns.has('out_of') && (
                       <td className="p-3 whitespace-nowrap text-sm text-gray-600">
-                        {student.out_of}
+                        {student.out_of !== null ? student.out_of : <span className="text-gray-400">-</span>}
                       </td>
                     )}
                     {visibleColumns.has('hints') && (
@@ -1510,10 +1812,11 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
                 {students.length === 0 && (
                   <tr>
-                    <td colSpan={20} className="p-8 text-center text-gray-500">
+                    <td colSpan={24} className="p-8 text-center text-gray-500">
                       No results found for the selected filters
                     </td>
                   </tr>
@@ -1521,20 +1824,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
               </tbody>
             </table>
           </div>
-
-          {/* Pagination */}
-          {totalRecords > 0 && (
-            <Pagination
-              currentPage={currentPage}
-              totalItems={totalRecords}
-              pageSize={pageSize}
-              onPageChange={setCurrentPage}
-              onPageSizeChange={(size) => {
-                setPageSize(size);
-                setCurrentPage(1);
-              }}
-            />
-          )}
           </div>
         </div>
       )}

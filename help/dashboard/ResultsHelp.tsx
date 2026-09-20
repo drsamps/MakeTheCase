@@ -35,10 +35,33 @@ const ResultsHelp: React.FC = () => (
     <h4>Student Details</h4>
     <p>The student table shows individual results with these features:</p>
     <ul>
-      <li><strong>Column Toggles</strong> - Click +/- buttons to show or hide optional columns (Status, Position, Persona, Score, Hints, Helpful, Time)</li>
+      <li><strong>Columns</strong> - Use the Columns picker to show or hide optional columns. Your choice is remembered the next time you open this screen.</li>
       <li><strong>Sorting</strong> - Click any column header to sort by that column</li>
-      <li><strong>Pagination</strong> - Choose how many records to display (10, 20, 50, 100)</li>
-      <li><strong>Export CSV</strong> - Download the current view as a CSV file</li>
+      <li><strong>Pagination</strong> - Above the table, choose how many records to display (10, 20, 50, 100, 250, or All)</li>
+      <li><strong>Export CSV</strong> - Exports <strong>every record matching your filters</strong>, not just the page on screen. Use the arrow beside the button to export only the rows currently showing instead. Either way the file contains the columns you have turned on. A single export is capped at 5,000 records; if your filters match more, narrow them and export in batches.</li>
+    </ul>
+
+    <h4>Identifying students in the export</h4>
+    <p>Three optional columns carry a student identifier. Turn them on from the Columns picker:</p>
+    <ul>
+      <li><strong>Net ID</strong> - The campus net id on its own, for example <code>abc234</code>. The <code>cas:</code> prefix stored internally is removed, so this column can be pasted straight into a gradebook. Blank for a student who registered with an email and password rather than through campus sign-in.</li>
+      <li><strong>Email</strong> - The address a self-registered student signs in with. May be blank for a campus sign-in student who never supplied one.</li>
+      <li><strong>Student ID</strong> - The raw database key, kept verbatim: <code>cas:abc234</code> for a campus sign-in student, a long UUID otherwise. Use this only when you need to match a record exactly.</li>
+    </ul>
+    <p>
+      <strong>Section ID</strong> (for example <code>f26-gscm410-1</code>) is shown by default in place of the
+      much longer full section title. The title is still available as the <strong>Section</strong> column.
+    </p>
+
+    <h4>Status values</h4>
+    <p>The Status column reports where the chat itself stopped, which explains why a row has no score:</p>
+    <ul>
+      <li><strong>Started</strong> - Chat opened but no messages exchanged yet</li>
+      <li><strong>In Progress</strong> - Student is working through the case</li>
+      <li><strong>Completed</strong> - Finished and evaluated; this is the only status that carries a score</li>
+      <li><strong>Abandoned</strong> - Left idle for more than 60 minutes, then closed automatically. This is the most common reason for an unscored row.</li>
+      <li><strong>Canceled</strong> - The student canceled the chat</li>
+      <li><strong>Ended by Instructor</strong> - An instructor killed the chat from the Monitor screen</li>
     </ul>
 
     <h4>Actions</h4>

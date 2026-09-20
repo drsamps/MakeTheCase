@@ -1,12 +1,23 @@
 import React from 'react';
 
+/** A page size, or 'all' for "one page holding every record". */
+export type PageSizeOption = number | 'all';
+
 interface PaginationProps {
   currentPage: number;
   totalItems: number;
   pageSize: number;
-  pageSizeOptions?: number[];
+  pageSizeOptions?: PageSizeOption[];
   onPageChange: (page: number) => void;
+  /**
+   * Called with a row count. 'all' is resolved here to `totalItems` (clamped by
+   * `maxPageSize`), so callers only ever deal in numbers.
+   */
   onPageSizeChange: (size: number) => void;
+  /** Ceiling for the 'all' option; should match the server's own limit cap. */
+  maxPageSize?: number;
+  /** 'top' sits above the table and uses a bottom border instead of a top one. */
+  position?: 'top' | 'bottom';
 }
 
 const Pagination: React.FC<PaginationProps> = ({
@@ -15,11 +26,42 @@ const Pagination: React.FC<PaginationProps> = ({
   pageSize,
   pageSizeOptions = [10, 20, 50, 100],
   onPageChange,
-  onPageSizeChange
+  onPageSizeChange,
+  maxPageSize = 5000,
+  position = 'bottom'
 }) => {
   const totalPages = Math.ceil(totalItems / pageSize);
   const startItem = totalItems > 0 ? (currentPage - 1) * pageSize + 1 : 0;
   const endItem = Math.min(currentPage * pageSize, totalItems);
+  // Everything fits on one page, so the page buttons have nothing to do.
+  const singlePage = totalPages <= 1;
+
+  /**
+   * 'all' only when the page genuinely holds every record. Beyond `maxPageSize`
+   * it cannot: picking All at 6,200 records with a 5,000 cap leaves 1,200 on a
+   * second page, so the select shows the real number instead of claiming All.
+   */
+  const showsEverything =
+    pageSizeOptions.includes('all') && totalItems > 0 && totalItems <= maxPageSize && pageSize >= totalItems;
+  const selectValue: string = showsEverything ? 'all' : String(pageSize);
+
+  /**
+   * Picking 'all' stores a row count, which a later filter change can leave
+   * stranded between the listed options (choose All at 1,200 records, then widen
+   * to 3,000). Offer it explicitly so the select never renders blank.
+   */
+  const options: PageSizeOption[] = showsEverything || pageSizeOptions.includes(pageSize)
+    ? pageSizeOptions
+    : [...pageSizeOptions.filter(o => o === 'all' || o < pageSize), pageSize,
+       ...pageSizeOptions.filter(o => o !== 'all' && o > pageSize)];
+
+  const handlePageSizeChange = (raw: string) => {
+    if (raw === 'all') {
+      onPageSizeChange(Math.max(1, Math.min(totalItems, maxPageSize)));
+    } else {
+      onPageSizeChange(parseInt(raw));
+    }
+  };
 
   const handlePrevious = () => {
     if (currentPage > 1) {
@@ -72,25 +114,30 @@ const Pagination: React.FC<PaginationProps> = ({
   };
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3 border-t border-gray-200 bg-gray-50">
+    <div
+      className={`flex flex-wrap items-center justify-between gap-4 px-4 py-3 bg-gray-50 ${position === 'top' ? 'border-b' : 'border-t'} border-gray-200`}
+    >
       <div className="flex items-center gap-2">
         <span className="text-sm text-gray-700">Show</span>
         <select
-          value={pageSize}
-          onChange={(e) => onPageSizeChange(parseInt(e.target.value))}
+          value={selectValue}
+          onChange={(e) => handlePageSizeChange(e.target.value)}
           className="px-2 py-1 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
         >
-          {pageSizeOptions.map(size => (
-            <option key={size} value={size}>{size}</option>
+          {options.map(size => (
+            <option key={size} value={String(size)}>{size === 'all' ? 'All' : size}</option>
           ))}
         </select>
         <span className="text-sm text-gray-700">per page</span>
       </div>
 
       <div className="text-sm text-gray-700">
-        Showing {startItem} to {endItem} of {totalItems} results
+        {singlePage
+          ? `Showing all ${totalItems} result${totalItems === 1 ? '' : 's'}`
+          : `Showing ${startItem} to ${endItem} of ${totalItems} results`}
       </div>
 
+      {!singlePage && (
       <div className="flex items-center gap-1">
         <button
           onClick={handleFirst}
@@ -153,6 +200,7 @@ const Pagination: React.FC<PaginationProps> = ({
           </svg>
         </button>
       </div>
+      )}
     </div>
   );
 };

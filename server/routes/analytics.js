@@ -165,11 +165,12 @@ async function requireCaseAndScenario(req) {
 
 // --- Rubric totals behind averaged scores ---------------------------------
 // Scores are raw points, so an average says nothing without the total it is out
-// of. 15 is the fallback the per-student `out_of` column already uses (an
-// evaluation with no rubric_id, or whose rubric row is gone).
+// of. 15 is the fallback for a scored evaluation carrying no rubric_id, or whose
+// rubric row is gone.
 const RUBRIC_TOTAL_SQL = 'COALESCE(r.total_points, 15)';
-// Only scored rows count: the breakdown queries LEFT JOIN evaluations, so a
-// not-started chat would otherwise contribute a phantom 15.
+// Only scored rows count. Every query here LEFT JOINs evaluations, so an unscored
+// chat leaves r.total_points NULL and the COALESCE above would report a phantom
+// 15 for it. Also drives the per-student `out_of`, which is null without a score.
 const SCORED_RUBRIC_TOTAL_SQL = `CASE WHEN e.score IS NOT NULL THEN ${RUBRIC_TOTAL_SQL} END`;
 
 // Drop into any aggregate over `evaluations e LEFT JOIN rubrics r`:
@@ -183,6 +184,13 @@ const RUBRIC_AGGREGATES_SQL = [
 ].join(',\n        ');
 
 const RUBRIC_JOIN_SQL = 'LEFT JOIN rubrics r ON e.rubric_id = r.rubric_id';
+
+// Ceiling on /results `limit`. The screen's "All" page size and its export-all
+// button both ask for the whole result set in one request, and the parameter is
+// caller-supplied, so it needs a bound. Mirrors the LIMIT 50000 guard in
+// routes/usage.js; kept lower here because every row is also rendered as a
+// table row when the caller is the Student Details screen.
+const MAX_RESULTS_LIMIT = 5000;
 
 /** The group's one rubric total, or null when the group mixes rubrics. */
 function sharedOutOf(row) {
@@ -245,6 +253,10 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
       sort_dir = 'desc'
     } = req.query;
 
+    // `limit` is caller-supplied; clamp it before it reaches the query or the response.
+    const parsedLimit = Math.min(Math.max(parseInt(limit) || 20, 1), MAX_RESULTS_LIMIT);
+    const parsedOffset = Math.max(parseInt(offset) || 0, 0);
+
     // Parse section, case IDs, and statuses
     let sectionIdList = section_ids === 'all' ? null : section_ids.split(',').map(s => s.trim());
     const caseIdList = case_ids === 'all' ? null : case_ids.split(',').map(s => s.trim());
@@ -272,8 +284,8 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
             },
             students: [],
             total: 0,
-            limit: parseInt(limit),
-            offset: parseInt(offset)
+            limit: parsedLimit,
+            offset: parsedOffset
           },
           error: null
         });
@@ -293,6 +305,9 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
     // Validate sort column (whitelist to prevent SQL injection)
     const validSortColumns = {
       'student_name': 's.full_name',
+      'email': 's.email',
+      'student_id': 's.id',
+      'section_id': 'sec.section_id',
       'section_title': 'sec.section_title',
       'case_id': 'c.case_id',
       'case_title': 'c.case_title',
@@ -584,6 +599,7 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
       SELECT
         s.id as student_id,
         s.full_name as student_name,
+        s.email,
         sec.section_id,
         sec.section_title,
         c.case_id,
@@ -604,7 +620,7 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
         e.improve,
         cc.chat_model,
         cc.backup_models_used,
-        COALESCE(r.total_points, 15) as out_of
+        ${SCORED_RUBRIC_TOTAL_SQL} as out_of
       FROM students s
       LEFT JOIN student_sections ss ON s.id = ss.student_id
       JOIN sections sec ON (ss.section_id = sec.section_id OR s.section_id = sec.section_id)
@@ -620,11 +636,14 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
 
     // Using pool.query instead of pool.execute for queries with LIMIT placeholders
     // as some MySQL versions have issues with prepared statements and LIMIT.
-    const [studentRows] = await pool.query(studentsQuery, [...params, parseInt(limit), parseInt(offset)]);
+    const [studentRows] = await pool.query(studentsQuery, [...params, parsedLimit, parsedOffset]);
 
     const students = studentRows.map(row => ({
       student_id: row.student_id,
       student_name: row.student_name,
+      // Login identity: CAS students carry their net id inside `student_id`
+      // (`cas:{netid}`); self-registered students have an email instead.
+      email: row.email || null,
       section_id: row.section_id,
       section_title: row.section_title,
       case_id: row.case_id,
@@ -634,7 +653,9 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
       final_position: row.final_position,
       persona: row.persona,
       score: row.score !== null ? parseInt(row.score) : null,
-      out_of: row.out_of !== null ? parseInt(row.out_of) : 15,
+      // null when the chat has no score: there is no total to be out of, and the
+      // old literal 15 was just the COALESCE fallback firing on an unmatched join.
+      out_of: row.out_of !== null ? parseInt(row.out_of) : null,
       hints: row.hints !== null ? parseInt(row.hints) : null,
       helpful: row.helpful !== null ? parseFloat(row.helpful) : null,
       time_minutes: row.time_minutes !== null ? parseInt(row.time_minutes) : null,
@@ -664,8 +685,8 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
         },
         students,
         total: parseInt(totalRecords),
-        limit: parseInt(limit),
-        offset: parseInt(offset)
+        limit: parsedLimit,
+        offset: parsedOffset
       },
       error: null
     });
