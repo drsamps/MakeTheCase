@@ -76,7 +76,10 @@ export interface Estimate {
 export interface Quote {
   mention_id: number;
   case_chat_id: string;
+  /** The real name when Show names is on, otherwise the anonymous label. */
   student: string;
+  /** Always the anonymous "Student N" label, whatever Show names is set to. */
+  student_anon: string;
   section_id: string | null;
   lean: string | null;
   gist: string | null;

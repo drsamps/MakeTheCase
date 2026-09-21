@@ -2,14 +2,20 @@
  * Issue Analytics — read models: the run view (themes, prevalence, position lean, quotes),
  * the staleness check, transcript excerpts and the CSV export.
  *
- * NAMES. Quotes are anonymous unless the caller passes names=true. With names off, a
- * student is "Student N" (stable within a run) and their name is masked inside quote and
- * transcript text. The CSV follows the same switch and then has no student_id or name
- * column at all, because that file leaves the platform.
+ * NAMES, in two tiers.
+ *   - Classmates -- the run's students plus everyone enrolled in its sections (rosterForMasking)
+ *     -- are masked inside quote, gist and transcript text ALWAYS, in both modes
+ *     (buildRosterMasker). A student never consented to being named by a classmate,
+ *     and that text is projected in Present and exported in the CSV.
+ *   - The student's OWN name follows the names flag: with names off they are "Student N"
+ *     (stable within a run) and maskNames() hides their name in their own text.
+ * The CSV follows the same switch and then has no student_id or name column at all, because
+ * that file leaves the platform. Masking is a read transform only -- the stored quote and its
+ * quote_start/quote_end offsets stay byte-aligned with the transcript.
  */
 
 import { pool } from '../../db.js';
-import { FALLBACK_LEANS, maskNames, sha256 } from './common.js';
+import { FALLBACK_LEANS, buildRosterMasker, maskNames, sha256 } from './common.js';
 import { instructorName, parseJsonArray } from './scope.js';
 import { parseTranscript } from '../../../utils/transcriptFormat.js';
 
@@ -50,6 +56,42 @@ async function studentLabels(runId) {
   const byChat = new Map();
   rows.forEach((r, i) => byChat.set(r.case_chat_id, { ...r, anon: `Student ${i + 1}` }));
   return byChat;
+}
+
+/**
+ * Everyone whose name must be masked in a classmate's quote: the run's sampled students plus
+ * every student enrolled in the run's sections. studentLabels() alone covers only the chats
+ * drawn into the run, so a classmate who was not sampled (or never chatted) went out unmasked.
+ */
+async function rosterForMasking(run, students) {
+  const roster = new Map();
+  for (const s of students.values()) roster.set(s.student_id, s);
+  const sectionIds = parseJsonArray(run.section_ids);
+  if (sectionIds.length) {
+    const marks = sectionIds.map(() => '?').join(',');
+    const [rows] = await pool.execute(
+      `SELECT st.id AS student_id, st.full_name, st.first_name, st.last_name
+         FROM students st
+        WHERE st.section_id IN (${marks})
+           OR st.id IN (SELECT ss.student_id FROM student_sections ss WHERE ss.section_id IN (${marks}))`,
+      [...sectionIds, ...sectionIds]
+    );
+    for (const r of rows) if (!roster.has(r.student_id)) roster.set(r.student_id, r);
+  }
+  return [...roster.values()];
+}
+
+/**
+ * The classmate masker for one run: its roster, minus the scenario protagonist's name, which
+ * students write constantly and which is not a classmate's even when a classmate shares it.
+ */
+async function rosterMaskerForRun(run, students) {
+  const [[scenario]] = run.scenario_id
+    ? await pool.execute('SELECT protagonist FROM case_scenarios WHERE id = ?', [run.scenario_id])
+    : [[]];
+  return buildRosterMasker(await rosterForMasking(run, students), {
+    exclude: [scenario?.protagonist].filter(Boolean),
+  });
 }
 
 export async function runSummary(run) {
@@ -128,6 +170,8 @@ export async function buildRunView(run, { names = false } = {}) {
     : { mode: 'fallback', leans: FALLBACK_LEANS.map(k => ({ key: k, label: `leans ${k === 'mixed' ? 'mixed' : k}`, detail: null })) };
 
   const students = await studentLabels(run.id);
+  const maskOthers = await rosterMaskerForRun(run, students);
+  const scrub = (text, s, opts) => maskOthers(names ? text : maskNames(text, s), s, opts);
   const [themes] = await pool.execute(
     'SELECT * FROM issue_analysis_themes WHERE run_id = ? ORDER BY sort_order, id',
     [run.id]
@@ -167,10 +211,13 @@ export async function buildRunView(run, { names = false } = {}) {
         mention_id: m.id,
         case_chat_id: m.case_chat_id,
         student: names ? (s?.full_name || s?.anon) : s?.anon,
+        // Always present, so Present mode can offer click-to-reveal instead of projecting a name.
+        student_anon: s?.anon,
         section_id: s?.section_id || null,
         lean: m.lean,
-        gist: names ? m.stance_summary : maskNames(m.stance_summary, s),
-        quote: names ? m.quote : maskNames(m.quote, s),
+        gist: scrub(m.stance_summary, s),
+        // A quote is an excerpt, so its first word may be mid-sentence in the transcript.
+        quote: scrub(m.quote, s, { fragment: true }),
         quote_start: m.quote_start,
         quote_end: m.quote_end,
       };
@@ -230,7 +277,10 @@ export async function transcriptView(run, caseChatId, { names = false, start = n
   });
   const hlStart = Number.isInteger(start) ? start : null;
   const hlEnd = Number.isInteger(end) ? end : null;
-  const mask = (t) => (names ? t : maskNames(t, s));
+  const maskOthers = await rosterMaskerForRun(run, students);
+  // `before` is the rest of the turn ahead of this segment, so a segment that starts at the
+  // highlight is checked against the words that really precede it.
+  const mask = (t, before = '') => maskOthers(names ? t : maskNames(t, s), s, { before });
 
   const turns = (parsed.turns.length ? parsed.turns : [{ role: 'unknown', start: 0, end: text.length }]).map(t => {
     const pieces = [];
@@ -238,8 +288,8 @@ export async function transcriptView(run, caseChatId, { names = false, start = n
     const b = hlStart != null && hlEnd != null ? Math.min(t.end, hlEnd) : null;
     if (a != null && b != null && a < b) {
       pieces.push({ text: mask(text.slice(t.start, a)), highlight: false });
-      pieces.push({ text: mask(text.slice(a, b)), highlight: true });
-      pieces.push({ text: mask(text.slice(b, t.end)), highlight: false });
+      pieces.push({ text: mask(text.slice(a, b), text.slice(t.start, a)), highlight: true });
+      pieces.push({ text: mask(text.slice(b, t.end), text.slice(t.start, b)), highlight: false });
     } else {
       pieces.push({ text: mask(text.slice(t.start, t.end)), highlight: false });
     }

@@ -227,6 +227,12 @@ export async function loadRunContext(run) {
   };
 }
 
+// Unicode-aware word boundaries, for regexes built with the `u` flag. `\b` without it treats
+// é, ë and other accented letters as non-word characters, so "José" and "Zoë" never matched
+// and went out unmasked.
+const WB_START = '(?<![\\p{L}\\p{N}_])';
+const WB_END = '(?![\\p{L}\\p{N}_])';
+
 function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -245,8 +251,134 @@ export function maskNames(text, student) {
     for (const w of s.split(/\s+/)) if (w.length >= 3) parts.add(w);
   }
   if (parts.size === 0) return text;
-  const re = new RegExp(`\\b(?:${[...parts].sort((a, b) => b.length - a.length).map(escapeRe).join('|')})\\b`, 'gi');
+  const re = new RegExp(`${WB_START}(?:${[...parts].sort((a, b) => b.length - a.length).map(escapeRe).join('|')})${WB_END}`, 'giu');
   return String(text).replace(re, '[name]');
+}
+
+/**
+ * Words that are ordinary English at the start of a sentence and a first name in the middle
+ * of one ("Will the CEO reconsider?" vs "I agreed with Will"). A roster token on this list is
+ * masked only mid-sentence. Deliberately short: the point is to avoid the handful of
+ * redactions an instructor would notice as obviously wrong, not to be exhaustive.
+ */
+const AMBIGUOUS_NAME_WORDS = new Set([
+  'art', 'bill', 'bob', 'case', 'cash', 'chase', 'dawn', 'don', 'drew', 'faith', 'frank',
+  'grace', 'grant', 'hope', 'jack', 'joy', 'june', 'lane', 'major', 'mark', 'max', 'may',
+  'miles', 'penny', 'price', 'ray', 'reed', 'rich', 'rose', 'sky', 'summer', 'sue', 'will',
+]);
+
+/**
+ * The form a token is matched in (the token regex is case-sensitive). A name stored in one
+ * case ("SADIE", "sadie") becomes "Sadie"; mixed case ("McDonald") is kept as stored.
+ */
+function capitalized(w) {
+  if (w !== w.toUpperCase() && w !== w.toLowerCase()) return w;
+  return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+}
+
+function nameTokens(student) {
+  const tokens = new Set();
+  const phrases = new Set();
+  for (const n of [student?.full_name, student?.first_name, student?.last_name]) {
+    if (!n) continue;
+    const s = String(n).trim();
+    if (!s) continue;
+    const words = s.split(/\s+/).filter(Boolean);
+    if (words.length > 1) phrases.add(words.join(' ').toLowerCase());
+    // A lowercase word in an otherwise capitalized name is a particle ("van" in "van Dyke"),
+    // and as a token it would mask the ordinary word ("a delivery van").
+    const hasCapital = words.some(w => w !== w.toLowerCase());
+    for (const w of words) {
+      if (w.length < 3 || (hasCapital && w === w.toLowerCase())) continue;
+      tokens.add(capitalized(w));
+    }
+  }
+  return { tokens, phrases };
+}
+
+/**
+ * True when the match at `index` opens a sentence, where a capital letter proves nothing.
+ * When `text` runs out, the check continues into `before` (the text that preceded it). When
+ * both run out, the start of `text` counts as a sentence start unless it is a `fragment` — a
+ * quote excerpted from the middle of a turn, where "Will made the best point" is usually the
+ * tail of "I think Will made the best point" and must not be let through.
+ */
+function isSentenceInitial(text, index, before = '', fragment = false) {
+  const prev = (str, from) => {
+    let i = from;
+    while (i >= 0 && /\s/.test(str[i])) i--;
+    return i >= 0 ? str[i] : null;
+  };
+  const ch = prev(text, index - 1) ?? prev(before, before.length - 1);
+  if (ch == null) return !fragment;
+  return /[.!?;:"'\u2018\u2019\u201c\u201d(\[]/.test(ch);
+}
+
+/**
+ * Mask the names of OTHER students in the run. maskNames() above only ever knew the author of
+ * the quote, so "I agreed with Sadie" written by a classmate went out in the clear — on the
+ * projector, in the CSV and in the printed handout. This masks every run roster name except
+ * the author's own, which stays on the Show-names switch.
+ *
+ * Deliberately best-effort, and tuned for precision over recall so instructors are not reading
+ * quotes full of spurious [name]: full names match case-insensitively, single tokens only in
+ * their Capitalized form, and an ambiguous token only mid-sentence.
+ *
+ * `exclude` lists names that are never masked — the scenario protagonist. Without it a
+ * classmate called Mark turned every "Mark" in "Mark Johnson should cut prices" (and in the
+ * protagonist's own transcript turns) into [name]. A classmate who shares a word with the
+ * protagonist is then masked only by their full name; that is the precision trade-off again.
+ *
+ * The returned function takes `{ before, fragment }` for the sentence-start check (see
+ * isSentenceInitial): pass the preceding text when masking a slice of a larger text, and
+ * `fragment: true` for a quote, whose first word may sit mid-sentence in the transcript.
+ *
+ * Build ONCE per view, not per quote — the alternation covers the whole roster.
+ */
+export function buildRosterMasker(students, { exclude = [] } = {}) {
+  const perStudent = new Map();
+  const allTokens = new Set();
+  const allPhrases = new Set();
+  for (const s of students || []) {
+    if (!s) continue;
+    const { tokens, phrases } = nameTokens(s);
+    const lower = new Set([...tokens].map(t => t.toLowerCase()));
+    perStudent.set(s.student_id ?? s, { tokens, phrases, lower });
+    for (const t of tokens) allTokens.add(t);
+    for (const p of phrases) allPhrases.add(p);
+  }
+  for (const name of exclude) {
+    const { tokens, phrases } = nameTokens({ full_name: name });
+    for (const t of tokens) allTokens.delete(t);
+    for (const p of phrases) allPhrases.delete(p);
+  }
+  if (allTokens.size === 0 && allPhrases.size === 0) return (text) => text;
+
+  const byLength = (a, b) => b.length - a.length;
+  const phraseRe = allPhrases.size
+    ? new RegExp(`${WB_START}(?:${[...allPhrases].sort(byLength).map(escapeRe).join('|')})${WB_END}`, 'giu')
+    : null;
+  // Case-SENSITIVE: keeps "will", "grace" and "mark" as ordinary words.
+  const tokenRe = allTokens.size
+    ? new RegExp(`${WB_START}(?:${[...allTokens].sort(byLength).map(escapeRe).join('|')})${WB_END}`, 'gu')
+    : null;
+
+  return function maskOtherStudents(text, ownStudent, { before = '', fragment = false } = {}) {
+    if (!text) return text;
+    const own = perStudent.get(ownStudent?.student_id ?? ownStudent);
+    let out = String(text);
+    if (phraseRe) {
+      out = out.replace(phraseRe, (m) => (own?.phrases.has(m.toLowerCase()) ? m : '[name]'));
+    }
+    if (tokenRe) {
+      out = out.replace(tokenRe, (m, offset, whole) => {
+        if (own?.lower.has(m.toLowerCase())) return m;
+        if (AMBIGUOUS_NAME_WORDS.has(m.toLowerCase()) && isSentenceInitial(whole, offset, before, fragment)) return m;
+        return '[name]';
+      });
+    }
+    return out;
+  };
 }
 
 /** A provider rate limit, by status or message (mirrors chatFallback.classifyError). */

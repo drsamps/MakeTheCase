@@ -87,11 +87,51 @@ const IssueAnalyticsHelp: React.FC = () => (
       </li>
     </ul>
 
+    <h4>Presenting in class</h4>
+    <p>
+      <strong>Present</strong> opens a full-screen deck of the themes you have ticked. It starts on
+      a <strong>Summary of Student Issues</strong> page listing every Topic, Argument and Friction
+      with how many students raised it — click one to jump straight to its slide, and use
+      <strong> Summary</strong> (or <code>S</code>) on any slide to come back.
+    </p>
+    <ul>
+      <li>
+        Each slide opens with its quotes hidden, so you can pose the issue first.
+        <strong> Show quotes</strong> (<code>Q</code>) reveals three.
+      </li>
+      <li>
+        <strong>Other student quotes</strong> (<code>R</code>) brings up a different three. The
+        three come from three different students whenever the theme has that many, and the deck works through the whole
+        class before anyone is quoted twice, so you are not hearing from the same few people on
+        every slide. The same slide keeps the same quotes until you ask for others, so you can
+        page back and forth safely.
+      </li>
+      <li>
+        Use <strong>− A +</strong> to size the text for the room and the width buttons to set how
+        wide the slide runs. Keyboard: <code>+</code> / <code>−</code> and <code>[</code> /
+        <code>]</code>.
+      </li>
+      <li>
+        <strong>☾ Dark</strong> (<code>D</code>) switches to light text on a dark slide, which many
+        projectors and darkened rooms show more clearly. Size, width and dark mode are all remembered
+        for next time.
+      </li>
+    </ul>
+
     <h4>Student names</h4>
     <p>
-      Quotes are anonymous by default (“Student 4”), and names inside quotes are hidden.
-      <strong> Show names</strong> reveals them. The CSV follows the same switch; with names off it
-      has no names or student ids at all. Check before projecting or sharing.
+      Students are shown as “Student 4” by default. <strong>Show names</strong> reveals who they
+      are; in Present the name then becomes a link under each quote, so it only reaches the
+      projector when you click it. The CSV follows the same switch; with names off it has no names
+      or student ids at all.
+    </p>
+    <p>
+      Names that students typed <em>inside</em> their answers — usually a classmate’s — are replaced
+      with <code>[name]</code> at all times, whether Show names is on or off, everywhere quotes
+      appear. The case protagonist’s name is left alone. This is a best-effort filter built from the names of every student enrolled in the analysed sections:
+      it will miss an unusual spelling or someone outside the class, and it can occasionally
+      redact an ordinary word that is also a student’s name. Read a slide before you project it if
+      that matters.
     </p>
 
     <div className="help-callout">
