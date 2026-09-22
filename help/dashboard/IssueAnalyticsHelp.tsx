@@ -97,14 +97,24 @@ const IssueAnalyticsHelp: React.FC = () => (
     <ul>
       <li>
         Each slide opens with its quotes hidden, so you can pose the issue first.
-        <strong> Show quotes</strong> (<code>Q</code>) reveals three.
+        <strong> Show quotes</strong> (<code>Q</code>) reveals them, as many at a time as you pick below (3 unless you change it).
       </li>
       <li>
-        <strong>Other student quotes</strong> (<code>R</code>) brings up a different three. The
-        three come from three different students whenever the theme has that many, and the deck works through the whole
+        The line at the bottom, between <strong>Previous</strong> and <strong>Next</strong>, reads
+        “show 3 quotes from all sections (12)”. Click the number to show 1 to 5 quotes at a time (or <em>all</em> of them),
+        and click the section to quote only the students in the room — easiest to set on the
+        Summary page before you start. Each section is listed with how many quotes it has for the
+        theme on screen (on the Summary, across all ticked themes). Only the quotes change; the student counts,
+        percentages and lean bar stay class-wide. The number is remembered for next time; the
+        section is remembered until you close the browser, so a new class starts at all sections.
+      </li>
+      <li>
+        <strong>Other student quotes</strong> (<code>R</code>) brings up a different set. A set
+        comes from different students whenever the theme has that many, and the deck works through the whole
         class before anyone is quoted twice, so you are not hearing from the same few people on
         every slide. The same slide keeps the same quotes until you ask for others, so you can
-        page back and forth safely.
+        page back and forth safely. Each time you open Present the order is shuffled again, so a
+        different student leads each theme in each class.
       </li>
       <li>
         Use <strong>− A +</strong> to size the text for the room and the width buttons to set how

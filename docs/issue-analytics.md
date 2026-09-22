@@ -149,12 +149,30 @@ instead of all of them. `drawSample()` in `scope.js` does the draw, called from 
   heard before anyone repeats. Round-robin alone does not keep a set of three distinct (A×3, B, C
   rotates as A B C A A), so `quoteWindow()` reads forward from the cursor and skips a student
   already in the set, topping up with repeats only when the theme has fewer than three students.
-  **Other student quotes** (`R`) advances the cursor by 3, wrapping.
-  - The seed is `` `${run.id}:${theme.id}` `` and the rotation is built once in a `useMemo` for
-    the life of the deck. It must not reshuffle on re-render: a presenter who pages back
-    mid-sentence has to find the same quote. Never use `Math.random()` here.
-  - The cursor lives at deck level (`cursors` keyed by theme id) so it survives paging away;
-    only the *visibility* resets.
+  **Other student quotes** (`R`) advances the cursor by the quote count, wrapping.
+  - The seed is `` `${run.id}:${theme.id}:${openSeed}` ``. `openSeed` is drawn **once per open**
+    (`useState` initialiser), so each class gets a fresh order and the same student does not lead
+    a theme every time; the rotation is then built once in a `useMemo` for the life of the deck.
+    It must not reshuffle on re-render: a presenter who pages back mid-sentence has to find the
+    same quote. `Math.random()` belongs only in that initialiser — never inside the rotation or
+    anywhere that runs per render. (Unrelated to Sampling's `drawSample()`, which must stay
+    deterministic.)
+  - The cursor lives at deck level (`cursors` keyed by `` `${theme.id}:${section}` ``) so it
+    survives paging away; only the *visibility* resets.
+- **Quote count and section** (bottom bar, every slide including the Summary, where the section is
+  usually set): "show 3 quotes from Section 2 (12)" — the count is for the current theme, or the
+  total across ticked themes on the Summary;
+  two native `<select>`s styled as inline text. The count (1–5 or all, default 3) replaces the old fixed
+  3 — `R` advances by it; "all" is `Infinity` in `PER_SET_OPTIONS`, so `R` does nothing then — and persists in `localStorage['mtc_ia_present_quotes']` (an index into
+  `PER_SET_OPTIONS`). The section persists per run in
+  `sessionStorage['mtc_ia_present_section:<runId>']`, deliberately session-only so a new browser
+  session (another classroom) starts at all sections; a stored id not in `run.section_ids` falls
+  back to all. **The section filter is applied to the deck's rotation, never by rebuilding one**:
+  a student belongs to one section, so the filtered list stays round-robin and deterministic.
+  Quotes with a NULL `section_id` appear only under all sections. Only quotes are filtered —
+  prevalence, lean bar and the summary stay run-wide. Section titles come from the
+  `sectionLabels` prop (built from the full `/analytics/filters` section list, not the
+  semester-scoped one). Deck shortcuts are ignored while one of these selects has focus.
 - **Text size and slide width** are stepped settings persisted in `localStorage`
   (`mtc_ia_present_font`, `mtc_ia_present_width`, beside `mtc_ia_show_names`). Tailwind's
   `text-4xl` etc. are `rem`-based and will not scale from a container `font-size`, so slide text

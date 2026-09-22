@@ -141,6 +141,11 @@ const IssueAnalytics: React.FC = () => {
     [sectionsInScope]
   );
   const pickedSectionIds = selectedSections.includes('all') ? null : selectedSections;
+  // Present labels every section in the run, including any outside the current semester scope.
+  const sectionLabels = useMemo(
+    () => Object.fromEntries(sectionOptions.map(s => [s.section_id, s.section_title || s.section_id])),
+    [sectionOptions]
+  );
 
   // Same narrowing as Position Analytics: only cases assigned to in-scope (and picked) sections.
   const casesForPicks = useMemo(() => {
@@ -808,7 +813,7 @@ const IssueAnalytics: React.FC = () => {
           start={openQuote.quote_start} end={openQuote.quote_end} names={showNames}
           onClose={() => setOpenQuote(null)} />
       )}
-      {presenting && view && <PresentMode view={view} onClose={() => setPresenting(false)} />}
+      {presenting && view && <PresentMode view={view} sectionLabels={sectionLabels} onClose={() => setPresenting(false)} />}
     </div>
   );
 };
