@@ -19,7 +19,10 @@ import { Persona } from './types';
  * 2. A LEARNING ACTIVITY, NOT A DRILL. The audience reflects the student's own words
  *    back before asking, says plainly when something lands, and thanks them. This lives
  *    in the template so EVERY audience does it; personas differ only in what it takes to
- *    satisfy them. It is safe to be warm because `buildCoachPrompt` never sees the
+ *    satisfy them. Understanding is paced in the template too (rules 2 and 8): without
+ *    that, every audience announced "that made it click" after the first explanation and
+ *    the activity ended before it began. Personas adjust how hard the listener is to satisfy
+ *    on top of that pacing. It is safe to be warm because `buildCoachPrompt` never sees the
  *    persona — the listener and the judge are separate calls, so an encouraging audience
  *    cannot buy a better grade.
  *
@@ -58,8 +61,12 @@ ${caseData.case_content}
 === END SOURCE DOCUMENT ===${supplementarySection}
 `;
 
+  // The persona's display name, as the student saw it in the picker ("Your grandmother").
+  // It is quoted as a label below rather than spliced into a sentence, because it is written
+  // from the student's side and does not read as "You are <name>". Who the listener is and
+  // how they behave comes from the persona's instructions ("Who You Are"), never from the
+  // case protagonist's role or the persona's dashboard description.
   const audienceName = caseData.protagonist || 'a curious beginner';
-  const audienceBackground = caseData.protagonist_role ? `, ${caseData.protagonist_role}` : '';
 
   // Who this particular audience is. Persona text supplies background and manner — never
   // what the listener knows, and never how strictly the work is judged.
@@ -97,7 +104,7 @@ ${caseData.case_content}
 
   const dynamicContent = `
 === ROLE & INSTRUCTIONS ===
-You are ${audienceName}${audienceBackground}. ${studentName} is teaching you about something you do not understand.
+You are playing the listener "${audienceName}". ${studentName} is teaching you about something you do not understand.
 
 You are not a teacher, a grader, or an assistant. You are the one who does not understand yet, and ${studentName} is trying to make you understand.
 
@@ -106,13 +113,13 @@ ${caseData.chat_question}
 ${scenarioSection}${audienceSection}${additionalPersonality}
 **How to Reply:**
 1.  **Reflect before you ask.** Put what ${studentName} just said back in your own words — "so if I've got this, X leads to Y because…?" — so they can hear what you actually took in, and correct you if you have it wrong.
-2.  **Say when something lands, and name what did it.** When an idea finally becomes clear, say so plainly and warmly, and thank ${studentName} for the part that made the difference. Do not praise everything; praise what actually worked.
+2.  **Understanding is earned, and it arrives in stages.** You start out knowing nothing about this. After a first explanation you understand only part of it: say what you took in, then ask about the piece that is still missing — usually the reason behind it, a concrete example, or how it differs from something that sounds similar. Do NOT say that something "clicked" or "made sense" in your first two replies. Say an idea has landed only when ${studentName} has really covered it, in words you could repeat back, and then name the specific thing that did it. Do not praise every reply, and never reuse a stock phrase ("that made it click", "now I get it") — say something specific, or say nothing about it.
 3.  **Then ask ONE question** about the thing that still confuses you. One question at a time, never two.
 4.  **Be genuinely curious rather than testing.** You are not checking their answer. You are trying to understand.
 5.  **Keep it short.** Under 60 words — two or three sentences. Write only your reply: no labels, no stage directions, no quotation marks around the whole thing.
 6.  **Never lecture.** You have read the source document, but stay in character as the one learning: never supply an idea, a term, an example, or an explanation that ${studentName} has not already given you. If you find yourself about to name the thing they are missing, ask about it instead.
 7.  **Hints:** If ${studentName} is stuck they may ask for a hint by specifically using the word "hint". (Other words like "help" or "clue" should not be treated as asking for a "hint".) You do not know the material, so you cannot hint about it — instead, ask your own last question again in simpler words, and point at the exact phrase of theirs that confused you. Never introduce an idea or term from the source document that ${studentName} has not already said. After giving a hint, ${hintPenaltyText}.
-8.  **The payoff:** When you genuinely understand the whole thing, say so with real warmth, tell ${studentName} which explanation got you there, and add that if they are done they can say "time is up".
+8.  **The payoff:** Only once ${studentName} has explained the key ideas, the reasons behind them and at least one example or application, and has answered your questions — normally not before your fourth reply — say that you genuinely understand the whole thing, with real warmth. Tell ${studentName} which explanation got you there, and add that if they are done they can say "time is up". Until then, keep asking.
 9.  **Conclusion:** At some point ${studentName} will mention a key phrase "time is up" that signals to the system to transition to the feedback and assessment phases. If ${studentName} says something about ending the conversation (such as "out of time" or just "time") then say "If it is time to conclude this conversation you need to say the phrase 'time is up'"
 `;
 

@@ -851,7 +851,10 @@ const App: React.FC = () => {
           ...caseData,
           protagonist: personaRow.persona_name,
           protagonist_initials: initialsOf(personaRow.persona_name),
-          protagonist_role: personaRow.description || caseData.protagonist_role,
+          // Cleared, not inherited: the scenario's role belongs to the case protagonist
+          // ("CEO of ..."), and the persona's description is an instructor-facing blurb.
+          // The audience's own background comes from its instructions ("Who You Are").
+          protagonist_role: undefined,
         };
         setActiveCaseData(caseData as CaseData);
       }
@@ -859,7 +862,7 @@ const App: React.FC = () => {
       // Build first message using the case protagonist (or the teach-back audience) and question
       const roleDescription = caseData.protagonist_role || 'the protagonist';
       const firstMessageContent = teachBackMode
-        ? TEACH_BACK_COPY.greeting(name, caseData.protagonist, caseData.protagonist_role || undefined, caseData.chat_question)
+        ? TEACH_BACK_COPY.greeting(name, caseData.protagonist, caseData.chat_question)
         : `Hello ${name}, I am ${caseData.protagonist}, ${roleDescription} of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
       const initialHistory: Message[] = [{ role: MessageRole.MODEL, at: Date.now(), content: firstMessageContent }];
 

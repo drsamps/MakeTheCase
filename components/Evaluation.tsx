@@ -3,16 +3,26 @@ import { EvaluationResult } from '../types';
 import CriteriaCoverage from './CriteriaCoverage';
 
 /**
- * The summary is plain text except for `**bold**`: the teach-back judge is asked for two
- * bold headings. A bold run that opens a line is a heading on its own line (the model may
- * put the heading and its text on one line); any other bold run is inline emphasis.
+ * The summary is plain text except for `**bold**`. The teach-back judge is asked for two
+ * headings but does not reliably mark them: they arrive bold, as "## " headings, with a
+ * trailing colon, or as bare lines. The two known headings are therefore recognised by
+ * their wording, however decorated, and shown as headings. Any other bold run that opens a
+ * line is a heading too; a bold run elsewhere is inline emphasis.
  */
+// After the wording there must be a colon, a closing "**", or the end of the line — a
+// sentence that merely starts "What you explained well was the tradeoff..." is not a heading.
+const KNOWN_HEADING =
+  /^\s*(?:#+\s*)?(?:\*\*)?\s*(what you explained well|what would have made it clearer)(?:(?:\*\*)?\s*:\s*(?:\*\*)?|\*\*|\s*$)\s*(.*)$/i;
+
 const renderInlineBold = (text: string) =>
   text.split(/\*\*(.+?)\*\*/g).map((part, i) => (i % 2 === 1 ? <strong key={i}>{part}</strong> : part));
 
 const renderSummary = (summary: string) =>
   (summary || '').split(/\n+/).filter((line) => line.trim()).map((line, i) => {
-    const heading = line.match(/^\s*\*\*(.+?)\*\*:?\s*(.*)$/);
+    const known = line.match(KNOWN_HEADING);
+    const heading = known
+      ? [line, known[1].charAt(0).toUpperCase() + known[1].slice(1).toLowerCase(), known[2]]
+      : line.match(/^\s*\*\*(.+?)\*\*:?\s*(.*)$/);
     if (!heading) {
       return <p key={i} className="text-gray-700 mt-1 first:mt-0">{renderInlineBold(line)}</p>;
     }

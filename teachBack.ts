@@ -85,6 +85,16 @@ export const initialsOf = (name: string): string => {
 };
 
 /**
+ * An audience's display name, phrased so it reads after "I'm". Audience names are written
+ * from the STUDENT's side of the picker ("Your grandmother", "A skeptical colleague"), so
+ * "I'm Your grandmother" is wrong in the greeting. Only a known leading article or
+ * possessive is lowercased: "Sam, a curious beginner" and any instructor-made name like
+ * "Professor Kim" keep their capital.
+ */
+export const introduceAudience = (name: string): string =>
+  (name || '').trim().replace(/^(your|a|an|the|my|our|someone|somebody)(?=\s)/i, (w) => w.toLowerCase());
+
+/**
  * Teach-Back student-facing copy.
  *
  * The case chat's own strings are protagonist-voiced ("I am glad you were able to study
@@ -93,8 +103,10 @@ export const initialsOf = (name: string): string => {
  * file plus a few ternaries.
  */
 export const TEACH_BACK_COPY = {
-  greeting: (studentName: string, audience: string, role: string | undefined, question: string) =>
-    `Hi ${studentName}, I'm ${audience}${role ? ` — ${role}` : ''}. I'm supposed to understand **${question}** and honestly I don't get it yet. Could you explain it to me?`,
+  // No role clause: a persona's description is an instructor-facing blurb ("Warm and sharp,
+  // but has never studied this subject"), not something a listener says about themself.
+  greeting: (studentName: string, audience: string, question: string) =>
+    `Hi ${studentName}, I'm ${introduceAudience(audience)}. I'm supposed to understand **${question}** and honestly I don't get it yet. Could you explain it to me?`,
 
   minExchangesWarning: () =>
     `I don't want to hold you up, but I'm not there yet — could we stay with it a little longer? A couple more explanations and I think it will click.`,
