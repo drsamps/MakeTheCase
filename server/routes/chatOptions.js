@@ -16,6 +16,10 @@ const forbid = (res, message) => res.status(403).json({ data: null, error: { mes
 
 // Default chat options - used when section_cases.chat_options is NULL
 const DEFAULT_CHAT_OPTIONS = {
+  // Activity mode (see server/services/teachBack.js). Absent or 'case_chat' = the
+  // protagonist chat; 'teach_back' = the student explains the reading to an AI audience.
+  activity_mode: 'case_chat',
+  teach_back_min_words: 15,      // Teach-back only: word floor on the opening explanation (0 = off)
   // Hints configuration
   hints_allowed: 3,
   free_hints: 1,
@@ -51,6 +55,28 @@ const DEFAULT_CHAT_OPTIONS = {
 // Base schema describing available options (for UI generation)
 // Note: persona options are loaded dynamically from database
 const BASE_CHAT_OPTIONS_SCHEMA = [
+  {
+    key: 'activity_mode',
+    label: 'Activity Mode',
+    type: 'select',
+    default: 'case_chat',
+    options: [
+      { value: 'case_chat', label: 'Case chat — the student argues a position with the case protagonist' },
+      { value: 'teach_back', label: 'Teach-back — the student explains the reading to an AI audience' }
+    ],
+    description: 'Which learning activity this assignment runs. Teach-back reverses the roles: the AI is the one who does not understand, and the student teaches it.',
+    category: 'activity'
+  },
+  {
+    key: 'teach_back_min_words',
+    label: 'Minimum Words (opening explanation)',
+    type: 'number',
+    default: 15,
+    min: 0,
+    max: 200,
+    description: 'Teach-back only. The FIRST student message must reach this many words (0 = no minimum). Short openings are refused before any AI call, so nothing is charged and no turn is used.',
+    category: 'activity'
+  },
   {
     key: 'hints_allowed',
     label: 'Hints Allowed',

@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Message, MessageRole, ConversationPhase, EvaluationResult, Section, CaseChat, ChatStatus, RubricForPrompt } from './types';
 import { createChatSession, getEvaluation, type LLMChatReply } from './services/llmService';
+import { TEACH_BACK, TEACH_BACK_COPY, DEFAULT_TEACH_BACK_MIN_WORDS, countWords, initialsOf, isTeachBack } from './teachBack';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
 import { api, getApiBaseUrl, refreshAuthToken } from './services/apiClient';
@@ -169,6 +170,9 @@ const App: React.FC = () => {
   
   // Chat options from section-case assignment (Phase 2)
   const [chatOptions, setChatOptions] = useState<any>(null);
+  // Teach-back reverses the activity: the AI is the one who does not understand, and the
+  // student explains the reading to it. Absent key = the case chat, always. See teachBack.ts.
+  const teachBackMode = isTeachBack(chatOptions);
 
   // Active rubric for evaluation
   const [activeRubric, setActiveRubric] = useState<RubricForPrompt | null>(null);
@@ -180,6 +184,8 @@ const App: React.FC = () => {
   
   // Default chat options
   const defaultChatOptions = {
+    activity_mode: 'case_chat',
+    teach_back_min_words: DEFAULT_TEACH_BACK_MIN_WORDS,
     hints_allowed: 3,
     free_hints: 1,
     ask_for_feedback: false,
@@ -834,15 +840,32 @@ const App: React.FC = () => {
         }
       }
 
-      // Build first message using case protagonist and question
+      const personaRow = availablePersonas.find((p) => p.persona_id === personaId);
+
+      // In teach-back the character comes from the PERSONA, not the scenario: the student
+      // chooses who they are explaining to. Overriding caseData here means the greeting,
+      // the ChatWindow avatar and the evaluation's protagonist label all follow the
+      // audience with no further edits downstream.
+      if (teachBackMode && personaRow?.persona_name) {
+        caseData = {
+          ...caseData,
+          protagonist: personaRow.persona_name,
+          protagonist_initials: initialsOf(personaRow.persona_name),
+          protagonist_role: personaRow.description || caseData.protagonist_role,
+        };
+        setActiveCaseData(caseData as CaseData);
+      }
+
+      // Build first message using the case protagonist (or the teach-back audience) and question
       const roleDescription = caseData.protagonist_role || 'the protagonist';
-      const firstMessageContent = `Hello ${name}, I am ${caseData.protagonist}, ${roleDescription} of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
+      const firstMessageContent = teachBackMode
+        ? TEACH_BACK_COPY.greeting(name, caseData.protagonist, caseData.protagonist_role || undefined, caseData.chat_question)
+        : `Hello ${name}, I am ${caseData.protagonist}, ${roleDescription} of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
       const initialHistory: Message[] = [{ role: MessageRole.MODEL, at: Date.now(), content: firstMessageContent }];
 
       // Create chat session with case data for cache-optimized prompts
       const freeHints = chatOptions?.free_hints ?? 1;
       const chatbotPersonality = chatOptions?.chatbot_personality || undefined;
-      const personaRow = availablePersonas.find((p) => p.persona_id === personaId);
       const personaData = personaRow
         ? {
             persona_id: personaRow.persona_id,
@@ -859,7 +882,7 @@ const App: React.FC = () => {
         modelId,
         initialHistory,
         caseData,
-        { freeHints, chatbotPersonality, personaData },
+        { freeHints, chatbotPersonality, personaData, mode: teachBackMode ? TEACH_BACK : undefined },
         studentId || studentDBId || undefined,
         caseChatId
       );
@@ -869,7 +892,7 @@ const App: React.FC = () => {
 
       // Check if we need position selection in chat (for 'explicit' capture method)
       const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-      const isPosTrackingEnabled = isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+      const isPosTrackingEnabled = !teachBackMode && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
       const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
       const selectedScenario = selectedScenarioId
         ? availableScenarios.find(s => s.scenario_id === selectedScenarioId)
@@ -887,7 +910,7 @@ const App: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId, chatOptions, availablePersonas, studentDBId]);
+  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId, chatOptions, teachBackMode, availablePersonas, studentDBId]);
   
   const handleSendMessage = async (userMessage: string) => {
     if (conversationPhase === ConversationPhase.CHATTING) {
@@ -911,7 +934,9 @@ const App: React.FC = () => {
             if (minExchanges > 0 && userMessageCount < minExchanges) {
               const ceoWarning: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: `I appreciate your time management, but we haven't had enough of a discussion yet. Let's continue our conversation a bit longer - I'd like to hear more of your analysis before we wrap up.`
+                content: teachBackMode
+                  ? TEACH_BACK_COPY.minExchangesWarning()
+                  : `I appreciate your time management, but we haven't had enough of a discussion yet. Let's continue our conversation a bit longer - I'd like to hear more of your analysis before we wrap up.`
               };
               setMessages(prev => [...prev, { role: MessageRole.USER, at: Date.now(), content: userMessage }, ceoWarning]);
               return;
@@ -926,7 +951,9 @@ const App: React.FC = () => {
                 // Ask for feedback (existing behavior)
                 const ceoPermissionRequest: Message = {
                     role: MessageRole.MODEL, at: Date.now(),
-                    content: `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. **Would you be willing to provide feedback by answering a few questions about our interaction?**`
+                    content: teachBackMode
+                      ? TEACH_BACK_COPY.feedbackPermission(studentFirstName)
+                      : `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. **Would you be willing to provide feedback by answering a few questions about our interaction?**`
                 };
                 setMessages(prev => [...prev, finalUserMessage, ceoPermissionRequest]);
                 setConversationPhase(ConversationPhase.AWAITING_HELPFUL_PERMISSION);
@@ -934,7 +961,9 @@ const App: React.FC = () => {
                 // Skip feedback, ask for transcript permission
                 const ceoTranscriptRequest: Message = {
                     role: MessageRole.MODEL, at: Date.now(),
-                    content: `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?**`
+                    content: teachBackMode
+                      ? TEACH_BACK_COPY.transcriptPermission(studentFirstName)
+                      : `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?**`
                 };
                 setMessages(prev => [...prev, finalUserMessage, ceoTranscriptRequest]);
                 setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
@@ -942,7 +971,9 @@ const App: React.FC = () => {
                 // Skip both feedback and transcript permission
                 const ceoFarewell: Message = {
                     role: MessageRole.MODEL, at: Date.now(),
-                    content: `${studentFirstName}, thank you for meeting with me today. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. Click the button below to proceed to the evaluation.`
+                    content: teachBackMode
+                      ? TEACH_BACK_COPY.farewell(studentFirstName)
+                      : `${studentFirstName}, thank you for meeting with me today. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. Click the button below to proceed to the evaluation.`
                 };
                 setMessages(prev => [...prev, finalUserMessage, ceoFarewell]);
                 setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
@@ -950,6 +981,26 @@ const App: React.FC = () => {
             return;
         }
         
+        // Teach-back only: floor on the OPENING explanation. The opening is the whole
+        // point of the activity, and MTC otherwise has no minimum at all - a student can
+        // type "idk" and burn their one chat. Refused before any AI call, so nothing is
+        // charged. Replies stay unfloored: "exactly, that's the trap" is a legitimate
+        // turn. (Quizzer floors its graded opening the same way.)
+        if (teachBackMode) {
+            const minWords = chatOptions?.teach_back_min_words ?? DEFAULT_TEACH_BACK_MIN_WORDS;
+            // The refused attempt stays on screen (like a refused hint), so "no opening
+            // yet" cannot be "no student message yet": it is "no student message has
+            // reached the floor yet". Otherwise the retry would go through unfloored.
+            const openingAccepted = messages.some(m => m.role === MessageRole.USER && countWords(m.content) >= minWords);
+            if (minWords > 0 && !openingAccepted && countWords(userMessage) < minWords) {
+                setMessages((prev) => [...prev,
+                    { role: MessageRole.USER, at: Date.now(), content: userMessage },
+                    { role: MessageRole.MODEL, at: Date.now(), content: TEACH_BACK_COPY.openingTooShort(minWords) }
+                ]);
+                return;
+            }
+        }
+
         // Check for hint request and enforce limit
         const isHintRequest = /\bhint\b/i.test(userMessage);
         const hintsAllowed = chatOptions?.hints_allowed ?? 3;
@@ -959,7 +1010,11 @@ const App: React.FC = () => {
             const newUserMessage: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
             const refusalMessage: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: hintsAllowed === 0 
+                content: teachBackMode
+                    ? (hintsAllowed === 0
+                        ? TEACH_BACK_COPY.hintsDisabled()
+                        : TEACH_BACK_COPY.hintsExhausted(hintsAllowed))
+                    : hintsAllowed === 0
                     ? "I'm sorry, but hints have been disabled for this conversation. Please try to work through this on your own using the case materials."
                     : `I'm sorry, but you've already used all ${hintsAllowed} of your allowed hints. You'll need to work through this on your own now.`
             };
@@ -1390,7 +1445,7 @@ const App: React.FC = () => {
         // Include position_id if explicit capture method is enabled (from assignment-level settings)
         // Check assignment's position tracking settings (from active-case endpoint)
         const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-        const isPosTrackingEnabled = isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+        const isPosTrackingEnabled = !teachBackMode && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
         const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
 
         if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && selectedInitialPositionId) {
@@ -1723,7 +1778,7 @@ const App: React.FC = () => {
     // Position tracking settings from assignment level (section_cases table)
     // These come from the active-case endpoint response
     const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-    const isPositionTrackingEnabled = isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+    const isPositionTrackingEnabled = !teachBackMode && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
     const positionCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
     const trackPositionChange = !isDisabledFlag(activeCaseInfo?.track_position_change);
 
@@ -1733,7 +1788,10 @@ const App: React.FC = () => {
     // Position selection happens IN CHAT for 'explicit' method, so no pre-chat requirement
     // For 'explicit' method: positions are selected after protagonist greeting in the chat
     const positionRequirementMet = true;
-    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted && positionRequirementMet;
+    // Teach-back has no built-in fallback character: with no audience the case protagonist
+    // would be cast as the confused listener, so the chat must not start at all.
+    const audienceRequirementMet = !teachBackMode || availablePersonas.some((p) => p.persona_id === selectedPersonaId);
+    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted && positionRequirementMet && audienceRequirementMet;
     const sectionName = sections.find(s => s.section_id === selectedSection)?.section_title || selectedSection;
 
     return (
@@ -2049,11 +2107,17 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {/* Protagonist Personality */}
+            {/* Protagonist Personality / teach-back audience */}
             {selectedCaseId && activeCaseData && (
               <div>
-                <label htmlFor="ceoPersona" className="block text-sm font-medium text-gray-700">Protagonist Personality</label>
-                <p className="mt-1 text-xs text-gray-500">Determines how strictly the protagonist requires you to cite case facts.</p>
+                <label htmlFor="ceoPersona" className="block text-sm font-medium text-gray-700">
+                  {teachBackMode ? 'Choose Your Audience' : 'Protagonist Personality'}
+                </label>
+                <p className="mt-1 text-xs text-gray-500">
+                  {teachBackMode
+                    ? 'Who you will be explaining this to. Your choice does not affect your score.'
+                    : 'Determines how strictly the protagonist requires you to cite case facts.'}
+                </p>
                 <select
                   id="ceoPersona"
                   value={selectedPersonaId}
@@ -2064,6 +2128,8 @@ const App: React.FC = () => {
                     availablePersonas.map((p) => (
                       <option key={p.persona_id} value={p.persona_id}>{p.persona_name}</option>
                     ))
+                  ) : teachBackMode ? (
+                    <option value="">No audience set up yet - ask your instructor</option>
                   ) : (
                     <>
                       <option value="moderate">Moderate (Recommended)</option>
@@ -2100,7 +2166,7 @@ const App: React.FC = () => {
               disabled={isLoading || !canStartChat}
               className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : !positionRequirementMet ? 'Select Your Position' : 'Start Chat'}
+              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : !positionRequirementMet ? 'Select Your Position' : !audienceRequirementMet ? 'No Audience Available' : 'Start Chat'}
             </button>
           </form>
         </div>
@@ -2159,7 +2225,7 @@ const App: React.FC = () => {
           (() => {
             // Get position tracking settings for final position selection
             const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-            const isPosTrackingEnabled = isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+            const isPosTrackingEnabled = !teachBackMode && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
             const trackPosChange = !isDisabledFlag(activeCaseInfo?.track_position_change);
             const selectedScenario = selectedScenarioId
               ? availableScenarios.find((s: any) => s.scenario_id === selectedScenarioId)

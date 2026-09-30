@@ -91,6 +91,7 @@ export interface SystemPromptOptions {
   personaData?: Persona;       // Database persona with custom instructions
   chatbotPersonality?: string; // Additional instructions from chat_options
   freeHints?: number;          // Number of free hints before score penalty (default 1)
+  mode?: string;               // chat_options.activity_mode — see teachBack.ts ('teach_back' swaps the template)
 }
 
 /**

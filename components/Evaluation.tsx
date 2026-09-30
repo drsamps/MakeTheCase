@@ -1,5 +1,28 @@
 import React from 'react';
 import { EvaluationResult } from '../types';
+import CriteriaCoverage from './CriteriaCoverage';
+
+/**
+ * The summary is plain text except for `**bold**`: the teach-back judge is asked for two
+ * bold headings. A bold run that opens a line is a heading on its own line (the model may
+ * put the heading and its text on one line); any other bold run is inline emphasis.
+ */
+const renderInlineBold = (text: string) =>
+  text.split(/\*\*(.+?)\*\*/g).map((part, i) => (i % 2 === 1 ? <strong key={i}>{part}</strong> : part));
+
+const renderSummary = (summary: string) =>
+  (summary || '').split(/\n+/).filter((line) => line.trim()).map((line, i) => {
+    const heading = line.match(/^\s*\*\*(.+?)\*\*:?\s*(.*)$/);
+    if (!heading) {
+      return <p key={i} className="text-gray-700 mt-1 first:mt-0">{renderInlineBold(line)}</p>;
+    }
+    return (
+      <React.Fragment key={i}>
+        <p className="font-semibold text-gray-800 mt-3 first:mt-0">{heading[1]}</p>
+        {heading[2] && <p className="text-gray-700 mt-1">{renderInlineBold(heading[2])}</p>}
+      </React.Fragment>
+    );
+  });
 
 interface EvaluationProps {
   result: EvaluationResult | null;
@@ -48,7 +71,8 @@ const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart,
         
         <div className="p-4 bg-blue-50 rounded-lg">
             <h2 className="text-xl font-semibold text-gray-800 mb-2">Supervisor's Summary</h2>
-            <p className="text-gray-700">{result.summary}</p>
+            {/* Line by line: a single <p> collapses a multi-paragraph or headed summary. */}
+            {renderSummary(result.summary)}
         </div>
 
         {typeof result.hints === 'number' && (
@@ -60,6 +84,8 @@ const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart,
           </div>
         )}
 
+        {showDetails && <CriteriaCoverage criteria={result.criteria} />}
+
         {showDetails && (
           <div className="space-y-6">
               {result.criteria.map((criterion, index) => (
@@ -67,7 +93,7 @@ const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart,
                       <div className="flex justify-between items-start">
                           <p className="text-md font-semibold text-gray-800 flex-1 pr-4">{criterion.question}</p>
                           <div className="text-lg font-bold text-white bg-blue-600 rounded-full w-12 h-12 flex items-center justify-center flex-shrink-0">
-                              {criterion.score}/5
+                              {criterion.score}/{criterion.max_score ?? 5}
                           </div>
                       </div>
                       <p className="text-sm text-gray-600 mt-2 pl-1"><strong className="font-medium">Feedback:</strong> {criterion.feedback}</p>

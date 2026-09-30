@@ -10,6 +10,7 @@ import {
 } from '../middleware/instructorAccess.js';
 import { canAccessResource } from '../services/resourceAccess.js';
 import { resolveAvailablePersonas } from '../services/personaService.js';
+import { resolveActivityMode } from '../services/teachBack.js';
 import {
   CaseVersionError,
   findMainVersionForSection,
@@ -44,7 +45,12 @@ function normalizeChatOptions(chatOptions) {
 
 async function attachAvailablePersonas(parsedChatOptions) {
   const opts = normalizeChatOptions(parsedChatOptions) || {};
-  const available_personas = await resolveAvailablePersonas(opts.allowed_personas);
+  // Teach-back offers audience personas, case chat offers protagonist personalities; the
+  // mode already travels inside chat_options, so this is the single place that decides.
+  const available_personas = await resolveAvailablePersonas(
+    opts.allowed_personas,
+    resolveActivityMode(opts)
+  );
   return available_personas;
 }
 

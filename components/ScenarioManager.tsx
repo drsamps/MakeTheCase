@@ -808,6 +808,13 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   rows={3}
                   placeholder="The main question for students to discuss..."
                 />
+                {/* The mode lives on the assignment, not the scenario, so this is static
+                    guidance rather than a conditional label. See docs/teach-back-setup.md. */}
+                <p className="text-xs text-gray-500 mt-1">
+                  On a <strong>teach-back</strong> assignment this is <em>what the audience needs
+                  explained</em> (e.g. &quot;why safety stock rises with demand variability&quot;), and
+                  positions and arguments are not used.
+                </p>
               </div>
 
               <div>

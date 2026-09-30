@@ -5,17 +5,29 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
 import { inferPositionFromTranscript } from '../services/positionInference.js';
 import { buildCoachPrompt } from '../services/promptBuilder.js';
+import { buildTeachBackCoachPrompt } from '../services/teachBackCoachPrompt.js';
+import { getActivityMode, teachBackEvalInputs, verifyEvidence, TEACH_BACK } from '../services/teachBack.js';
 import { stripTurnTiming } from '../../utils/transcriptFormat.js';
 import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
-import { resolveInstructorForSection, resolveInstructorForCaseChat, resolveSectionForCaseChat } from '../services/keyResolver.js';
+import { resolveInstructorForSection, resolveInstructorForCaseChat } from '../services/keyResolver.js';
 import {
   parseEvaluationResponse,
   validateEvaluationResult,
   buildCorrectionPrompt,
   trimEvaluationResult,
 } from '../services/evaluationNormalizer.js';
+
+/**
+ * Teach-back transcripts are judged by a different prompt: the student was teaching, not
+ * arguing, and the judge must be told to ignore everything the listener said. Same
+ * signature and same output contract, so every caller and the whole validation cascade is
+ * unchanged. Absent mode = the case-chat prompt, which is the pre-teach-back behaviour.
+ */
+function coachPromptFor(activityMode) {
+  return activityMode === TEACH_BACK ? buildTeachBackCoachPrompt : buildCoachPrompt;
+}
 
 const router = express.Router();
 
@@ -160,15 +172,27 @@ router.post('/run', async (req, res) => {
     }
 
     // 3. Get rubric
-    const rubric = rubricId ? await getRubricById(rubricId) : await getDefaultRubric();
-    const expectedCriteria = rubric?.criteria?.length || (rubric?.criteria_prompt?.match(/Q\d+\./g) || []).length || 3;
+    let rubric = rubricId ? await getRubricById(rubricId) : await getDefaultRubric();
 
     // 4. Load case data
     const { loadCaseData, getModelConfig } = await import('./llm.js');
-    const caseData = await loadCaseData(case_id);
+    let caseData = await loadCaseData(case_id);
     if (!caseData) {
       return res.status(404).json({ data: null, error: { message: 'Case not found' } });
     }
+
+    // Teach-back is judged against the audience the student chose, and against its own
+    // criteria unless the assignment names a rubric (the client always sends one).
+    const activityMode = await getActivityMode(section_id, case_id);
+    if (activityMode === TEACH_BACK) {
+      ({ caseData, rubric } = await teachBackEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric }));
+    }
+    const expectedCriteria = rubric?.criteria?.length || (rubric?.criteria_prompt?.match(/Q\d+\./g) || []).length || 3;
+    // Every successful exit goes through here so unverified "student quotes" never ship.
+    const sendResult = (data) => res.json({
+      data: activityMode === TEACH_BACK ? verifyEvidence(data, chatHistory, caseData.protagonist) : data,
+      error: null
+    });
 
     // 5. Look up model config (for temperature/reasoning_effort)
     const modelConfig = await getModelConfig(modelId);
@@ -177,7 +201,7 @@ router.post('/run', async (req, res) => {
     }
 
     // 6. Build evaluation prompt
-    const prompt = buildCoachPrompt(chatHistory, full_name, caseData, freeHints, rubric);
+    const prompt = coachPromptFor(activityMode)(chatHistory, full_name, caseData, freeHints, rubric);
 
     // 7. Call LLM
     const instructorId = await resolveInstructorForSection(section_id);
@@ -236,7 +260,7 @@ router.post('/run', async (req, res) => {
 
         if (retryIssues.length === 0) {
           console.log('[Eval run] Retry succeeded — validation passed');
-          return res.json({ data: retryResult, error: null });
+          return sendResult(retryResult);
         }
 
         // Retry didn't fully fix it; use retry result for Step 2 if it's better
@@ -261,26 +285,26 @@ router.post('/run', async (req, res) => {
       const criticalIssues = trimIssues.filter(i => i.code !== 'ZERO_SCORE_WITH_SUMMARY');
       if (criticalIssues.length === 0) {
         console.log('[Eval run] Trim succeeded — returning fixed result');
-        return res.json({ data: trimmed, error: null });
+        return sendResult(trimmed);
       }
 
       // Use trimmed result even if not perfect, as long as we have criteria
       if (trimmed.criteria.length === expectedCriteria) {
         console.log('[Eval run] Trim partially succeeded — returning trimmed result with remaining issues');
-        return res.json({ data: trimmed, error: null });
+        return sendResult(trimmed);
       }
     }
 
     // If only ZERO_SCORE_WITH_SUMMARY remains, still return the result
     const criticalIssues = issues.filter(i => i.code !== 'ZERO_SCORE_WITH_SUMMARY');
     if (criticalIssues.length === 0) {
-      return res.json({ data: result, error: null });
+      return sendResult(result);
     }
 
     // Step 3: Give up gracefully
     if (issues.length > 0 && result.criteria.length > 0 && result.summary && result.summary !== 'No summary provided.') {
       console.warn('[Eval run] Returning imperfect result (has criteria + summary)');
-      return res.json({ data: result, error: null });
+      return sendResult(result);
     }
 
     console.error('[Eval run] Evaluation failed after all recovery attempts:', issues.map(i => i.code));
@@ -332,12 +356,12 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
     if (!chatRows.length) {
       return res.status(404).json({ data: null, error: { message: 'Case chat not found' } });
     }
-    const { case_id, student_id, full_name } = chatRows[0];
+    const { case_id, student_id, section_id, full_name } = chatRows[0];
     console.log('[Re-evaluate] Step 2: Got case_id:', case_id, 'full_name:', full_name);
 
     // 3. Get rubric
     console.log('[Re-evaluate] Step 3: Getting rubric...');
-    const rubric = rubric_id
+    let rubric = rubric_id
       ? await getRubricById(rubric_id)
       : await getDefaultRubric();
     console.log('[Re-evaluate] Step 3: Got rubric:', rubric?.rubric_id);
@@ -345,16 +369,20 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
     // 4. Load case data
     console.log('[Re-evaluate] Step 4: Loading case data...');
     const { loadCaseData } = await import('./llm.js');
-    const caseData = await loadCaseData(case_id);
+    let caseData = await loadCaseData(case_id);
     if (!caseData) {
       return res.status(404).json({ data: null, error: { message: 'Case not found' } });
     }
     console.log('[Re-evaluate] Step 4: Got case data');
+    const reEvalMode = await getActivityMode(section_id, case_id);
+    if (reEvalMode === TEACH_BACK) {
+      ({ caseData, rubric } = await teachBackEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric, rubricChosen: !!rubric_id }));
+    }
 
     // 5. Build evaluation prompt
     console.log('[Re-evaluate] Step 5: Building prompt...');
     // Turn timing ("| 12 after 3.52m") is for instructors; the evaluator must not see it.
-    const prompt = buildCoachPrompt(stripTurnTiming(transcript), full_name, caseData, 0, rubric);
+    const prompt = coachPromptFor(reEvalMode)(stripTurnTiming(transcript), full_name, caseData, 0, rubric);
     console.log('[Re-evaluate] Step 5: Built prompt, length:', prompt.length);
 
     // 6. Call LLM for evaluation
@@ -362,9 +390,8 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
     const { getModelConfig: getReEvalModelConfig } = await import('./llm.js');
     const reEvalModelConfig = await getReEvalModelConfig(model_id);
     const reEvalInstructorId = await resolveInstructorForCaseChat(case_chat_id);
-    const reEvalSectionId = await resolveSectionForCaseChat(case_chat_id);
     const reEvalStartTime = Date.now();
-    const { text: evalResult, meta: evalMeta } = await evaluateWithLLM({ modelId: model_id, vendor: reEvalModelConfig?.vendor || null, prompt, config: { ...(reEvalModelConfig || {}), instructorId: reEvalInstructorId, caseId: case_id, sectionId: reEvalSectionId, purpose: 'evaluation' } });
+    const { text: evalResult, meta: evalMeta } = await evaluateWithLLM({ modelId: model_id, vendor: reEvalModelConfig?.vendor || null, prompt, config: { ...(reEvalModelConfig || {}), instructorId: reEvalInstructorId, caseId: case_id, sectionId: section_id, purpose: 'evaluation' } });
     const reEvalDurationMs = Date.now() - reEvalStartTime;
     console.log('[Re-evaluate] Step 6: Got LLM result');
 
@@ -445,7 +472,7 @@ router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, r
     // Get case_chat details
     console.log('[Preview-prompt] Step 2: Getting case_chat details...');
     const [chatRows] = await pool.execute(
-      `SELECT cc.case_id, s.full_name
+      `SELECT cc.case_id, cc.section_id, s.full_name
        FROM case_chats cc
        JOIN students s ON cc.student_id = s.id
        WHERE cc.id = ?`,
@@ -454,21 +481,25 @@ router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, r
     if (!chatRows.length) {
       return res.status(404).json({ data: null, error: { message: 'Case chat not found' } });
     }
-    const { case_id, full_name } = chatRows[0];
+    const { case_id, section_id, full_name } = chatRows[0];
     console.log('[Preview-prompt] Step 2: Got case_id:', case_id, 'full_name:', full_name);
 
     // Get rubric and case data, build prompt
     console.log('[Preview-prompt] Step 3: Getting rubric...');
-    const rubric = rubric_id ? await getRubricById(rubric_id) : await getDefaultRubric();
+    let rubric = rubric_id ? await getRubricById(rubric_id) : await getDefaultRubric();
     console.log('[Preview-prompt] Step 3: Got rubric:', rubric?.rubric_id);
 
     console.log('[Preview-prompt] Step 4: Loading case data...');
     const { loadCaseData } = await import('./llm.js');
-    const caseData = await loadCaseData(case_id);
+    let caseData = await loadCaseData(case_id);
     console.log('[Preview-prompt] Step 4: Got case data:', !!caseData);
+    const previewMode = await getActivityMode(section_id, case_id);
+    if (previewMode === TEACH_BACK) {
+      ({ caseData, rubric } = await teachBackEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric, rubricChosen: !!rubric_id }));
+    }
 
     console.log('[Preview-prompt] Step 5: Building prompt...');
-    const prompt = buildCoachPrompt(
+    const prompt = coachPromptFor(previewMode)(
       stripTurnTiming(transcriptRows[0].transcript),
       full_name,
       caseData || {},  // Handle null case data

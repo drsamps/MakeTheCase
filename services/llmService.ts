@@ -1,6 +1,8 @@
 import { getSystemPrompt, buildSystemPrompt, CaseData, DEFAULT_CASE_DATA, SystemPromptOptions } from "../constants";
 import { Message, EvaluationResult, CEOPersona } from "../types";
 import { getApiBaseUrl } from "./apiClient";
+import { TEACH_BACK } from "../teachBack";
+import { buildTeachBackSystemPrompt } from "../teachBackPrompt";
 
 const parseOrThrow = async (response: Response) => {
   const text = await response.text();
@@ -39,9 +41,14 @@ export const createChatSession = (
   studentId?: string,
   caseChatId?: string | null
 ): LLMChatSession => {
-  // Build prompt with case data at the TOP for LLM caching
+  // Build prompt with case data at the TOP for LLM caching. Teach-back swaps in a
+  // different template (the AI is the one who does not understand); everything else about
+  // the session — history, fallback, logging — is identical.
+  const teachBack = promptOptions?.mode === TEACH_BACK;
   const systemPrompt = caseData
-    ? buildSystemPrompt(studentName, persona, caseData, promptOptions)
+    ? teachBack
+      ? buildTeachBackSystemPrompt(studentName, persona as string, caseData, promptOptions)
+      : buildSystemPrompt(studentName, persona, caseData, promptOptions)
     : getSystemPrompt(studentName, persona);
   let currentHistory = [...history];
 

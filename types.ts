@@ -144,6 +144,10 @@ export interface SectionCase {
 }
 
 export interface ChatOptions {
+  // Activity mode: 'case_chat' (argue a position with the protagonist) or 'teach_back'
+  // (explain the reading to an AI audience). See teachBack.ts. A missing key means case chat.
+  activity_mode: string;
+  teach_back_min_words: number;   // Teach-back only: word floor on the opening explanation (0 = off)
   hints_allowed: number;
   free_hints: number;
   ask_for_feedback: boolean;
@@ -178,6 +182,10 @@ export interface EvaluationCriterion {
   score: number;
   max_score?: number;            // Variable max points (optional for backward compat)
   feedback: string;
+  // Teach-back only (components/CriteriaCoverage.tsx). Case-chat evaluations never set
+  // these, so they are optional and additive — the shared validator accepts both modes.
+  status?: 'met' | 'partial' | 'not_met';
+  evidence?: string;             // Verbatim quote from one of the student's own messages
 }
 
 export interface EvaluationResult {

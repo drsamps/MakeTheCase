@@ -5,6 +5,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api, getApiBaseUrl, getImpersonationId, setImpersonationId } from '../services/apiClient'; // Dashboard with tiles/list view toggle
 import { fetchSectionCaseSetting } from '../services/sectionCaseSettings';
 import { detectProvider } from '../services/llmService';
+import { TEACH_BACK, CASE_CHAT, DEFAULT_TEACH_BACK_MIN_WORDS, isTeachBack, isAudiencePersonaId, parseChatOptions, crossModePersonaIds, validateChatOptionsForSave } from '../teachBack';
 import { PromptManager } from './PromptManager';
 import { SettingsManager } from './SettingsManager';
 import { LoggingManager } from './LoggingManager';
@@ -49,7 +50,7 @@ import IssueAnalytics from './IssueAnalytics';
 import SectionResultsSummary from './SectionResultsSummary';
 import HelpTooltip from './ui/HelpTooltip';
 import ModelsList, { defaultRank, defaultRankLabel, type Model, type ModelTestOutcome, type ModelUsage } from './models/ModelsList';
-import { ChatOptionsHelp, PersonasHelp } from '../help/dashboard';
+import { ChatOptionsHelp, PersonasHelp, TeachBackHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
 import { personLabel, caseLabel, quote } from '../utils/confirmLabels';
 import {
@@ -678,6 +679,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   // Default chat options
   const defaultChatOptions = {
+    activity_mode: CASE_CHAT,
+    teach_back_min_words: DEFAULT_TEACH_BACK_MIN_WORDS,
     hints_allowed: 3,
     free_hints: 1,
     ask_for_feedback: false,
@@ -1967,13 +1970,40 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
+  /**
+   * Teach-back badge. The two activities look identical in every list until you open them,
+   * so the badge is the only thing telling an instructor which one an assignment runs.
+   * `chat_options` arrives either parsed or as a JSON string depending on the endpoint.
+   */
+  const renderActivityModeBadge = (chatOptions: any) => {
+    if (!isTeachBack(parseChatOptions(chatOptions))) return null;
+    return (
+      <span
+        className="text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded"
+        title="The student explains the reading to an AI audience"
+      >
+        Teach-back
+      </span>
+    );
+  };
+
   const renderPersonaChatOptionsFields = (disabled = false) => {
     if (!editingChatOptions) return null;
-    const enabledPersonas = personasList.filter((p) => p.enabled);
-    const { allowAll, selectedIds } = resolveAllowedPersonasForForm(
+    // Teach-back offers AUDIENCES (audience-*), case chat offers protagonist
+    // personalities. Filtering both the checkbox list and the default dropdown keeps an
+    // instructor from ever offering "Sycophantic" as a grandmother, or vice versa.
+    const teachBack = isTeachBack(editingChatOptions);
+    const allEnabled = personasList.filter((p) => p.enabled);
+    const enabledPersonas = allEnabled.filter((p) => isAudiencePersonaId(p.persona_id) === teachBack);
+    const resolved = resolveAllowedPersonasForForm(
       editingChatOptions.allowed_personas,
       enabledPersonas
     );
+    const allowAll = resolved.allowAll;
+    // Ids of the other activity are dropped from the working selection, so the next tick
+    // or untick writes a list without them.
+    const crossModeSelected = crossModePersonaIds(editingChatOptions);
+    const selectedIds = resolved.selectedIds.filter((id) => !crossModeSelected.includes(id));
     const defaultOptions = personasForDefaultDropdown(enabledPersonas, editingChatOptions.allowed_personas);
 
     const updateAllowed = (nextAllowAll: boolean, nextSelected: string[]) => {
@@ -1989,7 +2019,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     return (
       <>
         <div className="mb-4">
-          <label className="block text-xs font-medium text-gray-700 mb-2">Allowed Personas</label>
+          <label className="block text-xs font-medium text-gray-700 mb-2">
+            {teachBack ? 'Allowed Audiences' : 'Allowed Personas'}
+          </label>
+          {teachBack && enabledPersonas.length === 0 && (
+            <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2 mb-2">
+              No audience personas exist yet. Create them under <strong>Setup &rarr; Personas</strong> with
+              ids beginning <code>audience-</code> (see docs/teach-back-setup.md), or students will have
+              nobody to explain to.
+            </p>
+          )}
+          {crossModeSelected.length > 0 && (
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 mb-2">
+              This list still names {teachBack ? 'case-chat personalities' : 'teach-back audiences'} that
+              this activity will ignore: <code>{crossModeSelected.join(', ')}</code>. Changing the
+              selection below clears them.
+            </p>
+          )}
           <label className={`flex items-center gap-2 text-sm mb-2 ${disabled ? 'text-gray-400' : ''}`}>
             <input
               type="checkbox"
@@ -2028,10 +2074,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               ))}
             </div>
           )}
-          <p className="text-xs text-gray-500 mt-1">Leave &quot;All enabled&quot; checked to allow every enabled persona, including new clones.</p>
+          <p className="text-xs text-gray-500 mt-1">
+            Leave &quot;All enabled&quot; checked to allow every enabled {teachBack ? 'audience' : 'persona'}, including new clones.
+          </p>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-700 mb-1">Default Persona</label>
+          <label className="block text-xs font-medium text-gray-700 mb-1">
+            {teachBack ? 'Default Audience' : 'Default Persona'}
+          </label>
           <select
             value={editingChatOptions.default_persona ?? defaultOptions[0]?.persona_id ?? 'moderate'}
             onChange={(e) => setEditingChatOptions({ ...editingChatOptions, default_persona: e.target.value })}
@@ -2361,6 +2411,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   const handleSaveChatOptions = async (sectionId: string, caseId: string) => {
+    const invalid = validateChatOptionsForSave(editingChatOptions);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
     setIsSavingChatOptions(true);
     try {
       const token = localStorage.getItem('admin_auth_token');
@@ -4715,6 +4770,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           <div className="flex items-center gap-2">
                             <span className="font-medium text-gray-900">{sc.case_title}</span>
                             <span className="text-sm text-gray-500">({sc.case_id})</span>
+                            {renderActivityModeBadge(sc.chat_options)}
                             {renderCaseSettingsSourceChip(sc, getSelectedSection()?.course_id
                               ? () => openCourseAssignments(getSelectedSection()?.course_id)
                               : undefined)}
@@ -5507,6 +5563,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Handle saving chat options as defaults
   const handleSaveAsDefaults = async (forSection: boolean) => {
     if (!editingChatOptions) return;
+    const invalid = validateChatOptionsForSave(editingChatOptions);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
 
     const description = forSection
       ? `section "${assignmentsSectionsList.find((s: any) => s.section_id === chatOptionsSection)?.section_title || chatOptionsSection}"`
@@ -5546,6 +5607,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Handle saving the default directly (when in defaults editing mode)
   const handleSaveDefault = async () => {
     if (!editingChatOptions) return;
+    const invalid = validateChatOptionsForSave(editingChatOptions);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
 
     setIsSavingChatOptions(true);
     try {
@@ -5723,7 +5789,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               )}
               {sectionCasesList.map((sc: any) => (
                 <option key={sc.case_id} value={sc.case_id}>
-                  {sc.case_title} ({sc.case_id})
+                  {sc.case_title} ({sc.case_id}){isTeachBack(parseChatOptions(sc.chat_options)) ? ' - Teach-back' : ''}
                 </option>
               ))}
             </select>
@@ -5761,8 +5827,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 )}
               </>
             ) : (
-              <h3 className="font-medium text-gray-900">
-                Chat Options for {getSelectedChatOptionsCase()?.case_title}
+              <h3 className="font-medium text-gray-900 flex items-center gap-2">
+                <span>Chat Options for {getSelectedChatOptionsCase()?.case_title}</span>
+                {renderActivityModeBadge(editingChatOptions)}
               </h3>
             )}
           </div>
@@ -5869,6 +5936,54 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               }
               return null;
             })()}
+
+            {/* Activity mode. Deliberately ABOVE the categories, not inside one: it decides
+                what every option below it means, and which of them apply at all. */}
+            {editingChatOptions && (
+            <div className="mb-4 p-3 border border-purple-200 bg-purple-50 rounded-lg">
+              <div className="flex items-center gap-2 mb-2">
+                <label className="block text-xs font-semibold text-gray-800">Activity Mode</label>
+                <HelpTooltip title="Teach-Back Help">
+                  <TeachBackHelp />
+                </HelpTooltip>
+              </div>
+              <select
+                value={editingChatOptions.activity_mode ?? CASE_CHAT}
+                onChange={(e) => setEditingChatOptions({ ...editingChatOptions, activity_mode: e.target.value })}
+                disabled={!isEditingDefault && useDefaultOptions}
+                className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : 'bg-white'}`}
+              >
+                <option value={CASE_CHAT}>Case chat - the student argues a position with the case protagonist</option>
+                <option value={TEACH_BACK}>Teach-back - the student explains the reading to an AI audience</option>
+              </select>
+              {isTeachBack(editingChatOptions) && (
+                <div className="mt-3">
+                  <p className="text-xs text-gray-700 mb-2">
+                    In teach-back the roles reverse: the AI does not understand the material and the
+                    student teaches it. Positions, arguments and the teaching note are not used.
+                    The audience has read the reading, so teach-back is a practice activity -
+                    see <code>docs/teach-back-setup.md</code>.
+                  </p>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Minimum Words (opening explanation)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="200"
+                    value={editingChatOptions.teach_back_min_words ?? DEFAULT_TEACH_BACK_MIN_WORDS}
+                    onChange={(e) => setEditingChatOptions({ ...editingChatOptions, teach_back_min_words: parseInt(e.target.value) || 0 })}
+                    disabled={!isEditingDefault && useDefaultOptions}
+                    className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
+                  />
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    The student&apos;s first message must reach this many words (0 = no minimum). Short
+                    openings are refused before any AI call, so nothing is charged and no chat is used.
+                  </p>
+                </div>
+              )}
+            </div>
+            )}
 
             {/* Categories Header with Expand/Collapse All */}
             <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-200">
@@ -6311,8 +6426,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               )}
             </div>
 
-            {/* Advanced Section */}
-            <div className="border-b border-gray-200">
+            {/* Advanced Section. Hidden in teach-back: it holds only the position-tracking
+                override, and teach-back has no positions. */}
+            <div className={`border-b border-gray-200 ${isTeachBack(editingChatOptions) ? 'hidden' : ''}`}>
               <button
                 type="button"
                 onClick={() => toggleCategory('advanced')}
@@ -6540,7 +6656,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         <div className="flex items-center gap-2">
           <div>
             <h2 className="text-2xl font-bold text-gray-900">Chatbot Personas</h2>
-            <p className="text-sm text-gray-500">Manage AI personality configurations for case chats</p>
+            <p className="text-sm text-gray-500">
+              Protagonist personalities for case chats, and audiences for teach-back. An
+              <strong> Activity</strong> of Teach-back means the id begins <code>audience-</code>; the two
+              are never offered in the same assignment.
+            </p>
           </div>
           <HelpTooltip title="Chatbot Personas">
             <PersonasHelp />
@@ -6594,6 +6714,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">ID</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Name</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider whitespace-nowrap">Activity</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Type</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Owner</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Description</th>
@@ -6610,19 +6731,47 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 <tr key={persona.persona_id} className={!persona.enabled ? 'bg-gray-50 opacity-60' : 'hover:bg-gray-50'}>
                   <td className="px-4 py-3 text-sm font-medium text-gray-900">{persona.persona_id}</td>
                   <td className="px-4 py-3 text-sm text-gray-700 font-medium">{persona.persona_name}</td>
-                  <td className="px-4 py-3">
-                    {isSystemPersona(persona) ? (
-                      <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded">Built-in</span>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {isAudiencePersonaId(persona.persona_id) ? (
+                      <span
+                        className="inline-block whitespace-nowrap px-2 py-0.5 text-xs bg-indigo-50 text-indigo-700 border border-indigo-200 rounded"
+                        title="Offered on teach-back assignments: someone the student explains to"
+                      >
+                        Teach-back
+                      </span>
                     ) : (
-                      <span className="px-2 py-0.5 text-xs bg-gray-100 text-gray-700 rounded">Custom</span>
+                      <span
+                        className="inline-block whitespace-nowrap px-2 py-0.5 text-xs bg-amber-50 text-amber-800 border border-amber-200 rounded"
+                        title="Offered on case-chat assignments: how the protagonist pushes back"
+                      >
+                        Case chat
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {isSystemPersona(persona) ? (
+                      <span className="inline-block whitespace-nowrap px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded">Built-in</span>
+                    ) : (
+                      <span className="inline-block whitespace-nowrap px-2 py-0.5 text-xs bg-gray-100 text-gray-700 rounded">Custom</span>
                     )}
                     {!isSystemPersona(persona) && persona.visibility && persona.visibility !== 'private' && (
-                      <span className="ml-1 px-2 py-0.5 text-xs bg-purple-50 text-purple-700 rounded">{visibilityLabel(persona.visibility)}</span>
+                      <span className="inline-block whitespace-nowrap ml-1 px-2 py-0.5 text-xs bg-purple-50 text-purple-700 rounded">{visibilityLabel(persona.visibility)}</span>
                     )}
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">{ownerLabel(persona, personaAccessContext)}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600 max-w-xs truncate" title={persona.description || undefined}>
-                    {persona.description || '-'}
+                  {/* `max-w-*` on a <td> is ignored by an auto-layout table, which is why this
+                      column used to stretch. The width goes on an inner div instead, and the text
+                      is clamped to two smaller lines with the full description on hover.
+                      Clamping is inline rather than `line-clamp-2` because Tailwind is loaded
+                      from the unpinned CDN and that utility only exists from v3.3. */}
+                  <td className="px-4 py-3">
+                    <div
+                      className="text-xs text-gray-500 leading-snug w-56 overflow-hidden"
+                      style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
+                      title={persona.description || undefined}
+                    >
+                      {persona.description || '-'}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     {canToggle ? (
@@ -6644,8 +6793,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="flex gap-2 flex-wrap">
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <div className="flex gap-2">
                       {editable ? (
                         <button
                           onClick={() => handleOpenPersonaModal(persona, false)}
@@ -9773,6 +9922,30 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
                   />
                   <p className="text-xs text-gray-500 mt-1">Lowercase, hyphens only</p>
+                  {/* Teach-back audiences are distinguished from case-chat personalities by
+                      this id prefix rather than by a column, so the two are never offered in
+                      the same activity. See teachBack.ts. */}
+                  {!editingPersona && !personaViewOnly && (
+                    <label className="flex items-center gap-2 text-xs text-gray-700 mt-2">
+                      <input
+                        type="checkbox"
+                        checked={isAudiencePersonaId(personaForm.persona_id)}
+                        onChange={(e) => {
+                          const bare = personaForm.persona_id.replace(/^audience-/, '');
+                          setPersonaForm({ ...personaForm, persona_id: e.target.checked ? `audience-${bare}` : bare });
+                        }}
+                        className="rounded border-gray-300"
+                      />
+                      <span>Teach-back audience (someone the student explains to)</span>
+                    </label>
+                  )}
+                  {isAudiencePersonaId(personaForm.persona_id) && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Write the instructions as <em>who this listener is and how they react</em> - never
+                      what they know, and never how strictly to mark. The judge never sees the audience,
+                      so a warm audience cannot raise a score.
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Display Name *</label>

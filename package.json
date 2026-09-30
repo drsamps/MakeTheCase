@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "create-admin": "node server/scripts/create-admin.js",
     "seed-malawis": "node server/scripts/seed-malawis-pizza.js",
+    "seed-audiences": "node server/scripts/seed-teach-back-audiences.js",
     "migrate": "node server/scripts/run-pending-migrations.js",
     "migrate:dry": "node server/scripts/run-pending-migrations.js --dry-run"
   },
