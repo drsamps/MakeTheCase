@@ -198,6 +198,25 @@ async function orThrow<T>(request: Promise<{ data: T | null; error: { message: s
   return data;
 }
 
+// Save feedback shown beside the button that was clicked. The modal body scrolls,
+// and how far depends on the window size, so the message brings itself into view;
+// 'nearest' leaves the scroll alone when it is already visible.
+const InlineStatus: React.FC<{ kind: 'error' | 'saved'; text: string }> = ({ kind, text }) => {
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    ref.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [text]);
+  return (
+    <span
+      ref={ref}
+      role={kind === 'error' ? 'alert' : 'status'}
+      className={`min-w-0 text-sm ${kind === 'error' ? 'text-red-600' : 'text-green-600 font-medium'}`}
+    >
+      {kind === 'error' ? '⚠ ' : '✓ '}{text}
+    </span>
+  );
+};
+
 export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   caseId,
   caseTitle,
@@ -210,21 +229,23 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   const [editingScenario, setEditingScenario] = useState<CaseScenario | null>(null);
   const [formData, setFormData] = useState<FormData>(defaultFormData);
   const [isSaving, setIsSaving] = useState(false);
+  // List-level errors (load, toggle, delete, reorder, template) use the banner at
+  // the top; scenario/position form saves report beside their Save button instead,
+  // because those buttons sit at the bottom of a long form.
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [savedFlash, setSavedFlash] = useState<{ where: 'list' | 'positions'; text: string } | null>(null);
 
-  // The banners sit at the top of the scrolling body; the Save buttons are at the
-  // bottom of a long form, so bring a new message into view.
   useEffect(() => {
-    if (error || notice) contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [error, notice]);
+    if (!savedFlash) return;
+    const timer = setTimeout(() => setSavedFlash(null), 3000);
+    return () => clearTimeout(timer);
+  }, [savedFlash]);
 
-  // An error supersedes the success notice; don't let a stale one reappear once
-  // the error is dismissed.
-  useEffect(() => {
-    if (error) setNotice(null);
-  }, [error]);
+  const closeForm = () => {
+    setFormError(null);
+    setShowForm(false);
+  };
 
   // Positions state
   const [positions, setPositions] = useState<Position[]>([]);
@@ -301,7 +322,8 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   };
 
   const handleCreate = () => {
-    setNotice(null);
+    setFormError(null);
+    setSavedFlash(null);
     setEditingScenario(null);
     setFormData(defaultFormData);
     setPositions([]);
@@ -309,7 +331,8 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   };
 
   const handleEdit = (scenario: CaseScenario) => {
-    setNotice(null);
+    setFormError(null);
+    setSavedFlash(null);
     setEditingScenario(scenario);
     setFormData({
       scenario_name: scenario.scenario_name,
@@ -330,7 +353,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
   const handleSave = async () => {
     if (!formData.scenario_name || !formData.protagonist || !formData.protagonist_initials || !formData.chat_question) {
-      setError('Scenario name, protagonist, initials, and chat question are required');
+      setFormError('Scenario name, protagonist, initials, and chat question are required');
       return;
     }
 
@@ -348,7 +371,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     };
 
     setIsSaving(true);
-    setError(null);
+    setFormError(null);
     try {
       if (editingScenario) {
         await orThrow(api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}`, payload));
@@ -357,17 +380,18 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
         // Set editingScenario to the newly created scenario so positions can be added
         if (created) {
           setEditingScenario(created);
-          setNotice('Scenario saved. Add its positions below.');
+          setSavedFlash({ where: 'positions', text: 'Scenario saved. Add its positions below.' });
         }
       }
       await fetchScenarios();
       onScenariosChanged?.();
       // Don't close form - stay to add positions if this was a new scenario
       if (editingScenario) {
-        setShowForm(false);
+        closeForm();
+        setSavedFlash({ where: 'list', text: `Scenario "${formData.scenario_name}" updated` });
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to save scenario');
+      setFormError(err.message || 'Failed to save scenario');
     } finally {
       setIsSaving(false);
     }
@@ -405,12 +429,14 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
   // Position handlers
   const handleCreatePosition = () => {
+    setFormError(null);
     setEditingPosition(null);
     setPositionFormData(defaultPositionFormData);
     setShowPositionForm(true);
   };
 
   const handleEditPosition = (position: Position) => {
+    setFormError(null);
     setEditingPosition(position);
     setPositionFormData({
       position_name: position.position_name,
@@ -424,17 +450,17 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
   const handleSavePosition = async () => {
     if (!editingScenario) {
-      setError('Please save the scenario first before adding positions');
+      setFormError('Please save the scenario first before adding positions');
       return;
     }
 
     if (!positionFormData.position_name || !positionFormData.position) {
-      setError('Position name and description are required');
+      setFormError('Position name and description are required');
       return;
     }
 
     setIsSavingPosition(true);
-    setError(null);
+    setFormError(null);
     try {
       const payload = {
         position_name: positionFormData.position_name,
@@ -451,8 +477,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       }
       await fetchPositions(editingScenario.id);
       setShowPositionForm(false);
+      setSavedFlash({ where: 'positions', text: `Position "${positionFormData.position_name}" saved` });
     } catch (err: any) {
-      setError(err.message || 'Failed to save position');
+      setFormError(err.message || 'Failed to save position');
     } finally {
       setIsSavingPosition(false);
     }
@@ -565,25 +592,22 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
         </div>
 
         {/* Content */}
-        <div ref={contentRef} className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-6">
           {error && (
             <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg border border-red-200">
               {error}
               <button onClick={() => setError(null)} className="float-right text-red-500">&times;</button>
             </div>
           )}
-          {notice && !error && showForm && (
-            <div className="mb-4 p-3 bg-green-50 text-green-700 rounded-lg border border-green-200">
-              {notice}
-              <button onClick={() => setNotice(null)} className="float-right text-green-600">&times;</button>
-            </div>
-          )}
 
           {!showForm ? (
             <>
               {/* Scenario List */}
-              <div className="mb-4 flex justify-between items-center">
+              <div className="mb-4 flex flex-wrap justify-between items-center gap-x-3 gap-y-1">
                 <span className="text-gray-600">{scenarios.length} scenario(s)</span>
+                {savedFlash?.where === 'list' && (
+                  <span className="flex-1"><InlineStatus kind="saved" text={savedFlash.text} /></span>
+                )}
                 <button
                   onClick={handleCreate}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -665,7 +689,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   {editingPosition ? 'Edit Position' : 'Define Position'}
                 </h3>
                 <button
-                  onClick={() => setShowPositionForm(false)}
+                  onClick={() => { setFormError(null); setShowPositionForm(false); }}
                   className="text-gray-500 hover:text-gray-700"
                 >
                   &larr; Back to scenario
@@ -742,9 +766,10 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                 </label>
               </div>
 
-              <div className="flex justify-end gap-3 pt-4 border-t">
+              <div className="flex flex-wrap justify-end items-center gap-x-3 gap-y-2 pt-4 border-t">
+                {formError && <InlineStatus kind="error" text={formError} />}
                 <button
-                  onClick={() => setShowPositionForm(false)}
+                  onClick={() => { setFormError(null); setShowPositionForm(false); }}
                   className="px-4 py-2 border rounded-lg hover:bg-gray-100"
                   disabled={isSavingPosition}
                 >
@@ -767,7 +792,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   {editingScenario ? 'Edit Scenario' : 'New Scenario'}
                 </h3>
                 <button
-                  onClick={() => setShowForm(false)}
+                  onClick={closeForm}
                   className="text-gray-500 hover:text-gray-700"
                 >
                   &larr; Back to list
@@ -910,7 +935,8 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
               {/* Save Scenario Button (for new scenarios) */}
               {!editingScenario && (
-                <div className="flex justify-end pt-2">
+                <div className="flex flex-wrap justify-end items-center gap-x-3 gap-y-2 pt-2">
+                  {formError && <InlineStatus kind="error" text={formError} />}
                   <button
                     onClick={handleSave}
                     disabled={isSaving}
@@ -932,6 +958,11 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                     <span>→</span>
                     <span>Positions</span>
                   </div>
+                  {savedFlash?.where === 'positions' && (
+                    <div className="mb-2">
+                      <InlineStatus kind="saved" text={savedFlash.text} />
+                    </div>
+                  )}
                   <div className="flex justify-between items-center mb-3">
                     <h4 className="text-sm font-semibold text-gray-700">Defined Positions</h4>
                     <div className="flex gap-2 relative">
@@ -1035,9 +1066,10 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
         {/* Footer */}
         {showForm && !showPositionForm && editingScenario && (
-          <div className="px-6 py-4 border-t bg-gray-50 flex justify-end gap-3">
+          <div className="px-6 py-4 border-t bg-gray-50 flex flex-wrap justify-end items-center gap-x-3 gap-y-2">
+            {formError && <InlineStatus kind="error" text={formError} />}
             <button
-              onClick={() => setShowForm(false)}
+              onClick={closeForm}
               className="px-4 py-2 border rounded-lg hover:bg-gray-100"
               disabled={isSaving}
             >
