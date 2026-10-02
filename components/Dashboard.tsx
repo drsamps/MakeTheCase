@@ -1251,7 +1251,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     
     // Also fetch cases for this section for the filter dropdown
     try {
-      const casesResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases`);
+      const token = localStorage.getItem('admin_auth_token');
+      const casesResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
       const casesResult = await casesResponse.json();
       if (casesResult.data) {
         setSectionCasesForFilter(casesResult.data);
@@ -2680,6 +2683,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
+  // Scenario and position reads refuse callers who can't see or teach the case (403/404).
+  // Throw so the caller shows the refusal instead of an empty list ("no scenarios").
+  const readScenarioJson = async (response: Response, what: string) => {
+    const result = await response.json().catch(() => null);
+    if (!response.ok) {
+      const reason = typeof result?.error === 'string' ? result.error : result?.error?.message;
+      throw new Error(`Couldn't load ${what}${reason ? ` (${reason})` : ''}.`);
+    }
+    return result;
+  };
+
   // Expand/collapse scenario assignment panel
   const handleExpandScenarios = async (sectionId: string, caseId: string, sectionCase: any) => {
     if (expandedScenarios === caseId) {
@@ -2702,7 +2716,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const scenariosResponse = await fetch(`${getApiBaseUrl()}/cases/${caseId}/scenarios`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
-      const scenariosResult = await scenariosResponse.json();
+      const scenariosResult = await readScenarioJson(scenariosResponse, "this case's scenarios");
       const allScenarios = scenariosResult.data || [];
       setAvailableScenariosForCase(allScenarios);
 
@@ -2710,7 +2724,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const assignedResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/scenarios`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
-      const assignedResult = await assignedResponse.json();
+      const assignedResult = await readScenarioJson(assignedResponse, "this section's scenarios");
       // API returns { data: { scenarios: [...], selection_mode, ... } }
       const assignedData = assignedResult.data || {};
       setAssignedScenarios(assignedData.scenarios || []);
@@ -2726,7 +2740,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const positionsResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
-      const positionsResult = await positionsResponse.json();
+      const positionsResult = await readScenarioJson(positionsResponse, "this section's positions");
       const loadedPositions = positionsResult.data || [];
       setAssignmentPositions(loadedPositions);
 
@@ -2745,6 +2759,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       }
     } catch (err) {
       console.error('Failed to load scenario assignments:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load scenario assignments');
       setAvailableScenariosForCase([]);
       setAssignedScenarios([]);
       setAssignmentPositions([]);
@@ -2809,10 +2824,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const response = await fetch(`${getApiBaseUrl()}/cases/${caseId}/scenarios/${scenario.id}/positions`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
-      const result = await response.json();
+      const result = await readScenarioJson(response, "this scenario's positions");
       setViewingScenarioPositions(result.data || []);
     } catch (err) {
       console.error('Failed to fetch scenario positions:', err);
+      setError(err instanceof Error ? err.message : 'Failed to fetch scenario positions');
     } finally {
       setIsLoadingViewScenarioPositions(false);
     }

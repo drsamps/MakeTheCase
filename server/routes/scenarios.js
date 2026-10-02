@@ -1,7 +1,7 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken } from '../middleware/auth.js';
-import { requireAdminOrInstructor, requireCaseAccess } from '../middleware/instructorAccess.js';
+import { requireAdminOrInstructor, requireCaseAccess, requireCaseReadAccess } from '../middleware/instructorAccess.js';
 import scenarioPositionsRoutes from './scenarioPositions.js';
 
 const router = express.Router();
@@ -11,13 +11,17 @@ const router = express.Router();
 const canEditCase = [verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'edit')];
 // Deleting a scenario needs the case's 'delete' right (owner or admin), as DELETE /api/cases/:id.
 const canDeleteCase = [verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'delete')];
+// Scenarios hold AI-only content (prompt instructions, arguments), so reads need an
+// instructor or admin who can see or teaches the case. Students get them through
+// their section's case list (GET /api/sections/:id/cases), never these routes.
+const canReadCase = [verifyToken, requireCaseReadAccess('caseId')];
 
 // Mount scenario positions routes
 // Routes: /api/cases/:caseId/scenarios/:scenarioId/positions/*
 router.use('/:caseId/scenarios/:scenarioId/positions', scenarioPositionsRoutes);
 
 // GET /api/cases/:caseId/scenarios - List all scenarios for a case
-router.get('/:caseId/scenarios', async (req, res) => {
+router.get('/:caseId/scenarios', ...canReadCase, async (req, res) => {
   try {
     const { caseId } = req.params;
     const { enabled } = req.query;
@@ -48,7 +52,7 @@ router.get('/:caseId/scenarios', async (req, res) => {
 });
 
 // GET /api/cases/:caseId/scenarios/:id - Get single scenario
-router.get('/:caseId/scenarios/:id', async (req, res) => {
+router.get('/:caseId/scenarios/:id', ...canReadCase, async (req, res) => {
   try {
     const { caseId, id } = req.params;
 

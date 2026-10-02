@@ -1,5 +1,6 @@
 import express from 'express';
 import { pool } from '../db.js';
+import { verifyToken } from '../middleware/auth.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
 import { chatWithFallback } from '../services/chatFallback.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
@@ -264,7 +265,9 @@ async function loadCaseData(caseId) {
 const router = express.Router();
 
 // GET /api/llm/case-data/:caseId - Get case data for prompt building (content at top for caching)
-router.get('/case-data/:caseId', async (req, res) => {
+// Returns the teaching note, so it needs a login (the student's CAS token in the student app).
+// Any logged-in student can still read it: the browser builds the chat prompt from it.
+router.get('/case-data/:caseId', verifyToken, async (req, res) => {
   const caseId = req.params.caseId;
   console.log(`[case-data] Loading case data for: ${caseId}`);
   

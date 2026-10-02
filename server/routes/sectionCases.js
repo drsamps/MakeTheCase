@@ -33,6 +33,9 @@ import { parseDateInput } from '../utils/dateInput.js';
 const router = express.Router();
 
 const manageSectionCases = [requireAdminOrInstructor, requireSectionCaseManager('sectionId')];
+// Assignment reads that return AI-only scenario and position content (prompt instructions,
+// arguments). Only the dashboard calls them; students get theirs from GET /:sectionId/cases.
+const viewSectionCases = [verifyToken, requireAdminOrInstructor, requireSectionAccess('sectionId')];
 const isAdminUser = (req) => Boolean(req.user?.superuser || req.user?.role === 'admin');
 
 function normalizeChatOptions(chatOptions) {
@@ -89,7 +92,9 @@ async function resolveChatOptions(sectionId, chatOptions) {
 }
 
 // GET /api/sections/:sectionId/cases - List cases assigned to a section
-router.get('/:sectionId/cases', async (req, res) => {
+// The student app reads its scenarios here, including prompt_instructions and position
+// arguments (the browser builds the chat prompt), so it needs a login of any role.
+router.get('/:sectionId/cases', verifyToken, async (req, res) => {
   try {
     const { sectionId } = req.params;
     const { student_id } = req.query; // Optional: to check scenario completion
@@ -755,7 +760,7 @@ router.patch('/:sectionId/cases/:caseId/scheduling', verifyToken, manageSectionC
 // =====================================================
 
 // GET /api/sections/:sectionId/cases/:caseId/scenarios - List scenarios assigned to this section-case
-router.get('/:sectionId/cases/:caseId/scenarios', async (req, res) => {
+router.get('/:sectionId/cases/:caseId/scenarios', ...viewSectionCases, async (req, res) => {
   try {
     const { sectionId, caseId } = req.params;
 
@@ -1189,7 +1194,7 @@ router.patch('/:sectionId/cases/:caseId/position-settings', verifyToken, manageS
 });
 
 // GET /api/sections/:sectionId/cases/:caseId/positions - Get all positions for this assignment's scenarios
-router.get('/:sectionId/cases/:caseId/positions', async (req, res) => {
+router.get('/:sectionId/cases/:caseId/positions', ...viewSectionCases, async (req, res) => {
   try {
     const { sectionId, caseId } = req.params;
 

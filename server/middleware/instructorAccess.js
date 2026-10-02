@@ -526,6 +526,73 @@ export function requireCaseAccess(caseIdParam = 'id', action = 'view') {
 }
 
 /**
+ * Does this instructor teach the case? True when a section they can access (the same
+ * sources as canAccessSection) has it assigned, or ran chats on it after the assignment
+ * was removed (Results still lists those chats), or when they own a course whose case
+ * list has it (course owners edit its versions). Course access alone is not enough: a
+ * TA on one section would otherwise read every case on the course's list.
+ * @param {string} instructorId
+ * @param {string} caseId
+ * @returns {Promise<boolean>}
+ */
+export async function teachesCase(instructorId, caseId) {
+  const [rows] = await pool.execute(`
+    SELECT 1
+    FROM sections s
+    WHERE (EXISTS (SELECT 1 FROM section_cases sc WHERE sc.section_id = s.section_id AND sc.case_id = ?)
+           OR EXISTS (SELECT 1 FROM case_chats cc WHERE cc.section_id = s.section_id AND cc.case_id = ?))
+      AND (s.primary_instructor_id = ?
+           OR EXISTS (SELECT 1 FROM instructor_sections isec WHERE isec.section_id = s.section_id AND isec.instructor_id = ?)
+           OR EXISTS (SELECT 1 FROM instructor_semesters isem WHERE isem.semester_id = s.semester_id AND isem.instructor_id = ?)
+           OR EXISTS (SELECT 1 FROM courses c WHERE c.id = s.course_id AND c.primary_instructor_id = ?))
+    UNION ALL
+    SELECT 1
+    FROM course_cases ccs
+    JOIN courses c ON c.id = ccs.course_id
+    WHERE ccs.case_id = ? AND c.primary_instructor_id = ?
+    LIMIT 1
+  `, [caseId, caseId, instructorId, instructorId, instructorId, instructorId, caseId, instructorId]);
+  return rows.length > 0;
+}
+
+/**
+ * Middleware factory: read access to a case's teaching data (scenarios, positions).
+ *
+ * Allowed when the case is visible to the caller (as requireCaseAccess(…, 'view')),
+ * or when the caller teaches it (see teachesCase). Teaching does not imply visibility —
+ * an admin can assign a case the instructor was never shared, or the owner can make it
+ * private later — and such an instructor still needs its scenarios for Assignments,
+ * Results and case versions.
+ * Students and anonymous callers are refused (these rows are AI-only content).
+ *
+ * @param {string} caseIdParam - request param holding the case ID
+ */
+export function requireCaseReadAccess(caseIdParam = 'caseId') {
+  return async (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    if (req.user.role !== 'admin' && req.user.role !== 'instructor') {
+      return res.status(403).json({ error: 'Admin or instructor access required' });
+    }
+    const caseId = req.params[caseIdParam];
+    try {
+      const result = await canAccessResource(req, 'case', caseId, 'view');
+      if (result.allowed) return next();
+
+      const instructorId = getEffectiveInstructorId(req);
+      if (result.reason !== 'not_found' && instructorId && await teachesCase(instructorId, caseId)) {
+        return next();
+      }
+      return res.status(404).json({ error: formatAccessError(result) });
+    } catch (err) {
+      console.error('[requireCaseReadAccess]', err);
+      return res.status(500).json({ error: 'Access check failed' });
+    }
+  };
+}
+
+/**
  * Middleware factory: Require access to a generic shared resource (case,
  * rubric, rubric_criteria, persona, case_writer_project) via the unified
  * visibility/ownership model in services/resourceAccess.js.

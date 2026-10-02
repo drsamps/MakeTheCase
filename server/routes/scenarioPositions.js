@@ -1,7 +1,7 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken } from '../middleware/auth.js';
-import { requireAdminOrInstructor, requireCaseAccess } from '../middleware/instructorAccess.js';
+import { requireAdminOrInstructor, requireCaseAccess, requireCaseReadAccess } from '../middleware/instructorAccess.js';
 import { canAccessResource } from '../services/resourceAccess.js';
 
 const router = express.Router({ mergeParams: true });
@@ -29,9 +29,11 @@ const canEditCase = [verifyToken, requireAdminOrInstructor, requireCaseAccess('c
 // Deleting a position cascades to section and version settings, so it needs the
 // case's 'delete' right (owner or admin), as DELETE /api/cases/:id.
 const canDeleteCase = [verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'delete'), requireScenarioInCase];
+// Reads follow scenarios.js: an instructor or admin who can see or teaches the case.
+const canReadCase = [verifyToken, requireCaseReadAccess('caseId'), requireScenarioInCase];
 
 // GET /api/cases/:caseId/scenarios/:scenarioId/positions - List all positions for a scenario
-router.get('/', async (req, res) => {
+router.get('/', ...canReadCase, async (req, res) => {
   try {
     const { scenarioId } = req.params;
     const { enabled } = req.query;
@@ -61,7 +63,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/cases/:caseId/scenarios/:scenarioId/positions/:positionId - Get single position
-router.get('/:positionId', async (req, res) => {
+router.get('/:positionId', ...canReadCase, async (req, res) => {
   try {
     const { scenarioId, positionId } = req.params;
 

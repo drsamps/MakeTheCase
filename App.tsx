@@ -714,7 +714,10 @@ const App: React.FC = () => {
       setError(null); // Clear any previous errors
       try {
         // Fetch case content from the API
-        const caseResponse = await fetch(`${getApiBaseUrl()}/llm/case-data/${selectedCaseId}`);
+        const studentToken = localStorage.getItem('student_auth_token');
+        const caseResponse = await fetch(`${getApiBaseUrl()}/llm/case-data/${selectedCaseId}`, {
+          headers: studentToken ? { 'Authorization': `Bearer ${studentToken}` } : {}
+        });
         
         // Check if response is ok (status 200-299)
         if (!caseResponse.ok) {
