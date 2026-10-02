@@ -588,7 +588,7 @@ export function requireCaseAccessByRow(table, paramName = 'fileId', action = 'vi
  * Build a user-facing error message from a canAccessResource result. For
  * `not_owner` we append the owner's name/email so the user knows who to ask.
  */
-function formatAccessError(result) {
+export function formatAccessError(result) {
   if (result.reason === 'not_owner' && result.ownerLabel) {
     return `not_owner — owned by ${result.ownerLabel}`;
   }

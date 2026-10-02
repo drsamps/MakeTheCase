@@ -1,8 +1,34 @@
 import express from 'express';
 import { pool } from '../db.js';
-import { verifyToken, requireRole } from '../middleware/auth.js';
+import { verifyToken } from '../middleware/auth.js';
+import { requireAdminOrInstructor, requireCaseAccess } from '../middleware/instructorAccess.js';
+import { canAccessResource } from '../services/resourceAccess.js';
 
 const router = express.Router({ mergeParams: true });
+
+// Position writes follow the case: anyone who can edit the case (owner, team
+// editor, admin) can manage its positions — the same rule as PATCH /api/cases/:id.
+// The case check authorizes :caseId, so the scenario must also belong to it.
+async function requireScenarioInCase(req, res, next) {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT id FROM case_scenarios WHERE id = ? AND case_id = ?',
+      [req.params.scenarioId, req.params.caseId]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Scenario not found' } });
+    }
+    next();
+  } catch (error) {
+    console.error('Error checking scenario:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+}
+
+const canEditCase = [verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'edit'), requireScenarioInCase];
+// Deleting a position cascades to section and version settings, so it needs the
+// case's 'delete' right (owner or admin), as DELETE /api/cases/:id.
+const canDeleteCase = [verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'delete'), requireScenarioInCase];
 
 // GET /api/cases/:caseId/scenarios/:scenarioId/positions - List all positions for a scenario
 router.get('/', async (req, res) => {
@@ -59,10 +85,10 @@ router.get('/:positionId', async (req, res) => {
   }
 });
 
-// POST /api/cases/:caseId/scenarios/:scenarioId/positions - Create new position (admin only)
-router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
+// POST /api/cases/:caseId/scenarios/:scenarioId/positions - Create new position (case editors)
+router.post('/', ...canEditCase, async (req, res) => {
   try {
-    const { caseId, scenarioId } = req.params;
+    const { scenarioId } = req.params;
     const {
       position_name, position, position_order,
       arguments_for, arguments_against, position_enabled
@@ -74,15 +100,6 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
         data: null,
         error: { message: 'position_name and position are required' }
       });
-    }
-
-    // Check if scenario exists and belongs to the case
-    const [scenarioRows] = await pool.execute(
-      'SELECT id FROM case_scenarios WHERE id = ? AND case_id = ?',
-      [scenarioId, caseId]
-    );
-    if (scenarioRows.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Scenario not found' } });
     }
 
     // Check for duplicate position_name
@@ -138,8 +155,75 @@ router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
   }
 });
 
-// PATCH /api/cases/:caseId/scenarios/:scenarioId/positions/:positionId - Update position (admin only)
-router.patch('/:positionId', verifyToken, requireRole(['admin']), async (req, res) => {
+// Registered before PATCH /:positionId, which would otherwise capture "reorder"
+// as a :positionId.
+// PATCH /api/cases/:caseId/scenarios/:scenarioId/positions/reorder - Reorder positions (case editors)
+router.patch('/reorder', ...canEditCase, async (req, res) => {
+  try {
+    const { scenarioId } = req.params;
+    const { order } = req.body; // Array of position IDs in desired order
+
+    if (!Array.isArray(order) || order.length === 0) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'order must be a non-empty array of position IDs' }
+      });
+    }
+
+    // Verify all positions belong to this scenario
+    const [positions] = await pool.execute(
+      'SELECT position_id FROM scenario_positions WHERE scenario_id = ?',
+      [scenarioId]
+    );
+    const positionIds = new Set(positions.map(p => p.position_id));
+
+    for (const id of order) {
+      if (!positionIds.has(id)) {
+        return res.status(400).json({
+          data: null,
+          error: { message: `Position ID ${id} does not belong to this scenario` }
+        });
+      }
+    }
+
+    // Update position_order for each position, all or nothing
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      for (let i = 0; i < order.length; i++) {
+        await conn.execute(
+          'UPDATE scenario_positions SET position_order = ? WHERE position_id = ?',
+          [i, order[i]]
+        );
+      }
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+
+    // Return updated positions
+    const [rows] = await pool.execute(
+      `SELECT position_id, scenario_id, position_name, position, position_order,
+              arguments_for, arguments_against, position_enabled,
+              created_at, updated_at
+       FROM scenario_positions
+       WHERE scenario_id = ?
+       ORDER BY position_order ASC`,
+      [scenarioId]
+    );
+
+    res.json({ data: rows, error: null });
+  } catch (error) {
+    console.error('Error reordering positions:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/cases/:caseId/scenarios/:scenarioId/positions/:positionId - Update position (case editors)
+router.patch('/:positionId', ...canEditCase, async (req, res) => {
   try {
     const { scenarioId, positionId } = req.params;
     const updates = req.body;
@@ -212,8 +296,8 @@ router.patch('/:positionId', verifyToken, requireRole(['admin']), async (req, re
   }
 });
 
-// DELETE /api/cases/:caseId/scenarios/:scenarioId/positions/:positionId - Delete position (admin only)
-router.delete('/:positionId', verifyToken, requireRole(['admin']), async (req, res) => {
+// DELETE /api/cases/:caseId/scenarios/:scenarioId/positions/:positionId - Delete position (case owner or admin)
+router.delete('/:positionId', ...canDeleteCase, async (req, res) => {
   try {
     const { scenarioId, positionId } = req.params;
 
@@ -257,63 +341,8 @@ router.delete('/:positionId', verifyToken, requireRole(['admin']), async (req, r
   }
 });
 
-// PATCH /api/cases/:caseId/scenarios/:scenarioId/positions/reorder - Reorder positions (admin only)
-router.patch('/reorder', verifyToken, requireRole(['admin']), async (req, res) => {
-  try {
-    const { scenarioId } = req.params;
-    const { order } = req.body; // Array of position IDs in desired order
-
-    if (!Array.isArray(order) || order.length === 0) {
-      return res.status(400).json({
-        data: null,
-        error: { message: 'order must be a non-empty array of position IDs' }
-      });
-    }
-
-    // Verify all positions belong to this scenario
-    const [positions] = await pool.execute(
-      'SELECT position_id FROM scenario_positions WHERE scenario_id = ?',
-      [scenarioId]
-    );
-    const positionIds = new Set(positions.map(p => p.position_id));
-
-    for (const id of order) {
-      if (!positionIds.has(id)) {
-        return res.status(400).json({
-          data: null,
-          error: { message: `Position ID ${id} does not belong to this scenario` }
-        });
-      }
-    }
-
-    // Update position_order for each position
-    for (let i = 0; i < order.length; i++) {
-      await pool.execute(
-        'UPDATE scenario_positions SET position_order = ? WHERE position_id = ?',
-        [i, order[i]]
-      );
-    }
-
-    // Return updated positions
-    const [rows] = await pool.execute(
-      `SELECT position_id, scenario_id, position_name, position, position_order,
-              arguments_for, arguments_against, position_enabled,
-              created_at, updated_at
-       FROM scenario_positions
-       WHERE scenario_id = ?
-       ORDER BY position_order ASC`,
-      [scenarioId]
-    );
-
-    res.json({ data: rows, error: null });
-  } catch (error) {
-    console.error('Error reordering positions:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
-  }
-});
-
-// PATCH /api/cases/:caseId/scenarios/:scenarioId/positions/:positionId/toggle - Toggle enabled status (admin only)
-router.patch('/:positionId/toggle', verifyToken, requireRole(['admin']), async (req, res) => {
+// PATCH /api/cases/:caseId/scenarios/:scenarioId/positions/:positionId/toggle - Toggle enabled status (case editors)
+router.patch('/:positionId/toggle', ...canEditCase, async (req, res) => {
   try {
     const { scenarioId, positionId } = req.params;
 
@@ -349,10 +378,10 @@ router.patch('/:positionId/toggle', verifyToken, requireRole(['admin']), async (
   }
 });
 
-// POST /api/cases/:caseId/scenarios/:scenarioId/positions/copy - Copy positions from another scenario (admin only)
-router.post('/copy', verifyToken, requireRole(['admin']), async (req, res) => {
+// POST /api/cases/:caseId/scenarios/:scenarioId/positions/copy - Copy positions from another scenario (case editors)
+router.post('/copy', ...canEditCase, async (req, res) => {
   try {
-    const { caseId, scenarioId } = req.params;
+    const { scenarioId } = req.params;
     const { source_scenario_id, include_arguments } = req.body;
 
     if (!source_scenario_id) {
@@ -362,21 +391,13 @@ router.post('/copy', verifyToken, requireRole(['admin']), async (req, res) => {
       });
     }
 
-    // Check if target scenario exists and belongs to the case
-    const [targetScenario] = await pool.execute(
-      'SELECT id FROM case_scenarios WHERE id = ? AND case_id = ?',
-      [scenarioId, caseId]
-    );
-    if (targetScenario.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Target scenario not found' } });
-    }
-
-    // Check if source scenario exists
+    // Check if source scenario exists and its case is visible to the caller
     const [sourceScenario] = await pool.execute(
-      'SELECT id FROM case_scenarios WHERE id = ?',
+      'SELECT id, case_id FROM case_scenarios WHERE id = ?',
       [source_scenario_id]
     );
-    if (sourceScenario.length === 0) {
+    if (sourceScenario.length === 0
+      || !(await canAccessResource(req, 'case', sourceScenario[0].case_id, 'view')).allowed) {
       return res.status(404).json({ data: null, error: { message: 'Source scenario not found' } });
     }
 

@@ -1,9 +1,16 @@
 import express from 'express';
 import { pool } from '../db.js';
-import { verifyToken, requireRole } from '../middleware/auth.js';
+import { verifyToken } from '../middleware/auth.js';
+import { requireAdminOrInstructor, requireCaseAccess } from '../middleware/instructorAccess.js';
 import scenarioPositionsRoutes from './scenarioPositions.js';
 
 const router = express.Router();
+
+// Scenario writes follow the case: anyone who can edit the case (owner, team
+// editor, admin) can manage its scenarios — the same rule as PATCH /api/cases/:id.
+const canEditCase = [verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'edit')];
+// Deleting a scenario needs the case's 'delete' right (owner or admin), as DELETE /api/cases/:id.
+const canDeleteCase = [verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'delete')];
 
 // Mount scenario positions routes
 // Routes: /api/cases/:caseId/scenarios/:scenarioId/positions/*
@@ -66,8 +73,8 @@ router.get('/:caseId/scenarios/:id', async (req, res) => {
   }
 });
 
-// POST /api/cases/:caseId/scenarios - Create new scenario (admin only)
-router.post('/:caseId/scenarios', verifyToken, requireRole(['admin']), async (req, res) => {
+// POST /api/cases/:caseId/scenarios - Create new scenario (case editors)
+router.post('/:caseId/scenarios', ...canEditCase, async (req, res) => {
   try {
     const { caseId } = req.params;
     const {
@@ -83,12 +90,6 @@ router.post('/:caseId/scenarios', verifyToken, requireRole(['admin']), async (re
         data: null,
         error: { message: 'scenario_name, protagonist, protagonist_initials, and chat_question are required' }
       });
-    }
-
-    // Check if case exists
-    const [caseRows] = await pool.execute('SELECT case_id FROM cases WHERE case_id = ?', [caseId]);
-    if (caseRows.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Case not found' } });
     }
 
     // Get max sort_order if not specified
@@ -143,8 +144,76 @@ router.post('/:caseId/scenarios', verifyToken, requireRole(['admin']), async (re
   }
 });
 
-// PATCH /api/cases/:caseId/scenarios/:id - Update scenario (admin only)
-router.patch('/:caseId/scenarios/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+// Registered before PATCH /:caseId/scenarios/:id, which would otherwise capture
+// "reorder" as an :id.
+// PATCH /api/cases/:caseId/scenarios/reorder - Reorder scenarios (case editors)
+router.patch('/:caseId/scenarios/reorder', ...canEditCase, async (req, res) => {
+  try {
+    const { caseId } = req.params;
+    const { order } = req.body; // Array of scenario IDs in desired order
+
+    if (!Array.isArray(order) || order.length === 0) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'order must be a non-empty array of scenario IDs' }
+      });
+    }
+
+    // Verify all scenarios belong to this case
+    const [scenarios] = await pool.execute(
+      'SELECT id FROM case_scenarios WHERE case_id = ?',
+      [caseId]
+    );
+    const scenarioIds = new Set(scenarios.map(s => s.id));
+
+    for (const id of order) {
+      if (!scenarioIds.has(id)) {
+        return res.status(400).json({
+          data: null,
+          error: { message: `Scenario ID ${id} does not belong to this case` }
+        });
+      }
+    }
+
+    // Update sort_order for each scenario, all or nothing
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      for (let i = 0; i < order.length; i++) {
+        await conn.execute(
+          'UPDATE case_scenarios SET sort_order = ? WHERE id = ?',
+          [i, order[i]]
+        );
+      }
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+
+    // Return updated scenarios
+    const [rows] = await pool.execute(
+      `SELECT id, case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
+              chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
+              arguments_for, arguments_against, chat_options_override,
+              sort_order, enabled, created_at, updated_at
+       FROM case_scenarios
+       WHERE case_id = ?
+       ORDER BY sort_order ASC`,
+      [caseId]
+    );
+
+    res.json({ data: rows, error: null });
+  } catch (error) {
+    console.error('Error reordering scenarios:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/cases/:caseId/scenarios/:id - Update scenario (case editors)
+router.patch('/:caseId/scenarios/:id', ...canEditCase, async (req, res) => {
   try {
     const { caseId, id } = req.params;
     const updates = req.body;
@@ -208,8 +277,8 @@ router.patch('/:caseId/scenarios/:id', verifyToken, requireRole(['admin']), asyn
   }
 });
 
-// DELETE /api/cases/:caseId/scenarios/:id - Delete scenario (admin only)
-router.delete('/:caseId/scenarios/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+// DELETE /api/cases/:caseId/scenarios/:id - Delete scenario (case owner or admin)
+router.delete('/:caseId/scenarios/:id', ...canDeleteCase, async (req, res) => {
   try {
     const { caseId, id } = req.params;
 
@@ -255,64 +324,8 @@ router.delete('/:caseId/scenarios/:id', verifyToken, requireRole(['admin']), asy
   }
 });
 
-// PATCH /api/cases/:caseId/scenarios/reorder - Reorder scenarios (admin only)
-router.patch('/:caseId/scenarios/reorder', verifyToken, requireRole(['admin']), async (req, res) => {
-  try {
-    const { caseId } = req.params;
-    const { order } = req.body; // Array of scenario IDs in desired order
-
-    if (!Array.isArray(order) || order.length === 0) {
-      return res.status(400).json({
-        data: null,
-        error: { message: 'order must be a non-empty array of scenario IDs' }
-      });
-    }
-
-    // Verify all scenarios belong to this case
-    const [scenarios] = await pool.execute(
-      'SELECT id FROM case_scenarios WHERE case_id = ?',
-      [caseId]
-    );
-    const scenarioIds = new Set(scenarios.map(s => s.id));
-
-    for (const id of order) {
-      if (!scenarioIds.has(id)) {
-        return res.status(400).json({
-          data: null,
-          error: { message: `Scenario ID ${id} does not belong to this case` }
-        });
-      }
-    }
-
-    // Update sort_order for each scenario
-    for (let i = 0; i < order.length; i++) {
-      await pool.execute(
-        'UPDATE case_scenarios SET sort_order = ? WHERE id = ?',
-        [i, order[i]]
-      );
-    }
-
-    // Return updated scenarios
-    const [rows] = await pool.execute(
-      `SELECT id, case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
-              chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
-              arguments_for, arguments_against, chat_options_override,
-              sort_order, enabled, created_at, updated_at
-       FROM case_scenarios
-       WHERE case_id = ?
-       ORDER BY sort_order ASC`,
-      [caseId]
-    );
-
-    res.json({ data: rows, error: null });
-  } catch (error) {
-    console.error('Error reordering scenarios:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
-  }
-});
-
-// PATCH /api/cases/:caseId/scenarios/:id/toggle - Toggle enabled status (admin only)
-router.patch('/:caseId/scenarios/:id/toggle', verifyToken, requireRole(['admin']), async (req, res) => {
+// PATCH /api/cases/:caseId/scenarios/:id/toggle - Toggle enabled status (case editors)
+router.patch('/:caseId/scenarios/:id/toggle', ...canEditCase, async (req, res) => {
   try {
     const { caseId, id } = req.params;
 

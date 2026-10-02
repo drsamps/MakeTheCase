@@ -5437,12 +5437,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
-  // Every scenario write route is requireRole(['admin']) (server/routes/scenarios.js), so only
-  // link admins into the editor — an instructor following the link would 403 on save.
+  // Scenario writes follow the case (requireCaseAccess(…, 'edit') in server/routes/scenarios.js),
+  // so anyone here may open the editor; ScenarioManager explains a refused save to a non-editor.
   const renderScenariosLocationLink = (sectionCase?: { case_id: string; case_title?: string } | null) => {
-    if (user?.role !== 'admin') {
-      return <strong>Content &gt; Cases &gt; Scenarios</strong>;
-    }
     return (
       <button
         type="button"

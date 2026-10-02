@@ -104,6 +104,9 @@ non-admin path, and the Home quick action **New Section** (`DashboardHome.tsx:86
 
 - `server/routes/scenarios.js` and `positionTemplates.js` writes are also `requireRole(['admin'])`, so
   `ScenarioManager` likely 403s for instructors on cases they own — same class of bug, Content area.
+  **Fixed 2026-10-02:** scenario and position writes (and applying a position template) now require
+  `requireCaseAccess(…, 'edit')` like `PATCH /api/cases/:id`; `ScenarioManager` shows every refused
+  or failed write instead of swallowing it. Template create/delete stay admin-only.
 
 ## Decisions as originally posed
 

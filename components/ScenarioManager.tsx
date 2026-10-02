@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../services/apiClient';
 import { CaseScenario } from '../types';
 import {
@@ -177,6 +177,27 @@ const SortablePositionItem: React.FC<SortablePositionProps> = ({
   );
 };
 
+// Turn the server's case-access codes into something an instructor can act on.
+function scenarioErrorMessage(message: string): string {
+  if (message.startsWith('not_owner')) {
+    const owner = message.split('owned by ')[1];
+    return `You can't make this change on this case${owner ? ` (owned by ${owner})` : ''}. To edit its scenarios, ask the owner to share it with edit access, or ask an admin. Deleting a scenario or position needs the owner or an admin.`;
+  }
+  if (message === 'not_visible' || message === 'no_identity' || message === 'Forbidden'
+    || message === 'Admin or instructor access required') {
+    return "You don't have permission to change scenarios on this case.";
+  }
+  return message;
+}
+
+// The api client returns { data, error } and never throws, so a refused or
+// failed write would otherwise vanish. Throw instead, for the handlers' catch blocks.
+async function orThrow<T>(request: Promise<{ data: T | null; error: { message: string } | null }>): Promise<T | null> {
+  const { data, error } = await request;
+  if (error) throw new Error(scenarioErrorMessage(error.message));
+  return data;
+}
+
 export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   caseId,
   caseTitle,
@@ -190,6 +211,20 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   const [formData, setFormData] = useState<FormData>(defaultFormData);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  // The banners sit at the top of the scrolling body; the Save buttons are at the
+  // bottom of a long form, so bring a new message into view.
+  useEffect(() => {
+    if (error || notice) contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [error, notice]);
+
+  // An error supersedes the success notice; don't let a stale one reappear once
+  // the error is dismissed.
+  useEffect(() => {
+    if (error) setNotice(null);
+  }, [error]);
 
   // Positions state
   const [positions, setPositions] = useState<Position[]>([]);
@@ -226,9 +261,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     setIsLoading(true);
     setError(null);
     try {
-      const response = await api.get(`/cases/${caseId}/scenarios`);
-      if (response.data) {
-        setScenarios(response.data);
+      const data = await orThrow(api.get<CaseScenario[]>(`/cases/${caseId}/scenarios`));
+      if (data) {
+        setScenarios(data);
       }
     } catch (err: any) {
       setError(err.message || 'Failed to fetch scenarios');
@@ -240,9 +275,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   const fetchTemplates = async () => {
     setIsLoadingTemplates(true);
     try {
-      const response = await api.get('/position-templates');
-      if (response.data) {
-        setTemplates(response.data);
+      const data = await orThrow(api.get<PositionTemplate[]>('/position-templates'));
+      if (data) {
+        setTemplates(data);
       }
     } catch (err: any) {
       console.error('Failed to fetch templates:', err);
@@ -254,19 +289,19 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   const fetchPositions = async (scenarioId: number) => {
     setIsLoadingPositions(true);
     try {
-      const response = await api.get(`/cases/${caseId}/scenarios/${scenarioId}/positions`);
-      if (response.data) {
-        setPositions(response.data);
-      }
+      const data = await orThrow(api.get<Position[]>(`/cases/${caseId}/scenarios/${scenarioId}/positions`));
+      setPositions(data || []);
     } catch (err: any) {
       console.error('Failed to fetch positions:', err);
       setPositions([]);
+      setError(err.message || 'Failed to load positions');
     } finally {
       setIsLoadingPositions(false);
     }
   };
 
   const handleCreate = () => {
+    setNotice(null);
     setEditingScenario(null);
     setFormData(defaultFormData);
     setPositions([]);
@@ -274,6 +309,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   };
 
   const handleEdit = (scenario: CaseScenario) => {
+    setNotice(null);
     setEditingScenario(scenario);
     setFormData({
       scenario_name: scenario.scenario_name,
@@ -287,6 +323,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       chat_time_warning: scenario.chat_time_warning || 5,
       enabled: scenario.enabled
     });
+    setPositions([]);
     fetchPositions(scenario.id);
     setShowForm(true);
   };
@@ -314,12 +351,13 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     setError(null);
     try {
       if (editingScenario) {
-        await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}`, payload);
+        await orThrow(api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}`, payload));
       } else {
-        const response = await api.post(`/cases/${caseId}/scenarios`, payload);
+        const created = await orThrow(api.post<CaseScenario>(`/cases/${caseId}/scenarios`, payload));
         // Set editingScenario to the newly created scenario so positions can be added
-        if (response.data) {
-          setEditingScenario(response.data);
+        if (created) {
+          setEditingScenario(created);
+          setNotice('Scenario saved. Add its positions below.');
         }
       }
       await fetchScenarios();
@@ -336,8 +374,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   };
 
   const handleToggleEnabled = async (scenario: CaseScenario) => {
+    setError(null);
     try {
-      await api.patch(`/cases/${caseId}/scenarios/${scenario.id}/toggle`);
+      await orThrow(api.patch(`/cases/${caseId}/scenarios/${scenario.id}/toggle`));
       await fetchScenarios();
       onScenariosChanged?.();
     } catch (err: any) {
@@ -350,8 +389,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       return;
     }
 
+    setError(null);
     try {
-      await api.delete(`/cases/${caseId}/scenarios/${scenario.id}`);
+      await orThrow(api.delete(`/cases/${caseId}/scenarios/${scenario.id}`));
       await fetchScenarios();
       onScenariosChanged?.();
     } catch (err: any) {
@@ -405,9 +445,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       };
 
       if (editingPosition) {
-        await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${editingPosition.position_id}`, payload);
+        await orThrow(api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${editingPosition.position_id}`, payload));
       } else {
-        await api.post(`/cases/${caseId}/scenarios/${editingScenario.id}/positions`, payload);
+        await orThrow(api.post(`/cases/${caseId}/scenarios/${editingScenario.id}/positions`, payload));
       }
       await fetchPositions(editingScenario.id);
       setShowPositionForm(false);
@@ -422,8 +462,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     if (!editingScenario) return;
     if (!confirm(`Delete position "${position.position_name}"?`)) return;
 
+    setError(null);
     try {
-      await api.delete(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${position.position_id}`);
+      await orThrow(api.delete(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${position.position_id}`));
       await fetchPositions(editingScenario.id);
     } catch (err: any) {
       setError(err.message || 'Failed to delete position');
@@ -432,8 +473,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
   const handleTogglePositionEnabled = async (position: Position) => {
     if (!editingScenario) return;
+    setError(null);
     try {
-      await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${position.position_id}/toggle`);
+      await orThrow(api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${position.position_id}/toggle`));
       await fetchPositions(editingScenario.id);
     } catch (err: any) {
       setError(err.message || 'Failed to toggle position');
@@ -455,9 +497,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     setIsApplyingTemplate(true);
     setError(null);
     try {
-      await api.post(`/position-templates/${template.template_id}/apply/${editingScenario.id}`, {
+      await orThrow(api.post(`/position-templates/${template.template_id}/apply/${editingScenario.id}`, {
         clear_existing: false
-      });
+      }));
       await fetchPositions(editingScenario.id);
       setShowTemplateDropdown(false);
     } catch (err: any) {
@@ -484,9 +526,10 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     setPositions(reorderedPositions);
 
     // Send reorder to server
+    setError(null);
     try {
       const order = reorderedPositions.map(p => p.position_id);
-      await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/reorder`, { order });
+      await orThrow(api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/reorder`, { order }));
     } catch (err: any) {
       // Revert on error
       setError(err.message || 'Failed to reorder positions');
@@ -522,11 +565,17 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div ref={contentRef} className="flex-1 overflow-y-auto p-6">
           {error && (
             <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-lg border border-red-200">
               {error}
               <button onClick={() => setError(null)} className="float-right text-red-500">&times;</button>
+            </div>
+          )}
+          {notice && !error && showForm && (
+            <div className="mb-4 p-3 bg-green-50 text-green-700 rounded-lg border border-green-200">
+              {notice}
+              <button onClick={() => setNotice(null)} className="float-right text-green-600">&times;</button>
             </div>
           )}
 
