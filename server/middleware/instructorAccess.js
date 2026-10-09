@@ -499,6 +499,57 @@ export async function canManageSectionCases(req, sectionId) {
 }
 
 /**
+ * Section IDs whose chats, transcripts and evaluations the caller may see: any section they
+ * are primary on (directly or via course ownership) OR a TA assignment with can_view_chats=1.
+ * Admins (without impersonation) get null = no scope filter. Honors admin "act as".
+ * Callers must run verifyToken + requireRole(['admin', 'instructor']) first.
+ *
+ * A chat's section is case_chats.section_id; chats from before that column was filled in
+ * fall back to the student's enrolled section: COALESCE(cc.section_id, st.section_id).
+ * @returns {Promise<string[]|null>}
+ */
+export async function getChatViewableSectionIds(req) {
+  const isAdmin = req.user.role === 'admin';
+  const scopedInstructorId = req.effectiveInstructorId || (req.user.role === 'instructor' ? req.user.id : null);
+
+  if (isAdmin && !scopedInstructorId) return null; // full vision
+
+  const [rows] = await pool.execute(`
+    SELECT section_id FROM sections WHERE primary_instructor_id = ?
+    UNION
+    SELECT s.section_id FROM sections s
+    JOIN courses c ON s.course_id = c.id
+    WHERE c.primary_instructor_id = ?
+    UNION
+    SELECT section_id FROM instructor_sections
+    WHERE instructor_id = ? AND can_view_chats = 1
+  `, [scopedInstructorId, scopedInstructorId, scopedInstructorId]);
+  return rows.map(r => r.section_id);
+}
+
+/** True when sectionId is inside a getChatViewableSectionIds() result (null = everything). */
+export function isSectionInScope(scopedSectionIds, sectionId) {
+  return scopedSectionIds === null || (sectionId != null && scopedSectionIds.includes(sectionId));
+}
+
+/**
+ * True when the caller may view this case chat (and its transcript and positions).
+ * False for a chat that does not exist, so callers answer 404 either way.
+ */
+export async function canViewChat(req, caseChatId) {
+  const scopedSectionIds = await getChatViewableSectionIds(req);
+  if (scopedSectionIds === null) return true;
+  const [rows] = await pool.execute(
+    `SELECT COALESCE(cc.section_id, st.section_id) AS section_id
+       FROM case_chats cc
+       LEFT JOIN students st ON st.id = cc.student_id
+      WHERE cc.id = ?`,
+    [caseChatId]
+  );
+  return rows.length > 0 && isSectionInScope(scopedSectionIds, rows[0].section_id);
+}
+
+/**
  * Non-middleware section access check (view), admin-aware.
  * @returns {Promise<boolean>}
  */

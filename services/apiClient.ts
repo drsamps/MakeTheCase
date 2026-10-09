@@ -20,10 +20,11 @@ let adminAuthToken: string | null = localStorage.getItem('admin_auth_token');
 let studentAuthToken: string | null = localStorage.getItem('student_auth_token');
 
 // Determine current context based on URL hash
-// Case Writer is instructor/admin-authenticated, so it shares the admin token.
+// Case Writer is instructor/admin-authenticated, so it shares the admin token. So does the
+// #evaluation/:id tab, which only the dashboard opens (Monitor → Chats → view evaluation).
 function isAdminContext(): boolean {
   const h = window.location.hash;
-  return h === '#/admin' || h.startsWith('#/admin') || h.startsWith('#/case-writer');
+  return h === '#/admin' || h.startsWith('#/admin') || h.startsWith('#/case-writer') || h.startsWith('#evaluation/');
 }
 
 // Get the appropriate token for the current context

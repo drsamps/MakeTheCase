@@ -1,8 +1,10 @@
 # Plan: Close the unauthenticated student-data and AI routes
 
-Status: **planned, mostly not started.** Written 2026-09-15; revised 2026-10-09 against branch `teach-back` (`b2f29e7`).
+Status: **Phase 1 built (2026-10-09); Phases 2 and 3 not started.** Written 2026-09-15; revised 2026-10-09 against branch `teach-back` (`b2f29e7`).
 
-- Done so far: `GET /api/llm/case-data/:caseId` requires a login (`790a7bb`, 2026-10-02). That commit also locked the scenario and position reads, which are outside this plan.
+- Done so far:
+  - `GET /api/llm/case-data/:caseId` requires a login (`790a7bb`, 2026-10-02). That commit also locked the scenario and position reads, which are outside this plan.
+  - Phase 1: the evaluation, transcript and case-chat reads require a staff login and are limited to the caller's sections.
 - Phase 3 is planned in its own doc, [`server-side-chat-prompt.md`](server-side-chat-prompt.md). This doc only gives its place in the order.
 
 ## Context
@@ -71,6 +73,8 @@ Note that UUID chat IDs don't protect anything: the open evaluations list hands 
    - `server/routes/transcripts.js`: `GET /:id` (line 160), `GET /chat/:caseChatId` (line 195). Filter on the joined `cc.section_id`.
    - `server/routes/caseChats.js`: `GET /:id` (701), `GET /student/:studentId` (383), `GET /:id/positions` (1099), `GET /:id/should-infer` (1282). A grep on 2026-10-09 found no front-end callers of these (the only `case-chats/${id}` call in the dashboard is the admin DELETE); re-check before locking them down.
 3. Follow the empty-scope pattern already at `caseChats.js:276` (return empty data, not an error).
+
+**As built:** `instructorAccess.js` exports `getChatViewableSectionIds`, `isSectionInScope` and `canViewChat`. A record's section is `COALESCE(cc.section_id, st.section_id)`: the chat's section, else the student's enrolled section. Without the fallback, instructors would lose 99 Fall 2025 evaluations whose chats have no `section_id` and 10 evaluations with no case chat (dev copy, 2026-10-09). Admins without "act as" skip the joins and see everything as before.
 
 ### Client
 

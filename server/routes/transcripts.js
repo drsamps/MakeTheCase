@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { writeAudit } from '../services/auditLog.js';
+import { getChatViewableSectionIds, isSectionInScope } from '../middleware/instructorAccess.js';
 
 const router = express.Router();
 
@@ -155,15 +156,16 @@ router.put('/chat/:caseChatId', async (req, res) => {
 
 /**
  * GET /api/transcripts/:id
- * Get a transcript by ID
+ * Get a transcript by ID (staff; 404 outside the caller's chat scope)
  */
-router.get('/:id', async (req, res) => {
+router.get('/:id', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { id } = req.params;
 
     const [rows] = await pool.execute(
       `SELECT t.*, 
               cc.student_id, cc.case_id, cc.section_id,
+              COALESCE(cc.section_id, s.section_id) AS scope_section_id,
               s.full_name as student_name,
               c.case_title
        FROM transcripts t
@@ -174,14 +176,16 @@ router.get('/:id', async (req, res) => {
       [id]
     );
 
-    if (rows.length === 0) {
+    const scopedSectionIds = await getChatViewableSectionIds(req);
+    if (rows.length === 0 || !isSectionInScope(scopedSectionIds, rows[0].scope_section_id)) {
       return res.status(404).json({
         data: null,
         error: { message: 'Transcript not found' }
       });
     }
 
-    res.json({ data: rows[0], error: null });
+    const { scope_section_id, ...data } = rows[0];
+    res.json({ data, error: null });
   } catch (error) {
     console.error('Error fetching transcript:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
@@ -190,15 +194,16 @@ router.get('/:id', async (req, res) => {
 
 /**
  * GET /api/transcripts/chat/:caseChatId
- * Get transcript by case_chat_id
+ * Get transcript by case_chat_id (staff; 404 outside the caller's chat scope)
  */
-router.get('/chat/:caseChatId', async (req, res) => {
+router.get('/chat/:caseChatId', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { caseChatId } = req.params;
 
     const [rows] = await pool.execute(
       `SELECT t.*, 
               cc.student_id, cc.case_id, cc.section_id,
+              COALESCE(cc.section_id, s.section_id) AS scope_section_id,
               s.full_name as student_name,
               c.case_title
        FROM transcripts t
@@ -209,14 +214,16 @@ router.get('/chat/:caseChatId', async (req, res) => {
       [caseChatId]
     );
 
-    if (rows.length === 0) {
+    const scopedSectionIds = await getChatViewableSectionIds(req);
+    if (rows.length === 0 || !isSectionInScope(scopedSectionIds, rows[0].scope_section_id)) {
       return res.status(404).json({
         data: null,
         error: { message: 'Transcript not found for this case chat' }
       });
     }
 
-    res.json({ data: rows[0], error: null });
+    const { scope_section_id, ...data } = rows[0];
+    res.json({ data, error: null });
   } catch (error) {
     console.error('Error fetching transcript by case_chat_id:', error);
     res.status(500).json({ data: null, error: { message: error.message } });

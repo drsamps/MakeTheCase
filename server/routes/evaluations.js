@@ -2,7 +2,7 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
-import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
+import { requireAdminOrInstructor, getChatViewableSectionIds, isSectionInScope } from '../middleware/instructorAccess.js';
 import { inferPositionFromTranscript } from '../services/positionInference.js';
 import { buildCoachPrompt } from '../services/promptBuilder.js';
 import { buildTeachBackCoachPrompt } from '../services/teachBackCoachPrompt.js';
@@ -35,29 +35,48 @@ const router = express.Router();
 // NOTE: transcript, persona, hints, chat_model removed - now in case_chats and transcripts tables
 const EVAL_FIELDS = `id, created_at, student_id, case_id, case_chat_id, score, summary, criteria,
                      helpful, liked, improve, super_model, allow_rechat, rubric_id`;
+// The same fields on alias `e`, for queries that join case_chats/students (which share column names)
+const EVAL_FIELDS_E = EVAL_FIELDS.split(',').map(f => `e.${f.trim()}`).join(', ');
 
-// GET /api/evaluations - Get all evaluations (optionally filter by student_id and/or case_id)
-router.get('/', async (req, res) => {
+// An evaluation's section: its chat's section, else the student's enrolled section
+// (evaluations with no case chat, and chats from before case_chats.section_id was filled in).
+const EVAL_SCOPE_JOINS = `LEFT JOIN case_chats cc ON cc.id = e.case_chat_id
+     LEFT JOIN students st ON st.id = e.student_id`;
+const EVAL_SECTION_SQL = 'COALESCE(cc.section_id, st.section_id)';
+
+// GET /api/evaluations - Get evaluations in the caller's chat scope (optionally filter by student_id and/or case_id)
+router.get('/', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { student_id, student_ids, case_id } = req.query;
-    
-    let query = `SELECT ${EVAL_FIELDS} FROM evaluations`;
+
+    const scopedSectionIds = await getChatViewableSectionIds(req);
+    if (scopedSectionIds && scopedSectionIds.length === 0) {
+      return res.json({ data: [], error: null });
+    }
+
+    let query = `SELECT ${EVAL_FIELDS_E} FROM evaluations e`;
     const params = [];
     const conditions = [];
+
+    if (scopedSectionIds) {
+      query += ` ${EVAL_SCOPE_JOINS}`;
+      conditions.push(`${EVAL_SECTION_SQL} IN (${scopedSectionIds.map(() => '?').join(',')})`);
+      params.push(...scopedSectionIds);
+    }
     
     if (student_id) {
-      conditions.push('student_id = ?');
+      conditions.push('e.student_id = ?');
       params.push(student_id);
     } else if (student_ids) {
       // Support comma-separated list of student IDs
       const ids = student_ids.split(',');
       const placeholders = ids.map(() => '?').join(',');
-      conditions.push(`student_id IN (${placeholders})`);
+      conditions.push(`e.student_id IN (${placeholders})`);
       params.push(...ids);
     }
     
     if (case_id) {
-      conditions.push('case_id = ?');
+      conditions.push('e.case_id = ?');
       params.push(case_id);
     }
     
@@ -65,7 +84,7 @@ router.get('/', async (req, res) => {
       query += ' WHERE ' + conditions.join(' AND ');
     }
     
-    query += ' ORDER BY created_at DESC';
+    query += ' ORDER BY e.created_at DESC';
     
     const [rows] = await pool.execute(query, params);
     
@@ -554,19 +573,23 @@ router.patch('/:id/allow-rechat', verifyToken, requireRole(['admin']), async (re
   }
 });
 
-// GET /api/evaluations/:id - Get single evaluation
-router.get('/:id', async (req, res) => {
+// GET /api/evaluations/:id - Get single evaluation (staff; 404 outside the caller's chat scope)
+router.get('/:id', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT ${EVAL_FIELDS} FROM evaluations WHERE id = ?`,
+      `SELECT ${EVAL_FIELDS_E}, ${EVAL_SECTION_SQL} AS scope_section_id
+       FROM evaluations e
+       ${EVAL_SCOPE_JOINS}
+       WHERE e.id = ?`,
       [req.params.id]
     );
     
-    if (rows.length === 0) {
+    const scopedSectionIds = await getChatViewableSectionIds(req);
+    if (rows.length === 0 || !isSectionInScope(scopedSectionIds, rows[0].scope_section_id)) {
       return res.status(404).json({ data: null, error: { message: 'Evaluation not found' } });
     }
     
-    const row = rows[0];
+    const { scope_section_id, ...row } = rows[0];
     const data = {
       ...row,
       criteria: row.criteria ? (typeof row.criteria === 'string' ? JSON.parse(row.criteria) : row.criteria) : null

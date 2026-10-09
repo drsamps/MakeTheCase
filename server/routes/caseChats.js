@@ -4,33 +4,12 @@ import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { inferPositionsFromChat, shouldInferPositions } from '../services/positionInference.js';
 import { checkSectionReadiness } from '../services/keyResolver.js';
+import { getChatViewableSectionIds, canViewChat } from '../middleware/instructorAccess.js';
 
 const router = express.Router();
 
 // Valid status values
 const VALID_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'killed', 'completed', 'evaluation_failed'];
-
-// Section IDs an instructor may see chats for: any section they are primary on
-// (directly or via course) OR a TA assignment with can_view_chats=1.
-// Admins (without impersonation) get null = no scope filter.
-async function getChatViewableSectionIds(req) {
-  const isAdmin = req.user.role === 'admin';
-  const scopedInstructorId = req.effectiveInstructorId || (req.user.role === 'instructor' ? req.user.id : null);
-
-  if (isAdmin && !scopedInstructorId) return null; // full vision
-
-  const [rows] = await pool.execute(`
-    SELECT section_id FROM sections WHERE primary_instructor_id = ?
-    UNION
-    SELECT s.section_id FROM sections s
-    JOIN courses c ON s.course_id = c.id
-    WHERE c.primary_instructor_id = ?
-    UNION
-    SELECT section_id FROM instructor_sections
-    WHERE instructor_id = ? AND can_view_chats = 1
-  `, [scopedInstructorId, scopedInstructorId, scopedInstructorId]);
-  return rows.map(r => r.section_id);
-}
 
 // POST /api/case-chats - Create a new chat session
 router.post('/', async (req, res) => {
@@ -379,19 +358,30 @@ router.get('/', verifyToken, requireRole(['admin', 'instructor']), async (req, r
   }
 });
 
-// GET /api/case-chats/student/:studentId - Get a student's chats
-router.get('/student/:studentId', async (req, res) => {
+// GET /api/case-chats/student/:studentId - Get a student's chats (staff; only sections in scope)
+router.get('/student/:studentId', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { studentId } = req.params;
     const { case_id } = req.query;
+
+    const scopedSectionIds = await getChatViewableSectionIds(req);
+    if (scopedSectionIds && scopedSectionIds.length === 0) {
+      return res.json({ data: [], error: null });
+    }
 
     let query = `
       SELECT cc.*, c.case_title
       FROM case_chats cc
       LEFT JOIN cases c ON cc.case_id = c.case_id
+      LEFT JOIN students st ON cc.student_id = st.id
       WHERE cc.student_id = ?
     `;
     const params = [studentId];
+
+    if (scopedSectionIds) {
+      query += ` AND COALESCE(cc.section_id, st.section_id) IN (${scopedSectionIds.map(() => '?').join(',')})`;
+      params.push(...scopedSectionIds);
+    }
 
     if (case_id) {
       query += ' AND cc.case_id = ?';
@@ -697,10 +687,14 @@ router.get('/responses', verifyToken, requireRole(['admin']), async (req, res) =
 
 // ===== END SPECIFIC ROUTES =====
 
-// GET /api/case-chats/:id - Get a single chat session
-router.get('/:id', async (req, res) => {
+// GET /api/case-chats/:id - Get a single chat session (staff; 404 outside scope)
+router.get('/:id', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (!(await canViewChat(req, id))) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
 
     const [rows] = await pool.execute(
       `SELECT cc.*, s.full_name as student_name, c.case_title, sec.section_title
@@ -1095,10 +1089,14 @@ router.patch('/:id/position', async (req, res) => {
   }
 });
 
-// GET /api/case-chats/:id/positions - Get position history for a chat
-router.get('/:id/positions', async (req, res) => {
+// GET /api/case-chats/:id/positions - Get position history for a chat (staff; 404 outside scope)
+router.get('/:id/positions', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (!(await canViewChat(req, id))) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
 
     const [chat] = await pool.execute(
       'SELECT id, initial_position, final_position, position_method FROM case_chats WHERE id = ?',
@@ -1278,10 +1276,13 @@ router.post('/:id/infer-position', verifyToken, requireRole(['admin']), async (r
   }
 });
 
-// GET /api/case-chats/:id/should-infer - Check if chat should have positions inferred
-router.get('/:id/should-infer', async (req, res) => {
+// GET /api/case-chats/:id/should-infer - Check if chat should have positions inferred (staff; 404 outside scope)
+router.get('/:id/should-infer', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { id } = req.params;
+    if (!(await canViewChat(req, id))) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
     const shouldInfer = await shouldInferPositions(id);
     res.json({ data: { should_infer: shouldInfer }, error: null });
   } catch (error) {

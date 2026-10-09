@@ -276,10 +276,9 @@ const App: React.FC = () => {
             setViewingEvaluationId(evaluationId);
             setIsLoadingEvaluation(true);
 
-            // Fetch the evaluation data
+            // Fetch the evaluation data (api sends the instructor's token: #evaluation/ is admin context)
             try {
-                const response = await fetch(`${getApiBaseUrl()}/evaluations/${evaluationId}`);
-                const result = await response.json();
+                const result = await api.get(`/evaluations/${evaluationId}`);
 
                 if (result.data) {
                     // Convert the API response to EvaluationResult format
