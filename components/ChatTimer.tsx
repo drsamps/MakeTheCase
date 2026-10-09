@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { api, getApiBaseUrl } from '../services/apiClient';
+import { api, getApiBaseUrl, getAuthHeaders } from '../services/apiClient';
 
 interface ChatTimerProps {
   chatId: string;
@@ -24,7 +24,7 @@ export const ChatTimer: React.FC<ChatTimerProps> = ({
   // Fetch time remaining from server
   const syncWithServer = useCallback(async () => {
     try {
-      const response = await fetch(`${getApiBaseUrl()}/case-chats/${chatId}/time-remaining`);
+      const response = await fetch(`${getApiBaseUrl()}/case-chats/${chatId}/time-remaining`, { headers: getAuthHeaders() });
       const result = await response.json();
 
       if (result.data) {

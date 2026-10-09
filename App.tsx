@@ -6,7 +6,7 @@ import { createChatSession, getEvaluation, type LLMChatReply } from './services/
 import { TEACH_BACK, TEACH_BACK_COPY, DEFAULT_TEACH_BACK_MIN_WORDS, countWords, initialsOf, isTeachBack } from './teachBack';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
-import { api, getApiBaseUrl, refreshAuthToken } from './services/apiClient';
+import { api, getApiBaseUrl, getAuthHeaders, refreshAuthToken } from './services/apiClient';
 import { formatTranscript } from './utils/transcriptFormat.js';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
@@ -551,7 +551,7 @@ const App: React.FC = () => {
           for (const caseItem of activeCases) {
             try {
               // Check case-level completion
-              const response = await fetch(`${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}`);
+              const response = await fetch(`${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}`, { headers: getAuthHeaders() });
               const result = await response.json();
               if (result.data) {
                 caseCompletionStatuses[caseItem.case_id] = {
@@ -565,7 +565,8 @@ const App: React.FC = () => {
                 for (const scenario of caseItem.scenarios) {
                   try {
                     const scenarioResponse = await fetch(
-                      `${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}?scenario_id=${scenario.scenario_id}`
+                      `${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}?scenario_id=${scenario.scenario_id}`,
+                      { headers: getAuthHeaders() }
                     );
                     const scenarioResult = await scenarioResponse.json();
                     if (scenarioResult.data) {
@@ -775,7 +776,7 @@ const App: React.FC = () => {
         try {
           await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/activity`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getAuthHeaders(),
           });
         } catch (err) {
           console.error('Heartbeat failed:', err);
@@ -924,7 +925,7 @@ const App: React.FC = () => {
           try {
             await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/start-timer`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: getAuthHeaders(),
             });
           } catch (err) {
             console.error('Failed to start timer:', err);
@@ -1057,7 +1058,7 @@ const App: React.FC = () => {
               const transcript = buildTranscript(allMessages, fullName, activeCaseData?.protagonist);
               fetch(`${getApiBaseUrl()}/transcripts/chat/${currentCaseChatId}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: getAuthHeaders(),
                 body: JSON.stringify({ transcript }),
               }).catch(err => console.error('Auto-save transcript failed:', err));
             }
@@ -1213,7 +1214,7 @@ const App: React.FC = () => {
       try {
         await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/final-position`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
           body: JSON.stringify({ final_position_id: positionId })
         });
       } catch (err) {
@@ -1232,7 +1233,7 @@ const App: React.FC = () => {
       try {
         await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/initial-position`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
           body: JSON.stringify({ initial_position_id: position.position_id })
         });
       } catch (err) {
@@ -1325,7 +1326,7 @@ const App: React.FC = () => {
             try {
               const transcriptResponse = await fetch(`${getApiBaseUrl()}/transcripts/chat/${currentCaseChatId}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: getAuthHeaders(),
                 body: JSON.stringify({
                   transcript: transcriptToSave,
                   // Consent to share this transcript with the developers. Instructors can see and
@@ -1358,7 +1359,7 @@ const App: React.FC = () => {
         try {
           await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/status`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getAuthHeaders(),
             body: JSON.stringify({ status: 'evaluation_failed' }),
           });
         } catch (statusErr) {
@@ -1460,7 +1461,7 @@ const App: React.FC = () => {
 
         const caseChatResponse = await fetch(`${getApiBaseUrl()}/case-chats`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
           body: JSON.stringify(caseChatPayload),
         });
         const caseChatResult = await caseChatResponse.json();
@@ -1597,7 +1598,7 @@ const App: React.FC = () => {
       try {
         await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/status`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
           body: JSON.stringify({ status: 'canceled' })
         });
       } catch (err) {
@@ -1617,7 +1618,7 @@ const App: React.FC = () => {
       try {
         await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/status`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
           body: JSON.stringify({ status: 'canceled' })
         });
       } catch (err) {

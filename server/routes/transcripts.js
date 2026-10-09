@@ -4,6 +4,7 @@ import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { writeAudit } from '../services/auditLog.js';
 import { getChatViewableSectionIds, isSectionInScope } from '../middleware/instructorAccess.js';
+import { requireChatOwner } from '../middleware/chatOwner.js';
 
 const router = express.Router();
 
@@ -11,7 +12,7 @@ const router = express.Router();
  * POST /api/transcripts
  * Create a new transcript for a case_chat
  */
-router.post('/', async (req, res) => {
+router.post('/', requireChatOwner('case_chat_id', 'body'), async (req, res) => {
   try {
     const { case_chat_id, transcript, saved_with_permission } = req.body;
 
@@ -82,7 +83,7 @@ router.post('/', async (req, res) => {
  * Upsert transcript for a case_chat (used by auto-save during active chat).
  * Creates the transcript row on first call; updates it on subsequent calls.
  */
-router.put('/chat/:caseChatId', async (req, res) => {
+router.put('/chat/:caseChatId', requireChatOwner('caseChatId'), async (req, res) => {
   try {
     const { caseChatId } = req.params;
     const { transcript, saved_with_permission } = req.body;

@@ -1,11 +1,12 @@
 # Plan: Close the unauthenticated student-data and AI routes
 
-Status: **Phases 1 and 2a built (2026-10-09); 2b and 3 not started.** Written 2026-09-15; revised 2026-10-09 against branch `teach-back` (`b2f29e7`).
+Status: **Phases 1 and 2 built (2026-10-09); Phase 3 not started.** Written 2026-09-15; revised 2026-10-09 against branch `teach-back` (`b2f29e7`).
 
 - Done so far:
   - `GET /api/llm/case-data/:caseId` requires a login (`790a7bb`, 2026-10-02). That commit also locked the scenario and position reads, which are outside this plan.
   - Phase 1: the evaluation, transcript and case-chat reads require a staff login and are limited to the caller's sections.
   - Phase 2a: `/llm/chat` and `/evaluations/run` require a student token and the student's own chat; `/llm/eval` is gone; `server/scripts/dev-student-token.js` exists.
+  - Phase 2b: every chat write requires the chat's owner (`server/middleware/chatOwner.js`), and the student comes from the token.
 - Phase 3 is planned in its own doc, [`server-side-chat-prompt.md`](server-side-chat-prompt.md). This doc only gives its place in the order.
 
 ## Context
@@ -153,6 +154,15 @@ Phase 3 still accepts `systemPrompt` from the browser after 2a, so a logged-in s
    - `components/ChatTimer.tsx:27`: `time-remaining`.
    - `/llm/case-data` (`App.tsx:718`) already sends the student token. It can switch to `getAuthHeaders()` for consistency.
    - `App.tsx:654` reads `/rubrics/:id` (or `/rubrics/default`), which is still open on the server. Rubrics aren't student records, so this plan leaves it alone; adding the header now costs nothing if it's locked later.
+
+#### As built
+
+- `requireChatOwner(name, source)` and `requireSelfStudent(param)` live in `server/middleware/chatOwner.js`. Each returns `[verifyToken, check]`.
+- Staff pass `requireChatOwner` within their sections, as planned. No dashboard screen calls these write routes today.
+- `POST /api/evaluations` adds `requireRole(['student'])` after the owner check, and takes `student_id` **and `case_id`** from the chat row.
+- `POST /api/case-chats` is students only (`requireRole(['student'])`); the body's `student_id` is ignored.
+- The three `check-*` routes use `requireSelfStudent`. Staff get 403 there: only the student screen calls `check-completion`, and nothing calls the other two.
+- **Not added: an enrollment check on `POST /case-chats`.** A student can still open a chat in a section they aren't enrolled in, and `/evaluations/run` bills that section's instructor. On the dev copy, 33 of 173 chats from 2026 have no matching `student_sections` row, so requiring one would block real students. Work out why first (removed enrollments? legacy `students.section_id`?).
 
 ### What Phase 2 does *not* fix (say so when shipping)
 

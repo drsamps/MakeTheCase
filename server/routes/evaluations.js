@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { requireAdminOrInstructor, getChatViewableSectionIds, isSectionInScope } from '../middleware/instructorAccess.js';
+import { requireChatOwner, requireSelfStudent } from '../middleware/chatOwner.js';
 import { inferPositionFromTranscript } from '../services/positionInference.js';
 import { buildCoachPrompt } from '../services/promptBuilder.js';
 import { buildTeachBackCoachPrompt } from '../services/teachBackCoachPrompt.js';
@@ -104,7 +105,7 @@ router.get('/', verifyToken, requireRole(['admin', 'instructor']), async (req, r
 // GET /api/evaluations/check-completion/:studentId/:caseId - Check if student has completed a case or scenario
 // Query params: scenario_id (optional) - filter by specific scenario
 // Returns { completed: boolean, allow_rechat: boolean, evaluation_id: string | null }
-router.get('/check-completion/:studentId/:caseId', async (req, res) => {
+router.get('/check-completion/:studentId/:caseId', requireSelfStudent('studentId'), async (req, res) => {
   try {
     const { studentId, caseId } = req.params;
     const { scenario_id } = req.query;
@@ -656,20 +657,19 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   }
 });
 
-// POST /api/evaluations - Create new evaluation
-router.post('/', async (req, res) => {
+// POST /api/evaluations - Create new evaluation (the student who owns the chat; student_id and
+// case_id come from the chat row). The score is still the browser's until Phase 3 of
+// docs/security-student-data-access.md has /run save the evaluation itself.
+router.post('/', requireChatOwner('case_chat_id', 'body'), requireRole(['student']), async (req, res) => {
   try {
     const {
-      student_id, case_id, case_chat_id, score, summary, criteria,
+      case_chat_id, score, summary, criteria,
       helpful, liked, improve, super_model, transcript, rubric_id
     } = req.body;
+    const { student_id, case_id } = req.caseChat;
 
-    if (!student_id || score === undefined) {
-      return res.status(400).json({ data: null, error: { message: 'Student ID and score are required' } });
-    }
-
-    if (!case_chat_id) {
-      return res.status(400).json({ data: null, error: { message: 'case_chat_id is required' } });
+    if (score === undefined) {
+      return res.status(400).json({ data: null, error: { message: 'score is required' } });
     }
 
     const id = uuidv4();

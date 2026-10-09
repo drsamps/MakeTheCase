@@ -5,21 +5,23 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 import { inferPositionsFromChat, shouldInferPositions } from '../services/positionInference.js';
 import { checkSectionReadiness } from '../services/keyResolver.js';
 import { getChatViewableSectionIds, canViewChat } from '../middleware/instructorAccess.js';
+import { requireChatOwner, requireSelfStudent } from '../middleware/chatOwner.js';
 
 const router = express.Router();
 
 // Valid status values
 const VALID_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'killed', 'completed', 'evaluation_failed'];
 
-// POST /api/case-chats - Create a new chat session
-router.post('/', async (req, res) => {
+// POST /api/case-chats - Create a new chat session (students only; the student comes from the token)
+router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
   try {
-    const { student_id, case_id, section_id, scenario_id, persona, chat_model, initial_position, initial_position_id, position_method } = req.body;
+    const { case_id, section_id, scenario_id, persona, chat_model, initial_position, initial_position_id, position_method } = req.body;
+    const student_id = req.user.id;
 
-    if (!student_id || !case_id) {
+    if (!case_id) {
       return res.status(400).json({
         data: null,
-        error: { message: 'student_id and case_id are required' }
+        error: { message: 'case_id is required' }
       });
     }
 
@@ -88,7 +90,7 @@ router.post('/', async (req, res) => {
 });
 
 // PATCH /api/case-chats/:id/activity - Update last_activity timestamp (heartbeat)
-router.patch('/:id/activity', async (req, res) => {
+router.patch('/:id/activity', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -123,7 +125,7 @@ router.patch('/:id/activity', async (req, res) => {
 
 // PATCH /api/case-chats/:id/status - Update chat status
 // NOTE: Transcript handling removed - use /api/transcripts instead
-router.patch('/:id/status', async (req, res) => {
+router.patch('/:id/status', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { status, hints_used } = req.body;
@@ -187,7 +189,7 @@ router.patch('/:id/status', async (req, res) => {
 // NOTE: evaluation_id and transcript removed from this endpoint
 // - Evaluations link via case_chat_id (one-way reference)
 // - Transcripts saved via /api/transcripts
-router.patch('/:id/complete', async (req, res) => {
+router.patch('/:id/complete', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { hints_used } = req.body;
@@ -400,7 +402,7 @@ router.get('/student/:studentId', verifyToken, requireRole(['admin', 'instructor
 });
 
 // GET /api/case-chats/check-repeats/:studentId/:caseId - Check if student can start another chat
-router.get('/check-repeats/:studentId/:caseId', async (req, res) => {
+router.get('/check-repeats/:studentId/:caseId', requireSelfStudent('studentId'), async (req, res) => {
   try {
     const { studentId, caseId } = req.params;
     const { section_id } = req.query;
@@ -813,7 +815,7 @@ router.post('/mark-abandoned', verifyToken, requireRole(['admin', 'instructor'])
 // =====================================================
 
 // POST /api/case-chats/:id/start-timer - Start the chat timer (call on first student message)
-router.post('/:id/start-timer', async (req, res) => {
+router.post('/:id/start-timer', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -880,7 +882,7 @@ router.post('/:id/start-timer', async (req, res) => {
 });
 
 // GET /api/case-chats/:id/time-remaining - Get remaining time for active chat
-router.get('/:id/time-remaining', async (req, res) => {
+router.get('/:id/time-remaining', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -951,7 +953,7 @@ router.get('/:id/time-remaining', async (req, res) => {
 });
 
 // GET /api/case-chats/check-scenario-completion/:studentId/:caseId - Check which scenarios are completed
-router.get('/check-scenario-completion/:studentId/:caseId', async (req, res) => {
+router.get('/check-scenario-completion/:studentId/:caseId', requireSelfStudent('studentId'), async (req, res) => {
   try {
     const { studentId, caseId } = req.params;
     const { section_id } = req.query;
@@ -1028,7 +1030,7 @@ router.get('/check-scenario-completion/:studentId/:caseId', async (req, res) => 
 // =====================================================
 
 // PATCH /api/case-chats/:id/position - Set or update position for a chat
-router.patch('/:id/position', async (req, res) => {
+router.patch('/:id/position', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { position_type, position_value, recorded_by, notes } = req.body;
@@ -1130,7 +1132,7 @@ router.get('/:id/positions', verifyToken, requireRole(['admin', 'instructor']), 
 });
 
 // PATCH /api/case-chats/:id/initial-position - Set initial position by position_id (for explicit capture method)
-router.patch('/:id/initial-position', async (req, res) => {
+router.patch('/:id/initial-position', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { initial_position_id } = req.body;
@@ -1178,7 +1180,7 @@ router.patch('/:id/initial-position', async (req, res) => {
 });
 
 // PATCH /api/case-chats/:id/final-position - Set final position by position_id (new FK-based system)
-router.patch('/:id/final-position', async (req, res) => {
+router.patch('/:id/final-position', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { final_position_id } = req.body;
