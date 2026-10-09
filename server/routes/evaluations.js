@@ -151,8 +151,9 @@ router.get('/check-completion/:studentId/:caseId', async (req, res) => {
 });
 
 // POST /api/evaluations/run - Run a student evaluation (prompt built server-side)
+// Students only, on their own chat (404 otherwise, so chat IDs can't be probed).
 // MUST be placed before /:id routes
-router.post('/run', async (req, res) => {
+router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
   const { case_chat_id, chatHistory, modelId, rubricId } = req.body;
 
   if (!case_chat_id || !chatHistory || !modelId) {
@@ -168,7 +169,7 @@ router.post('/run', async (req, res) => {
        WHERE cc.id = ?`,
       [case_chat_id]
     );
-    if (!chatRows.length) {
+    if (!chatRows.length || chatRows[0].student_id !== req.user.id) {
       return res.status(404).json({ data: null, error: { message: 'Case chat not found' } });
     }
     const { case_id, student_id, section_id, full_name } = chatRows[0];

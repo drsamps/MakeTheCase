@@ -1,10 +1,11 @@
 # Plan: Close the unauthenticated student-data and AI routes
 
-Status: **Phase 1 built (2026-10-09); Phases 2 and 3 not started.** Written 2026-09-15; revised 2026-10-09 against branch `teach-back` (`b2f29e7`).
+Status: **Phases 1 and 2a built (2026-10-09); 2b and 3 not started.** Written 2026-09-15; revised 2026-10-09 against branch `teach-back` (`b2f29e7`).
 
 - Done so far:
   - `GET /api/llm/case-data/:caseId` requires a login (`790a7bb`, 2026-10-02). That commit also locked the scenario and position reads, which are outside this plan.
   - Phase 1: the evaluation, transcript and case-chat reads require a staff login and are limited to the caller's sections.
+  - Phase 2a: `/llm/chat` and `/evaluations/run` require a student token and the student's own chat; `/llm/eval` is gone; `server/scripts/dev-student-token.js` exists.
 - Phase 3 is planned in its own doc, [`server-side-chat-prompt.md`](server-side-chat-prompt.md). This doc only gives its place in the order.
 
 ## Context
@@ -118,6 +119,8 @@ Students always have a token, since they must sign in through CAS (`server/route
 
 Phase 3 still accepts `systemPrompt` from the browser after 2a, so a logged-in student can use the chat with a custom prompt within their instructor's cap. 2a stops anonymous use only.
 
+**As built:** both routes take `requireRole(['student'])`. Staff never call them (the dashboard has no chat; staff reach the student screen through a CAS student login, which issues a student token), and a staff token would otherwise need its own billing rule. Ownership is checked now rather than waiting for 2b: `/llm/chat` 404s a `caseChatId` the student doesn't own, and `/evaluations/run` 404s a `case_chat_id` whose `student_id` isn't the caller. The body's `studentId` is ignored. The dev script below was added in 2a, since a student chat can't be tested without it.
+
 ### Phase 2b: Only the chat's owner can act on it
 
 #### Server
@@ -164,7 +167,7 @@ These all come from the browser building prompts and saving grades. Phase 3 fixe
 ### Verify Phase 2
 
 - **Dev student login.** CAS is off in dev, so there's no normal way to sign in as a student. Add a dev-only script, `server/scripts/dev-student-token.js`:
-  - It refuses to run unless `NODE_ENV !== 'production'`.
+  - It refuses to run when `NODE_ENV` is `production` or `CAS_REDIRECT_BASE_URL` isn't localhost. (`CAS_ENABLED` can't be the guard: it is `true` in this machine's dev `.env.local`.)
   - It calls `generateToken('cas:<existing test student>', email, 'student', {...})`.
   - It prints `http://localhost:3000/?token=…&role=student&fullName=…&email=…`, which `api.auth.applyCasCallbackFromUrl()` (`services/apiClient.ts:216`) already accepts.
 - **As that student, run a full case chat:**

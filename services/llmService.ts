@@ -1,6 +1,6 @@
 import { getSystemPrompt, buildSystemPrompt, CaseData, DEFAULT_CASE_DATA, SystemPromptOptions } from "../constants";
 import { Message, EvaluationResult, CEOPersona } from "../types";
-import { getApiBaseUrl } from "./apiClient";
+import { getApiBaseUrl, getAuthHeaders } from "./apiClient";
 import { TEACH_BACK } from "../teachBack";
 import { buildTeachBackSystemPrompt } from "../teachBackPrompt";
 
@@ -59,7 +59,7 @@ export const createChatSession = (
       const messageAt = Date.now();
       const response = await fetch(`${getApiBaseUrl()}/llm/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           modelId,
           systemPrompt,
@@ -67,7 +67,7 @@ export const createChatSession = (
           message,
           messageAt,
           caseId: caseData?.case_id,  // Pass caseId for metrics tracking
-          studentId,  // Pass studentId for logging
+          studentId,  // Ignored by the server, which takes the student from the token
           caseChatId: caseChatId || undefined,  // Records replies served by a backup model
         }),
       });
@@ -110,7 +110,7 @@ export const getEvaluation = async (
 
   const response = await fetch(`${getApiBaseUrl()}/evaluations/run`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders(),
     body: JSON.stringify({ case_chat_id: caseChatId, chatHistory, modelId, rubricId }),
   });
 
