@@ -14,9 +14,15 @@ So every "AI-only" field has to reach the browser. That means the teaching note,
 
 What is already done (2026-10-02): those two GET routes and the dashboard-only scenario/position reads now require a login. Logged-in students can still read everything above. Only this rebuild fixes that.
 
-### Also open: `/api/llm/chat` and `/api/llm/eval` have no login check
+### Comes after the login work in `security-student-data-access.md`
 
-They trust the browser's `systemPrompt`, `studentId` and `caseId`. Anyone can send any prompt and bill it to whichever instructor owns the `caseId` they name. Step 3 closes this for chat. A login gate on both routes can ship first as its own small change: `llmService.ts` sends the student token, the routes add `verifyToken`. First check whether anything still calls `/llm/eval`, and remove it if nothing does.
+This is Phase 3 of [`security-student-data-access.md`](security-student-data-access.md). Its Phase 2 does the parts this plan relies on:
+- Phase 2a: the login check on `/api/llm/chat`, `studentId` taken from the token, and removing `/api/llm/eval`;
+- Phase 2b: `POST /case-chats` takes `student_id` from the token, and `requireChatOwner` checks the student owns the chat.
+
+Two parts of that plan's Phase 3 are not built into the steps below yet. Add them before building:
+- `POST /api/evaluations/run` grades the server's stored transcript and saves the evaluation itself; `POST /api/evaluations` stops accepting a score from the browser.
+- The server stores the conversation, so `history` stops coming from the browser (step 3 still accepts it).
 
 ## Decide before building
 
@@ -44,12 +50,12 @@ They trust the browser's `systemPrompt`, `studentId` and `caseId`. Anyone can se
 
    Rebuilding every turn is fine at first, because `loadCaseData` reads cached `converted_text`. Add a short in-memory cache keyed by `caseChatId` only if timing shows a need.
 3. **New chat request shape.**
-   - `POST /api/llm/chat` takes `{ caseChatId, message, messageAt, history }` and requires `verifyToken`, `role === 'student'` and `case_chats.student_id === req.user.id`.
+   - `POST /api/llm/chat` takes `{ caseChatId, message, messageAt, history }` and requires `verifyToken`, `role === 'student'` and `case_chats.student_id === req.user.id`. Phase 2 of `security-student-data-access.md` adds the login and ownership checks first; this step adds the new body shape and the student-only role.
    - The model, case, section and billed instructor all come from the `case_chats` row, never the body. This also stops a browser from choosing who gets billed.
    - `chatFallback.js`, prompt logging (`promptLogger.js`) and hints need no changes, because they only see the finished prompt.
 4. **Require the chat record.**
    - `App.tsx` `handleNameSubmit` currently continues when `POST /case-chats` fails ("chat tracking is optional"). Make that a visible error.
-   - `POST /case-chats` should take `student_id` from the token, not the body.
+   - `POST /case-chats` takes `student_id` from the token, not the body (done in Phase 2b of `security-student-data-access.md`).
 5. **Stop sending the hidden fields.**
    - `GET /api/llm/case-data/:caseId` for students: return only what the student sees (title, protagonist, role, question, `case_content` when `show_case` is on). Supplementary content depends on decision 3. Keep the full response for staff, or move it to a staff-only route.
    - `GET /api/sections/:id/cases` for `role === 'student'`: leave out `prompt_instructions`, `arguments_for` and `arguments_against` from scenarios and positions. Keep `position_name` and `position`, which the position picker shows.
