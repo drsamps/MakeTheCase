@@ -90,6 +90,52 @@ function getFileTypeLabel(fileType) {
   return fileType;
 }
 
+/**
+ * Helper: Find a file row's original on disk, or null if there is none.
+ *
+ * The path is built only from the row (never from the request), and each candidate
+ * must stay inside case_files/<case_id>/ once resolved. Uploads live in uploads/;
+ * Case Writer publishes case.md / teaching_note.md at the case root, and legacy
+ * rows fall back to <file_type>.md there, the same lookup loadFileContent() uses.
+ */
+async function findOriginalPath(row) {
+  if (!row.case_id || path.basename(row.case_id) !== row.case_id) return null;
+  const caseDir = path.resolve(CASE_FILES_DIR, row.case_id);
+  const name = row.filename ? path.basename(row.filename) : null;
+  const candidates = [];
+  if (name) {
+    candidates.push(path.join(caseDir, 'uploads', name));
+    candidates.push(path.join(caseDir, name));
+  }
+  if (row.file_type === 'case' || row.file_type === 'teaching_note') {
+    candidates.push(path.join(caseDir, `${row.file_type}.md`));
+  }
+  for (const candidate of candidates) {
+    const resolved = path.resolve(candidate);
+    if (!resolved.startsWith(caseDir + path.sep)) continue;
+    try {
+      const stats = await fs.stat(resolved);
+      if (stats.isFile()) return resolved;
+    } catch {
+      // Not here; try the next location.
+    }
+  }
+  return null;
+}
+
+// Download types served with their own Content-Type; anything else is octet-stream
+// so an uploaded or fetched HTML/SVG can never be rendered on our origin.
+const DOWNLOAD_CONTENT_TYPES = {
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.doc': 'application/msword',
+  '.md': 'text/markdown; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png'
+};
+
 // GET /api/case-files/:caseId - List all files for a case with full metadata
 router.get('/:caseId', verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'view'), async (req, res) => {
   try {
@@ -110,20 +156,23 @@ router.get('/:caseId', verifyToken, requireAdminOrInstructor, requireCaseAccess(
               proprietary, proprietary_confirmed_by, proprietary_confirmed_at,
               include_in_chat_prompt, prompt_order, file_version, original_filename,
               file_size, processing_status, processing_model, outline_content,
-              processed_at, created_at, is_outline, is_latest_outline
+              processed_at, created_at, is_outline, is_latest_outline,
+              converted_text IS NOT NULL AS has_text
        FROM case_files
        WHERE case_id = ?
        ORDER BY prompt_order ASC, created_at ASC`,
       [caseId]
     );
 
-    // Add display labels
-    const filesWithLabels = files.map(f => ({
+    // Add display labels, and whether there is an original to download
+    const filesWithLabels = await Promise.all(files.map(async f => ({
       ...f,
       file_type_label: getFileTypeLabel(f.file_type),
       proprietary: !!f.proprietary,
-      include_in_chat_prompt: !!f.include_in_chat_prompt
-    }));
+      include_in_chat_prompt: !!f.include_in_chat_prompt,
+      has_text: !!f.has_text,
+      has_original: (await findOriginalPath(f)) !== null
+    })));
 
     res.json({
       data: filesWithLabels,
@@ -717,6 +766,70 @@ router.get('/:fileId/content', verifyToken, requireAdminOrInstructor, requireCas
       data: null,
       error: { message: error.message }
     });
+  }
+});
+
+// GET /api/case-files/:fileId/download - Download the original file as an attachment
+router.get('/:fileId/download', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'view'), async (req, res) => {
+  try {
+    const [files] = await pool.execute(
+      'SELECT id, case_id, filename, original_filename, file_type FROM case_files WHERE id = ?',
+      [req.params.fileId]
+    );
+    if (files.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'File not found' } });
+    }
+    const row = files[0];
+    const filePath = await findOriginalPath(row);
+    if (!filePath) {
+      return res.status(404).json({
+        data: { textOnly: true },
+        error: { message: 'There is no original file for this entry; download its text instead.' }
+      });
+    }
+
+    const downloadName = row.original_filename || row.filename || path.basename(filePath);
+    // Always an attachment, never inline.
+    res.attachment(downloadName);
+    res.set('Content-Type', DOWNLOAD_CONTENT_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.sendFile(filePath, (err) => {
+      if (err && !res.headersSent) {
+        console.error('[CaseFiles] Error sending file:', err);
+        res.status(500).json({ data: null, error: { message: 'Download failed' } });
+      }
+    });
+  } catch (error) {
+    console.error('[CaseFiles] Error downloading file:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// GET /api/case-files/:fileId/download-text - Download the extracted text (what the AI reads)
+router.get('/:fileId/download-text', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'view'), async (req, res) => {
+  try {
+    const [files] = await pool.execute(
+      'SELECT id, filename, original_filename, file_format, converted_text FROM case_files WHERE id = ?',
+      [req.params.fileId]
+    );
+    if (files.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'File not found' } });
+    }
+    const row = files[0];
+    if (row.converted_text == null) {
+      return res.status(404).json({ data: null, error: { message: 'No extracted text for this file yet' } });
+    }
+
+    const baseName = path.basename(row.original_filename || row.filename || `file-${row.id}`);
+    const stem = path.basename(baseName, path.extname(baseName)) || `file-${row.id}`;
+    const ext = row.file_format === 'md' ? '.md' : '.txt';
+    res.attachment(`${stem}${ext}`);
+    res.set('Content-Type', DOWNLOAD_CONTENT_TYPES[ext]);
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.send(row.converted_text);
+  } catch (error) {
+    console.error('[CaseFiles] Error downloading text:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
 

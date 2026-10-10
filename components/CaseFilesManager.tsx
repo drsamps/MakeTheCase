@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { api, getApiBaseUrl } from '../services/apiClient';
+import { api, getApiBaseUrl, getAuthHeaders } from '../services/apiClient';
 
 interface Case {
   case_id: string;
@@ -14,8 +14,10 @@ interface CaseFile {
   file_type: string;
   file_type_label: string;
   file_format: string | null;
-  file_source: 'uploaded' | 'ai_prepped' | 'downloaded';
+  file_source: 'uploaded' | 'ai_prepped' | 'downloaded' | 'case_writer';
   source_url: string | null;
+  has_original: boolean;
+  has_text: boolean;
   proprietary: boolean;
   proprietary_confirmed_by: number | null;
   proprietary_confirmed_at: string | null;
@@ -26,6 +28,17 @@ interface CaseFile {
   processing_status: 'pending' | 'processing' | 'completed' | 'failed' | null;
   created_at: string;
 }
+
+// Only http(s) URLs become links, so a stored javascript: URL can never run.
+const safeHttpUrl = (url: string | null): URL | null => {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
 
 const PREDEFINED_FILE_TYPES = [
   { value: 'case', label: 'Case Document' },
@@ -306,6 +319,44 @@ export const CaseFilesManager: React.FC = () => {
       setSuccess(`Text re-extracted (${chars.toLocaleString()} chars)`);
     } catch (err: any) {
       setError(err.message || 'Reconvert failed');
+    }
+  };
+
+  // A plain link cannot carry the Bearer token, so fetch the file and hand the browser a blob URL.
+  const downloadFromApi = async (apiPath: string, fallbackName: string) => {
+    setError(null);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}${apiPath}`, { headers: getAuthHeaders() });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error?.message || `Download failed (${response.status})`);
+      }
+      // The server names the file; fall back only if the header is unreadable.
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+      const plain = disposition.match(/filename="([^"]+)"/i);
+      const name = encoded ? decodeURIComponent(encoded[1]) : plain ? plain[1] : fallbackName;
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err: any) {
+      setError(err.message || 'Download failed');
+    }
+  };
+
+  // Rows with no original on disk (text-only entries) download their text instead.
+  const handleDownload = (file: CaseFile) => {
+    const name = file.original_filename || file.filename;
+    if (file.has_original) {
+      downloadFromApi(`/case-files/${file.id}/download`, name);
+    } else {
+      downloadFromApi(`/case-files/${file.id}/download-text`, `${name}.txt`);
     }
   };
 
@@ -737,7 +788,12 @@ export const CaseFilesManager: React.FC = () => {
                         <td className="px-3 py-2 text-gray-500">{file.prompt_order}</td>
                         <td className="px-3 py-2">
                           <div className="font-medium">{file.original_filename || file.filename}</div>
-                          <div className="text-xs text-gray-500">{file.file_format?.toUpperCase()}</div>
+                          <div className="text-xs text-gray-500">
+                            {file.file_format?.toUpperCase()}
+                            {safeHttpUrl(file.source_url) && (
+                              <>{file.file_format ? ' · ' : ''}{safeHttpUrl(file.source_url)!.hostname}</>
+                            )}
+                          </div>
                         </td>
                         <td className="px-3 py-2">
                           <span className="px-2 py-0.5 bg-gray-100 rounded text-xs">
@@ -810,6 +866,32 @@ export const CaseFilesManager: React.FC = () => {
                                 >
                                   Reconvert
                                 </button>
+                              </>
+                            )}
+                            {(file.has_original || file.has_text) && (
+                              <>
+                                <span className="text-gray-300">|</span>
+                                <button
+                                  onClick={() => handleDownload(file)}
+                                  className="text-gray-700 hover:text-gray-900 text-xs"
+                                  title={file.has_original ? 'Download the original file' : 'No original file is stored; download its text'}
+                                >
+                                  Download
+                                </button>
+                              </>
+                            )}
+                            {safeHttpUrl(file.source_url) && (
+                              <>
+                                <span className="text-gray-300">|</span>
+                                <a
+                                  href={safeHttpUrl(file.source_url)!.href}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-gray-700 hover:text-gray-900 text-xs whitespace-nowrap"
+                                  title={file.source_url!}
+                                >
+                                  Visit ↗
+                                </a>
                               </>
                             )}
                             <span className="text-gray-300">|</span>
@@ -1182,14 +1264,27 @@ export const CaseFilesManager: React.FC = () => {
 
             {textModalHasText && !textModalLoading && (
               <div className="px-6 py-4 border-t flex items-center justify-between">
-                <button
-                  onClick={handleTextModalConvert}
-                  disabled={textModalLoading}
-                  className="text-sm text-green-600 hover:text-green-800"
-                  title="Re-extract text from the original file (discards edits)"
-                >
-                  Re-extract from file
-                </button>
+                <div className="flex gap-4">
+                  <button
+                    onClick={handleTextModalConvert}
+                    disabled={textModalLoading}
+                    className="text-sm text-green-600 hover:text-green-800"
+                    title="Re-extract text from the original file (discards edits)"
+                  >
+                    Re-extract from file
+                  </button>
+                  <button
+                    onClick={() => downloadFromApi(
+                      `/case-files/${textModalFile.id}/download-text`,
+                      `${textModalFile.original_filename || textModalFile.filename}.txt`
+                    )}
+                    disabled={textModalDirty}
+                    className="text-sm text-gray-600 hover:text-gray-800 disabled:text-gray-300"
+                    title={textModalDirty ? 'Save your changes first' : 'Download the saved text (what the AI reads)'}
+                  >
+                    Download text
+                  </button>
+                </div>
                 <div className="flex gap-2">
                   <button
                     onClick={closeTextModal}
