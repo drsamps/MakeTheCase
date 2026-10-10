@@ -1,7 +1,8 @@
 /**
  * URL Fetcher — download an instructor-supplied web page and turn it into text.
  *
- * Used by the Case Writer "Fetch page text" action on `link` source material. Kept
+ * Used by the Case Writer "Fetch page text" action on `link` source material, and by
+ * Case Files "Add from web page" (via fetchUrlBytes + services/htmlToMarkdown.js). Kept
  * free of Express and DB imports so the SSRF logic can be exercised in isolation.
  *
  * Threat model: the URL comes from an authenticated instructor, but the *server* is
@@ -407,7 +408,7 @@ async function fetchFollowingRedirects(startUrl) {
 // Body → text
 // ---------------------------------------------------------------------------
 
-function decodeText(buffer, contentTypeHeader) {
+export function decodeText(buffer, contentTypeHeader) {
   const charset = charsetFrom(contentTypeHeader);
   if (charset && charset !== 'utf-8' && charset !== 'utf8') {
     try {
@@ -477,20 +478,31 @@ async function extractBinary(buffer, extWithDot) {
 }
 
 /**
+ * Fetch a URL and return its raw body, with every SSRF check applied.
+ *
+ * For callers that convert the body themselves or keep the original bytes.
+ *
+ * @param {string} urlString
+ * @returns {Promise<{buffer: Buffer, contentType: string, contentTypeHeader: string, finalUrl: string}>}
+ */
+export async function fetchUrlBytes(urlString) {
+  const { response, finalUrl } = await fetchFollowingRedirects(urlString);
+  const contentTypeHeader = response.headers['content-type'] || '';
+  const buffer = await readBodyCapped(response);
+  if (buffer.length === 0) {
+    throw new Error(`The page returned an empty response. ${PASTE_INSTEAD}`);
+  }
+  return { buffer, contentType: baseContentType(contentTypeHeader), contentTypeHeader, finalUrl };
+}
+
+/**
  * Fetch a URL and return its text.
  *
  * @param {string} urlString
  * @returns {Promise<{text: string, format: string, finalUrl: string, contentType: string, title: string|null, degraded: boolean}>}
  */
 export async function fetchUrlAsText(urlString) {
-  const { response, finalUrl } = await fetchFollowingRedirects(urlString);
-  const contentTypeHeader = response.headers['content-type'] || '';
-  const type = baseContentType(contentTypeHeader);
-  const buffer = await readBodyCapped(response);
-
-  if (buffer.length === 0) {
-    throw new Error(`The page returned an empty response. ${PASTE_INSTEAD}`);
-  }
+  const { buffer, contentType: type, contentTypeHeader, finalUrl } = await fetchUrlBytes(urlString);
 
   let out;
   if (type === 'text/html' || type === 'application/xhtml+xml' || type === '') {

@@ -23,6 +23,7 @@ export { default as ResultsHelp } from './ResultsHelp';
 export { default as TeamsHelp } from './TeamsHelp';
 export { default as ApiKeysHelp } from './ApiKeysHelp';
 export { default as VisibilityHelp } from './VisibilityHelp';
+export { default as CaseFilesHelp } from './CaseFilesHelp';
 
 // Future help content exports:
 // export { default as AssignmentsHelp } from './AssignmentsHelp';

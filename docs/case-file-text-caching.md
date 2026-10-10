@@ -56,6 +56,19 @@ Admins can view and edit the extracted text via:
 
 If no text has been extracted yet, the modal shows a notice with a "Convert to Text" button.
 
+## Web pages and pasted text (migration 083)
+
+Content > Case Files → **Add from web page** fetches a URL, shows the text for review, and saves it only when the instructor clicks Save. **Paste text instead** uses the same review window for pages that can't be fetched.
+
+- **Two calls, nothing stored on preview.** `POST /api/case-files/:caseId/fetch-url` with `{ url, preview: true }` returns `{ kind, title, text, degraded, final_url, content_type }`; the same route without `preview` saves the reviewed `text`. `POST /:caseId/paste` saves pasted text (`file_source = 'pasted'`, optional `source_url`).
+- **Every fetch goes through `server/services/caseFileFetch.js` → `urlFetcher.js#fetchUrlBytes`**, which blocks internal addresses on every redirect hop and pins the checked address (see the case-writer skill). Never fetch a URL in `caseFiles.js` any other way; the old `download-url` route used plain `fetch()` and was removed.
+- **Web pages become Markdown** (Readability's article HTML → `turndown` + GFM tables). Infoboxes and layout tables become `Label: value` lines; images are dropped; links are kept only as absolute http(s). Pages with under 200 characters of article text fall back to body text and return `degraded: true`, which the UI shows as a warning. Case Writer keeps its own plain-text extraction.
+- **What is stored.** Web pages and pasted text are text only: `file_source` `web` / `pasted`, `file_format = 'md'`, and a placeholder `filename` that never exists on disk (Sync skips these rows). PDF / DOCX / text URLs keep the original in `uploads/` (`file_source = 'downloaded'`); the save call fetches the bytes once more for that. `source_url`, `fetched_final_url`, `fetched_content_type` and `fetched_at` record the fetch.
+- **Re-fetch** (`POST /:fileId/refetch`) works on any row with a `source_url`, including old URL imports that saved raw HTML with no text; it turns them into `web` rows.
+- **Revert and the edited flag.** `converted_text_original` keeps the first extraction; `PUT /converted-text` fills it with `COALESCE` before overwriting (MySQL applies `SET` left to right) and sets `text_edited_at` unless the text matches the original. Re-extract and Re-fetch reset both. `POST /:fileId/revert-text` copies the original back.
+- **Downloads.** `GET /:fileId/download` sends the original (always as an attachment, `nosniff`; the path comes only from the DB row and must stay inside the case folder). `GET /:fileId/download-text` sends the current text, which is what the AI reads. Both need view access to the case.
+- **On/off:** the `case_files_url_fetch_enabled` setting (default `1`) gates fetch and re-fetch; `GET /api/case-files/config/web-fetch` tells the UI. Paste always works.
+
 ## Orphaned Outline Fix
 
 A related fix was made to `loadCaseData()` in `server/routes/llm.js`. Previously, AI-generated outlines (from Case Prep) were only included in prompts as children of their parent file. If the parent file had `include_in_chat_prompt = 0` (e.g., the instructor wanted to use only the outline, not the raw case), the outline was silently dropped.
@@ -68,7 +81,10 @@ Now, outlines whose parent is excluded from the prompt are included as standalon
 |------|------|
 | `server/migrations/025_add_converted_text_cache.sql` | Adds `converted_text` and `converted_at` columns |
 | `server/services/fileConverter.js` | Core conversion logic (`convertFile`, `convertPdfToText`, etc.) |
-| `server/routes/caseFiles.js` | Upload, reconvert, text view/edit endpoints |
+| `server/routes/caseFiles.js` | Upload, fetch/paste, re-fetch, revert, download, reconvert, text view/edit endpoints |
+| `server/services/caseFileFetch.js` | URL → Markdown (web pages) or bytes + text (PDF/DOCX), via `urlFetcher.js` |
+| `server/migrations/083_case_files_web_fetch.sql` | Fetch columns, `converted_text_original`, `text_edited_at`, `case_files_url_fetch_enabled` |
 | `server/routes/llm.js` | `loadFileContent()` with cache + backfill, `loadCaseData()` with orphan outline fix |
-| `components/CaseFilesManager.tsx` | Admin UI for Text, Reconvert, and other file actions |
+| `components/CaseFilesManager.tsx` | Admin UI for Text, Reconvert, Download, Visit, and other file actions |
+| `components/caseFiles/WebFetchModal.tsx`, `TextEditorPanel.tsx` | Fetch/paste review window; shared editor with Preview |
 | `services/apiClient.ts` | Frontend API client (includes `api.put()` method) |

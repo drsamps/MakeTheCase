@@ -12,7 +12,9 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'crypto';
 import { convertFile } from '../services/fileConverter.js';
+import { fetchForCaseFile } from '../services/caseFileFetch.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -157,6 +159,7 @@ router.get('/:caseId', verifyToken, requireAdminOrInstructor, requireCaseAccess(
               include_in_chat_prompt, prompt_order, file_version, original_filename,
               file_size, processing_status, processing_model, outline_content,
               processed_at, created_at, is_outline, is_latest_outline,
+              fetched_final_url, fetched_at, text_edited_at,
               converted_text IS NOT NULL AS has_text
        FROM case_files
        WHERE case_id = ?
@@ -266,9 +269,9 @@ router.post('/:caseId/upload', verifyToken, requireAdminOrInstructor, requireCas
           case_id, filename, file_type, file_format, file_source,
           proprietary, include_in_chat_prompt, prompt_order, file_version,
           original_filename, file_size, processing_status,
-          converted_text, converted_at, created_at
+          converted_text, converted_text_original, converted_at, created_at
         ) VALUES (?, ?, ?, ?, 'uploaded', ?, ?, ?, ?, ?, ?, 'pending',
-                  ?, ${convertedText ? 'NOW()' : 'NULL'}, NOW())`,
+                  ?, ?, ${convertedText ? 'NOW()' : 'NULL'}, NOW())`,
         [
           caseId,
           req.file.filename,
@@ -280,6 +283,7 @@ router.post('/:caseId/upload', verifyToken, requireAdminOrInstructor, requireCas
           file_version || null,
           req.file.originalname,
           stats.size,
+          convertedText,
           convertedText
         ]
       );
@@ -313,163 +317,380 @@ router.post('/:caseId/upload', verifyToken, requireAdminOrInstructor, requireCas
   });
 });
 
-// POST /api/case-files/:caseId/download-url - Download file from URL
-router.post('/:caseId/download-url', verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'edit'), async (req, res) => {
+// ---------------------------------------------------------------------------
+// Web pages and pasted text
+//
+// "Add from web page" is two calls: { preview: true } fetches and returns the text
+// without saving anything; the second call saves the text the instructor reviewed.
+// Web pages and pasted text are stored as text only (file_source 'web' / 'pasted',
+// file_format 'md', a placeholder filename that never exists on disk). PDF / DOCX /
+// text URLs keep their original in uploads/ (file_source 'downloaded'), so they can be
+// downloaded later. Every fetch goes through services/caseFileFetch.js, which uses
+// urlFetcher.js's SSRF-checked fetcher; never fetch a URL here any other way.
+// ---------------------------------------------------------------------------
+
+const MAX_TEXT_CHARS = 2_000_000;
+const TEXT_ONLY_SOURCES = ['web', 'pasted'];
+
+/** Gate for every route that makes this server fetch a URL. */
+async function isUrlFetchEnabled() {
+  const [rows] = await pool.execute(
+    'SELECT setting_value FROM settings WHERE setting_key = ?',
+    ['case_files_url_fetch_enabled']
+  );
+  return rows.length > 0 && String(rows[0].setting_value).trim() === '1';
+}
+
+/** An http(s) URL of sane length, or null. */
+function parseHttpUrl(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 2048) return null;
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A display title: no control characters, at most 255 chars. */
+function cleanTitle(value, fallback) {
+  const title = (typeof value === 'string' ? value : '')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .trim()
+    .slice(0, 255);
+  return title || fallback;
+}
+
+/** Placeholder `filename` for a text-only row (the column is NOT NULL). */
+function textOnlyFilename(source) {
+  return `${source}-${Date.now()}-${randomUUID().slice(0, 8)}.md`;
+}
+
+/** Validate the text and the metadata fields shared by fetch and paste saves. */
+function readSaveFields(body) {
+  const { file_type, text } = body;
+  if (!validateFileType(file_type)) {
+    return { error: `Invalid file_type. Use one of: ${PREDEFINED_FILE_TYPES.join(', ')}, or "other:Custom Label"` };
+  }
+  if (typeof text !== 'string' || !text.trim()) {
+    return { error: 'The text is empty' };
+  }
+  if (text.length > MAX_TEXT_CHARS) {
+    return { error: `The text is over the ${MAX_TEXT_CHARS.toLocaleString()} character limit` };
+  }
+  return {
+    fields: {
+      file_type,
+      text,
+      proprietary: body.proprietary === true || body.proprietary === '1' ? 1 : 0,
+      include_in_chat_prompt: body.include_in_chat_prompt === false || body.include_in_chat_prompt === '0' ? 0 : 1,
+      prompt_order: parseInt(body.prompt_order, 10) || 0,
+      file_version: typeof body.file_version === 'string' && body.file_version.trim()
+        ? body.file_version.trim().slice(0, 50)
+        : null
+    }
+  };
+}
+
+/** Save fetched bytes under uploads/ with the usual `<name>-<timestamp><ext>` naming. */
+async function storeFetchedBytes(caseId, title, ext, buffer) {
+  const uploadsDir = path.join(CASE_FILES_DIR, caseId, 'uploads');
+  await fs.mkdir(uploadsDir, { recursive: true });
+  const stem = path.basename(title, path.extname(title))
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-')
+    .slice(0, 120) || 'downloaded-file';
+  const storedFilename = `${stem}-${Date.now()}${ext}`;
+  await fs.writeFile(path.join(uploadsDir, storedFilename), buffer);
+  return storedFilename;
+}
+
+async function caseExists(caseId) {
+  const [cases] = await pool.execute('SELECT case_id FROM cases WHERE case_id = ?', [caseId]);
+  return cases.length > 0;
+}
+
+async function selectFileForResponse(id) {
+  const [rows] = await pool.execute(
+    `SELECT id, case_id, filename, file_type, file_format, file_source, source_url,
+            fetched_final_url, fetched_at, text_edited_at,
+            proprietary, include_in_chat_prompt, prompt_order, file_version,
+            original_filename, file_size, processing_status, created_at
+     FROM case_files WHERE id = ?`,
+    [id]
+  );
+  const row = rows[0];
+  return {
+    ...row,
+    file_type_label: getFileTypeLabel(row.file_type),
+    proprietary: !!row.proprietary,
+    include_in_chat_prompt: !!row.include_in_chat_prompt
+  };
+}
+
+// GET /api/case-files/config/web-fetch - Is fetching from URLs enabled?
+// Two segments, so it cannot be shadowed by GET /:caseId.
+router.get('/config/web-fetch', verifyToken, requireAdminOrInstructor, async (req, res) => {
+  try {
+    res.json({ data: { url_fetch_enabled: await isUrlFetchEnabled() }, error: null });
+  } catch (error) {
+    console.error('[CaseFiles] Error reading fetch setting:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/case-files/:caseId/fetch-url - Preview a URL's text, or save the reviewed text
+router.post('/:caseId/fetch-url', verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'edit'), async (req, res) => {
   try {
     const { caseId } = req.params;
-    const {
-      url,
-      file_type,
-      proprietary = false,
-      include_in_chat_prompt = true,
-      prompt_order = 0,
-      file_version = null
-    } = req.body;
-
-    // Validate inputs
-    if (!url || !file_type) {
-      return res.status(400).json({
-        data: null,
-        error: { message: 'url and file_type are required' }
-      });
+    if (!(await isUrlFetchEnabled())) {
+      return res.status(403).json({ data: null, error: { message: 'Fetching from URLs is turned off. An admin can turn it on in Settings.' } });
+    }
+    const url = parseHttpUrl(req.body.url);
+    if (!url) {
+      return res.status(400).json({ data: null, error: { message: 'Enter a full http:// or https:// address' } });
+    }
+    if (!(await caseExists(caseId))) {
+      return res.status(404).json({ data: null, error: { message: 'Case not found' } });
     }
 
-    if (!validateFileType(file_type)) {
-      return res.status(400).json({
-        data: null,
-        error: {
-          message: `Invalid file_type. Use one of: ${PREDEFINED_FILE_TYPES.join(', ')}, or "other:Custom Label"`
-        }
-      });
-    }
-
-    // Validate URL format
-    let parsedUrl;
-    try {
-      parsedUrl = new URL(url);
-      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-        throw new Error('Only HTTP/HTTPS URLs are supported');
-      }
-    } catch (e) {
-      return res.status(400).json({
-        data: null,
-        error: { message: `Invalid URL: ${e.message}` }
-      });
-    }
-
-    // Verify case exists
-    const [cases] = await pool.execute('SELECT case_id FROM cases WHERE case_id = ?', [caseId]);
-    if (cases.length === 0) {
-      return res.status(404).json({
-        data: null,
-        error: { message: 'Case not found' }
-      });
-    }
-
-    // Create uploads directory
-    const uploadsDir = path.join(CASE_FILES_DIR, caseId, 'uploads');
-    await fs.mkdir(uploadsDir, { recursive: true });
-
-    // Download the file
-    console.log('[CaseFiles] Downloading file from:', url);
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'MakeTheCase/1.0'
-      },
-      signal: AbortSignal.timeout(30000) // 30 second timeout
-    });
-
-    if (!response.ok) {
-      return res.status(400).json({
-        data: null,
-        error: { message: `Failed to download file: HTTP ${response.status}` }
-      });
-    }
-
-    // Get filename from URL or content-disposition
-    let filename = path.basename(parsedUrl.pathname) || 'downloaded-file';
-    const contentDisposition = response.headers.get('content-disposition');
-    if (contentDisposition) {
-      const match = contentDisposition.match(/filename="?([^";\n]+)"?/i);
-      if (match) filename = match[1];
-    }
-
-    // Add timestamp to filename
-    const timestamp = Date.now();
-    const ext = path.extname(filename);
-    const basename = path.basename(filename, ext);
-    const storedFilename = `${basename}-${timestamp}${ext}`;
-    const filePath = path.join(uploadsDir, storedFilename);
-
-    // Save file
-    const buffer = await response.arrayBuffer();
-    await fs.writeFile(filePath, Buffer.from(buffer));
-
-    const stats = await fs.stat(filePath);
-    const fileFormat = detectFileFormat(filename);
-
-    // Convert file to text at download time so we never re-parse PDFs later
-    let convertedText = null;
-    const textFormats = ['pdf', 'docx', 'doc', 'md', 'txt'];
-    if (textFormats.includes(fileFormat)) {
+    // --- Preview: fetch and return, store nothing ---
+    if (req.body.preview) {
+      let fetched;
       try {
-        const { text } = await convertFile(filePath, ext);
-        convertedText = text || null;
-      } catch (convErr) {
-        console.warn('[CaseFiles] Text conversion at download failed (will retry later):', convErr.message);
+        fetched = await fetchForCaseFile(url);
+      } catch (err) {
+        // Paywalls, bot walls and JS-rendered pages land here; the message is the answer.
+        console.warn('[CaseFiles] fetch failed:', url, err.message);
+        return res.status(422).json({ data: null, error: { message: err.message } });
       }
+      return res.json({
+        data: {
+          kind: fetched.kind,
+          title: fetched.title,
+          text: fetched.text,
+          degraded: fetched.degraded,
+          final_url: fetched.finalUrl,
+          content_type: fetched.contentType
+        },
+        error: null
+      });
     }
 
-    // Insert file record
+    // --- Save the reviewed text ---
+    const { fields, error: fieldError } = readSaveFields(req.body);
+    if (fieldError) {
+      return res.status(400).json({ data: null, error: { message: fieldError } });
+    }
+
+    let row;
+    if (req.body.kind === 'file') {
+      // Fetch again for the original bytes; the reviewed text is what gets stored.
+      let fetched;
+      try {
+        fetched = await fetchForCaseFile(url);
+      } catch (err) {
+        return res.status(422).json({ data: null, error: { message: err.message } });
+      }
+      if (fetched.kind !== 'file') {
+        return res.status(409).json({ data: null, error: { message: 'That URL no longer serves a file. Fetch it again.' } });
+      }
+      const title = cleanTitle(req.body.title, fetched.title);
+      const storedFilename = await storeFetchedBytes(caseId, title, fetched.ext, fetched.buffer);
+      row = {
+        filename: storedFilename,
+        original_filename: title.toLowerCase().endsWith(fetched.ext) ? title : `${title}${fetched.ext}`,
+        file_format: fetched.ext.slice(1),
+        file_source: 'downloaded',
+        file_size: fetched.buffer.length,
+        final_url: fetched.finalUrl,
+        content_type: fetched.contentType,
+        original_text: fetched.text
+      };
+    } else {
+      row = {
+        filename: textOnlyFilename('web'),
+        original_filename: cleanTitle(req.body.title, new URL(url).hostname),
+        file_format: 'md',
+        file_source: 'web',
+        file_size: Buffer.byteLength(fields.text, 'utf8'),
+        final_url: parseHttpUrl(req.body.final_url) || url,
+        content_type: typeof req.body.content_type === 'string' ? req.body.content_type.slice(0, 120) : 'text/html',
+        // The preview's text, for Revert. It came from this instructor's own preview.
+        original_text: typeof req.body.original_text === 'string' && req.body.original_text.length <= MAX_TEXT_CHARS
+          ? req.body.original_text
+          : fields.text
+      };
+    }
+
+    const [result] = await pool.execute(
+      `INSERT INTO case_files (
+        case_id, filename, file_type, file_format, file_source, source_url,
+        fetched_final_url, fetched_content_type, fetched_at,
+        proprietary, include_in_chat_prompt, prompt_order, file_version,
+        original_filename, file_size, processing_status,
+        converted_text, converted_text_original, converted_at, text_edited_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NOW(), ?, NOW())`,
+      [
+        caseId, row.filename, fields.file_type, row.file_format, row.file_source, url,
+        row.final_url, row.content_type,
+        fields.proprietary, fields.include_in_chat_prompt, fields.prompt_order, fields.file_version,
+        row.original_filename, row.file_size,
+        fields.text, row.original_text, fields.text === row.original_text ? null : new Date()
+      ]
+    );
+
+    res.status(201).json({ data: await selectFileForResponse(result.insertId), error: null });
+  } catch (error) {
+    console.error('[CaseFiles] Error saving fetched URL:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/case-files/:caseId/paste - Save pasted text as a case file
+router.post('/:caseId/paste', verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'edit'), async (req, res) => {
+  try {
+    const { caseId } = req.params;
+    const { fields, error: fieldError } = readSaveFields(req.body);
+    if (fieldError) {
+      return res.status(400).json({ data: null, error: { message: fieldError } });
+    }
+    const title = cleanTitle(req.body.title, '');
+    if (!title) {
+      return res.status(400).json({ data: null, error: { message: 'Give the text a title' } });
+    }
+    let sourceUrl = null;
+    if (typeof req.body.source_url === 'string' && req.body.source_url.trim()) {
+      sourceUrl = parseHttpUrl(req.body.source_url);
+      if (!sourceUrl) {
+        return res.status(400).json({ data: null, error: { message: 'The source URL must start with http:// or https://' } });
+      }
+    }
+    if (!(await caseExists(caseId))) {
+      return res.status(404).json({ data: null, error: { message: 'Case not found' } });
+    }
+
     const [result] = await pool.execute(
       `INSERT INTO case_files (
         case_id, filename, file_type, file_format, file_source, source_url,
         proprietary, include_in_chat_prompt, prompt_order, file_version,
         original_filename, file_size, processing_status,
-        converted_text, converted_at, created_at
-      ) VALUES (?, ?, ?, ?, 'downloaded', ?, ?, ?, ?, ?, ?, ?, 'pending',
-                ?, ${convertedText ? 'NOW()' : 'NULL'}, NOW())`,
+        converted_text, converted_text_original, converted_at, created_at
+      ) VALUES (?, ?, ?, 'md', 'pasted', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NOW(), NOW())`,
       [
-        caseId,
-        storedFilename,
-        file_type,
-        fileFormat,
-        url,
-        proprietary ? 1 : 0,
-        include_in_chat_prompt ? 1 : 0,
-        parseInt(prompt_order, 10) || 0,
-        file_version || null,
-        filename,
-        stats.size,
-        convertedText
+        caseId, textOnlyFilename('pasted'), fields.file_type, sourceUrl,
+        fields.proprietary, fields.include_in_chat_prompt, fields.prompt_order, fields.file_version,
+        title, Buffer.byteLength(fields.text, 'utf8'),
+        fields.text, fields.text
       ]
     );
 
-    // Return created file record
-    const [fileRecord] = await pool.execute(
-      `SELECT id, case_id, filename, file_type, file_format, file_source, source_url,
-              proprietary, include_in_chat_prompt, prompt_order, file_version,
-              original_filename, file_size, processing_status, created_at
-       FROM case_files WHERE id = ?`,
-      [result.insertId]
+    res.status(201).json({ data: await selectFileForResponse(result.insertId), error: null });
+  } catch (error) {
+    console.error('[CaseFiles] Error saving pasted text:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/case-files/:fileId/refetch - Fetch source_url again, replacing the text (and file)
+router.post('/:fileId/refetch', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'edit'), async (req, res) => {
+  try {
+    if (!(await isUrlFetchEnabled())) {
+      return res.status(403).json({ data: null, error: { message: 'Fetching from URLs is turned off. An admin can turn it on in Settings.' } });
+    }
+    const [rows] = await pool.execute(
+      'SELECT id, case_id, filename, file_source, source_url, original_filename FROM case_files WHERE id = ?',
+      [req.params.fileId]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'File not found' } });
+    }
+    const file = rows[0];
+    const url = parseHttpUrl(file.source_url);
+    if (!url) {
+      return res.status(400).json({ data: null, error: { message: 'This file has no web address to fetch' } });
+    }
+
+    let fetched;
+    try {
+      fetched = await fetchForCaseFile(url);
+    } catch (err) {
+      console.warn('[CaseFiles] re-fetch failed:', url, err.message);
+      return res.status(422).json({ data: null, error: { message: err.message } });
+    }
+
+    // The previous original (if any) is replaced: a page keeps no file, a file gets the new bytes.
+    const oldUpload = TEXT_ONLY_SOURCES.includes(file.file_source)
+      ? null
+      : path.join(CASE_FILES_DIR, file.case_id, 'uploads', path.basename(file.filename));
+    const title = cleanTitle(file.original_filename, fetched.title);
+    let filename;
+    let fileFormat;
+    let fileSource;
+    let fileSize;
+    if (fetched.kind === 'file') {
+      filename = await storeFetchedBytes(file.case_id, title, fetched.ext, fetched.buffer);
+      fileFormat = fetched.ext.slice(1);
+      fileSource = 'downloaded';
+      fileSize = fetched.buffer.length;
+    } else {
+      filename = file.file_source === 'web' ? file.filename : textOnlyFilename('web');
+      fileFormat = 'md';
+      fileSource = 'web';
+      fileSize = Buffer.byteLength(fetched.text, 'utf8');
+    }
+
+    await pool.execute(
+      `UPDATE case_files
+          SET filename = ?, file_format = ?, file_source = ?, file_size = ?,
+              original_filename = ?,
+              converted_text = ?, converted_text_original = ?, converted_at = NOW(), text_edited_at = NULL,
+              fetched_final_url = ?, fetched_content_type = ?, fetched_at = NOW()
+        WHERE id = ?`,
+      [
+        filename, fileFormat, fileSource, fileSize,
+        file.original_filename || title,
+        fetched.text, fetched.text,
+        fetched.finalUrl, fetched.contentType,
+        file.id
+      ]
     );
 
-    res.status(201).json({
+    if (oldUpload && path.basename(oldUpload) !== filename) {
+      await fs.unlink(oldUpload).catch(() => {});
+    }
+
+    res.json({
       data: {
-        ...fileRecord[0],
-        file_type_label: getFileTypeLabel(file_type),
-        proprietary: !!fileRecord[0].proprietary,
-        include_in_chat_prompt: !!fileRecord[0].include_in_chat_prompt
+        ...(await selectFileForResponse(file.id)),
+        converted_text_length: fetched.text.length,
+        degraded: fetched.degraded
       },
       error: null
     });
-
   } catch (error) {
-    console.error('[CaseFiles] Error downloading from URL:', error);
-    res.status(500).json({
-      data: null,
-      error: { message: error.message }
-    });
+    console.error('[CaseFiles] Error re-fetching:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/case-files/:fileId/revert-text - Put back the text as first extracted
+router.post('/:fileId/revert-text', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'edit'), async (req, res) => {
+  try {
+    const [result] = await pool.execute(
+      `UPDATE case_files
+          SET converted_text = converted_text_original, converted_at = NOW(), text_edited_at = NULL
+        WHERE id = ? AND converted_text_original IS NOT NULL`,
+      [req.params.fileId]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ data: null, error: { message: 'There is no extracted text to revert to' } });
+    }
+    res.json({ data: { id: parseInt(req.params.fileId, 10), reverted: true }, error: null });
+  } catch (error) {
+    console.error('[CaseFiles] Error reverting text:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
 
@@ -820,7 +1041,8 @@ router.get('/:fileId/download-text', verifyToken, requireAdminOrInstructor, requ
       return res.status(404).json({ data: null, error: { message: 'No extracted text for this file yet' } });
     }
 
-    const baseName = path.basename(row.original_filename || row.filename || `file-${row.id}`);
+    // Titles of web pages can contain characters that are not allowed in file names.
+    const baseName = (row.original_filename || row.filename || `file-${row.id}`).replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-');
     const stem = path.basename(baseName, path.extname(baseName)) || `file-${row.id}`;
     const ext = row.file_format === 'md' ? '.md' : '.txt';
     res.attachment(`${stem}${ext}`);
@@ -840,7 +1062,8 @@ router.get('/:fileId/converted-text', verifyToken, requireAdminOrInstructor, req
 
     const [files] = await pool.execute(
       `SELECT id, case_id, filename, original_filename, file_type, file_format,
-              converted_text, converted_at
+              file_source, source_url, fetched_at, text_edited_at,
+              converted_text, converted_at, converted_text_original IS NOT NULL AS has_original_text
        FROM case_files WHERE id = ?`,
       [fileId]
     );
@@ -860,7 +1083,12 @@ router.get('/:fileId/converted-text', verifyToken, requireAdminOrInstructor, req
         file_format: f.file_format,
         converted_text: f.converted_text,
         converted_at: f.converted_at,
-        has_converted_text: f.converted_text != null
+        has_converted_text: f.converted_text != null,
+        file_source: f.file_source,
+        source_url: f.source_url,
+        fetched_at: f.fetched_at,
+        text_edited_at: f.text_edited_at,
+        has_original_text: !!f.has_original_text
       },
       error: null
     });
@@ -899,8 +1127,15 @@ router.put('/:fileId/converted-text', verifyToken, requireAdminOrInstructor, req
       });
     }
 
+    // SET runs left to right in MySQL: keep the first extraction before overwriting it,
+    // then flag the row as edited unless the text matches that original.
     await pool.execute(
-      'UPDATE case_files SET converted_text = ?, converted_at = NOW() WHERE id = ?',
+      `UPDATE case_files
+          SET converted_text_original = COALESCE(converted_text_original, converted_text),
+              converted_text = ?,
+              converted_at = NOW(),
+              text_edited_at = IF(converted_text <=> converted_text_original, NULL, NOW())
+        WHERE id = ?`,
       [converted_text || null, fileId]
     );
 
@@ -928,7 +1163,7 @@ router.post('/:fileId/reconvert', verifyToken, requireAdminOrInstructor, require
     const { fileId } = req.params;
 
     const [files] = await pool.execute(
-      'SELECT id, case_id, filename, file_type, file_format FROM case_files WHERE id = ?',
+      'SELECT id, case_id, filename, file_type, file_format, file_source FROM case_files WHERE id = ?',
       [fileId]
     );
 
@@ -940,14 +1175,25 @@ router.post('/:fileId/reconvert', verifyToken, requireAdminOrInstructor, require
     }
 
     const fileRecord = files[0];
-    const filePath = path.join(CASE_FILES_DIR, fileRecord.case_id, 'uploads', fileRecord.filename);
+    const filePath = await findOriginalPath(fileRecord);
+    if (!filePath) {
+      return res.status(400).json({
+        data: null,
+        error: {
+          message: TEXT_ONLY_SOURCES.includes(fileRecord.file_source)
+            ? 'This entry has no original file. Use Re-fetch for a web page.'
+            : 'The original file is missing from the server.'
+        }
+      });
+    }
 
-    const ext = path.extname(fileRecord.filename);
-    const { text } = await convertFile(filePath, ext);
+    const { text } = await convertFile(filePath, path.extname(filePath));
 
     await pool.execute(
-      'UPDATE case_files SET converted_text = ?, converted_at = NOW() WHERE id = ?',
-      [text || null, fileId]
+      `UPDATE case_files
+          SET converted_text = ?, converted_text_original = ?, converted_at = NOW(), text_edited_at = NULL
+        WHERE id = ?`,
+      [text || null, text || null, fileId]
     );
 
     res.json({
@@ -991,7 +1237,7 @@ router.post('/:caseId/sync', verifyToken, requireAdminOrInstructor, requireCaseA
 
     // Get all files from database
     const [dbFiles] = await pool.execute(
-      'SELECT id, filename, file_type, file_format, file_size, original_filename FROM case_files WHERE case_id = ?',
+      'SELECT id, filename, file_type, file_format, file_source, file_size, original_filename FROM case_files WHERE case_id = ?',
       [caseId]
     );
 
@@ -1013,6 +1259,9 @@ router.post('/:caseId/sync', verifyToken, requireAdminOrInstructor, requireCaseA
 
     // Check for missing files and update file_size
     for (const file of dbFiles) {
+      // Web pages and pasted text are stored as text only; there is no file to find.
+      if (TEXT_ONLY_SOURCES.includes(file.file_source)) continue;
+
       // Try uploads directory first
       let filePath = path.join(uploadsDir, file.filename);
       let exists = false;
