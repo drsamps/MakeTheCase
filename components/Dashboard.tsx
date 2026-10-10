@@ -49,6 +49,7 @@ import PositionAnalytics from './PositionAnalytics';
 import IssueAnalytics from './IssueAnalytics';
 import SectionResultsSummary from './SectionResultsSummary';
 import HelpTooltip from './ui/HelpTooltip';
+import InlineStatus from './ui/InlineStatus';
 import ModelsList, { defaultRank, defaultRankLabel, type Model, type ModelTestOutcome, type ModelUsage } from './models/ModelsList';
 import { ChatOptionsHelp, PersonasHelp, TeachBackHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
@@ -664,6 +665,36 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [assignmentPositions, setAssignmentPositions] = useState<any[]>([]);
   const [isLoadingPositionSettings, setIsLoadingPositionSettings] = useState(false);
   const [isSavingPositionSettings, setIsSavingPositionSettings] = useState(false);
+
+  // Last loaded/saved copies of the Scenarios and Positions panel settings. The Save
+  // buttons are green only while the edited values differ from these.
+  const [savedScenarioSettings, setSavedScenarioSettings] = useState(scenarioSettings);
+  const [savedPositionSettings, setSavedPositionSettings] = useState(positionSettings);
+  // Save result shown beside the button that was clicked ('position' = Save Position
+  // Settings, 'settings' = Save Settings).
+  const [scenarioSaveStatus, setScenarioSaveStatus] = useState<{
+    where: 'position' | 'settings';
+    kind: 'saved' | 'error';
+    text: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (scenarioSaveStatus?.kind !== 'saved') return;
+    const timer = setTimeout(() => setScenarioSaveStatus(null), 3000);
+    return () => clearTimeout(timer);
+  }, [scenarioSaveStatus]);
+
+  const positionSettingsDirty =
+    positionSettings.position_tracking_enabled !== savedPositionSettings.position_tracking_enabled ||
+    positionSettings.position_capture_method !== savedPositionSettings.position_capture_method ||
+    positionSettings.track_position_change !== savedPositionSettings.track_position_change;
+  // Save Settings also writes the position settings, but only when positions exist.
+  const scenarioPanelDirty =
+    // Boolean(): the API returns these two as 0/1, the checkboxes set true/false.
+    Boolean(scenarioSettings.use_scenarios) !== Boolean(savedScenarioSettings.use_scenarios) ||
+    scenarioSettings.selection_mode !== savedScenarioSettings.selection_mode ||
+    Boolean(scenarioSettings.require_order) !== Boolean(savedScenarioSettings.require_order) ||
+    (assignmentPositions.length > 0 && positionSettingsDirty);
 
   // Drag-and-drop sensors for position reordering
   const positionSensors = useSensors(
@@ -2576,6 +2607,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Save position settings for section-case
   const handleSavePositionSettings = async (sectionId: string, caseId: string) => {
     setIsSavingPositionSettings(true);
+    setScenarioSaveStatus(null);
     try {
       const token = localStorage.getItem('admin_auth_token');
 
@@ -2592,12 +2624,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         throw new Error(result.error?.message || 'Failed to update position settings');
       }
       setExpandedPositionSettings(null);
+      setSavedPositionSettings(positionSettings);
+      setScenarioSaveStatus({ where: 'position', kind: 'saved', text: 'Saved!' });
       // Refresh the section cases list
       if (selectedAssignmentSection) {
         fetchSectionCases(selectedAssignmentSection);
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to update position settings');
+      setScenarioSaveStatus({ where: 'position', kind: 'error', text: err.message || 'Failed to update position settings' });
     } finally {
       setIsSavingPositionSettings(false);
     }
@@ -2696,6 +2730,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   // Expand/collapse scenario assignment panel
   const handleExpandScenarios = async (sectionId: string, caseId: string, sectionCase: any) => {
+    setScenarioSaveStatus(null);
     if (expandedScenarios === caseId) {
       setExpandedScenarios(null);
       setAvailableScenariosForCase([]);
@@ -2730,11 +2765,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       setAssignedScenarios(assignedData.scenarios || []);
 
       // Set current settings from API response (more reliable than sectionCase object)
-      setScenarioSettings({
+      const loadedScenarioSettings = {
         use_scenarios: assignedData.use_scenarios ?? sectionCase.use_scenarios ?? false,
         selection_mode: assignedData.selection_mode || sectionCase.selection_mode || 'student_choice',
         require_order: assignedData.require_order ?? sectionCase.require_order ?? false
-      });
+      };
+      setScenarioSettings(loadedScenarioSettings);
+      setSavedScenarioSettings(loadedScenarioSettings);
 
       // Also load positions for this assignment (needed for displaying under scenarios)
       const positionsResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions`, {
@@ -2750,12 +2787,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       });
       const settingsResult = await settingsResponse.json();
       if (settingsResult.data) {
-        setPositionSettings({
+        const loadedPositionSettings = {
           // Reflect persisted DB value; do not auto-enable when positions exist.
           position_tracking_enabled: isEnabledFlag(settingsResult.data.position_tracking_enabled),
           position_capture_method: settingsResult.data.position_capture_method || 'explicit',
           track_position_change: !isDisabledFlag(settingsResult.data.track_position_change)
-        });
+        };
+        setPositionSettings(loadedPositionSettings);
+        setSavedPositionSettings(loadedPositionSettings);
+      } else {
+        // Nothing loaded: the form keeps what it shows, so that is the baseline.
+        setSavedPositionSettings(positionSettings);
       }
     } catch (err) {
       console.error('Failed to load scenario assignments:', err);
@@ -2837,6 +2879,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Save scenario selection mode settings
   const handleSaveScenarioSettings = async (sectionId: string, caseId: string) => {
     setIsSavingScenarioAssignment(true);
+    setScenarioSaveStatus(null);
     try {
       const token = localStorage.getItem('admin_auth_token');
 
@@ -2853,6 +2896,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       if (!response.ok || result.error) {
         throw new Error(result.error?.message || 'Failed to update scenario settings');
       }
+      // Recorded per request, so a failure below leaves only the unsaved half pending.
+      setSavedScenarioSettings(scenarioSettings);
 
       // Also save position tracking settings if there are positions defined
       if (assignmentPositions.length > 0) {
@@ -2868,14 +2913,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         if (!positionResponse.ok || positionResult.error) {
           throw new Error(positionResult.error?.message || 'Failed to update position settings');
         }
+        setSavedPositionSettings(positionSettings);
       }
+      setScenarioSaveStatus({ where: 'settings', kind: 'saved', text: 'Saved!' });
 
       // Refresh section cases
       if (expandedAssignmentSection) {
         fetchSectionCases(expandedAssignmentSection);
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to update scenario settings');
+      setScenarioSaveStatus({ where: 'settings', kind: 'error', text: err.message || 'Failed to update scenario settings' });
     } finally {
       setIsSavingScenarioAssignment(false);
     }
@@ -5116,11 +5163,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
                                   {/* Save Position Settings Button */}
                                   {assignmentPositions.length > 0 && (
-                                    <div className="flex justify-end pt-2">
+                                    <div className="flex flex-wrap justify-end items-center gap-2 pt-2">
+                                      {scenarioSaveStatus?.where === 'position' && !(scenarioSaveStatus.kind === 'saved' && positionSettingsDirty) && (
+                                        <InlineStatus kind={scenarioSaveStatus.kind} text={scenarioSaveStatus.text} />
+                                      )}
                                       <button
                                         onClick={() => handleSavePositionSettings(selectedAssignmentSection!, sc.case_id)}
-                                        disabled={isSavingPositionSettings}
-                                        className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50"
+                                        disabled={isSavingPositionSettings || !positionSettingsDirty}
+                                        title={positionSettingsDirty ? undefined : 'No changes to save'}
+                                        className={`px-3 py-1.5 text-xs font-medium text-white rounded ${
+                                          positionSettingsDirty
+                                            ? 'bg-green-600 hover:bg-green-700 disabled:opacity-50'
+                                            : 'bg-gray-400 cursor-not-allowed'
+                                        }`}
                                       >
                                         {isSavingPositionSettings ? 'Saving...' : 'Save Position Settings'}
                                       </button>
@@ -5129,7 +5184,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                 </div>
 
                                 {/* Action Buttons */}
-                                <div className="flex justify-end gap-2 pt-2 border-t">
+                                <div className="flex flex-wrap justify-end items-center gap-2 pt-2 border-t">
+                                  {scenarioSaveStatus?.where === 'settings' && !(scenarioSaveStatus.kind === 'saved' && scenarioPanelDirty) && (
+                                    <InlineStatus kind={scenarioSaveStatus.kind} text={scenarioSaveStatus.text} />
+                                  )}
                                   <button
                                     onClick={() => { setExpandedScenarios(null); }}
                                     className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
@@ -5138,8 +5196,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                   </button>
                                   <button
                                     onClick={() => handleSaveScenarioSettings(selectedAssignmentSection!, sc.case_id)}
-                                    disabled={isSavingScenarioAssignment}
-                                    className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50"
+                                    disabled={isSavingScenarioAssignment || !scenarioPanelDirty}
+                                    title={scenarioPanelDirty ? undefined : 'No changes to save'}
+                                    className={`px-3 py-1.5 text-xs font-medium text-white rounded ${
+                                      scenarioPanelDirty
+                                        ? 'bg-green-600 hover:bg-green-700 disabled:opacity-50'
+                                        : 'bg-gray-400 cursor-not-allowed'
+                                    }`}
                                   >
                                     {isSavingScenarioAssignment ? 'Saving...' : 'Save Settings'}
                                   </button>
