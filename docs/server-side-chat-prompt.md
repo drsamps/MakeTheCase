@@ -1,78 +1,63 @@
-# Plan: build the student chat prompt on the server
+# Build the student chat prompt on the server
 
-Status: **planned, not started** (written 2026-10-02). Three decisions below must be made before building.
+Status: **built 2026-10-09** (Phase 3a of [`security-student-data-access.md`](security-student-data-access.md)). Server-side grading and server-held history (Phase 3b) are not started; see [Still open](#still-open-phase-3b).
 
 ## Why
 
-The student's browser builds the whole chat system prompt today and sends it to `/api/llm/chat`:
+Until 2026-10-09 the student's browser built the whole chat system prompt and sent it to `/api/llm/chat`:
 
-- `App.tsx#startConversation` merges the scenario's `prompt_instructions` and the scenario/position `arguments_for` / `arguments_against` into `caseData`.
-- `services/llmService.ts#createChatSession` turns that into a prompt with `buildSystemPrompt` (`constants.ts`) or `buildTeachBackSystemPrompt` (`teachBackPrompt.ts`).
-- `server/routes/llm.js` `POST /chat` passes the `systemPrompt` it receives straight to the model.
+- `App.tsx#startConversation` merged the scenario's `prompt_instructions` and the position `arguments_for` / `arguments_against` into `caseData`.
+- `services/llmService.ts#createChatSession` turned that into a prompt with `buildSystemPrompt` (`constants.ts`) or `buildTeachBackSystemPrompt` (`teachBackPrompt.ts`).
+- `server/routes/llm.js` `POST /chat` passed the `systemPrompt` it received straight to the model.
 
-So every "AI-only" field has to reach the browser. That means the teaching note, supplementary materials, scenario instructions, argument framework and persona instructions. A student can read all of it in the network tab: in `GET /api/llm/case-data/:caseId`, in `GET /api/sections/:id/cases`, and in the body of every chat request.
+So every AI-only field had to reach the browser: the teaching note, scenario instructions, argument framework and persona instructions. A student could read all of it in the network tab, and could send any prompt they liked.
 
-What is already done (2026-10-02): those two GET routes and the dashboard-only scenario/position reads now require a login. Logged-in students can still read everything above. Only this rebuild fixes that.
+## Decisions (made 2026-10-09)
 
-### Comes after the login work in `security-student-data-access.md`
+1. **Student name: the browser sends it with each message.** No migration. The server cleans it before it goes into the prompt (`chatPrompt.js#sanitizeStudentName`): letters, marks, digits, spaces, apostrophes, periods and hyphens only, whitespace collapsed, at most 40 characters, `Student` when empty. That strips prompt markers (`===`), tags and `{placeholders}`.
+2. **Outdated pages are refused right away.** A `/api/llm/chat` request that still carries `systemPrompt` gets 409 `CLIENT_OUTDATED`, "This page was updated. Please refresh it to continue." A student mid-chat during the deploy loses that chat, so deploy outside class hours.
+3. **Supplementary materials stay visible to students.** `/api/llm/case-data` keeps sending `supplementary_content`; only the teaching note is removed. Whether to show supplementary materials in the case panel is a separate question.
 
-This is Phase 3 of [`security-student-data-access.md`](security-student-data-access.md). Its Phase 2 does the parts this plan relies on:
-- Phase 2a: the login check on `/api/llm/chat`, `studentId` taken from the token, and removing `/api/llm/eval`;
-- Phase 2b: `POST /case-chats` takes `student_id` from the token, and `requireChatOwner` checks the student owns the chat.
+## What was built
 
-Two parts of that plan's Phase 3 are not built into the steps below yet. Add them before building:
-- `POST /api/evaluations/run` grades the server's stored transcript and saves the evaluation itself; `POST /api/evaluations` stops accepting a score from the browser.
-- The server stores the conversation, so `history` stops coming from the browser (step 3 still accepts it).
+- **Templates:** `server/services/chatPromptTemplates.js` holds `buildSystemPrompt` (case chat) and `buildTeachBackSystemPrompt`, ported from the browser. They live on the server only: the browser no longer needs them, so the plan's shared `utils/` module was unnecessary. `constants.ts` keeps only `CaseData` and `DEFAULT_CASE_DATA`; `teachBackPrompt.ts` is deleted.
+- **Byte-for-byte check:** `node server/scripts/check-chat-prompt.js` compares the templates against `server/scripts/fixtures/chat-prompt-golden.json`. That file holds 12 input sets and the exact strings the original TypeScript builders produced for them (captured before the move): both modes, every built-in persona, a custom persona, scenario instructions, both/one/no arguments, teaching note present, empty and whitespace-only, supplementary present and whitespace-only, personality, `freeHints` 0/1/2/3. A deliberate wording change must update the fixture in the same commit.
+- **Loader:** `server/services/chatPrompt.js#buildChatSystemPrompt(chat, studentName)` reads the `case_chats` row and gathers what `App.tsx` used to: `loadCaseData`, the chat's scenario, the starting position's arguments (overriding the scenario's), the assignment's resolved chat options (`server/services/chatOptions.js`, moved out of `sectionCases.js`), and the persona row, looked up only in the assignment's allowed list. Teach-back swaps the audience persona in as the listener.
+- **`POST /api/llm/chat`** takes `{ caseChatId, studentName, message, messageAt, history }`. Students only, on their own chat. The model and case come from the chat record; the billed instructor comes from the token's student and that case.
+- **`POST /api/case-chats`** chooses the chat model itself: the section's chat model, else the default model, else the first enabled one (what the browser used to choose). The body's `chat_model` is ignored.
+- **A chat needs its record.** Starting a chat shows an error if `POST /case-chats` fails (it used to carry on untracked), and **Restart Chat now creates a new chat record**. Before, a restarted chat had no record at all.
+- **What students receive:**
+  - `/api/llm/case-data`: no `teaching_note`.
+  - `GET /api/sections/:id/cases`: `sectionCases.js#forStudent` removes scenario `prompt_instructions`, position `arguments_for` / `arguments_against`, persona `instructions` and `chat_options.chatbot_personality`.
+  - `GET /api/sections/:id/active-case` was open with no login and returned the same AI-only fields. Nothing calls it, so it now needs a login and uses `forStudent` too.
+  - Staff still get full rows.
 
-## Decide before building
+### Two deliberate changes in what the AI sees
 
-1. **Where does the student's name come from?** It appears throughout the prompt ("You are … meeting with a junior business analyst, {name}"), and today it's the first name the student types at the start screen. It isn't stored anywhere.
-   - **(a) Save it on the chat record (recommended).** Add a `student_display_name` column on `case_chats` (migration), written by `POST /case-chats`. Every turn then uses the same name, and the server owns the whole prompt.
-   - **(b) The browser sends it with each message.** No migration, but the browser still supplies part of the prompt. The name would need length limits and stripping of prompt markers.
-2. **Students mid-chat during the deploy.** Their open page still sends the old `{ systemPrompt, … }` body.
-   - **(a) Accept the old shape briefly.** Keep accepting it (logged-in students only) for about a week, then remove it. No chat breaks, but the hole stays open for that week.
-   - **(b) Refuse it right away (recommended if deploying outside class hours).** Reply 409 "This page was updated — please refresh." That student loses their current chat.
-3. **Are supplementary materials meant for students to see?** Today they only go into the prompt (`=== SUPPLEMENTARY MATERIALS ===`), and the student never sees them on screen.
-   - If they're **AI-only**, take them out of the student response like the teaching note.
-   - If students **should** see them (exhibits, say), keep sending them and decide separately whether to show them in the case panel.
+- **Scenario-level arguments are now included.** The student cases route never selected `case_scenarios.arguments_for` / `arguments_against`, so the browser silently dropped them; only position arguments ever reached the AI. On the dev copy (2026-10-09), 6 scenarios have scenario-level arguments.
+- **A position picked in the chat now applies.** With explicit position capture, the browser built the prompt before the student picked a position and never rebuilt it, so position arguments applied only when the position was chosen on the start screen. The server reads `case_chats.initial_position_id` on every turn.
 
-## Build steps
+Everything else matches the browser's prompt byte for byte.
 
-1. **One shared prompt builder.**
-   - Move `buildSystemPrompt`, `buildTeachBackSystemPrompt`, `getPersonaInstructions` and `DEFAULT_PERSONA_INSTRUCTIONS` into a plain-JS `utils/chatPrompt.js` that server and browser can both import. `utils/transcriptFormat.js` already works this way.
-   - Drop the legacy no-case fallback (`getSystemPrompt` + `DEFAULT_CASE_DATA` from `data/business_case`), or keep it only in the browser.
-   - **Add a byte-for-byte test:** for a set of sample inputs, the old TypeScript builders and the new module must produce identical strings. Cover normal and teach-back modes, with/without scenario, position arguments, teaching note, supplementary content, custom persona and personality. Any difference breaks the provider prompt-cache prefix (`llmRouter.js` sets Anthropic `cache_control` on the system prompt) and makes old and new prompt logs hard to compare.
-2. **Rebuild from the chat record on the server.** New `server/services/chatPrompt.js#buildChatSystemPrompt(caseChatId)`, which loads:
-   - the `case_chats` row: `case_id`, `section_id`, `scenario_id`, `persona`, `initial_position_id`, plus the name if decision 1 is (a);
-   - the section's `chat_options`, with section and global defaults applied. Move `resolveChatOptions` out of `routes/sectionCases.js` into a service so both can use it. This supplies `free_hints`, `chatbot_personality` and the activity mode (`resolveActivityMode`);
-   - `loadCaseData(case_id)`, the `case_scenarios` row, and the starting position's arguments, which override the scenario's (same order as `App.tsx` today);
-   - the persona row (`personaService.js`), including teach-back audience personas.
+## How it was checked (2026-10-09, dev)
 
-   Rebuilding every turn is fine at first, because `loadCaseData` reads cached `converted_text`. Add a short in-memory cache keyed by `caseChatId` only if timing shows a need.
-3. **New chat request shape.**
-   - `POST /api/llm/chat` takes `{ caseChatId, message, messageAt, history }` and requires `verifyToken`, `role === 'student'` and `case_chats.student_id === req.user.id`. Phase 2 of `security-student-data-access.md` adds the login and ownership checks first; this step adds the new body shape and the student-only role.
-   - The model, case, section and billed instructor all come from the `case_chats` row, never the body. This also stops a browser from choosing who gets billed.
-   - `chatFallback.js`, prompt logging (`promptLogger.js`) and hints need no changes, because they only see the finished prompt.
-4. **Require the chat record.**
-   - `App.tsx` `handleNameSubmit` currently continues when `POST /case-chats` fails ("chat tracking is optional"). Make that a visible error.
-   - `POST /case-chats` takes `student_id` from the token, not the body (done in Phase 2b of `security-student-data-access.md`).
-5. **Stop sending the hidden fields.**
-   - `GET /api/llm/case-data/:caseId` for students: return only what the student sees (title, protagonist, role, question, `case_content` when `show_case` is on). Supplementary content depends on decision 3. Keep the full response for staff, or move it to a staff-only route.
-   - `GET /api/sections/:id/cases` for `role === 'student'`: leave out `prompt_instructions`, `arguments_for` and `arguments_against` from scenarios and positions. Keep `position_name` and `position`, which the position picker shows.
-   - Remove `prompt_instructions` / `arguments_*` from the browser's `CaseData` merge in `startConversation`.
-6. **Deploy.** Follow decision 2. Deploy the browser bundle and the server together.
+- `check-chat-prompt.js`: 12/12 golden cases match.
+- API checks (scratch script, 20/20):
+  - an old-shape request gets 409 `CLIENT_OUTDATED`; another student's chat gets 404;
+  - the student payloads carry no `prompt_instructions`, arguments, persona `instructions` or `chatbot_personality`, while staff payloads still do;
+  - `/llm/case-data` has no `teaching_note` for students;
+  - `active-case` gets 401 without a login;
+  - a new chat's model comes from the section, not the body.
+- Browser, as a dev student (`server/scripts/dev-student-token.js`):
+  - a Zipcar case chat with an opening position, Restart (new record, chat continues), four exchanges, Finish, final position and evaluation;
+  - a Teach-back chat ("Your grandmother") that replied in character.
 
-## How to check it works
+  The server-built prompts were inspected for both: the case chat had the position's arguments and the student's name; Teach-back had the listener line and "Who You Are", and no teaching note or arguments.
+- Not yet done: compare prompt logs before and after for the same chat setup, and watch the cache-hit rate in Monitor → AI Usage over the next days.
 
-- The byte-for-byte builder test passes.
-- Dev chats work in normal and teach-back mode, including one scenario whose position has its own arguments.
-- With Prompt Logging on, the before and after prompt logs for the same chat setup match.
-- Monitor → AI Usage shows the same cache-hit rate over the following days.
-- The browser network tab shows no teaching note, scenario instructions or arguments anywhere.
-- A chat request with another student's `caseChatId` gets 403; one with no token gets 401.
+## Still open (Phase 3b)
 
-## Docs to update when built
+Until these are built, a signed-in student can still invent the conversation the model sees, and post their own score:
 
-- `CLAUDE.md` § System Prompt Construction: the server builds the prompt; the browser never receives the hidden content.
-- `docs/scenario-prompt-instructions-2026-04.md`: it says `constants.ts#buildSystemPrompt` reads `prompt_instructions`.
-- `docs/multi-instructor-personas.md`: persona instructions passed into `buildSystemPrompt`.
+- **Server-held conversation.** `/api/llm/chat` still accepts `history` from the browser. The server should store each turn (the `transcripts` row or a turns table) and send its own copy to the model.
+- **Grade from the server's copy.** `POST /api/evaluations/run` should read the stored transcript and save the evaluation row itself. It should also take the supervisor model from the section, as `POST /case-chats` now does for the chat model. The browser would then submit only feedback (`helpful`, `liked`, `improve`) through a student-owned update, and `POST /api/evaluations` would stop accepting a score.

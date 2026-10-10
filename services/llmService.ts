@@ -1,8 +1,5 @@
-import { getSystemPrompt, buildSystemPrompt, CaseData, DEFAULT_CASE_DATA, SystemPromptOptions } from "../constants";
-import { Message, EvaluationResult, CEOPersona } from "../types";
+import { Message, EvaluationResult } from "../types";
 import { getApiBaseUrl, getAuthHeaders } from "./apiClient";
-import { TEACH_BACK } from "../teachBack";
-import { buildTeachBackSystemPrompt } from "../teachBackPrompt";
 
 const parseOrThrow = async (response: Response) => {
   const text = await response.text();
@@ -31,25 +28,18 @@ export const detectProvider = (modelId: string) => {
   return 'google';
 };
 
+/**
+ * A student chat session. The server builds the system prompt from the chat record
+ * (server/services/chatPrompt.js), so the browser sends only the chat id, the student's
+ * first name and the conversation; the model comes from the chat record too. `modelId` is
+ * only the label used when a reply does not name the model that answered.
+ */
 export const createChatSession = (
   studentName: string,
-  persona: CEOPersona | string,
   modelId: string,
-  history: Message[] = [],
-  caseData?: CaseData,
-  promptOptions?: SystemPromptOptions,
-  studentId?: string,
-  caseChatId?: string | null
+  history: Message[],
+  caseChatId: string
 ): LLMChatSession => {
-  // Build prompt with case data at the TOP for LLM caching. Teach-back swaps in a
-  // different template (the AI is the one who does not understand); everything else about
-  // the session — history, fallback, logging — is identical.
-  const teachBack = promptOptions?.mode === TEACH_BACK;
-  const systemPrompt = caseData
-    ? teachBack
-      ? buildTeachBackSystemPrompt(studentName, persona as string, caseData, promptOptions)
-      : buildSystemPrompt(studentName, persona, caseData, promptOptions)
-    : getSystemPrompt(studentName, persona);
   let currentHistory = [...history];
 
   return {
@@ -61,14 +51,11 @@ export const createChatSession = (
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({
-          modelId,
-          systemPrompt,
+          caseChatId,
+          studentName,
           history: currentHistory,
           message,
           messageAt,
-          caseId: caseData?.case_id,  // Pass caseId for metrics tracking
-          studentId,  // Ignored by the server, which takes the student from the token
-          caseChatId: caseChatId || undefined,  // Records replies served by a backup model
         }),
       });
 

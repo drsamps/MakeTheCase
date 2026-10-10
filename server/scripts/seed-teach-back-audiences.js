@@ -14,7 +14,7 @@
  *
  * An audience says WHO THIS LISTENER IS AND HOW THEY REACT — never what they know, and
  * never how strictly the work is marked. The reflecting-back, the "that makes sense now"
- * and the thanks all come from the activity template (`teachBackPrompt.ts`), so no audience
+ * and the thanks all come from the activity template (`server/services/chatPromptTemplates.js`), so no audience
  * has to carry them, and they all stay courteous. What these vary is how much it takes to
  * satisfy this particular listener.
  *

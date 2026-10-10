@@ -1,12 +1,13 @@
 # Plan: Close the unauthenticated student-data and AI routes
 
-Status: **Phases 1 and 2 built (2026-10-09); Phase 3 not started.** Written 2026-09-15; revised 2026-10-09 against branch `teach-back` (`b2f29e7`).
+Status: **Phases 1, 2 and 3a built (2026-10-09); 3b not started.** Written 2026-09-15; revised 2026-10-09 against branch `teach-back` (`b2f29e7`).
 
 - Done so far:
   - `GET /api/llm/case-data/:caseId` requires a login (`790a7bb`, 2026-10-02). That commit also locked the scenario and position reads, which are outside this plan.
   - Phase 1: the evaluation, transcript and case-chat reads require a staff login and are limited to the caller's sections.
   - Phase 2a: `/llm/chat` and `/evaluations/run` require a student token and the student's own chat; `/llm/eval` is gone; `server/scripts/dev-student-token.js` exists.
   - Phase 2b: every chat write requires the chat's owner (`server/middleware/chatOwner.js`), and the student comes from the token.
+  - Phase 3a: the server builds the chat prompt; students no longer receive AI-only content (details in [`server-side-chat-prompt.md`](server-side-chat-prompt.md)).
 - Phase 3 is planned in its own doc, [`server-side-chat-prompt.md`](server-side-chat-prompt.md). This doc only gives its place in the order.
 
 ## Context
@@ -198,9 +199,9 @@ These all come from the browser building prompts and saving grades. Phase 3 fixe
 
 ## Phase 3: Keep AI-only content and grading on the server (larger)
 
-**Planned in [`server-side-chat-prompt.md`](server-side-chat-prompt.md).** That doc covers both chat modes (case chat and Teach-back), the shared prompt builder with a byte-for-byte test to protect prompt caching, and three decisions to make before building.
+**3a, built 2026-10-09: the server builds the prompt.** See [`server-side-chat-prompt.md`](server-side-chat-prompt.md) for the decisions and what was built.
 
-That doc covers moving the prompt to the server and trimming what students receive. Two items from the original Phase 3 are not in it yet; add them there before building:
+**3b, not started.** Two items remain; until they are built, a signed-in student can still invent the chat history and post their own score:
 - **Grade from the server's copy.** `POST /api/evaluations/run` reads the stored transcript and **saves the evaluation row itself**. The browser only submits feedback (`helpful`, `liked`, `improve`) through a student-owned update. `POST /api/evaluations` no longer accepts a score from the browser.
 - **Server-held conversation.** That doc keeps `history` in the chat request. Until the server stores turns and stops accepting `history` from the browser, a student can still invent the history the model sees and that is later graded.
 

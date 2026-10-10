@@ -11,6 +11,7 @@ import {
 import { canAccessResource } from '../services/resourceAccess.js';
 import { resolveAvailablePersonas } from '../services/personaService.js';
 import { resolveActivityMode } from '../services/teachBack.js';
+import { resolveChatOptions } from '../services/chatOptions.js';
 import {
   CaseVersionError,
   findMainVersionForSection,
@@ -57,43 +58,29 @@ async function attachAvailablePersonas(parsedChatOptions) {
   return available_personas;
 }
 
-// Helper function to resolve chat options with defaults fallback
-async function resolveChatOptions(sectionId, chatOptions) {
-  // If chat_options is explicitly set, use it
-  if (chatOptions !== null && chatOptions !== undefined) {
-    return chatOptions;
-  }
-
-  // Otherwise, fetch defaults (section-specific or global)
-  try {
-    // Try section-specific default first
-    const [sectionDefaults] = await pool.execute(
-      'SELECT chat_options FROM chat_options_defaults WHERE section_id = ?',
-      [sectionId]
-    );
-    if (sectionDefaults.length > 0) {
-      return sectionDefaults[0].chat_options;
-    }
-
-    // Fall back to global default
-    const [globalDefaults] = await pool.execute(
-      'SELECT chat_options FROM chat_options_defaults WHERE section_id IS NULL'
-    );
-    if (globalDefaults.length > 0) {
-      return globalDefaults[0].chat_options;
-    }
-
-    // Final fallback: return null (frontend will use its hardcoded defaults)
-    return null;
-  } catch (error) {
-    console.error('Error fetching chat options defaults:', error);
-    return null;
-  }
+// What a STUDENT may see of a section-case row. The server builds the chat prompt
+// (services/chatPrompt.js), so scenario prompt_instructions, position arguments, persona
+// instructions and chatbot_personality stay on the server. Staff get the full row.
+function forStudent(row) {
+  const opts = normalizeChatOptions(row.chat_options);
+  const { chatbot_personality, ...chatOptions } = opts || {};
+  return {
+    ...row,
+    chat_options: opts ? chatOptions : opts,
+    available_personas: (row.available_personas || []).map(({ instructions, ...p }) => p),
+    ...(row.scenarios && {
+      scenarios: row.scenarios.map(({ prompt_instructions, ...scenario }) => ({
+        ...scenario,
+        ...(scenario.positions && {
+          positions: scenario.positions.map(({ arguments_for, arguments_against, ...p }) => p),
+        }),
+      })),
+    }),
+  };
 }
 
 // GET /api/sections/:sectionId/cases - List cases assigned to a section
-// The student app reads its scenarios here, including prompt_instructions and position
-// arguments (the browser builds the chat prompt), so it needs a login of any role.
+// Any login: the dashboard reads full rows; students get forStudent() rows for the start screen.
 router.get('/:sectionId/cases', verifyToken, async (req, res) => {
   try {
     const { sectionId } = req.params;
@@ -220,7 +207,8 @@ router.get('/:sectionId/cases', verifyToken, async (req, res) => {
       })
     );
 
-    res.json({ data: withScenarios, error: null });
+    const isStudent = req.user.role === 'student';
+    res.json({ data: isStudent ? withScenarios.map(forStudent) : withScenarios, error: null });
   } catch (error) {
     console.error('Error fetching section cases:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
@@ -256,8 +244,10 @@ function isCaseAvailable(openDate, closeDate, manualStatus) {
   return { available: true, reason: null };
 }
 
-// GET /api/sections/:sectionId/active-case - Get the currently active case for a section (used by students)
-router.get('/:sectionId/active-case', async (req, res) => {
+// GET /api/sections/:sectionId/active-case - Get the currently active case for a section.
+// Nothing calls this today (the student app uses GET /:sectionId/cases). Login required;
+// students get a forStudent() row.
+router.get('/:sectionId/active-case', verifyToken, async (req, res) => {
   try {
     const { sectionId } = req.params;
     const { student_id } = req.query; // Optional: to check scenario completion
@@ -371,17 +361,15 @@ router.get('/:sectionId/active-case', async (req, res) => {
 
     const available_personas = await attachAvailablePersonas(resolvedChatOptions);
 
-    res.json({
-      data: {
-        ...caseData,
-        chat_options: resolvedChatOptions,
-        available_personas,
-        is_available: availability.available,
-        availability_message: availability.reason,
-        scenarios: scenarios
-      },
-      error: null
-    });
+    const data = {
+      ...caseData,
+      chat_options: resolvedChatOptions,
+      available_personas,
+      is_available: availability.available,
+      availability_message: availability.reason,
+      scenarios: scenarios
+    };
+    res.json({ data: req.user.role === 'student' ? forStudent(data) : data, error: null });
   } catch (error) {
     console.error('Error fetching active case:', error);
     res.status(500).json({ data: null, error: { message: error.message } });

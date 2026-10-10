@@ -55,7 +55,7 @@ The student app:
 
 - Populates the personality dropdown from `available_personas`
 - Applies `default_persona` from chat options (fallback: first available row by sort order)
-- Passes `personaData` (including DB `instructions`) into `buildSystemPrompt` for custom/cloned personas
+- Sends the chosen persona id when the chat is created (`case_chats.persona`). The server looks the persona up in the assignment's allowed list and passes its DB `instructions` into the prompt (`server/services/chatPrompt.js`); students' `available_personas` rows no longer carry `instructions`.
 
 ## Dashboard navigation
 

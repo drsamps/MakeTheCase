@@ -803,30 +803,11 @@ const App: React.FC = () => {
       // Use active case data or default
       let caseData = activeCaseData || DEFAULT_CASE_DATA;
 
-      // If a scenario is selected, override case data with scenario-specific values
+      // If a scenario is selected, show its protagonist and question. Only display fields: the
+      // server builds the chat prompt (scenario instructions, arguments) from the chat record.
       if (selectedScenarioId && availableScenarios.length > 0) {
         const selectedScenario = availableScenarios.find(s => s.scenario_id === selectedScenarioId);
         if (selectedScenario) {
-          // Start with scenario's arguments
-          let argumentsFor = selectedScenario.arguments_for || undefined;
-          let argumentsAgainst = selectedScenario.arguments_against || undefined;
-
-          // If a position is selected and has position-specific arguments, use those instead
-          if (selectedInitialPositionId && selectedScenario.positions?.length > 0) {
-            const selectedPosition = selectedScenario.positions.find(
-              (p: any) => p.position_id === selectedInitialPositionId
-            );
-            if (selectedPosition) {
-              // Position-specific arguments override scenario arguments
-              if (selectedPosition.arguments_for) {
-                argumentsFor = selectedPosition.arguments_for;
-              }
-              if (selectedPosition.arguments_against) {
-                argumentsAgainst = selectedPosition.arguments_against;
-              }
-            }
-          }
-
           caseData = {
             ...caseData,
             protagonist: selectedScenario.protagonist,
@@ -834,9 +815,6 @@ const App: React.FC = () => {
             protagonist_role: selectedScenario.protagonist_role || undefined,
             chat_topic: selectedScenario.chat_topic || undefined,
             chat_question: selectedScenario.chat_question,
-            prompt_instructions: selectedScenario.prompt_instructions || undefined,
-            arguments_for: argumentsFor,
-            arguments_against: argumentsAgainst,
           };
           // Update activeCaseData so scenario values are available later (e.g., in final position UI)
           setActiveCaseData(caseData as CaseData);
@@ -869,29 +847,12 @@ const App: React.FC = () => {
         : `Hello ${name}, I am ${caseData.protagonist}, ${roleDescription} of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
       const initialHistory: Message[] = [{ role: MessageRole.MODEL, at: Date.now(), content: firstMessageContent }];
 
-      // Create chat session with case data for cache-optimized prompts
-      const freeHints = chatOptions?.free_hints ?? 1;
-      const chatbotPersonality = chatOptions?.chatbot_personality || undefined;
-      const personaData = personaRow
-        ? {
-            persona_id: personaRow.persona_id,
-            persona_name: personaRow.persona_name,
-            description: personaRow.description ?? null,
-            instructions: personaRow.instructions || '',
-            enabled: true,
-            sort_order: 0,
-          }
-        : undefined;
-      const session = createChatSession(
-        name,
-        personaId,
-        modelId,
-        initialHistory,
-        caseData,
-        { freeHints, chatbotPersonality, personaData, mode: teachBackMode ? TEACH_BACK : undefined },
-        studentId || studentDBId || undefined,
-        caseChatId
-      );
+      // The server builds each turn's prompt from the chat record, so the session needs one.
+      if (!caseChatId) {
+        setError('Could not start the chat. Please try again.');
+        return;
+      }
+      const session = createChatSession(name, modelId, initialHistory, caseChatId);
       setChatSession(session);
       setMessages(initialHistory);
       setConversationPhase(ConversationPhase.CHATTING);
@@ -1373,6 +1334,51 @@ const App: React.FC = () => {
     }
   };
 
+  // Create the case_chats row a chat runs on. The server builds every chat turn's prompt from
+  // it (and chooses the model), so a chat cannot start without one. Returns the new id, or
+  // null after showing an error.
+  const createCaseChat = async (sectionId: string): Promise<string | null> => {
+    try {
+      const caseChatPayload: Record<string, any> = {
+        case_id: selectedCaseId,
+        section_id: sectionId,
+        persona: selectedPersonaId,
+        scenario_id: selectedScenarioId || undefined,
+      };
+
+      // Include position_id if explicit capture method is enabled (from assignment-level settings)
+      const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
+      const isPosTrackingEnabled = !teachBackMode && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+      const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
+
+      if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && selectedInitialPositionId) {
+        caseChatPayload.initial_position_id = selectedInitialPositionId;
+        caseChatPayload.position_method = 'explicit';
+      }
+
+      const caseChatResponse = await fetch(`${getApiBaseUrl()}/case-chats`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(caseChatPayload),
+      });
+      const caseChatResult = await caseChatResponse.json();
+      if (caseChatResponse.status === 409 && caseChatResult?.error?.code === 'INSTRUCTOR_SETUP_INCOMPLETE') {
+        setError(caseChatResult.error.message || "This section isn't ready yet — your instructor still needs to finish setup.");
+        return null;
+      }
+      if (!caseChatResponse.ok || !caseChatResult.data?.id) {
+        setError(caseChatResult?.error?.message || 'Could not start the chat. Please try again.');
+        return null;
+      }
+      setCurrentCaseChatId(caseChatResult.data.id);
+      return caseChatResult.data.id;
+    } catch (err) {
+      console.error('Failed to create case_chat record:', err);
+      setError('Could not start the chat. Please check your connection and try again.');
+      return null;
+    }
+  };
+
   const handleNameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!sessionUser || sessionUser.role !== 'student') {
@@ -1436,47 +1442,8 @@ const App: React.FC = () => {
       setStudentDBId(studentId);
       setStudentFirstName(trimmedFirstName);
 
-      // Create case_chat record to track this chat session
-      let newCaseChatId: string | null = null;
-      try {
-        const caseChatPayload: Record<string, any> = {
-          student_id: studentId,
-          case_id: selectedCaseId,
-          section_id: sectionToSave,
-          persona: selectedPersonaId,
-          chat_model: selectedChatModel,
-          scenario_id: selectedScenarioId || undefined,
-        };
-
-        // Include position_id if explicit capture method is enabled (from assignment-level settings)
-        // Check assignment's position tracking settings (from active-case endpoint)
-        const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-        const isPosTrackingEnabled = !teachBackMode && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
-        const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
-
-        if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && selectedInitialPositionId) {
-          caseChatPayload.initial_position_id = selectedInitialPositionId;
-          caseChatPayload.position_method = 'explicit';
-        }
-
-        const caseChatResponse = await fetch(`${getApiBaseUrl()}/case-chats`, {
-          method: 'POST',
-          headers: getAuthHeaders(),
-          body: JSON.stringify(caseChatPayload),
-        });
-        const caseChatResult = await caseChatResponse.json();
-        if (caseChatResponse.status === 409 && caseChatResult?.error?.code === 'INSTRUCTOR_SETUP_INCOMPLETE') {
-          setError(caseChatResult.error.message || "This section isn't ready yet — your instructor still needs to finish setup.");
-          return;
-        }
-        if (caseChatResult.data?.id) {
-          newCaseChatId = caseChatResult.data.id;
-          setCurrentCaseChatId(caseChatResult.data.id);
-        }
-      } catch (err) {
-        console.error('Failed to create case_chat record:', err);
-        // Continue anyway - chat tracking is optional
-      }
+      const newCaseChatId = await createCaseChat(sectionToSave);
+      if (!newCaseChatId) return;
 
       await startConversation(trimmedFirstName, selectedPersonaId, selectedChatModel, studentId, newCaseChatId);
     } finally {
@@ -1641,9 +1608,11 @@ const App: React.FC = () => {
     setCurrentCaseChatId(null);
     setHintsUsed(0);
 
-    // Immediately start a new conversation with the same settings
+    // Immediately start a new conversation with the same settings, on a new chat record
     if (studentFirstName && selectedChatModel) {
-      await startConversation(studentFirstName, selectedPersonaId, selectedChatModel, studentDBId || undefined);
+      const newCaseChatId = await createCaseChat(selectedSection);
+      if (!newCaseChatId) return;
+      await startConversation(studentFirstName, selectedPersonaId, selectedChatModel, studentDBId || undefined, newCaseChatId);
     }
   };
 

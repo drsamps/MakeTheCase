@@ -4,6 +4,7 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 import { chatWithFallback } from '../services/chatFallback.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
 import { resolveInstructorForStudentCase, resolveSectionForStudentCase } from '../services/keyResolver.js';
+import { buildChatSystemPrompt, sanitizeStudentName } from '../services/chatPrompt.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -263,9 +264,8 @@ async function loadCaseData(caseId) {
 
 const router = express.Router();
 
-// GET /api/llm/case-data/:caseId - Get case data for prompt building (content at top for caching)
-// Returns the teaching note, so it needs a login (the student's CAS token in the student app).
-// Any logged-in student can still read it: the browser builds the chat prompt from it.
+// GET /api/llm/case-data/:caseId - The case's text for the student's reading panel (any login).
+// Staff get the teaching note too; students never do.
 router.get('/case-data/:caseId', verifyToken, async (req, res) => {
   const caseId = req.params.caseId;
   console.log(`[case-data] Loading case data for: ${caseId}`);
@@ -307,7 +307,10 @@ router.get('/case-data/:caseId', verifyToken, async (req, res) => {
     }
     
     console.log(`[case-data] Successfully loaded case: ${caseId} (${caseData.case_content.length} chars)`);
-    res.json({ data: caseData, error: null });
+    // Students get what their screen shows: the case and supplementary materials, never the
+    // teaching note (the server builds the chat prompt, services/chatPrompt.js).
+    const { teaching_note, ...studentView } = caseData;
+    res.json({ data: req.user.role === 'student' ? studentView : caseData, error: null });
   } catch (error) {
     console.error(`[case-data] Error loading case data for ${caseId}:`, error);
     console.error(`[case-data] CASE_FILES_DIR: ${CASE_FILES_DIR}`);
@@ -340,21 +343,37 @@ function recordBackupReply(caseChatId, studentId, modelIdUsed) {
     .catch((e) => console.error('[llm/chat] failed to record backup reply:', e.message));
 }
 
-// POST /api/llm/chat - One student chat turn. Students only: the billed instructor and the
-// section come from the token's student and the caseId, never from a studentId in the body.
+// POST /api/llm/chat - One student chat turn: { caseChatId, studentName, message, messageAt, history }.
+// Students only, on their own chat. The server builds the system prompt from the chat record
+// (services/chatPrompt.js), so AI-only content never reaches the browser; the model and case
+// come from the chat record, and the billed instructor from the token's student and that case.
 router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => {
   try {
-    const { modelId, systemPrompt, history, message, messageAt, caseId, caseChatId } = req.body || {};
+    const { systemPrompt: clientSystemPrompt, studentName, history, message, messageAt, caseChatId } = req.body || {};
     const studentId = req.user.id;
-    if (!modelId || !systemPrompt || !message) {
-      return res.status(400).json({ data: null, error: { message: 'modelId, systemPrompt, and message are required' } });
+    // A page loaded before the server built prompts still sends its own. Refuse it rather
+    // than run a student-supplied prompt (docs/server-side-chat-prompt.md, decision 2).
+    if (clientSystemPrompt !== undefined) {
+      return res.status(409).json({ data: null, error: { code: 'CLIENT_OUTDATED', message: 'This page was updated. Please refresh it to continue.' } });
     }
-    if (caseChatId) {
-      const [owned] = await pool.execute('SELECT 1 FROM case_chats WHERE id = ? AND student_id = ?', [caseChatId, studentId]);
-      if (owned.length === 0) {
-        return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
-      }
+    if (!caseChatId || !message) {
+      return res.status(400).json({ data: null, error: { message: 'caseChatId and message are required' } });
     }
+    const [chats] = await pool.execute(
+      `SELECT id, case_id, section_id, scenario_id, persona, initial_position_id, chat_model
+         FROM case_chats WHERE id = ? AND student_id = ?`,
+      [caseChatId, studentId]
+    );
+    const chat = chats[0];
+    if (!chat) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
+    const modelId = chat.chat_model;
+    const caseId = chat.case_id;
+    if (!modelId) {
+      return res.status(400).json({ data: null, error: { message: 'This chat has no model assigned' } });
+    }
+    const systemPrompt = await buildChatSystemPrompt(chat, sanitizeStudentName(studentName));
     const modelConfig = await getModelConfig(modelId);
     if (!modelConfig) {
       return res.status(404).json({ data: null, error: { message: 'Model not found' } });
@@ -370,30 +389,28 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       systemPrompt,
       history: Array.isArray(history) ? history : [],
       message,
-      config: { caseId, instructorId, sectionId, caseChatId: caseChatId || null, purpose: 'student_chat' },
+      config: { caseId, instructorId, sectionId, caseChatId, purpose: 'student_chat' },
     });
     const durationMs = Date.now() - startTime;
 
-    if (backup && caseChatId && studentId) {
+    if (backup) {
       recordBackupReply(caseChatId, studentId, modelIdUsed);
     }
 
     // Log prompt if enabled (async, non-blocking)
-    if (studentId && caseId) {
-      logPromptIfEnabled({
-        logType: 'chat',
-        studentId,
-        caseId,
-        modelId: modelIdUsed,
-        systemPrompt,
-        history: Array.isArray(history) ? history : [],
-        currentMessage: message,
-        currentMessageAt: messageAt,
-        response: text,
-        meta,
-        durationMs
-      }).catch(() => {}); // Fire and forget - errors handled internally
-    }
+    logPromptIfEnabled({
+      logType: 'chat',
+      studentId,
+      caseId,
+      modelId: modelIdUsed,
+      systemPrompt,
+      history: Array.isArray(history) ? history : [],
+      currentMessage: message,
+      currentMessageAt: messageAt,
+      response: text,
+      meta,
+      durationMs
+    }).catch(() => {}); // Fire and forget - errors handled internally
 
     res.json({ data: { text, meta: { ...meta, model_id: modelIdUsed, backup } }, error: null });
   } catch (error) {
@@ -405,6 +422,9 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
     }
     if (error?.code === 'MODEL_UNPRICED') {
       return res.status(409).json({ data: null, error: { code: error.code, message: 'This model has no pricing configured — please contact your instructor.', modelId: error.modelId } });
+    }
+    if (error?.status === 404) {
+      return res.status(404).json({ data: null, error: { message: error.message } });
     }
     console.error('LLM chat error:', error);
     res.status(500).json({ data: null, error: { message: error.message || 'LLM chat failed' } });

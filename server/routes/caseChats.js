@@ -12,10 +12,25 @@ const router = express.Router();
 // Valid status values
 const VALID_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'killed', 'completed', 'evaluation_failed'];
 
-// POST /api/case-chats - Create a new chat session (students only; the student comes from the token)
+// The chat model a new chat is assigned: the section's chat model, else the default model
+// (rank 1), else the first enabled model. The same choice the student app makes (App.tsx),
+// made here so the browser cannot pick the model the student's instructor is billed for.
+async function resolveChatModel(sectionId) {
+  if (sectionId) {
+    const [sections] = await pool.execute('SELECT chat_model FROM sections WHERE section_id = ?', [sectionId]);
+    if (sections[0]?.chat_model) return sections[0].chat_model;
+  }
+  const [models] = await pool.execute(
+    'SELECT model_id FROM models WHERE enabled = 1 ORDER BY (default_model = 1) DESC LIMIT 1'
+  );
+  return models[0]?.model_id || null;
+}
+
+// POST /api/case-chats - Create a new chat session (students only; the student comes from the
+// token and the chat model from resolveChatModel, never from the body)
 router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
   try {
-    const { case_id, section_id, scenario_id, persona, chat_model, initial_position, initial_position_id, position_method } = req.body;
+    const { case_id, section_id, scenario_id, persona, initial_position, initial_position_id, position_method } = req.body;
     const student_id = req.user.id;
 
     if (!case_id) {
@@ -40,6 +55,7 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
     }
 
     const id = uuidv4();
+    const chat_model = await resolveChatModel(section_id);
 
     // If scenario_id provided, get the time limit from the scenario
     let timeLimitMinutes = null;
