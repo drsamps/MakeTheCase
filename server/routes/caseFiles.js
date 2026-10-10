@@ -265,7 +265,7 @@ router.post('/:caseId/upload', verifyToken, requireAdminOrInstructor, requireCas
 });
 
 // POST /api/case-files/:caseId/download-url - Download file from URL
-router.post('/:caseId/download-url', verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'view'), async (req, res) => {
+router.post('/:caseId/download-url', verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'edit'), async (req, res) => {
   try {
     const { caseId } = req.params;
     const {
@@ -650,88 +650,6 @@ router.post('/:fileId/confirm-proprietary', verifyToken, requireAdminOrInstructo
 
   } catch (error) {
     console.error('[CaseFiles] Error confirming proprietary:', error);
-    res.status(500).json({
-      data: null,
-      error: { message: error.message }
-    });
-  }
-});
-
-// GET /api/case-files/:caseId/prompt-context - Get ordered files for prompt building
-router.get('/:caseId/prompt-context', verifyToken, async (req, res) => {
-  try {
-    const { caseId } = req.params;
-
-    // Get files that should be included in prompt, ordered by prompt_order
-    const [files] = await pool.execute(
-      `SELECT id, case_id, filename, file_type, file_format,
-              proprietary, proprietary_confirmed_by, prompt_order, converted_text
-       FROM case_files
-       WHERE case_id = ? AND include_in_chat_prompt = 1
-       ORDER BY prompt_order ASC, created_at ASC`,
-      [caseId]
-    );
-
-    // Separate files into included and excluded (proprietary without confirmation)
-    const includedFiles = [];
-    const excludedFiles = [];
-
-    for (const file of files) {
-      if (file.proprietary && !file.proprietary_confirmed_by) {
-        excludedFiles.push({
-          ...file,
-          exclusion_reason: 'Proprietary content not confirmed'
-        });
-      } else {
-        includedFiles.push(file);
-      }
-    }
-
-    // Load content for included files (prefer cached converted_text)
-    const filesWithContent = await Promise.all(
-      includedFiles.map(async (file) => {
-        try {
-          // Use cached converted text if available
-          if (file.converted_text) {
-            return { ...file, content: file.converted_text };
-          }
-
-          const textFormats = ['md', 'txt', 'pdf', 'docx', 'doc'];
-          if (!textFormats.includes(file.file_format)) {
-            return { ...file, content: null, content_error: 'Non-text file format' };
-          }
-
-          const filePath = path.join(CASE_FILES_DIR, caseId, 'uploads', file.filename);
-          const ext = path.extname(file.filename);
-          const { text } = await convertFile(filePath, ext);
-          return { ...file, content: text };
-        } catch (e) {
-          if (file.file_type === 'case' || file.file_type === 'teaching_note') {
-            try {
-              const standardPath = path.join(CASE_FILES_DIR, caseId, `${file.file_type}.md`);
-              const content = await fs.readFile(standardPath, 'utf-8');
-              return { ...file, content };
-            } catch (e2) {
-              return { ...file, content: null, content_error: e2.message };
-            }
-          }
-          return { ...file, content: null, content_error: e.message };
-        }
-      })
-    );
-
-    res.json({
-      data: {
-        included: filesWithContent,
-        excluded: excludedFiles,
-        total_included: includedFiles.length,
-        total_excluded: excludedFiles.length
-      },
-      error: null
-    });
-
-  } catch (error) {
-    console.error('[CaseFiles] Error getting prompt context:', error);
     res.status(500).json({
       data: null,
       error: { message: error.message }
