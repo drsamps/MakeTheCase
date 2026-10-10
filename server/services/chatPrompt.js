@@ -4,7 +4,8 @@
  *
  * The browser used to build this prompt, so every AI-only field (teaching note, argument
  * framework, scenario instructions, persona instructions) had to reach the student. Now the
- * browser sends only the chat id, the student's first name and the conversation.
+ * browser sends only the chat id, the student's first name and the new message; the server
+ * keeps the conversation (services/chatTurns.js).
  *
  * Inputs mirror what App.tsx#startConversation gathered, in the same order:
  *   1. loadCaseData(case_id): case, supplementary materials, teaching note
@@ -45,11 +46,11 @@ export function sanitizeStudentName(name) {
 }
 
 /**
- * @param {{ id, case_id, section_id, scenario_id, persona, initial_position_id }} chat - case_chats row
- * @param {string} studentName - already sanitized
- * @returns {Promise<string>} the system prompt
+ * Everything a chat's prompt, greeting and transcript need, from its case_chats row.
+ * @param {{ id, case_id, section_id, scenario_id, persona, initial_position_id }} chat
+ * @returns {Promise<{ chat, caseData, chatOptions, mode, options }>}
  */
-export async function buildChatSystemPrompt(chat, studentName) {
+export async function loadChatContext(chat) {
   // Dynamic import: routes/llm.js imports this module (same pattern as evaluations.js).
   const { loadCaseData } = await import('../routes/llm.js');
   const loaded = await loadCaseData(chat.case_id);
@@ -107,7 +108,43 @@ export async function buildChatSystemPrompt(chat, studentName) {
     chatbotPersonality: chatOptions.chatbot_personality || undefined,
     personaData: personaRow ? { instructions: personaRow.instructions || '' } : undefined,
   };
+  return { chat, caseData, chatOptions, mode, options };
+}
+
+/**
+ * The system prompt for one turn.
+ * @param {Awaited<ReturnType<typeof loadChatContext>>} ctx
+ * @param {string} studentName - already sanitized
+ */
+export function buildChatSystemPrompt(ctx, studentName) {
+  const { chat, caseData, mode, options } = ctx;
   return mode === TEACH_BACK
     ? buildTeachBackSystemPrompt(studentName, chat.persona, caseData, options)
     : buildSystemPrompt(studentName, chat.persona, caseData, options);
+}
+
+/** The label for the AI's turns in the transcript and the grading copy ("CEO" if unknown). */
+export function protagonistLabel(ctx) {
+  return ctx.caseData.protagonist || 'CEO';
+}
+
+// An audience's display name, phrased so it reads after "I'm". Audience names are written from
+// the STUDENT's side of the picker ("Your grandmother", "A skeptical colleague"), so "I'm Your
+// grandmother" would be wrong. Only a known leading article or possessive is lowercased: "Sam, a
+// curious beginner" and an instructor-made name like "Professor Kim" keep their capital.
+const introduceAudience = (name) =>
+  (name || '').trim().replace(/^(your|a|an|the|my|our|someone|somebody)(?=\s)/i, (w) => w.toLowerCase());
+
+/**
+ * The AI's opening line (turn 0), written when the chat is created and shown by the browser.
+ * Moved from App.tsx#startConversation and teachBack.ts TEACH_BACK_COPY.greeting.
+ * @param {string} studentName - already sanitized
+ */
+export function buildGreeting(ctx, studentName) {
+  const { caseData, mode } = ctx;
+  if (mode === TEACH_BACK) {
+    return `Hi ${studentName}, I'm ${introduceAudience(caseData.protagonist)}. I'm supposed to understand **${caseData.chat_question}** and honestly I don't get it yet. Could you explain it to me?`;
+  }
+  const roleDescription = caseData.protagonist_role || 'the protagonist';
+  return `Hello ${studentName}, I am ${caseData.protagonist}, ${roleDescription} of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
 }

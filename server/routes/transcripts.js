@@ -4,15 +4,16 @@ import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { writeAudit } from '../services/auditLog.js';
 import { getChatViewableSectionIds, isSectionInScope } from '../middleware/instructorAccess.js';
-import { requireChatOwner } from '../middleware/chatOwner.js';
 
 const router = express.Router();
 
 /**
  * POST /api/transcripts
- * Create a new transcript for a case_chat
+ * Create a new transcript for a case_chat. Admin only: student transcripts are written by the
+ * server from its own copy of the chat (services/chatTurns.js#writeTranscript), never by the
+ * student's browser.
  */
-router.post('/', requireChatOwner('case_chat_id', 'body'), async (req, res) => {
+router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { case_chat_id, transcript, saved_with_permission } = req.body;
 
@@ -80,10 +81,10 @@ router.post('/', requireChatOwner('case_chat_id', 'body'), async (req, res) => {
 
 /**
  * PUT /api/transcripts/chat/:caseChatId
- * Upsert transcript for a case_chat (used by auto-save during active chat).
- * Creates the transcript row on first call; updates it on subsequent calls.
+ * Upsert transcript for a case_chat. Creates the transcript row on first call; updates it on
+ * subsequent calls. Admin only: the student chat no longer writes transcripts (see POST above).
  */
-router.put('/chat/:caseChatId', requireChatOwner('caseChatId'), async (req, res) => {
+router.put('/chat/:caseChatId', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { caseChatId } = req.params;
     const { transcript, saved_with_permission } = req.body;

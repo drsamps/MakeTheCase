@@ -84,15 +84,6 @@ export const initialsOf = (name: string): string => {
   return (words[0][0] + words[words.length - 1][0]).toUpperCase();
 };
 
-/**
- * An audience's display name, phrased so it reads after "I'm". Audience names are written
- * from the STUDENT's side of the picker ("Your grandmother", "A skeptical colleague"), so
- * "I'm Your grandmother" is wrong in the greeting. Only a known leading article or
- * possessive is lowercased: "Sam, a curious beginner" and any instructor-made name like
- * "Professor Kim" keep their capital.
- */
-export const introduceAudience = (name: string): string =>
-  (name || '').trim().replace(/^(your|a|an|the|my|our|someone|somebody)(?=\s)/i, (w) => w.toLowerCase());
 
 /**
  * Teach-Back student-facing copy.
@@ -103,10 +94,8 @@ export const introduceAudience = (name: string): string =>
  * file plus a few ternaries.
  */
 export const TEACH_BACK_COPY = {
-  // No role clause: a persona's description is an instructor-facing blurb ("Warm and sharp,
-  // but has never studied this subject"), not something a listener says about themself.
-  greeting: (studentName: string, audience: string, question: string) =>
-    `Hi ${studentName}, I'm ${introduceAudience(audience)}. I'm supposed to understand **${question}** and honestly I don't get it yet. Could you explain it to me?`,
+  // The opening greeting is written by the server when the chat is created
+  // (server/services/chatPrompt.js#buildGreeting), as turn 0 of its copy of the conversation.
 
   minExchangesWarning: () =>
     `I don't want to hold you up, but I'm not there yet — could we stay with it a little longer? A couple more explanations and I think it will click.`,

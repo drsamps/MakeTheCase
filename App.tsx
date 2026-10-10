@@ -1,13 +1,12 @@
 
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Message, MessageRole, ConversationPhase, EvaluationResult, Section, CaseChat, ChatStatus, RubricForPrompt } from './types';
+import { Message, MessageRole, ConversationPhase, EvaluationResult, Section, CaseChat, ChatStatus } from './types';
 import { createChatSession, getEvaluation, type LLMChatReply } from './services/llmService';
 import { TEACH_BACK, TEACH_BACK_COPY, DEFAULT_TEACH_BACK_MIN_WORDS, countWords, initialsOf, isTeachBack } from './teachBack';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
 import { api, getApiBaseUrl, getAuthHeaders, refreshAuthToken } from './services/apiClient';
-import { formatTranscript } from './utils/transcriptFormat.js';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
 import MessageInput from './components/MessageInput';
@@ -38,16 +37,6 @@ const isEnabledFlag = (value: unknown): boolean =>
 const isDisabledFlag = (value: unknown): boolean =>
   value === false || value === 0 || value === '0' || value === 'false';
 
-/**
- * The stored transcript blob, with [STUDENT]/[PROTAGONIST] turn markers (see utils/transcriptFormat.js).
- * Every Message literal in this file carries `at: Date.now()`, which adds "| n after m.mmm" turn timing.
- */
-function buildTranscript(msgs: Message[], studentName: string, protagonistName?: string): string {
-  return formatTranscript(
-    msgs.map(m => ({ role: m.role === MessageRole.USER ? 'student' : 'protagonist', content: m.content, at: m.at })),
-    { studentName, protagonistName: protagonistName || 'CEO' }
-  );
-}
 
 /** Yes/no for feedback/transcript permission replies. Avoids substring false positives (e.g. includes('y') matches "today"). */
 function isAffirmativeConsentReply(message: string): boolean {
@@ -175,7 +164,6 @@ const App: React.FC = () => {
   const teachBackMode = isTeachBack(chatOptions);
 
   // Active rubric for evaluation
-  const [activeRubric, setActiveRubric] = useState<RubricForPrompt | null>(null);
 
   // Position tracking state (using position IDs from scenario_positions table)
   const [selectedInitialPositionId, setSelectedInitialPositionId] = useState<number | null>(null);
@@ -632,7 +620,6 @@ const App: React.FC = () => {
       if (!selectedCaseId) {
         setActiveCaseData(null);
         setChatOptions(defaultChatOptions);
-        setActiveRubric(null);
         setAvailableScenarios([]);
         setSelectedScenarioId(null);
         setUseScenarios(false);
@@ -646,30 +633,7 @@ const App: React.FC = () => {
         const options = selectedCase.chat_options || defaultChatOptions;
         setChatOptions(options);
 
-        // Fetch rubric for evaluation (use assigned rubric_id or default)
-        try {
-          const rubricUrl = selectedCase.rubric_id
-            ? `${getApiBaseUrl()}/rubrics/${selectedCase.rubric_id}`
-            : `${getApiBaseUrl()}/rubrics/default`;
-          const rubricResponse = await fetch(rubricUrl);
-          if (rubricResponse.ok) {
-            const rubricResult = await rubricResponse.json();
-            if (rubricResult.data) {
-              setActiveRubric({
-                criteria_prompt: rubricResult.data.criteria_prompt,
-                additional_prompt: rubricResult.data.additional_prompt,
-                total_points: rubricResult.data.total_points,
-                rubric_id: rubricResult.data.rubric_id
-              });
-            }
-          } else {
-            console.warn('Could not fetch rubric, using default evaluation criteria');
-            setActiveRubric(null);
-          }
-        } catch (rubricErr) {
-          console.warn('Error fetching rubric:', rubricErr);
-          setActiveRubric(null);
-        }
+        // The rubric is chosen on the server when the chat is graded (/api/evaluations/run).
 
         // Personas available for this assignment (from server)
         const personas = Array.isArray(selectedCase.available_personas)
@@ -792,9 +756,9 @@ const App: React.FC = () => {
     }
   }, [currentCaseChatId, conversationPhase]);
 
-  // caseChatId is passed explicitly: the caller has just created the case_chat, so
-  // currentCaseChatId state is not visible inside this closure yet.
-  const startConversation = useCallback(async (name: string, personaId: string, modelId: string, studentId?: string, caseChatId?: string | null) => {
+  // caseChatId and greeting are passed explicitly: the caller has just created the case_chat
+  // (createCaseChat), so currentCaseChatId state is not visible inside this closure yet.
+  const startConversation = useCallback(async (name: string, personaId: string, modelId: string, studentId?: string, caseChatId?: string | null, greeting?: string) => {
     setIsLoading(true);
     setError(null);
     setHintsUsed(0);  // Reset hint counter at start of conversation
@@ -840,19 +804,14 @@ const App: React.FC = () => {
         setActiveCaseData(caseData as CaseData);
       }
 
-      // Build first message using the case protagonist (or the teach-back audience) and question
-      const roleDescription = caseData.protagonist_role || 'the protagonist';
-      const firstMessageContent = teachBackMode
-        ? TEACH_BACK_COPY.greeting(name, caseData.protagonist, caseData.chat_question)
-        : `Hello ${name}, I am ${caseData.protagonist}, ${roleDescription} of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
-      const initialHistory: Message[] = [{ role: MessageRole.MODEL, at: Date.now(), content: firstMessageContent }];
-
-      // The server builds each turn's prompt from the chat record, so the session needs one.
-      if (!caseChatId) {
+      // The server builds each turn's prompt and keeps the conversation, starting with the
+      // greeting it wrote as turn 0 when the chat record was created.
+      if (!caseChatId || !greeting) {
         setError('Could not start the chat. Please try again.');
         return;
       }
-      const session = createChatSession(name, modelId, initialHistory, caseChatId);
+      const initialHistory: Message[] = [{ role: MessageRole.MODEL, at: Date.now(), content: greeting }];
+      const session = createChatSession(name, modelId, caseChatId);
       setChatSession(session);
       setMessages(initialHistory);
       setConversationPhase(ConversationPhase.CHATTING);
@@ -1011,18 +970,7 @@ const App: React.FC = () => {
             setLastReply(response);
             const modelMessage: Message = { role: MessageRole.MODEL, at: Date.now(), content: response.text };
             setMessages((prev) => [...prev, modelMessage]);
-
-            // Auto-save transcript after each successful exchange
-            if ((chatOptions?.auto_save_transcript ?? true) && currentCaseChatId) {
-              const fullName = sessionUser?.full_name || studentFirstName || 'Student';
-              const allMessages = [...messages, newUserMessage, modelMessage];
-              const transcript = buildTranscript(allMessages, fullName, activeCaseData?.protagonist);
-              fetch(`${getApiBaseUrl()}/transcripts/chat/${currentCaseChatId}`, {
-                method: 'PUT',
-                headers: getAuthHeaders(),
-                body: JSON.stringify({ transcript }),
-              }).catch(err => console.error('Auto-save transcript failed:', err));
-            }
+            // No transcript save here: the server records the exchange and writes the transcript.
         } catch (e) {
             console.error("Failed to send message:", e);
             playErrorSound();
@@ -1238,78 +1186,24 @@ const App: React.FC = () => {
     setConversationPhase(ConversationPhase.EVALUATION_LOADING);
     setError(null);
     try {
-    const fullName = sessionUser?.full_name || `${studentFirstName}`;
-    const protagonistLabel = activeCaseData?.protagonist || 'CEO';
-    const result = await getEvaluation(messages, currentCaseChatId!, selectedSuperModel, protagonistLabel, activeRubric?.rubric_id);
+      // The server grades its own copy of the conversation and saves the evaluation and the
+      // transcript; the browser sends only the student's feedback answers and their consent to
+      // share the transcript with the developers (instructors see transcripts regardless).
+      const result = await getEvaluation(
+        currentCaseChatId!,
+        { helpful: helpfulScore, liked: sanitizeFeedback(likedFeedback), improve: sanitizeFeedback(improveFeedback) },
+        shareTranscript,
+      );
       setEvaluationResult(result);
-      
+
       if (studentDBId) {
-        const sanitizedLiked = sanitizeFeedback(likedFeedback);
-        const sanitizedImprove = sanitizeFeedback(improveFeedback);
-
-        // Check if transcript should be saved (either by user permission or always_save_transcript setting)
-        const alwaysSave = chatOptions?.always_save_transcript ?? false;
-        const shouldSaveTranscript = shareTranscript || alwaysSave;
-
-        let transcriptToSave: string | null = null;
-        if (shouldSaveTranscript) {
-          // Save the ORIGINAL transcript (NOT anonymized)
-          // Anonymization happens at display time, not save time
-          // Same builder as the per-turn auto-save: this PUT overwrites that copy, so a
-          // different format here would erase the turn markers at the end of every chat.
-          transcriptToSave = buildTranscript(messages, fullName, protagonistLabel);
-        }
-
-        const finishedTimestamp = new Date();
-        const mysqlTimestamp = finishedTimestamp.toISOString().slice(0, 19).replace('T', ' ');
-
-        const { error: evaluationError } = await api
-          .from('evaluations')
-          .insert({
-            student_id: studentDBId,
-            case_id: selectedCaseId,
-            case_chat_id: currentCaseChatId,
-            score: result.totalScore,
-            summary: result.summary,
-            criteria: result.criteria,
-            helpful: helpfulScore,
-            liked: sanitizedLiked,
-            improve: sanitizedImprove,
-            super_model: selectedSuperModel,
-            rubric_id: result.rubric_id || null,
-          });
-
-        if (evaluationError) {
-          console.error("Error saving evaluation:", evaluationError);
-        } else {
-          // Save transcript separately to transcripts table (upsert — may already exist from auto-save)
-          if (transcriptToSave && currentCaseChatId) {
-            try {
-              const transcriptResponse = await fetch(`${getApiBaseUrl()}/transcripts/chat/${currentCaseChatId}`, {
-                method: 'PUT',
-                headers: getAuthHeaders(),
-                body: JSON.stringify({
-                  transcript: transcriptToSave,
-                  // Consent to share this transcript with the developers. Instructors can see and
-                  // analyse transcripts regardless (see the disclosure under the chat).
-                  saved_with_permission: shouldSaveTranscript && shareTranscript
-                })
-              });
-              if (!transcriptResponse.ok) {
-                console.error("Error saving transcript:", await transcriptResponse.text());
-              }
-            } catch (transcriptError) {
-              console.error("Error saving transcript:", transcriptError);
-            }
-          }
-
-          // If evaluation is saved, try to update the student's finished_at timestamp
-          const { error: studentUpdateError } = await api
-            .from('students')
-            .update({ finished_at: mysqlTimestamp })
-            .eq('id', studentDBId);
-          if (studentUpdateError) console.error("Error updating student finished_at timestamp:", studentUpdateError);
-        }
+        const mysqlTimestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        // Try to update the student's finished_at timestamp
+        const { error: studentUpdateError } = await api
+          .from('students')
+          .update({ finished_at: mysqlTimestamp })
+          .eq('id', studentDBId);
+        if (studentUpdateError) console.error("Error updating student finished_at timestamp:", studentUpdateError);
       }
       setConversationPhase(ConversationPhase.EVALUATING);
     } catch (e: any) {
@@ -1335,11 +1229,12 @@ const App: React.FC = () => {
   };
 
   // Create the case_chats row a chat runs on. The server builds every chat turn's prompt from
-  // it (and chooses the model), so a chat cannot start without one. Returns the new id, or
-  // null after showing an error.
-  const createCaseChat = async (sectionId: string): Promise<string | null> => {
+  // it, chooses the model, and writes the AI's greeting (returned here), so a chat cannot start
+  // without one. Returns the new id and greeting, or null after showing an error.
+  const createCaseChat = async (sectionId: string, studentName: string): Promise<{ id: string; greeting: string } | null> => {
     try {
       const caseChatPayload: Record<string, any> = {
+        student_name: studentName,
         case_id: selectedCaseId,
         section_id: sectionId,
         persona: selectedPersonaId,
@@ -1366,12 +1261,12 @@ const App: React.FC = () => {
         setError(caseChatResult.error.message || "This section isn't ready yet — your instructor still needs to finish setup.");
         return null;
       }
-      if (!caseChatResponse.ok || !caseChatResult.data?.id) {
+      if (!caseChatResponse.ok || !caseChatResult.data?.id || !caseChatResult.data?.greeting) {
         setError(caseChatResult?.error?.message || 'Could not start the chat. Please try again.');
         return null;
       }
       setCurrentCaseChatId(caseChatResult.data.id);
-      return caseChatResult.data.id;
+      return { id: caseChatResult.data.id, greeting: caseChatResult.data.greeting };
     } catch (err) {
       console.error('Failed to create case_chat record:', err);
       setError('Could not start the chat. Please check your connection and try again.');
@@ -1442,10 +1337,10 @@ const App: React.FC = () => {
       setStudentDBId(studentId);
       setStudentFirstName(trimmedFirstName);
 
-      const newCaseChatId = await createCaseChat(sectionToSave);
-      if (!newCaseChatId) return;
+      const created = await createCaseChat(sectionToSave, trimmedFirstName);
+      if (!created) return;
 
-      await startConversation(trimmedFirstName, selectedPersonaId, selectedChatModel, studentId, newCaseChatId);
+      await startConversation(trimmedFirstName, selectedPersonaId, selectedChatModel, studentId, created.id, created.greeting);
     } finally {
       setIsLoading(false);
     }
@@ -1610,9 +1505,9 @@ const App: React.FC = () => {
 
     // Immediately start a new conversation with the same settings, on a new chat record
     if (studentFirstName && selectedChatModel) {
-      const newCaseChatId = await createCaseChat(selectedSection);
-      if (!newCaseChatId) return;
-      await startConversation(studentFirstName, selectedPersonaId, selectedChatModel, studentDBId || undefined, newCaseChatId);
+      const created = await createCaseChat(selectedSection, studentFirstName);
+      if (!created) return;
+      await startConversation(studentFirstName, selectedPersonaId, selectedChatModel, studentDBId || undefined, created.id, created.greeting);
     }
   };
 

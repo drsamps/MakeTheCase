@@ -6,31 +6,23 @@ import { inferPositionsFromChat, shouldInferPositions } from '../services/positi
 import { checkSectionReadiness } from '../services/keyResolver.js';
 import { getChatViewableSectionIds, canViewChat } from '../middleware/instructorAccess.js';
 import { requireChatOwner, requireSelfStudent } from '../middleware/chatOwner.js';
+import { resolveSectionModel } from '../services/modelChoice.js';
+import { loadChatContext, buildGreeting, sanitizeStudentName } from '../services/chatPrompt.js';
+import { appendTurns } from '../services/chatTurns.js';
 
 const router = express.Router();
 
 // Valid status values
 const VALID_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'killed', 'completed', 'evaluation_failed'];
 
-// The chat model a new chat is assigned: the section's chat model, else the default model
-// (rank 1), else the first enabled model. The same choice the student app makes (App.tsx),
-// made here so the browser cannot pick the model the student's instructor is billed for.
-async function resolveChatModel(sectionId) {
-  if (sectionId) {
-    const [sections] = await pool.execute('SELECT chat_model FROM sections WHERE section_id = ?', [sectionId]);
-    if (sections[0]?.chat_model) return sections[0].chat_model;
-  }
-  const [models] = await pool.execute(
-    'SELECT model_id FROM models WHERE enabled = 1 ORDER BY (default_model = 1) DESC LIMIT 1'
-  );
-  return models[0]?.model_id || null;
-}
-
-// POST /api/case-chats - Create a new chat session (students only; the student comes from the
-// token and the chat model from resolveChatModel, never from the body)
+// POST /api/case-chats - Create a new chat session (students only). The student comes from the
+// token and the chat model from the section (services/modelChoice.js), never from the body.
+// Also writes the AI's greeting as turn 0 of the server's copy (services/chatTurns.js) and
+// returns it as data.greeting for the browser to show. student_name is the first name the
+// greeting uses (cleaned like every name that reaches the prompt).
 router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
   try {
-    const { case_id, section_id, scenario_id, persona, initial_position, initial_position_id, position_method } = req.body;
+    const { case_id, section_id, scenario_id, persona, initial_position, initial_position_id, position_method, student_name } = req.body;
     const student_id = req.user.id;
 
     if (!case_id) {
@@ -55,7 +47,15 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
     }
 
     const id = uuidv4();
-    const chat_model = await resolveChatModel(section_id);
+    const chat_model = await resolveSectionModel(section_id, 'chat_model');
+
+    // Built before the insert so a case that cannot load refuses the chat instead of leaving a
+    // record with no greeting.
+    const context = await loadChatContext({
+      id, case_id, section_id: section_id || null, scenario_id: scenario_id || null,
+      persona: persona || null, initial_position_id: initial_position_id || null,
+    });
+    const greeting = buildGreeting(context, sanitizeStudentName(student_name));
 
     // If scenario_id provided, get the time limit from the scenario
     let timeLimitMinutes = null;
@@ -96,10 +96,15 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
       );
     }
 
+    await appendTurns(id, [{ role: 'protagonist', content: greeting }]);
+
     const [rows] = await pool.execute('SELECT * FROM case_chats WHERE id = ?', [id]);
 
-    res.status(201).json({ data: rows[0], error: null });
+    res.status(201).json({ data: { ...rows[0], greeting }, error: null });
   } catch (error) {
+    if (error?.status === 404) {
+      return res.status(404).json({ data: null, error: { message: error.message } });
+    }
     console.error('Error creating case chat:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }

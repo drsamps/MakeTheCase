@@ -1,6 +1,6 @@
 # Build the student chat prompt on the server
 
-Status: **built 2026-10-09** (Phase 3a of [`security-student-data-access.md`](security-student-data-access.md)). Server-side grading and server-held history (Phase 3b) are not started; see [Still open](#still-open-phase-3b).
+Status: **built 2026-10-09 (prompt, Phase 3a) and 2026-10-10 (conversation and grading, [Phase 3b](#phase-3b-the-server-keeps-and-grades-the-conversation))** of [`security-student-data-access.md`](security-student-data-access.md). Not yet deployed.
 
 ## Why
 
@@ -55,9 +55,38 @@ Everything else matches the browser's prompt byte for byte.
   The server-built prompts were inspected for both: the case chat had the position's arguments and the student's name; Teach-back had the listener line and "Who You Are", and no teaching note or arguments.
 - Not yet done: compare prompt logs before and after for the same chat setup, and watch the cache-hit rate in Monitor → AI Usage over the next days.
 
-## Still open (Phase 3b)
+## Phase 3b: the server keeps and grades the conversation
 
-Until these are built, a signed-in student can still invent the conversation the model sees, and post their own score:
+Built 2026-10-10. Before it, the browser sent the whole conversation with every turn and again for grading, then saved the score and the transcript itself, so a signed-in student could invent what the model saw, what was graded, their score and the transcript instructors read.
 
-- **Server-held conversation.** `/api/llm/chat` still accepts `history` from the browser. The server should store each turn (the `transcripts` row or a turns table) and send its own copy to the model.
-- **Grade from the server's copy.** `POST /api/evaluations/run` should read the stored transcript and save the evaluation row itself. It should also take the supervisor model from the section, as `POST /case-chats` now does for the chat model. The browser would then submit only feedback (`helpful`, `liked`, `improve`) through a student-owned update, and `POST /api/evaluations` would stop accepting a score.
+**Decision (2026-10-10): the server writes the transcript.** It always matches what was graded and cannot be faked. The cost: the browser-only lines are no longer in it. Those are the canned feedback questions and the student's answers (still saved on the evaluation as `helpful` / `liked` / `improve`), the "finish" message and wrap-up, and refused-hint, minimum-exchange and too-short warnings.
+
+- **`chat_turns` (migration 082)** holds each chat's conversation. Turn 0 is the AI's greeting; after it come the student/AI pairs the model actually answered. `server/services/chatTurns.js` lists and appends turns (locking the chat row so a double send cannot collide), shapes them for the model and the grader, and writes the transcript.
+- **`POST /api/case-chats`** takes `student_name`, writes the greeting as turn 0 (`chatPrompt.js#buildGreeting`, moved from `App.tsx` and `teachBack.ts`) and returns it as `data.greeting`; the browser shows that text.
+- **`POST /api/llm/chat`** takes `{ caseChatId, studentName, message }`. It sends the model the stored turns, then appends the exchange and rewrites the transcript (when `auto_save_transcript` is not false). A failed turn stores nothing. A completed, cancelled or killed chat gets 409 `CHAT_ENDED`.
+- **`POST /api/evaluations/run`** takes `{ case_chat_id, feedback: { helpful, liked, improve }, share_transcript }`. Steps:
+  1. It grades the stored turns, using the section's supervisor model (`services/modelChoice.js`) and the assignment's rubric (else the default).
+  2. It saves the evaluation row, with the cleaned feedback, and marks the chat completed.
+  3. It writes the final transcript, using the browser's old rule: save when auto-save is on, the assignment always saves, or the student agreed to share.
+  4. It runs AI position inference in the background.
+
+  A chat that already has an evaluation gets 409 `ALREADY_EVALUATED`. A request with `chatHistory` gets 409 `CLIENT_OUTDATED`.
+- **Removed or restricted:**
+  - `POST /api/evaluations` is removed; its position-inference code is now `inferPositionAfterEvaluation()`.
+  - `POST /api/transcripts` and `PUT /api/transcripts/chat/:id` are admin-only.
+  - The browser's `buildTranscript()`, auto-save, evaluation insert and rubric fetch are gone.
+
+**Grading changes that follow from grading the stored turns.** Only exchanges the model answered are graded. The browser used to send everything on screen, including feedback answers (where "hint" in an answer was counted as a hint request) and refused hint requests. `free_hints` now comes from the resolved chat options (assignment, else section or global default), as the chat prompt already did; `/run` used to read only the assignment's own options.
+
+**Checked (dev, 2026-10-10):**
+- API checks (10/10):
+  - the greeting is returned and stored as turn 0, with the name cleaned;
+  - old-shape `/run` gets 409, and `/run` with no student turns gets 400;
+  - removed `POST /evaluations` gets 404;
+  - a student's transcript POST or PUT gets 403;
+  - a cancelled chat gets `CHAT_ENDED`, and a graded chat gets `ALREADY_EVALUATED`.
+- Browser, a full Zipcar case chat:
+  - an opening position, a hint, three explanations, feedback (5, liked, improve), final position and grading;
+  - the database then held 9 turns, the evaluation (score 7, feedback, section supervisor model, rubric 1), status `completed`, and a transcript built from the turns with markers and timing;
+  - the browser sent no transcript or evaluation writes.
+- Teach-back greeting from the server: "Hi Scott, I'm your grandmother. …", the same as the old browser text.

@@ -1,4 +1,4 @@
-import { Message, EvaluationResult } from "../types";
+import { EvaluationResult } from "../types";
 import { getApiBaseUrl, getAuthHeaders } from "./apiClient";
 
 const parseOrThrow = async (response: Response) => {
@@ -29,76 +29,58 @@ export const detectProvider = (modelId: string) => {
 };
 
 /**
- * A student chat session. The server builds the system prompt from the chat record
- * (server/services/chatPrompt.js), so the browser sends only the chat id, the student's
- * first name and the conversation; the model comes from the chat record too. `modelId` is
- * only the label used when a reply does not name the model that answered.
+ * A student chat session. The server builds the system prompt and keeps the conversation
+ * (server/services/chatPrompt.js, chatTurns.js), so the browser sends only the chat id, the
+ * student's first name and the new message; the model comes from the chat record too.
+ * `modelId` is only the label used when a reply does not name the model that answered.
  */
 export const createChatSession = (
   studentName: string,
   modelId: string,
-  history: Message[],
   caseChatId: string
-): LLMChatSession => {
-  let currentHistory = [...history];
+): LLMChatSession => ({
+  async sendMessage({ message }: { message: string }) {
+    const response = await fetch(`${getApiBaseUrl()}/llm/chat`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ caseChatId, studentName, message }),
+    });
 
-  return {
-    async sendMessage({ message }: { message: string }) {
-      // `at` / `messageAt` (client clock) only label turns in the prompt log; the server
-      // passes {role, content} alone to the model.
-      const messageAt = Date.now();
-      const response = await fetch(`${getApiBaseUrl()}/llm/chat`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({
-          caseChatId,
-          studentName,
-          history: currentHistory,
-          message,
-          messageAt,
-        }),
-      });
+    const result = await parseOrThrow(response);
+    if (!response.ok || result.error) {
+      const msg = result?.error?.message || `Server returned ${response.status}`;
+      throw new Error(msg);
+    }
 
-      const result = await parseOrThrow(response);
-      if (!response.ok || result.error) {
-        const msg = result?.error?.message || `Server returned ${response.status}`;
-        throw new Error(msg);
-      }
+    return {
+      text: result.data?.text || '',
+      modelId: result.data?.meta?.model_id || modelId,
+      backup: Boolean(result.data?.meta?.backup),
+    };
+  },
+});
 
-      const text = result.data?.text || '';
-      currentHistory = [
-        ...currentHistory,
-        { role: 'user', content: message, at: messageAt },
-        { role: 'model', content: text, at: Date.now() },
-      ];
-      return {
-        text,
-        modelId: result.data?.meta?.model_id || modelId,
-        backup: Boolean(result.data?.meta?.backup),
-      };
-    },
-  };
-};
+export interface EvaluationFeedback {
+  helpful: number | null;
+  liked: string | null;
+  improve: string | null;
+}
 
 /**
- * Run an evaluation via the backend endpoint.
- * Prompt building, LLM call, normalization, validation, and retry all happen server-side.
+ * Grade the chat and save the evaluation. The server grades its own copy of the conversation
+ * with the section's supervisor model and the assignment's rubric, and saves the evaluation
+ * row itself; the browser sends only the student's feedback answers and whether they agreed
+ * to share the transcript. The result carries `evaluation_id`.
  */
 export const getEvaluation = async (
-  messages: Message[],
   caseChatId: string,
-  modelId: string,
-  protagonistLabel: string = 'CEO',
-  rubricId?: number,
+  feedback: EvaluationFeedback,
+  shareTranscript: boolean,
 ): Promise<EvaluationResult> => {
-  const chatHistory = messages
-    .map((msg) => `${msg.role === "user" ? "Student" : protagonistLabel}: ${msg.content}`)
-    .join("\n\n");
-
   const response = await fetch(`${getApiBaseUrl()}/evaluations/run`, {
     method: 'POST',
     headers: getAuthHeaders(),
-    body: JSON.stringify({ case_chat_id: caseChatId, chatHistory, modelId, rubricId }),
+    body: JSON.stringify({ case_chat_id: caseChatId, feedback, share_transcript: shareTranscript }),
   });
 
   const result = await parseOrThrow(response);
@@ -112,4 +94,3 @@ export const getEvaluation = async (
 
   return result.data as EvaluationResult;
 };
-

@@ -4,7 +4,8 @@ import { verifyToken, requireRole } from '../middleware/auth.js';
 import { chatWithFallback } from '../services/chatFallback.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
 import { resolveInstructorForStudentCase, resolveSectionForStudentCase } from '../services/keyResolver.js';
-import { buildChatSystemPrompt, sanitizeStudentName } from '../services/chatPrompt.js';
+import { loadChatContext, buildChatSystemPrompt, protagonistLabel, sanitizeStudentName } from '../services/chatPrompt.js';
+import { listTurns, appendTurns, historyForModel, writeTranscript } from '../services/chatTurns.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -343,13 +344,15 @@ function recordBackupReply(caseChatId, studentId, modelIdUsed) {
     .catch((e) => console.error('[llm/chat] failed to record backup reply:', e.message));
 }
 
-// POST /api/llm/chat - One student chat turn: { caseChatId, studentName, message, messageAt, history }.
+// POST /api/llm/chat - One student chat turn: { caseChatId, studentName, message }.
 // Students only, on their own chat. The server builds the system prompt from the chat record
-// (services/chatPrompt.js), so AI-only content never reaches the browser; the model and case
-// come from the chat record, and the billed instructor from the token's student and that case.
+// (services/chatPrompt.js) and sends the model its own copy of the conversation
+// (services/chatTurns.js), never one from the browser; the answered exchange is appended there
+// and the transcript rewritten from it. The model and case come from the chat record, and the
+// billed instructor from the token's student and that case.
 router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => {
   try {
-    const { systemPrompt: clientSystemPrompt, studentName, history, message, messageAt, caseChatId } = req.body || {};
+    const { systemPrompt: clientSystemPrompt, studentName, message, caseChatId } = req.body || {};
     const studentId = req.user.id;
     // A page loaded before the server built prompts still sends its own. Refuse it rather
     // than run a student-supplied prompt (docs/server-side-chat-prompt.md, decision 2).
@@ -360,7 +363,7 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       return res.status(400).json({ data: null, error: { message: 'caseChatId and message are required' } });
     }
     const [chats] = await pool.execute(
-      `SELECT id, case_id, section_id, scenario_id, persona, initial_position_id, chat_model
+      `SELECT id, case_id, section_id, scenario_id, persona, initial_position_id, chat_model, status
          FROM case_chats WHERE id = ? AND student_id = ?`,
       [caseChatId, studentId]
     );
@@ -368,12 +371,19 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
     if (!chat) {
       return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
     }
+    // A graded, cancelled or killed chat is over: nothing more joins its conversation.
+    if (['completed', 'canceled', 'killed'].includes(chat.status)) {
+      return res.status(409).json({ data: null, error: { code: 'CHAT_ENDED', message: 'This chat has ended. Please start a new one.' } });
+    }
     const modelId = chat.chat_model;
     const caseId = chat.case_id;
     if (!modelId) {
       return res.status(400).json({ data: null, error: { message: 'This chat has no model assigned' } });
     }
-    const systemPrompt = await buildChatSystemPrompt(chat, sanitizeStudentName(studentName));
+    const context = await loadChatContext(chat);
+    const systemPrompt = buildChatSystemPrompt(context, sanitizeStudentName(studentName));
+    const history = historyForModel(await listTurns(caseChatId));
+    const askedAt = new Date();
     const modelConfig = await getModelConfig(modelId);
     if (!modelConfig) {
       return res.status(404).json({ data: null, error: { message: 'Model not found' } });
@@ -387,7 +397,7 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
     const { text, meta, modelIdUsed, backup } = await chatWithFallback({
       modelId,
       systemPrompt,
-      history: Array.isArray(history) ? history : [],
+      history,
       message,
       config: { caseId, instructorId, sectionId, caseChatId, purpose: 'student_chat' },
     });
@@ -397,6 +407,17 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       recordBackupReply(caseChatId, studentId, modelIdUsed);
     }
 
+    // Only answered exchanges join the conversation: a failed turn leaves no trace, and the
+    // student simply sends again.
+    await appendTurns(caseChatId, [
+      { role: 'student', content: message, at: askedAt },
+      { role: 'protagonist', content: text },
+    ]);
+    if (context.chatOptions.auto_save_transcript !== false) {
+      writeTranscript(caseChatId, { protagonistName: protagonistLabel(context) })
+        .catch((e) => console.error('[llm/chat] transcript write failed:', e.message));
+    }
+
     // Log prompt if enabled (async, non-blocking)
     logPromptIfEnabled({
       logType: 'chat',
@@ -404,9 +425,9 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       caseId,
       modelId: modelIdUsed,
       systemPrompt,
-      history: Array.isArray(history) ? history : [],
+      history,
       currentMessage: message,
-      currentMessageAt: messageAt,
+      currentMessageAt: askedAt.getTime(),
       response: text,
       meta,
       durationMs
