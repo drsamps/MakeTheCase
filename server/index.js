@@ -50,6 +50,7 @@ import feedbackRoutes from './routes/feedback.js';
 import contentRoutes from './routes/content.js';
 import usageRoutes from './routes/usage.js';
 import backupsRoutes from './routes/backups.js';
+import activityPacksRoutes, { versionRoute } from './routes/activityPacks.js';
 import { startTruncateOldRawUsageJob } from './jobs/truncateOldRawUsage.js';
 import { startPruneModelFailuresJob } from './jobs/pruneModelFailures.js';
 import { startIssueAnalyticsMaintenance } from './jobs/issueAnalyticsMaintenance.js';
@@ -118,6 +119,7 @@ app.use('/api/teams', teamsRoutes); // Instructor teams + sharing
 app.use('/api/feedback', feedbackRoutes); // In-app user feedback system
 app.use('/api/content', contentRoutes); // Static markdown content (e.g. instructor welcome screen)
 app.use('/api/usage', usageRoutes); // AI cost-first usage reporting (model_usage table)
+app.use('/api/activity-packs', activityPacksRoutes); // Download cases as a package, install one from another server
 console.log('✓ Rubrics routes mounted');
 console.log('✓ Case Writer routes mounted at /api/case-writer');
 
@@ -125,6 +127,9 @@ console.log('✓ Case Writer routes mounted at /api/case-writer');
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// App version, schema level and the activity packages this server can install (staff only)
+app.get('/api/version', ...versionRoute);
 
 // Static files are served directly by Apache in production for better performance
 // Only serve static files in development mode or if not behind Apache proxy

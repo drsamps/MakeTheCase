@@ -166,7 +166,25 @@ Courses span semesters; a section carries `semester_id` + `section_number`, and 
 - **Assignments is course-first.** `[ By course | By section ]` is a view switch (`localStorage['mtc_assignments_view']`), never a stored mode — following the course is already per case, per section (`section_cases.version_id`). By course (`components/courses/CourseAssignments.tsx`) edits versions for settings and each section's dates/Active; By section is the per-section screen. Courses > Courses covers structure and links to By course. Keep `CaseVersionEditor` at parity with the section editors when either changes. Full design: `docs/semesters-courses-sections.md` § Dashboard: Assignments is course-first.
 
 ### Chat Options (per section-case)
-JSON configuration stored in `section_cases.chat_options`: hints_allowed, free_hints, ask_for_feedback, ask_save_transcript, allowed_personas, default_persona, chatbot_personality, show_case, do_evaluation.
+JSON configuration stored in `section_cases.chat_options`: hints_allowed, free_hints, ask_for_feedback, ask_save_transcript, allowed_personas, default_persona, chatbot_personality, show_case, do_evaluation. The one list of keys is `DEFAULT_CHAT_OPTIONS` in `server/services/chatOptions.js`; add a new option there.
+
+### Study-Chat activities: the case is the activity (migrations 084-086)
+A case is a self-contained activity: documents, scenarios and positions, an activity type, and its own default settings. The dashboard still says "Cases". Full design: `docs/activity-packages.md`.
+- **The activity type is `cases.activity_type`** (`case_chat`, `teach_back`), never a chat option. `chat_options.activity_mode` is retired: nothing reads it, and every route that stores chat options passes them through `withoutActivityMode()`. Read the type from the case: `loadCaseData()` returns it, and every case, assignment and version endpoint returns `activity_type`.
+- **Do not test `type === 'teach_back'` on the server.** The list of types is `utils/activityTypes.js` (shared with the dashboard); what each does (chat prompt, greeting, grading prompt) is `server/services/activityTypes.js#activityBehaviour`. A new type (Debate, Pitch) is an entry in each.
+- The type is fixed once the case is assigned, listed on a course, or has chats (409 `ACTIVITY_TYPE_IN_USE`). Another activity on the same reading is a **Copy** of the case.
+- **Case default settings** (`cases.default_settings`, `default_rubric_id`; `server/services/activityDefaults.js`) are COPIED into a new course Main version, or a section assignment that follows none, when the case is attached. They are never followed afterwards; course versions stay the live settings.
+
+### Activity packages (download a case, install it on another server)
+`Content > Cases`: **Download**, **Install from file**, **Copy**. Code: `server/services/activityPack/` (`format.js`, `capabilities.js`, `zip.js`, `export.js`, `import.js`), `server/routes/activityPacks.js`, `components/CasePackages.tsx`. Rules that fail silently (also in the header of `activityPack/index.js`):
+- **Fail closed.** An unknown format version, `requires` token, activity type, chat option, document role, persona kind or enum is refused, never ignored. This is what stops a package from a newer server installing on an older one, and it cannot be added later to servers already deployed. Anything a new release adds that an older installer would mishandle by ignoring needs a token in `capabilities.js`.
+- **The ZIP is untrusted.** Entry names are never used as paths; only entries the manifest names are read; sizes are capped while inflating.
+- **A package never sets** owner, visibility, ids, system-default flags or proprietary confirmation. Installing only creates rows or reuses identical ones; it never overwrites, and everything it creates is private to the installer and assigned nowhere.
+- **Download checks view access** to each case, its settings source, and each persona and rubric bundled ("all enabled personas" includes other instructors' private ones).
+- **Install must match the plan the person confirmed** (`plan_hash`): `inspect` writes nothing, `install` re-plans.
+- **An outline whose parent document is left out travels as a document of the parent's role**, because an outline with no parent row is read as case content and would show a teaching-note outline to students.
+- After changing anything here, in `utils/activityTypes.js` or in the chat option list: `node server/scripts/check-activity-pack.js` (add `--db` for a round trip on the dev database).
+- `GET /api/version` reports the app version (`package.json`, bumped on each production deploy), schema level and package capabilities.
 
 ### Case File Organization
 Cases stored in `case_files/{case_id}/` with:

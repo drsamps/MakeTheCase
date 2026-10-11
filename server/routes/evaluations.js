@@ -8,9 +8,7 @@ import { loadChatContext, protagonistLabel } from '../services/chatPrompt.js';
 import { listTurns, historyForGrading, writeTranscript } from '../services/chatTurns.js';
 import { resolveSectionModel } from '../services/modelChoice.js';
 import { inferPositionFromTranscript } from '../services/positionInference.js';
-import { buildCoachPrompt } from '../services/promptBuilder.js';
-import { buildTeachBackCoachPrompt } from '../services/teachBackCoachPrompt.js';
-import { getActivityMode, teachBackEvalInputs, verifyEvidence, TEACH_BACK } from '../services/teachBack.js';
+import { activityBehaviour } from '../services/activityTypes.js';
 import { stripTurnTiming } from '../../utils/transcriptFormat.js';
 import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
@@ -23,15 +21,10 @@ import {
   trimEvaluationResult,
 } from '../services/evaluationNormalizer.js';
 
-/**
- * Teach-back transcripts are judged by a different prompt: the student was teaching, not
- * arguing, and the judge must be told to ignore everything the listener said. Same
- * signature and same output contract, so every caller and the whole validation cascade is
- * unchanged. Absent mode = the case-chat prompt, which is the pre-teach-back behaviour.
- */
-function coachPromptFor(activityMode) {
-  return activityMode === TEACH_BACK ? buildTeachBackCoachPrompt : buildCoachPrompt;
-}
+// Each activity type is judged by its own prompt (services/activityTypes.js): a teach-back
+// student was teaching, not arguing, and the judge must ignore everything the listener said.
+// The builders share one signature and one output contract, so the validation cascade below
+// is the same for every type. The type is the case's, returned by loadCaseData().
 
 const router = express.Router();
 
@@ -229,15 +222,13 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
 
     // Teach-back is judged against the audience the student chose, and against its own
     // criteria unless the assignment names a rubric (a rubric is always passed in here).
-    const activityMode = await getActivityMode(section_id, case_id);
-    if (activityMode === TEACH_BACK) {
-      ({ caseData, rubric } = await teachBackEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric }));
-    }
+    const activity = activityBehaviour(caseData.activity_type);
+    ({ caseData, rubric } = await activity.prepareEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric }));
     const expectedCriteria = rubric?.criteria?.length || (rubric?.criteria_prompt?.match(/Q\d+\./g) || []).length || 3;
     // Every successful exit goes through here so unverified "student quotes" never ship, and
     // so the saved evaluation is exactly what the student is shown.
     const sendResult = async (data) => {
-      const result = activityMode === TEACH_BACK ? verifyEvidence(data, chatHistory, caseData.protagonist) : data;
+      const result = activity.finishEvaluation(data, chatHistory, caseData.protagonist);
       const { helpful, liked, improve } = cleanFeedback(feedback);
       const evaluationId = uuidv4();
       await pool.execute(
@@ -268,7 +259,7 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
     }
 
     // 6. Build evaluation prompt
-    const prompt = coachPromptFor(activityMode)(chatHistory, full_name, caseData, freeHints, rubric);
+    const prompt = activity.buildCoachPrompt(chatHistory, full_name, caseData, freeHints, rubric);
 
     // 7. Call LLM
     const instructorId = await resolveInstructorForSection(section_id);
@@ -441,15 +432,13 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
       return res.status(404).json({ data: null, error: { message: 'Case not found' } });
     }
     console.log('[Re-evaluate] Step 4: Got case data');
-    const reEvalMode = await getActivityMode(section_id, case_id);
-    if (reEvalMode === TEACH_BACK) {
-      ({ caseData, rubric } = await teachBackEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric, rubricChosen: !!rubric_id }));
-    }
+    const reEvalActivity = activityBehaviour(caseData.activity_type);
+    ({ caseData, rubric } = await reEvalActivity.prepareEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric, rubricChosen: !!rubric_id }));
 
     // 5. Build evaluation prompt
     console.log('[Re-evaluate] Step 5: Building prompt...');
     // Turn timing ("| 12 after 3.52m") is for instructors; the evaluator must not see it.
-    const prompt = coachPromptFor(reEvalMode)(stripTurnTiming(transcript), full_name, caseData, 0, rubric);
+    const prompt = reEvalActivity.buildCoachPrompt(stripTurnTiming(transcript), full_name, caseData, 0, rubric);
     console.log('[Re-evaluate] Step 5: Built prompt, length:', prompt.length);
 
     // 6. Call LLM for evaluation
@@ -560,13 +549,11 @@ router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, r
     const { loadCaseData } = await import('./llm.js');
     let caseData = await loadCaseData(case_id);
     console.log('[Preview-prompt] Step 4: Got case data:', !!caseData);
-    const previewMode = await getActivityMode(section_id, case_id);
-    if (previewMode === TEACH_BACK) {
-      ({ caseData, rubric } = await teachBackEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric, rubricChosen: !!rubric_id }));
-    }
+    const previewActivity = activityBehaviour(caseData?.activity_type);
+    ({ caseData, rubric } = await previewActivity.prepareEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric, rubricChosen: !!rubric_id }));
 
     console.log('[Preview-prompt] Step 5: Building prompt...');
-    const prompt = coachPromptFor(previewMode)(
+    const prompt = previewActivity.buildCoachPrompt(
       stripTurnTiming(transcriptRows[0].transcript),
       full_name,
       caseData || {},  // Handle null case data

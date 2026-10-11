@@ -332,6 +332,20 @@ const CourseAssignments: React.FC<Props> = ({ isAdmin, userId, selectedCourseId,
     await refresh();
   };
 
+  // A case's default settings are copied into a new course Main version, or a section assignment
+  // that follows none, when the case is attached (server/services/activityDefaults.js). Saving
+  // them changes nothing that is already assigned.
+  const saveAsCaseDefaults = async (row: CourseCaseRow, version: VersionRow) => {
+    const which = version.is_main ? 'Main' : `"${version.label}"`;
+    if (!confirm(`Save the ${which} settings as the default settings of ${caseLabel(row.case_title, row.case_id)}?\n\nThey are used when this case is added to another course or section. Nothing already assigned changes.`)) return;
+    setBusy(true);
+    setError(null);
+    const { error: saveError } = await api.put(`/cases/${encodeURIComponent(row.case_id)}/defaults`, { from_version_id: version.version_id });
+    setBusy(false);
+    if (saveError) { setError(saveError.message); return; }
+    flash(`Saved as the default settings of ${row.case_title}.`);
+  };
+
   const removeCase = async (row: CourseCaseRow) => {
     if (!confirm(`Remove ${caseLabel(row.case_title, row.case_id)} from this course?\n\nSections keep the case with their current settings, but stop following the course's versions.`)) return;
     const { error: delError } = await api.delete(`/courses/${courseId}/cases/${encodeURIComponent(row.case_id)}`);
@@ -553,6 +567,12 @@ const CourseAssignments: React.FC<Props> = ({ isAdmin, userId, selectedCourseId,
                   </button>
                   {canManage && (
                     <button onClick={() => setCopying({ row, from: v })} className="text-xs text-gray-600 hover:underline px-1">Make semester copy</button>
+                  )}
+                  {canManage && row.can_edit_case && (
+                    <button onClick={() => saveAsCaseDefaults(row, v)} disabled={busy} className="text-xs text-gray-600 hover:underline px-1 disabled:opacity-50"
+                      title="Use these settings when this case is added to another course or section">
+                      Save as case defaults
+                    </button>
                   )}
                   {canManage && !v.is_main && (
                     <button onClick={() => deleteCopy(v)} className="text-xs text-red-600 hover:underline px-1">Delete copy</button>

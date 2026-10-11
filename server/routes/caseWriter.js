@@ -17,6 +17,7 @@ import { markdownToDocxBuffer, markdownToPdfBuffer } from '../services/markdownE
 import { convertFile } from '../services/fileConverter.js';
 import { fetchUrlAsText } from '../services/urlFetcher.js';
 import { detectOutline, mergeRanges } from '../services/referenceOutline.js';
+import { slugifyTitle, generateUniqueCaseId } from '../services/caseIds.js';
 import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -2560,30 +2561,6 @@ router.post('/extract-principles',
 // ----------------------------------------------------------------------------
 // Publish: materialize the project into cases / case_scenarios / case_files
 // ----------------------------------------------------------------------------
-
-function slugifyTitle(title) {
-  return String(title || '')
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 24) || 'case';
-}
-
-async function generateUniqueCaseId(baseSlug) {
-  const [existing] = await pool.execute(
-    'SELECT case_id FROM cases WHERE case_id = ? OR case_id LIKE ?',
-    [baseSlug, `${baseSlug}-%`]
-  );
-  if (existing.length === 0) return baseSlug;
-  const taken = new Set(existing.map(r => r.case_id));
-  for (let i = 2; i < 1000; i++) {
-    const candidate = `${baseSlug}-${i}`.slice(0, 30);
-    if (!taken.has(candidate)) return candidate;
-  }
-  throw new Error(`Could not generate a unique case_id from base '${baseSlug}'`);
-}
 
 function deriveInitials(name) {
   if (!name) return '?';

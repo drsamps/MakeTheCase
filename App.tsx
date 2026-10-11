@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Message, MessageRole, ConversationPhase, EvaluationResult, Section, CaseChat, ChatStatus } from './types';
 import { createChatSession, getEvaluation, type LLMChatReply } from './services/llmService';
-import { TEACH_BACK, TEACH_BACK_COPY, DEFAULT_TEACH_BACK_MIN_WORDS, countWords, initialsOf, isTeachBack } from './teachBack';
+import { TEACH_BACK, TEACH_BACK_COPY, DEFAULT_TEACH_BACK_MIN_WORDS, countWords, initialsOf, isTeachBackType } from './teachBack';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
 import { api, getApiBaseUrl, getAuthHeaders, refreshAuthToken } from './services/apiClient';
@@ -159,9 +159,6 @@ const App: React.FC = () => {
   
   // Chat options from section-case assignment (Phase 2)
   const [chatOptions, setChatOptions] = useState<any>(null);
-  // Teach-back reverses the activity: the AI is the one who does not understand, and the
-  // student explains the reading to it. Absent key = the case chat, always. See teachBack.ts.
-  const teachBackMode = isTeachBack(chatOptions);
 
   // Active rubric for evaluation
 
@@ -172,7 +169,6 @@ const App: React.FC = () => {
   
   // Default chat options
   const defaultChatOptions = {
-    activity_mode: 'case_chat',
     teach_back_min_words: DEFAULT_TEACH_BACK_MIN_WORDS,
     hints_allowed: 3,
     free_hints: 1,
@@ -192,6 +188,10 @@ const App: React.FC = () => {
   // Available cases for selected section
   const [availableCases, setAvailableCases] = useState<any[]>([]);
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  // Teach-back reverses the activity: the AI is the one who does not understand, and the
+  // student explains the reading to it. The activity type is the case's (`activity_type` on
+  // each assigned case), not a chat option; a missing type is the case chat. See teachBack.ts.
+  const teachBackMode = isTeachBackType(availableCases.find((c) => c.case_id === selectedCaseId)?.activity_type);
   const [isLoadingAvailableCases, setIsLoadingAvailableCases] = useState(false);
   const [studentSavedSectionId, setStudentSavedSectionId] = useState<string | null>(null);
   const [enrolledSectionIds, setEnrolledSectionIds] = useState<string[]>([]);

@@ -3,7 +3,8 @@ import { api } from '../../services/apiClient';
 import HelpTooltip from '../ui/HelpTooltip';
 import { ChatOptionsHelp } from '../../help/dashboard';
 import { formatAllowedPersonas, personasForDefaultDropdown, resolveAllowedPersonasForForm, type PersonaRow } from '../../utils/personas';
-import { crossModePersonaIds, isAudiencePersonaId, isTeachBack, validateChatOptionsForSave } from '../../teachBack';
+import { crossModePersonaIds, isAudiencePersonaId, isTeachBackType, validateChatOptionsForSave } from '../../teachBack';
+import { getActivityType } from '../../utils/activityTypes.js';
 
 /**
  * Edit one course case version ("Main" or a semester copy). Every save is written through to
@@ -35,6 +36,8 @@ interface SchemaField {
   max?: number;
   description?: string;
   category?: string;
+  /** When present, the option applies only to cases of these activity types. */
+  activity_types?: string[];
   options?: { value: string; label: string }[];
 }
 
@@ -184,11 +187,13 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
   const isMain = version.is_main;
   const assignedIds = new Set(assigned.map((s) => s.scenario_id));
   const disabled = !canEdit || busy;
+  // The activity type is the case's (cases.activity_type), not a chat option.
+  const activityType = getActivityType(version.activity_type);
 
   // Same check as the section form, because this save is written through to every section
   // that follows the version.
   const saveOptions = () => {
-    const invalid = useDefaults ? null : validateChatOptionsForSave(options);
+    const invalid = useDefaults ? null : validateChatOptionsForSave(options, activityType.id);
     if (invalid) {
       setError(invalid);
       return;
@@ -201,7 +206,7 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
   // offers audiences (audience-*) and case chat offers personalities, never both.
   const renderPersonaFields = () => {
     const fieldDisabled = disabled || useDefaults;
-    const teachBack = isTeachBack(options);
+    const teachBack = isTeachBackType(activityType.id);
     const enabledPersonas: PersonaRow[] = (schema.find((f) => f.key === 'allowed_personas')?.options || [])
       .map((o) => ({ persona_id: o.value, persona_name: o.label }))
       .filter((p) => isAudiencePersonaId(p.persona_id) === teachBack);
@@ -209,7 +214,7 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
     const allowAll = resolved.allowAll;
     // Ids of the other activity are dropped from the working selection, so the next tick
     // or untick writes a list without them.
-    const crossModeSelected = crossModePersonaIds(options);
+    const crossModeSelected = crossModePersonaIds(options, activityType.id);
     const selectedIds = resolved.selectedIds.filter((id) => !crossModeSelected.includes(id));
     const noun = teachBack ? 'audience' : 'persona';
     const defaultChoices = personasForDefaultDropdown(enabledPersonas, options.allowed_personas);
@@ -365,6 +370,8 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
           <div className="min-w-0">
             <h3 className="text-lg font-bold text-gray-900">{version.case_title}</h3>
             <p className="text-sm text-gray-600">
+              <span title={`${activityType.summary}. Set on the case under Content > Cases.`}>{activityType.label}</span>
+              {' · '}
               {isMain ? 'Main settings' : `${version.semester_name} copy`}
               {' · '}
               {followerCount === 0 ? (
@@ -422,7 +429,10 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
               Use the default chat options
             </label>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {schema.filter((f) => !PERSONA_KEYS.has(f.key)).map(renderField)}
+              {schema
+                .filter((f) => !PERSONA_KEYS.has(f.key))
+                .filter((f) => !f.activity_types || f.activity_types.includes(activityType.id))
+                .map(renderField)}
               {schema.some((f) => f.key === 'allowed_personas') && renderPersonaFields()}
             </div>
             <div className="flex justify-end">

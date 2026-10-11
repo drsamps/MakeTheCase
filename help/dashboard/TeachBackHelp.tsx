@@ -4,8 +4,8 @@ const TeachBackHelp: React.FC = () => (
   <>
     <h4>What Teach-Back Is</h4>
     <p>
-      Every assignment runs one of two activities, chosen by <strong>Activity Mode</strong> at the top
-      of Chat Options.
+      Every case is one of two activities, chosen by <strong>Activity type</strong> when the case is
+      created under Content &rarr; Cases. The type is fixed once the case is assigned.
     </p>
     <ul>
       <li><strong>Case chat</strong> - the student argues a position with the case protagonist, who
@@ -21,15 +21,16 @@ const TeachBackHelp: React.FC = () => (
         from one command - <code>npm run seed-audiences</code> - or you can add your own under
         Setup &rarr; Personas by ticking &quot;Teach-back audience&quot;. Both are listed in
         <code>docs/teach-back-setup.md</code>.</li>
-      <li><strong>Upload the reading</strong> as the case document. Leave the teaching note and the
-        arguments empty - teach-back does not use them.</li>
+      <li><strong>Create the case</strong> with Activity type <em>Teach-back</em>, and upload the
+        reading as the case document. Leave the teaching note and the arguments empty - teach-back
+        does not use them.</li>
       <li><strong>Write the Chat Question</strong> as the thing to be explained, not a decision to be
         made: &quot;why safety stock rises with demand variability&quot;, not &quot;should we raise
         safety stock&quot;.</li>
       <li><strong>Write a teach-back rubric.</strong> This is the step that matters most. The default
         rubric was written for case chat.</li>
-      <li><strong>Assign it</strong>, set Activity Mode to Teach-back, and tick your audiences under
-        Allowed Audiences.</li>
+      <li><strong>Assign it</strong>, and tick your audiences under Allowed Audiences in Chat
+        Options.</li>
     </ol>
 
     <h4>Choosing the Audience</h4>

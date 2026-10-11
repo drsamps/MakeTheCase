@@ -78,7 +78,7 @@ async function loadFileContent(caseId, filename, fileType, convertedText, fileId
 // Now uses ordered prompt context from case_files table
 async function loadCaseData(caseId) {
   const [cases] = await pool.execute(
-    `SELECT case_id, case_title
+    `SELECT case_id, case_title, activity_type
      FROM cases WHERE case_id = ?`,
     [caseId]
   );
@@ -453,7 +453,7 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
 });
 
 // Export loadCaseData and getModelConfig for use in other modules (e.g., evaluations)
-export { loadCaseData, getModelConfig };
+export { loadCaseData, loadFileContent, getModelConfig };
 
 export default router;
 

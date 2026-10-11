@@ -191,7 +191,7 @@ These all come from the browser building prompts and saving grades. Phase 3 fixe
   - with transcript auto-save.
 
   Also test cancel, restart and repeat. Check the browser console for 401/404s.
-- **Also run a Teach-back chat** (`activity_mode` teach-back, `docs/teach-back-setup.md`) through to its evaluation. Teach-back has its own prompt and coach-prompt path in `llmService.ts` and `evaluations.js`.
+- **Also run a Teach-back chat** (a case whose `activity_type` is `teach_back`, `docs/teach-back-setup.md`) through to its evaluation. Teach-back has its own prompt and coach-prompt path in `llmService.ts` and `evaluations.js`.
 - **Negative tests:** with student A's token, try student B's chat ID on each route (expect 404). Try no token (expect 401).
 - **Instructor dashboard:** Monitor → Live/Chats, kill a chat, "mark abandoned", Results. All should still work.
 - `npx tsc --noEmit -p .` shows no new errors.

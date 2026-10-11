@@ -1,5 +1,6 @@
 import { pool } from '../db.js';
-import { TEACH_BACK, isAudiencePersonaId } from './teachBack.js';
+import { isAudiencePersonaId } from './teachBack.js';
+import { getActivityType } from '../../utils/activityTypes.js';
 
 /**
  * True when allowed_personas is unset / blank (all enabled personas allowed).
@@ -24,14 +25,17 @@ export function parseAllowedPersonaIds(allowedPersonasCsv) {
     .filter(Boolean);
 }
 
+/** True when this activity type offers audience personas rather than protagonist personalities. */
+const wantsAudience = (activityType) => getActivityType(activityType).personaKind === 'audience';
+
 /**
  * Keep only the personas that belong to this activity, using the `audience-` id prefix
- * (see services/teachBack.js — this pilot distinguishes them by convention rather than by
+ * (see services/teachBack.js — audiences are distinguished by convention rather than by
  * a column). The filter runs in BOTH directions on purpose: a teach-back student is never
  * offered "Sycophantic", and a case-chat student is never offered "Your grandmother".
  */
-function filterPersonasForMode(rows, activityMode) {
-  const wantAudience = activityMode === TEACH_BACK;
+function filterPersonasForMode(rows, activityType) {
+  const wantAudience = wantsAudience(activityType);
   return rows.filter((p) => isAudiencePersonaId(p.persona_id) === wantAudience);
 }
 
@@ -39,7 +43,7 @@ function filterPersonasForMode(rows, activityMode) {
  * Resolve personas available for student case chats.
  * Blank/unrestricted allowed_personas → all enabled personas for the activity.
  * @param {string|null|undefined} allowedPersonasCsv
- * @param {string} [activityMode] - 'case_chat' (default) or 'teach_back'
+ * @param {string} [activityMode] - the case's activity type (case chat when omitted)
  * @returns {Promise<Array<{persona_id, persona_name, description, instructions, sort_order}>>}
  */
 export async function resolveAvailablePersonas(allowedPersonasCsv, activityMode) {
@@ -71,12 +75,12 @@ export async function resolveAvailablePersonas(allowedPersonasCsv, activityMode)
   );
 
   const forMode = filterPersonasForMode(rows, activityMode);
-  if (forMode.length > 0 || activityMode !== TEACH_BACK) return forMode;
+  if (forMode.length > 0 || !wantsAudience(activityMode)) return forMode;
 
   // Teach-back assignment whose allowed list names only case-chat personas — most likely
-  // an assignment switched to teach-back before its audiences were picked. Widen to every
-  // audience rather than to every persona: still inside the only set this mode can use,
-  // and it keeps a student from meeting an empty picker.
+  // its audiences were never picked. Widen to every audience rather than to every persona:
+  // still inside the only set this activity can use, and it keeps a student from meeting an
+  // empty picker.
   const [audienceRows] = await pool.execute(
     `SELECT persona_id, persona_name, description, instructions, sort_order
      FROM personas WHERE enabled = 1 AND persona_id LIKE 'audience-%'

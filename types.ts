@@ -140,13 +140,13 @@ export interface SectionCase {
   created_at?: string;
   // Joined fields
   case_title?: string;
+  activity_type?: string;        // The case's Study-Chat activity type (utils/activityTypes.js)
   scenarios?: SectionCaseScenario[];
 }
 
+// The activity type (case chat, teach-back) is not a chat option: it is the case's
+// `activity_type`. See utils/activityTypes.js.
 export interface ChatOptions {
-  // Activity mode: 'case_chat' (argue a position with the protagonist) or 'teach_back'
-  // (explain the reading to an AI audience). See teachBack.ts. A missing key means case chat.
-  activity_mode: string;
   teach_back_min_words: number;   // Teach-back only: word floor on the opening explanation (0 = off)
   hints_allowed: number;
   free_hints: number;

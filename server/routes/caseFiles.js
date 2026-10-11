@@ -99,8 +99,12 @@ function getFileTypeLabel(fileType) {
  * must stay inside case_files/<case_id>/ once resolved. Uploads live in uploads/;
  * Case Writer publishes case.md / teaching_note.md at the case root, and legacy
  * rows fall back to <file_type>.md there, the same lookup loadFileContent() uses.
+ * A text-only row (TEXT_ONLY_SOURCES) has no original, so it never takes that fallback:
+ * a pasted or web "case" document would otherwise be served the legacy case.md. Callers
+ * must select file_source.
  */
 async function findOriginalPath(row) {
+  if (TEXT_ONLY_SOURCES.includes(row.file_source)) return null;
   if (!row.case_id || path.basename(row.case_id) !== row.case_id) return null;
   const caseDir = path.resolve(CASE_FILES_DIR, row.case_id);
   const name = row.filename ? path.basename(row.filename) : null;
@@ -330,7 +334,10 @@ router.post('/:caseId/upload', verifyToken, requireAdminOrInstructor, requireCas
 // ---------------------------------------------------------------------------
 
 const MAX_TEXT_CHARS = 2_000_000;
-const TEXT_ONLY_SOURCES = ['web', 'pasted'];
+// 'imported_text' is a document installed from an activity package without its original file
+// (services/activityPack/import.js); one installed WITH its original is 'imported' and behaves
+// like an upload.
+const TEXT_ONLY_SOURCES = ['web', 'pasted', 'imported_text'];
 
 /** Gate for every route that makes this server fetch a URL. */
 async function isUrlFetchEnabled() {
@@ -994,7 +1001,7 @@ router.get('/:fileId/content', verifyToken, requireAdminOrInstructor, requireCas
 router.get('/:fileId/download', verifyToken, requireAdminOrInstructor, requireCaseAccessByRow('case_files', 'fileId', 'view'), async (req, res) => {
   try {
     const [files] = await pool.execute(
-      'SELECT id, case_id, filename, original_filename, file_type FROM case_files WHERE id = ?',
+      'SELECT id, case_id, filename, original_filename, file_type, file_source FROM case_files WHERE id = ?',
       [req.params.fileId]
     );
     if (files.length === 0) {
@@ -1392,5 +1399,8 @@ router.get('/types', verifyToken, async (req, res) => {
     error: null
   });
 });
+
+// For services/activityPack/export.js, which packages a case's original files.
+export { findOriginalPath };
 
 export default router;

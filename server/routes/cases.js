@@ -9,6 +9,14 @@ import {
 import { buildVisibilityScope, canAccessResource } from '../services/resourceAccess.js';
 import { setVisibility } from '../services/visibilityWrites.js';
 import { writeAudit } from '../services/auditLog.js';
+import {
+  ActivityDefaultsError,
+  clearCaseDefaults,
+  readCaseDefaults,
+  writeCaseDefaults,
+} from '../services/activityDefaults.js';
+import { DEFAULT_ACTIVITY_TYPE, isKnownActivityType } from '../../utils/activityTypes.js';
+import { PackError, duplicateCase, loadSettingsChoice } from '../services/activityPack/index.js';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
@@ -66,8 +74,11 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { enabled, include_scenarios } = req.query;
     let query = `
-      SELECT c.case_id, c.case_title, c.case_version, c.base_scenario_id,
+      SELECT c.case_id, c.case_title, c.case_version, c.activity_type, c.base_scenario_id,
              c.created_at, c.enabled, c.is_shared, c.visibility, c.created_by, c.created_by_type,
+             c.default_settings IS NOT NULL AS has_default_settings,
+             JSON_UNQUOTE(JSON_EXTRACT(c.default_settings, '$.source')) AS default_settings_source,
+             JSON_UNQUOTE(JSON_EXTRACT(c.default_settings, '$.saved_at')) AS default_settings_saved_at,
              CASE
                WHEN c.created_by_type = 'admin' THEN (SELECT who FROM admins WHERE id = c.created_by)
                WHEN c.created_by_type = 'instructor' THEN (SELECT full_name FROM instructors WHERE id = c.created_by)
@@ -124,7 +135,7 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
 router.get('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'), async (req, res) => {
   try {
     const [cases] = await pool.execute(
-      `SELECT case_id, case_title, case_version, base_scenario_id,
+      `SELECT case_id, case_title, case_version, activity_type, base_scenario_id,
               created_at, enabled, is_shared, created_by, created_by_type
        FROM cases WHERE case_id = ?`,
       [req.params.id]
@@ -157,6 +168,7 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'
 router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { case_id, case_title, case_version, enabled } = req.body;
+    const activityType = req.body.activity_type ?? DEFAULT_ACTIVITY_TYPE;
 
     // Only case_id and case_title are required
     // Protagonist and chat info are now stored in case_scenarios
@@ -165,6 +177,9 @@ router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
         data: null,
         error: { message: 'case_id and case_title are required' }
       });
+    }
+    if (!isKnownActivityType(activityType)) {
+      return res.status(400).json({ data: null, error: { message: `Unknown activity type: ${activityType}` } });
     }
 
     // Check if case_id already exists
@@ -182,12 +197,13 @@ router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
     const createdBy = effectiveId;
 
     await pool.execute(
-      `INSERT INTO cases (case_id, case_title, case_version, enabled, created_by_type, created_by, is_shared)
-       VALUES (?, ?, ?, ?, ?, ?, 0)`,
+      `INSERT INTO cases (case_id, case_title, case_version, activity_type, enabled, created_by_type, created_by, is_shared)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
       [
         case_id,
         case_title,
         case_version || null,
+        activityType,
         enabled !== false ? 1 : 0,
         createdByType,
         createdBy
@@ -200,7 +216,7 @@ router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
 
     // Return created case
     const [rows] = await pool.execute(
-      `SELECT case_id, case_title, case_version, base_scenario_id,
+      `SELECT case_id, case_title, case_version, activity_type, base_scenario_id,
               created_at, enabled, is_shared, created_by, created_by_type
        FROM cases WHERE case_id = ?`,
       [case_id]
@@ -220,10 +236,44 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('i
     const updates = req.body;
 
     const allowedFields = [
-      'case_title', 'case_version', 'base_scenario_id', 'enabled'
+      'case_title', 'case_version', 'activity_type', 'base_scenario_id', 'enabled'
     ];
     const setClauses = [];
     const params = [];
+
+    // The activity type is fixed once the case is in use: its scenarios, personas and rubric
+    // were written for that type, and chats already graded under it would be re-read as the
+    // other. A case used as a different type is a duplicate of the case.
+    let typeChanged = false;
+    if (updates.activity_type !== undefined) {
+      if (!isKnownActivityType(updates.activity_type)) {
+        return res.status(400).json({ data: null, error: { message: `Unknown activity type: ${updates.activity_type}` } });
+      }
+      const [current] = await pool.execute('SELECT activity_type FROM cases WHERE case_id = ?', [id]);
+      if (current.length > 0 && current[0].activity_type !== updates.activity_type) {
+        typeChanged = true;
+        const [[inUse]] = await pool.execute(
+          `SELECT (SELECT COUNT(*) FROM section_cases WHERE case_id = ?) AS assignments,
+                  (SELECT COUNT(*) FROM course_cases WHERE case_id = ?) AS courses,
+                  (SELECT COUNT(*) FROM case_chats WHERE case_id = ?) AS chats`,
+          [id, id, id]
+        );
+        if (inUse.assignments > 0 || inUse.courses > 0 || inUse.chats > 0) {
+          return res.status(409).json({
+            data: null,
+            error: {
+              code: 'ACTIVITY_TYPE_IN_USE',
+              message: 'This case is already assigned or has chats, so its activity type cannot be changed. Create a new case for the other activity type.'
+            }
+          });
+        }
+      }
+    }
+
+    if (typeChanged) {
+      // Default settings (chat options, personas, rubric) are written for one activity type.
+      setClauses.push('default_settings = NULL', 'default_rubric_id = NULL');
+    }
 
     for (const [key, value] of Object.entries(updates)) {
       if (allowedFields.includes(key)) {
@@ -247,7 +297,7 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('i
     await pool.execute(`UPDATE cases SET ${setClauses.join(', ')} WHERE case_id = ?`, params);
 
     const [rows] = await pool.execute(
-      `SELECT case_id, case_title, case_version, base_scenario_id,
+      `SELECT case_id, case_title, case_version, activity_type, base_scenario_id,
               created_at, enabled
        FROM cases WHERE case_id = ?`,
       [id]
@@ -405,6 +455,84 @@ router.get('/:id/content/:fileType', verifyToken, requireAdminOrInstructor, requ
     }
   } catch (error) {
     console.error('Error reading case content:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Default settings: how the case is meant to be run when it is not yet assigned.
+// Copied into a new course Main version or a new unattached section assignment; never
+// followed afterwards. See services/activityDefaults.js.
+// ----------------------------------------------------------------------------
+
+// GET /api/cases/:id/defaults - The case's default settings bundle, or null.
+router.get('/:id/defaults', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'), async (req, res) => {
+  try {
+    res.json({ data: await readCaseDefaults(pool, req.params.id), error: null });
+  } catch (error) {
+    console.error('Error reading case defaults:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PUT /api/cases/:id/defaults - Save a course case version's or a section assignment's current
+// settings as the case's defaults. Body: { from_version_id } or { from_section_id }.
+// Needs edit access to the case and read access to the course or section copied from.
+router.put('/:id/defaults', verifyToken, requireAdminOrInstructor, requireCaseAccess('id', 'edit'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { from_version_id, from_section_id } = req.body || {};
+    let choice;
+    if (from_version_id) choice = { source: 'version', id: from_version_id };
+    else if (from_section_id) choice = { source: 'section', id: from_section_id };
+    else return res.status(400).json({ data: null, error: { message: 'from_version_id or from_section_id is required' } });
+
+    // The same access-checked loader the package download uses (activityPack/export.js).
+    const { bundle, label: source } = await loadSettingsChoice(req, id, choice);
+    await writeCaseDefaults(pool, id, bundle, source);
+    await writeAudit(req, { action: 'case.defaults_saved', resourceType: 'case', resourceId: id, details: { source } });
+    res.json({ data: await readCaseDefaults(pool, id), error: null });
+  } catch (error) {
+    if (error instanceof ActivityDefaultsError || error instanceof PackError) {
+      return res.status(error.status).json({ data: null, error: { message: error.message } });
+    }
+    console.error('Error saving case defaults:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// DELETE /api/cases/:id/defaults - Remove the case's default settings.
+router.delete('/:id/defaults', verifyToken, requireAdminOrInstructor, requireCaseAccess('id', 'edit'), async (req, res) => {
+  try {
+    await clearCaseDefaults(pool, req.params.id);
+    await writeAudit(req, { action: 'case.defaults_cleared', resourceType: 'case', resourceId: req.params.id });
+    res.json({ data: { cleared: true }, error: null });
+  } catch (error) {
+    console.error('Error clearing case defaults:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// POST /api/cases/:id/duplicate - Copy a case (documents, scenarios, positions, default settings)
+// as a new private case owned by the caller. Body: { case_title?, activity_type? }.
+// A different activity_type makes the copy the same reading as another kind of activity; its
+// default settings are then left behind. See services/activityPack/index.js#duplicateCase.
+router.post('/:id/duplicate', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'), async (req, res) => {
+  try {
+    const { case_title, activity_type } = req.body || {};
+    const created = await duplicateCase(req, req.params.id, { title: case_title, activityType: activity_type });
+    await writeAudit(req, {
+      action: 'case.duplicate',
+      resourceType: 'case',
+      resourceId: created.case_id,
+      details: { from: req.params.id, activity_type: activity_type || null },
+    });
+    res.status(201).json({ data: created, error: null });
+  } catch (error) {
+    if (error instanceof PackError) {
+      return res.status(error.status).json({ data: null, error: { message: error.message, code: error.code } });
+    }
+    console.error('Error duplicating case:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

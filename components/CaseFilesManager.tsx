@@ -19,7 +19,8 @@ interface CaseFile {
   file_type: string;
   file_type_label: string;
   file_format: string | null;
-  file_source: 'uploaded' | 'ai_prepped' | 'downloaded' | 'case_writer' | 'web' | 'pasted';
+  // 'imported' / 'imported_text': installed from an activity package, with or without the original file
+  file_source: 'uploaded' | 'ai_prepped' | 'downloaded' | 'case_writer' | 'web' | 'pasted' | 'imported' | 'imported_text';
   source_url: string | null;
   fetched_at: string | null;
   text_edited_at: string | null;
@@ -670,10 +671,14 @@ export const CaseFilesManager: React.FC = () => {
       ai_prepped: 'bg-green-100 text-green-800',
       web: 'bg-teal-100 text-teal-800',
       pasted: 'bg-amber-100 text-amber-800',
+      imported: 'bg-indigo-100 text-indigo-800',
+      imported_text: 'bg-indigo-100 text-indigo-800',
     };
+    // Installed from an activity package; "text only" when its original file did not travel.
+    const label = source === 'imported_text' ? 'imported, text only' : source;
     return (
       <span className={`px-2 py-0.5 rounded text-xs ${colors[source as keyof typeof colors] || 'bg-gray-100 text-gray-800'}`}>
-        {source}
+        {label}
       </span>
     );
   };

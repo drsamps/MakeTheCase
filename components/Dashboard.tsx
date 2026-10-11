@@ -5,7 +5,9 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api, getApiBaseUrl, getImpersonationId, setImpersonationId } from '../services/apiClient'; // Dashboard with tiles/list view toggle
 import { fetchSectionCaseSetting } from '../services/sectionCaseSettings';
 import { detectProvider } from '../services/llmService';
-import { TEACH_BACK, CASE_CHAT, DEFAULT_TEACH_BACK_MIN_WORDS, isTeachBack, isAudiencePersonaId, parseChatOptions, crossModePersonaIds, validateChatOptionsForSave } from '../teachBack';
+import { DEFAULT_TEACH_BACK_MIN_WORDS, isTeachBackType, isAudiencePersonaId, crossModePersonaIds, validateChatOptionsForSave } from '../teachBack';
+import { DEFAULT_ACTIVITY_TYPE, getActivityType, listActivityTypes } from '../utils/activityTypes.js';
+import { DownloadCasesModal, InstallCasesModal } from './CasePackages';
 import { PromptManager } from './PromptManager';
 import { SettingsManager } from './SettingsManager';
 import { LoggingManager } from './LoggingManager';
@@ -51,7 +53,7 @@ import SectionResultsSummary from './SectionResultsSummary';
 import HelpTooltip from './ui/HelpTooltip';
 import InlineStatus from './ui/InlineStatus';
 import ModelsList, { defaultRank, defaultRankLabel, type Model, type ModelTestOutcome, type ModelUsage } from './models/ModelsList';
-import { ChatOptionsHelp, PersonasHelp, TeachBackHelp } from '../help/dashboard';
+import { CasePackagesHelp, ChatOptionsHelp, PersonasHelp, TeachBackHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
 import { personLabel, caseLabel, quote } from '../utils/confirmLabels';
 import {
@@ -189,6 +191,11 @@ interface Case {
   case_id: string;
   case_title: string;
   case_version?: string | null;
+  activity_type?: string;
+  // The case's own default settings (server/services/activityDefaults.js)
+  has_default_settings?: boolean | number;
+  default_settings_source?: string | null;
+  default_settings_saved_at?: string | null;
   base_scenario_id?: number | null;
   protagonist?: string | null;
   protagonist_initials?: string | null;
@@ -582,6 +589,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     case_id: '',
     case_title: '',
     case_version: '',
+    activity_type: DEFAULT_ACTIVITY_TYPE as string,
     protagonist: '',
     protagonist_initials: '',
     chat_topic: '',
@@ -591,6 +599,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     team_shares: [] as { team_id: number; access_level?: 'view' | 'edit' }[]
   });
   const [isSavingCase, setIsSavingCase] = useState(false);
+  // Activity packages (components/CasePackages.tsx): cases ticked for download, and the two dialogs.
+  const [selectedCaseIds, setSelectedCaseIds] = useState<Set<string>>(new Set());
+  const [downloadingCaseIds, setDownloadingCaseIds] = useState<string[] | null>(null);
+  const [showInstallCases, setShowInstallCases] = useState(false);
   const [goToScenariosAfterCreate, setGoToScenariosAfterCreate] = useState(false);
   const [caseFileUpload, setCaseFileUpload] = useState<{ type: 'case' | 'teaching_note'; file: File | null }>({ type: 'case', file: null });
   const [isUploadingCaseFile, setIsUploadingCaseFile] = useState(false);
@@ -710,7 +722,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   // Default chat options
   const defaultChatOptions = {
-    activity_mode: CASE_CHAT,
     teach_back_min_words: DEFAULT_TEACH_BACK_MIN_WORDS,
     hints_allowed: 3,
     free_hints: 1,
@@ -2005,28 +2016,40 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   /**
-   * Teach-back badge. The two activities look identical in every list until you open them,
-   * so the badge is the only thing telling an instructor which one an assignment runs.
-   * `chat_options` arrives either parsed or as a JSON string depending on the endpoint.
+   * Activity type badge, shown for every type other than the default case chat. The
+   * activities look identical in every list until you open them, so the badge is the only
+   * thing telling an instructor which one a case runs. The type is the case's
+   * (`activity_type` on case, assignment and version rows).
    */
-  const renderActivityModeBadge = (chatOptions: any) => {
-    if (!isTeachBack(parseChatOptions(chatOptions))) return null;
+  const renderActivityTypeBadge = (activityType?: string | null) => {
+    const type = getActivityType(activityType);
+    if (type.id === DEFAULT_ACTIVITY_TYPE) return null;
     return (
       <span
         className="text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded"
-        title="The student explains the reading to an AI audience"
+        title={type.summary}
       >
-        Teach-back
+        {type.label}
       </span>
     );
   };
+
+  // The activity type of the case whose chat options are open: in the section's case list
+  // (Manage Cases), else on the Chat Options tab. Null while a default is being edited,
+  // because a default is shared by cases of every type.
+  const editingActivityType: string | null = (() => {
+    const caseId = managingSectionCases ? expandedCaseOptions : (isEditingDefault ? null : chatOptionsCase);
+    if (!caseId) return null;
+    return sectionCasesList.find((sc: any) => sc.case_id === caseId)?.activity_type ?? null;
+  })();
+  const editingTeachBack = isTeachBackType(editingActivityType);
 
   const renderPersonaChatOptionsFields = (disabled = false) => {
     if (!editingChatOptions) return null;
     // Teach-back offers AUDIENCES (audience-*), case chat offers protagonist
     // personalities. Filtering both the checkbox list and the default dropdown keeps an
     // instructor from ever offering "Sycophantic" as a grandmother, or vice versa.
-    const teachBack = isTeachBack(editingChatOptions);
+    const teachBack = editingTeachBack;
     const allEnabled = personasList.filter((p) => p.enabled);
     const enabledPersonas = allEnabled.filter((p) => isAudiencePersonaId(p.persona_id) === teachBack);
     const resolved = resolveAllowedPersonasForForm(
@@ -2036,7 +2059,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     const allowAll = resolved.allowAll;
     // Ids of the other activity are dropped from the working selection, so the next tick
     // or untick writes a list without them.
-    const crossModeSelected = crossModePersonaIds(editingChatOptions);
+    const crossModeSelected = crossModePersonaIds(editingChatOptions, editingActivityType);
     const selectedIds = resolved.selectedIds.filter((id) => !crossModeSelected.includes(id));
     const defaultOptions = personasForDefaultDropdown(enabledPersonas, editingChatOptions.allowed_personas);
 
@@ -2185,6 +2208,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         case_id: caseItem.case_id,
         case_title: caseItem.case_title,
         case_version: caseItem.case_version || '',
+        activity_type: caseItem.activity_type || DEFAULT_ACTIVITY_TYPE,
         protagonist: caseItem.protagonist || '',
         protagonist_initials: caseItem.protagonist_initials || '',
         chat_topic: caseItem.chat_topic || '',
@@ -2199,6 +2223,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         case_id: '',
         case_title: '',
         case_version: '',
+        activity_type: DEFAULT_ACTIVITY_TYPE,
         protagonist: '',
         protagonist_initials: '',
         chat_topic: '',
@@ -2225,6 +2250,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         const { error } = await api.from('cases').update({
           case_title: caseForm.case_title,
           case_version: caseForm.case_version || null,
+          activity_type: caseForm.activity_type,
           protagonist: caseForm.protagonist || null,
           protagonist_initials: caseForm.protagonist_initials || null,
           chat_topic: caseForm.chat_topic || null,
@@ -2237,6 +2263,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           case_id: caseForm.case_id,
           case_title: caseForm.case_title,
           case_version: caseForm.case_version || null,
+          activity_type: caseForm.activity_type,
           protagonist: caseForm.protagonist || null,
           protagonist_initials: caseForm.protagonist_initials || null,
           chat_topic: caseForm.chat_topic || null,
@@ -2285,6 +2312,44 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     } catch (err: any) {
       setError(err.message || 'Failed to delete case');
     }
+  };
+
+  // A copy is a new private case with the same documents, scenarios and default settings.
+  // Nothing that is assigned changes, and the copy is assigned nowhere.
+  const handleDuplicateCase = async (caseItem: Case) => {
+    if (!confirm(`Make a copy of ${caseLabel(caseItem.case_title, caseItem.case_id)}?\n\nThe copy is a new private case with the same documents, scenarios and default settings. It is not assigned to any course or section.`)) return;
+    const { data, error } = await api.post<{ case_id: string; case_title: string }>(`/cases/${encodeURIComponent(caseItem.case_id)}/duplicate`);
+    if (error || !data) {
+      setError(error?.message || 'Failed to copy the case');
+      return;
+    }
+    setSuccessMessage(`Copied as "${data.case_title}" (${data.case_id}).`);
+    setTimeout(() => setSuccessMessage(null), 8000);
+    fetchCases();
+  };
+
+  const toggleCaseSelected = (caseId: string) => {
+    setSelectedCaseIds((current) => {
+      const next = new Set(current);
+      if (next.has(caseId)) next.delete(caseId);
+      else next.add(caseId);
+      return next;
+    });
+  };
+
+  // Default settings are copied when the case is attached, so clearing them changes nothing
+  // that is already assigned.
+  const handleClearCaseDefaults = async (caseItem: Case) => {
+    if (!confirm(`Clear the default settings of ${caseLabel(caseItem.case_title, caseItem.case_id)}?\n\nCourses and sections that already have this case keep their settings.`)) return;
+    const { error } = await api.delete(`/cases/${encodeURIComponent(caseItem.case_id)}/defaults`);
+    if (error) {
+      setError(error.message || 'Failed to clear the default settings');
+      return;
+    }
+    setEditingCase((current) => (current && current.case_id === caseItem.case_id
+      ? { ...current, has_default_settings: false, default_settings_source: null, default_settings_saved_at: null }
+      : current));
+    fetchCases();
   };
 
   const handleToggleCaseEnabled = async (caseItem: Case) => {
@@ -2445,7 +2510,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   const handleSaveChatOptions = async (sectionId: string, caseId: string) => {
-    const invalid = validateChatOptionsForSave(editingChatOptions);
+    const caseActivityType = sectionCasesList.find((sc: any) => sc.case_id === caseId)?.activity_type;
+    const invalid = validateChatOptionsForSave(editingChatOptions, caseActivityType);
     if (invalid) {
       setError(invalid);
       return;
@@ -4047,6 +4113,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           <p className="text-sm text-gray-500">{casesList.length} case{casesList.length !== 1 ? 's' : ''} available</p>
         </div>
         <div className="flex items-center gap-2">
+          <HelpTooltip title="Downloading and Installing Cases">
+            <CasePackagesHelp />
+          </HelpTooltip>
+          {selectedCaseIds.size > 0 && (
+            <button
+              onClick={() => setDownloadingCaseIds(casesList.filter((c) => selectedCaseIds.has(c.case_id)).map((c) => c.case_id))}
+              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              Download selected ({selectedCaseIds.size})
+            </button>
+          )}
+          <button
+            onClick={() => setShowInstallCases(true)}
+            title="Install cases from a package downloaded from a MakeTheCase server"
+            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          >
+            Install from file
+          </button>
           <button
             onClick={() => handleOpenCaseModal()}
             className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
@@ -4066,6 +4150,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       </div>
 
+      {/* While the case form is open it shows the error itself (it covers this banner). */}
+      {!showCaseModal && renderDismissibleErrorBanner('mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg')}
+      {successMessage && <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg">{successMessage}</div>}
+
       {isLoadingCases ? (
         <div className="text-center py-12">
           <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
@@ -4080,6 +4168,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
+                <th className="pl-4 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    className="rounded"
+                    aria-label="Select all cases"
+                    title="Select all, to download them as one package"
+                    checked={casesList.length > 0 && casesList.every((c) => selectedCaseIds.has(c.case_id))}
+                    onChange={(e) => setSelectedCaseIds(e.target.checked ? new Set(casesList.map((c) => c.case_id)) : new Set())}
+                  />
+                </th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Title</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Version</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
@@ -4090,8 +4188,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <tbody className="divide-y divide-gray-200">
               {casesList.map((caseItem) => (
                 <tr key={caseItem.case_id} className={!caseItem.enabled ? 'bg-gray-50 opacity-60' : 'hover:bg-gray-50'}>
+                  <td className="pl-4 py-3 w-8">
+                    <input
+                      type="checkbox"
+                      className="rounded"
+                      aria-label={`Select ${caseItem.case_title}`}
+                      checked={selectedCaseIds.has(caseItem.case_id)}
+                      onChange={() => toggleCaseSelected(caseItem.case_id)}
+                    />
+                  </td>
                   <td className="px-4 py-3">
-                    <div className="text-sm font-medium text-gray-900">{caseItem.case_title}</div>
+                    <div className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                      <span>{caseItem.case_title}</span>
+                      {renderActivityTypeBadge(caseItem.activity_type)}
+                    </div>
                     <div className="text-xs text-gray-400">
                       {caseItem.case_id}
                       {caseItem.visibility && (
@@ -4156,6 +4266,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-teal-600 border-teal-200 hover:bg-teal-50"
                       >
                         Scenarios
+                      </button>
+                      <button
+                        onClick={() => setDownloadingCaseIds([caseItem.case_id])}
+                        title="Download this case as a package to install on another MakeTheCase server"
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                      >
+                        Download
+                      </button>
+                      <button
+                        onClick={() => handleDuplicateCase(caseItem)}
+                        title="Make a copy of this case, for example to run a different activity on the same reading"
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                      >
+                        Copy
                       </button>
                       <button
                         onClick={() => handleDeleteCase(caseItem)}
@@ -4833,7 +4957,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           <div className="flex items-center gap-2">
                             <span className="font-medium text-gray-900">{sc.case_title}</span>
                             <span className="text-sm text-gray-500">({sc.case_id})</span>
-                            {renderActivityModeBadge(sc.chat_options)}
+                            {renderActivityTypeBadge(sc.activity_type)}
                             {renderCaseSettingsSourceChip(sc, getSelectedSection()?.course_id
                               ? () => openCourseAssignments(getSelectedSection()?.course_id)
                               : undefined)}
@@ -5865,7 +5989,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               )}
               {sectionCasesList.map((sc: any) => (
                 <option key={sc.case_id} value={sc.case_id}>
-                  {sc.case_title} ({sc.case_id}){isTeachBack(parseChatOptions(sc.chat_options)) ? ' - Teach-back' : ''}
+                  {sc.case_title} ({sc.case_id}){getActivityType(sc.activity_type).id !== DEFAULT_ACTIVITY_TYPE ? ` - ${getActivityType(sc.activity_type).label}` : ''}
                 </option>
               ))}
             </select>
@@ -5905,7 +6029,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             ) : (
               <h3 className="font-medium text-gray-900 flex items-center gap-2">
                 <span>Chat Options for {getSelectedChatOptionsCase()?.case_title}</span>
-                {renderActivityModeBadge(editingChatOptions)}
+                {renderActivityTypeBadge(editingActivityType)}
               </h3>
             )}
           </div>
@@ -6013,35 +6137,43 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               return null;
             })()}
 
-            {/* Activity mode. Deliberately ABOVE the categories, not inside one: it decides
-                what every option below it means, and which of them apply at all. */}
+            {/* Activity type. Deliberately ABOVE the categories, not inside one: it decides
+                what every option below it means, and which of them apply at all. It belongs to
+                the case (Content > Cases), so it is shown here but not edited here. A default
+                has no type: it is shared by cases of every type. */}
             {editingChatOptions && (
             <div className="mb-4 p-3 border border-purple-200 bg-purple-50 rounded-lg">
               <div className="flex items-center gap-2 mb-2">
-                <label className="block text-xs font-semibold text-gray-800">Activity Mode</label>
+                <label className="block text-xs font-semibold text-gray-800">Activity Type</label>
                 <HelpTooltip title="Teach-Back Help">
                   <TeachBackHelp />
                 </HelpTooltip>
               </div>
-              <select
-                value={editingChatOptions.activity_mode ?? CASE_CHAT}
-                onChange={(e) => setEditingChatOptions({ ...editingChatOptions, activity_mode: e.target.value })}
-                disabled={!isEditingDefault && useDefaultOptions}
-                className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : 'bg-white'}`}
-              >
-                <option value={CASE_CHAT}>Case chat - the student argues a position with the case protagonist</option>
-                <option value={TEACH_BACK}>Teach-back - the student explains the reading to an AI audience</option>
-              </select>
-              {isTeachBack(editingChatOptions) && (
+              {isEditingDefault ? (
+                <p className="text-xs text-gray-700">
+                  A default applies to cases of every activity type. The activity type is set on each
+                  case under <strong>Content &gt; Cases</strong>.
+                </p>
+              ) : (
+                <p className="text-sm text-gray-900">
+                  <strong>{getActivityType(editingActivityType).label}</strong> - {getActivityType(editingActivityType).summary}.
+                  <span className="block text-xs text-gray-600 mt-0.5">
+                    Set on the case under <strong>Content &gt; Cases</strong>, and fixed once the case is assigned.
+                  </span>
+                </p>
+              )}
+              {(editingTeachBack || isEditingDefault) && (
                 <div className="mt-3">
+                  {editingTeachBack && (
                   <p className="text-xs text-gray-700 mb-2">
                     In teach-back the roles reverse: the AI does not understand the material and the
                     student teaches it. Positions, arguments and the teaching note are not used.
                     The audience has read the reading, so teach-back is a practice activity -
                     see <code>docs/teach-back-setup.md</code>.
                   </p>
+                  )}
                   <label className="block text-xs font-medium text-gray-700 mb-1">
-                    Minimum Words (opening explanation)
+                    Minimum Words (opening explanation){isEditingDefault ? ' - teach-back cases only' : ''}
                   </label>
                   <input
                     type="number"
@@ -6504,7 +6636,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
             {/* Advanced Section. Hidden in teach-back: it holds only the position-tracking
                 override, and teach-back has no positions. */}
-            <div className={`border-b border-gray-200 ${isTeachBack(editingChatOptions) ? 'hidden' : ''}`}>
+            <div className={`border-b border-gray-200 ${editingActivityType && !getActivityType(editingActivityType).usesPositions ? 'hidden' : ''}`}>
               <button
                 type="button"
                 onClick={() => toggleCategory('advanced')}
@@ -9826,6 +9958,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       )}
 
+      {/* Activity packages: download cases, install a package */}
+      {downloadingCaseIds && (
+        <DownloadCasesModal caseIds={downloadingCaseIds} onClose={() => setDownloadingCaseIds(null)} />
+      )}
+      {showInstallCases && (
+        <InstallCasesModal
+          isAdmin={user?.role === 'admin'}
+          userId={user?.role === 'instructor' ? user.id : null}
+          onClose={() => setShowInstallCases(false)}
+          onInstalled={() => fetchCases()}
+        />
+      )}
+
       {/* Case Modal */}
       {showCaseModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -9844,6 +9989,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </button>
             </div>
             <div className="p-4 space-y-4">
+              {renderDismissibleErrorBanner('bg-red-100 border border-red-200 text-red-700 p-3 rounded-lg text-sm')}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Case ID *</label>
                 <input
@@ -9877,6 +10023,47 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 />
                 <p className="text-xs text-gray-500 mt-1">Optional version label (such as the year of the case)</p>
               </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Activity type</label>
+                <select
+                  value={caseForm.activity_type}
+                  onChange={(e) => setCaseForm({ ...caseForm, activity_type: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  {listActivityTypes().map((type) => (
+                    <option key={type.id} value={type.id}>{type.label} - {type.summary}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  {editingCase
+                    ? 'Can be changed only while the case has no assignments, course listings or chats. Changing it clears the default settings.'
+                    : 'What students do with this case. It is fixed once the case is assigned.'}
+                </p>
+              </div>
+              {editingCase && (
+                <div>
+                  <span className="block text-sm font-medium text-gray-700 mb-1">Default settings</span>
+                  {editingCase.has_default_settings ? (
+                    <p className="text-sm text-gray-700">
+                      Saved{editingCase.default_settings_source ? ` from ${editingCase.default_settings_source}` : ''}
+                      {editingCase.default_settings_saved_at ? ` on ${new Date(editingCase.default_settings_saved_at).toLocaleDateString()}` : ''}.
+                      <button
+                        type="button"
+                        onClick={() => handleClearCaseDefaults(editingCase)}
+                        className="ml-2 text-xs text-red-600 hover:underline"
+                      >
+                        Clear
+                      </button>
+                    </p>
+                  ) : (
+                    <p className="text-sm text-gray-500">None.</p>
+                  )}
+                  <p className="text-xs text-gray-500 mt-1">
+                    The chat options, rubric and scenarios used when this case is added to a course or
+                    section. Save them from Assignments &gt; By course with &quot;Save as case defaults&quot;.
+                  </p>
+                </div>
+              )}
               {/* Info box for editing - encourage going to Scenarios */}
               {editingCase && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">

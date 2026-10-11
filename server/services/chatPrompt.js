@@ -14,6 +14,9 @@
  *   3. Teach-back: the audience persona replaces the protagonist (role cleared)
  *   4. persona row (only from the assignment's allowed list), chatbot_personality, free_hints
  *
+ * The activity type is the case's (cases.activity_type, returned by loadCaseData); the
+ * per-type prompt and greeting builders are in services/activityTypes.js.
+ *
  * Two deliberate differences from the browser version:
  *   - scenario-level arguments_for/against are included. The student cases route never
  *     selected them, so the browser silently dropped them.
@@ -25,8 +28,8 @@
 import { pool } from '../db.js';
 import { getSectionCaseChatOptions } from './chatOptions.js';
 import { resolveAvailablePersonas } from './personaService.js';
-import { resolveActivityMode, TEACH_BACK } from './teachBack.js';
-import { buildSystemPrompt, buildTeachBackSystemPrompt } from './chatPromptTemplates.js';
+import { activityBehaviour } from './activityTypes.js';
+import { getActivityType, normalizeActivityType } from '../../utils/activityTypes.js';
 
 const MAX_NAME_LENGTH = 40;
 
@@ -95,11 +98,11 @@ export async function loadChatContext(chat) {
   }
 
   const chatOptions = (await getSectionCaseChatOptions(chat.section_id, chat.case_id)) || {};
-  const mode = resolveActivityMode(chatOptions);
+  const mode = normalizeActivityType(loaded.activity_type);
   const personas = await resolveAvailablePersonas(chatOptions.allowed_personas, mode);
   const personaRow = personas.find((p) => p.persona_id === chat.persona);
 
-  if (mode === TEACH_BACK && personaRow?.persona_name) {
+  if (getActivityType(mode).characterFrom === 'persona' && personaRow?.persona_name) {
     caseData = { ...caseData, protagonist: personaRow.persona_name, protagonist_role: undefined };
   }
 
@@ -118,9 +121,7 @@ export async function loadChatContext(chat) {
  */
 export function buildChatSystemPrompt(ctx, studentName) {
   const { chat, caseData, mode, options } = ctx;
-  return mode === TEACH_BACK
-    ? buildTeachBackSystemPrompt(studentName, chat.persona, caseData, options)
-    : buildSystemPrompt(studentName, chat.persona, caseData, options);
+  return activityBehaviour(mode).buildSystemPrompt(studentName, chat.persona, caseData, options);
 }
 
 /** The label for the AI's turns in the transcript and the grading copy ("CEO" if unknown). */
@@ -128,23 +129,11 @@ export function protagonistLabel(ctx) {
   return ctx.caseData.protagonist || 'CEO';
 }
 
-// An audience's display name, phrased so it reads after "I'm". Audience names are written from
-// the STUDENT's side of the picker ("Your grandmother", "A skeptical colleague"), so "I'm Your
-// grandmother" would be wrong. Only a known leading article or possessive is lowercased: "Sam, a
-// curious beginner" and an instructor-made name like "Professor Kim" keep their capital.
-const introduceAudience = (name) =>
-  (name || '').trim().replace(/^(your|a|an|the|my|our|someone|somebody)(?=\s)/i, (w) => w.toLowerCase());
-
 /**
  * The AI's opening line (turn 0), written when the chat is created and shown by the browser.
- * Moved from App.tsx#startConversation and teachBack.ts TEACH_BACK_COPY.greeting.
+ * The wording per activity type is in services/activityTypes.js.
  * @param {string} studentName - already sanitized
  */
 export function buildGreeting(ctx, studentName) {
-  const { caseData, mode } = ctx;
-  if (mode === TEACH_BACK) {
-    return `Hi ${studentName}, I'm ${introduceAudience(caseData.protagonist)}. I'm supposed to understand **${caseData.chat_question}** and honestly I don't get it yet. Could you explain it to me?`;
-  }
-  const roleDescription = caseData.protagonist_role || 'the protagonist';
-  return `Hello ${studentName}, I am ${caseData.protagonist}, ${roleDescription} of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
+  return activityBehaviour(ctx.mode).buildGreeting(ctx.caseData, studentName);
 }

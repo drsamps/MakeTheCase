@@ -1,15 +1,19 @@
 # Setting Up a Teach-Back Assignment
 
 A step-by-step click path. Everything is done in the instructor dashboard, apart from one
-optional one-line command that creates the starter audiences for you. Nothing to install,
-and no database migration.
+optional one-line command that creates the starter audiences for you. Nothing to install.
+(The server needs migration 084, which adds the activity type to cases.)
 
-**What teach-back is.** Every assignment runs one of two activities. In the usual **case
-chat**, the student argues a position with the case protagonist, who knows the case and
-pushes back. In **teach-back**, the roles reverse: the AI plays someone who does *not*
-understand the reading, and the student has to make them understand it. The AI reflects
-the student's words back, says when something lands, thanks them, and asks about whatever
-still confuses it.
+**What teach-back is.** Every case is one of two Study-Chat activities, chosen as its
+**Activity type** when the case is created. In the usual **case chat**, the student argues a
+position with the case protagonist, who knows the case and pushes back. In **teach-back**,
+the roles reverse: the AI plays someone who does *not* understand the reading, and the
+student has to make them understand it. The AI reflects the student's words back, says when
+something lands, thanks them, and asks about whatever still confuses it.
+
+The type belongs to the case, not to the assignment, and it is fixed once the case is
+assigned, listed on a course, or has chats. To run both activities on the same reading,
+create a second case for the other type.
 
 **Teach-back is a practice activity, not a high-stakes exam.** MakeTheCase shows the
 student and the AI the same case text, so the audience has read the reading. It is
@@ -77,8 +81,11 @@ score, and a sceptical one cannot lower it.
 
 ## Step 2 — Add the reading as a case
 
-**Cases → New Case**, then **Case Files** to upload the reading as the case document.
+**Content → Cases → New Case**, set **Activity type** to **Teach-back**, then **Case Files**
+to upload the reading as the case document.
 
+- **Activity type is the switch.** Everything else follows from it: which personas students
+  are offered, the opening line, and how the chat is graded.
 - Leave the **teaching note empty**. Teach-back does not send it.
 - Do not bother with arguments for/against. Teach-back does not use them.
 - Any PDF/DOCX is fine; the text is extracted once on upload.
@@ -116,7 +123,7 @@ Four or five criteria at 5 points each works well. You do not need all of the ab
 
 | Setting | Recommended | Why |
 |---|---|---|
-| **Activity Mode** | **Teach-back** | This is the switch. Everything else follows from it. |
+| **Activity Type** | shows *Teach-back* | Read-only here. It is the case's type, set in Step 2 |
 | **Allowed Audiences** | all eight, or "All enabled" | Students pick; the grade is unaffected either way |
 | **Default Audience** | `audience-beginner` | The neutral starting point. `audience-mentee` is the gentlest if your class needs encouraging |
 | **Minimum Words (opening)** | 15 | Stops "idk" from burning a chat. Refused before any AI call, so it costs nothing |
@@ -158,7 +165,7 @@ required*. The student teaches each topic in turn. No extra setup.
 | Symptom | Cause |
 |---|---|
 | You cannot tell which personas are which | Setup &rarr; Personas, **Activity** column: *Teach-back* or *Case chat* |
-| Student is offered "Strict" or "Sycophantic" | The assignment is still in Case chat mode, or Allowed Audiences names case-chat personalities — the panel warns about this |
+| Student is offered "Strict" or "Sycophantic" | The case's Activity type is Case chat (Content &rarr; Cases). It can be changed only while the case is unassigned; otherwise create a new Teach-back case |
 | "No audience set up yet" on the start screen | No `audience-` personas exist, or none are enabled |
 | The audience lectures instead of asking | Check the audience's own instructions — if they grant it knowledge, remove that. It should describe who the listener is, not what they know |
 | The audience's name is not the one you expected | In teach-back the name comes from the audience the student picked, not from the scenario's protagonist |

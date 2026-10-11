@@ -1,67 +1,56 @@
 /**
- * Teach-Back mode — shared client constants and helpers.
+ * Teach-back — client constants and helpers.
  *
- * Teach-Back inverts the case chat: instead of arguing a position with a knowledgeable
+ * Teach-back inverts the case chat: instead of arguing a position with a knowledgeable
  * protagonist, the student EXPLAINS the reading to an AI audience that does not understand
  * it (your grandmother, a classmate who skipped the reading, a skeptical colleague...).
  *
- * The mode is stored in `section_cases.chat_options.activity_mode`, so it needs no schema
- * change and rides case-version write-through for free. A missing key always means the
- * existing case-chat behaviour — every read site goes through `resolveActivityMode()`.
+ * It is one of the Study-Chat activity types (`utils/activityTypes.js`). The type belongs to
+ * the CASE (`cases.activity_type`), and every endpoint that lists cases, assignments or
+ * course versions returns it as `activity_type`. It is no longer a chat option: nothing reads
+ * `chat_options.activity_mode`, and the helpers below take the case's type instead.
  *
  * Ported from Quizzer's EXPLAIN activity (`../quizzer/explain/`). See
  * `docs/teach-back-setup.md` for the instructor runbook.
  */
 
 import { parseAllowedPersonaIds } from './utils/personas';
+import { CASE_CHAT, TEACH_BACK } from './utils/activityTypes.js';
 
-export const CASE_CHAT = 'case_chat';
-export const TEACH_BACK = 'teach_back';
-
-export type ActivityMode = typeof CASE_CHAT | typeof TEACH_BACK;
+export { CASE_CHAT, TEACH_BACK };
 
 /**
  * Audience personas are distinguished from case-chat personas by an id prefix rather than
- * by a column, because this pilot ships without a migration. The prefix is read in BOTH
- * directions: Teach-Back offers only `audience-*`, and case chat now excludes them (so a
- * CEO is never played by your grandmother).
+ * by a column. The prefix is read in BOTH directions: teach-back offers only `audience-*`,
+ * and case chat excludes them (so a CEO is never played by your grandmother).
  */
 export const AUDIENCE_PREFIX = 'audience-';
 
 export const isAudiencePersonaId = (personaId?: string | null): boolean =>
   typeof personaId === 'string' && personaId.startsWith(AUDIENCE_PREFIX);
 
-/** The stored mode, defaulting to case chat for any assignment that has never set it. */
-export const resolveActivityMode = (chatOptions?: { activity_mode?: string } | null): ActivityMode =>
-  chatOptions?.activity_mode === TEACH_BACK ? TEACH_BACK : CASE_CHAT;
-
-export const isTeachBack = (chatOptions?: { activity_mode?: string } | null): boolean =>
-  resolveActivityMode(chatOptions) === TEACH_BACK;
-
-/** `chat_options` as a list endpoint returns it: already parsed, or still a JSON string. */
-export const parseChatOptions = (chatOptions: unknown): any => {
-  if (typeof chatOptions !== 'string') return chatOptions ?? null;
-  try { return JSON.parse(chatOptions); } catch { return null; }
-};
+/** True for a teach-back case. A missing type is case chat, as it was before types existed. */
+export const isTeachBackType = (activityType?: string | null): boolean => activityType === TEACH_BACK;
 
 /** Ids in `allowed_personas` that belong to the OTHER activity, which this one ignores. */
-export const crossModePersonaIds = (chatOptions?: { activity_mode?: string; allowed_personas?: string | null } | null): string[] =>
+export const crossModePersonaIds = (chatOptions?: { allowed_personas?: string | null } | null, activityType?: string | null): string[] =>
   (parseAllowedPersonaIds(chatOptions?.allowed_personas) || [])
-    .filter((id) => isAudiencePersonaId(id) !== isTeachBack(chatOptions));
+    .filter((id) => isAudiencePersonaId(id) !== isTeachBackType(activityType));
 
 /**
  * An explicit `allowed_personas` list must name at least one persona its activity can use.
  * Blocking at configuration time is deliberate: the alternative is a student meeting an
  * empty picker, or a "falls back to every persona" rule that would hand them Sycophantic as
  * a grandmother. Shared by every chat-options editor (section, defaults, course version) so
- * none of them can save what the others refuse. Returns an error message, or null when the
- * options are fine to save.
+ * none of them can save what the others refuse. `activityType` is the case's; a default,
+ * which is shared by cases of every type, is checked as case chat. Returns an error message,
+ * or null when the options are fine to save.
  */
-export const validateChatOptionsForSave = (chatOptions?: { activity_mode?: string; allowed_personas?: string | null } | null): string | null => {
+export const validateChatOptionsForSave = (chatOptions?: { allowed_personas?: string | null } | null, activityType?: string | null): string | null => {
   const allowed = parseAllowedPersonaIds(chatOptions?.allowed_personas);
   if (allowed === null) return null;  // "all enabled" resolves per activity server-side
-  if (allowed.length > crossModePersonaIds(chatOptions).length) return null;
-  return isTeachBack(chatOptions)
+  if (allowed.length > crossModePersonaIds(chatOptions, activityType).length) return null;
+  return isTeachBackType(activityType)
     ? 'Teach-back needs at least one audience. Tick an audience under Allowed Audiences, or tick "All enabled".'
     : 'Case chat needs at least one personality. Tick a persona under Allowed Personas, or tick "All enabled".';
 };

@@ -161,7 +161,7 @@ async function main() {
   );
   if (!dryRun && (created > 0 || updated > 0)) {
     console.log(
-      'Next: Assignments > Chat Options > Activity Mode = Teach-back, then tick these under\n' +
+      'Next: create the case with Activity type = Teach-back (Content > Cases), then tick these under\n' +
       'Allowed Audiences. See docs/teach-back-setup.md.'
     );
   }
