@@ -172,6 +172,8 @@ export interface ChatOptions {
   // Chat flow control
   require_minimum_exchanges: number; // Minimum exchanges before allowing "time is up" (default: 0)
   max_message_length: number;     // Maximum character count per message (0 = unlimited)
+  max_exchanges?: number;         // Wrap up after the AI answers this many student messages (0 = no limit)
+  max_exchanges_action?: 'end' | 'ask'; // At the limit: end the chat, or let the student finish or keep talking
   // Position tracking override (position config is now per-scenario in chat_options_override)
   disable_position_tracking: boolean; // Override to disable scenario-level position tracking
 }

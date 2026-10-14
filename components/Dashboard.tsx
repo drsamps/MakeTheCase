@@ -744,6 +744,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     restart_chat: false,
     allow_exit: false,
     require_minimum_exchanges: 0,
+    max_exchanges: 0,
+    max_exchanges_action: 'end',
     max_message_length: 0,
     disable_position_tracking: false
   };
@@ -6599,7 +6601,66 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         disabled={!isEditingDefault && useDefaultOptions}
                         className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />
-                      <p className="text-xs text-gray-500 mt-1">Required before "time is up" (0 = none)</p>
+                      <p className="text-xs text-gray-500 mt-1">Answered messages before the student can finish (0 = none)</p>
+                    </div>
+                    <div className={`${!useDefaultOptions && isOptionModified('max_exchanges', editingChatOptions.max_exchanges, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-gray-700">Maximum Responses</label>
+                        {!useDefaultOptions && isOptionModified('max_exchanges', editingChatOptions.max_exchanges, applicableDefault) && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">Modified</span>
+                            <button
+                              type="button"
+                              onClick={() => setEditingChatOptions({...editingChatOptions, max_exchanges: applicableDefault?.max_exchanges ?? 0})}
+                              className="text-xs text-gray-500 hover:text-purple-600"
+                              title={`Reset to default (${applicableDefault?.max_exchanges ?? 0})`}
+                            >
+                              ↩
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        max="50"
+                        value={editingChatOptions.max_exchanges ?? 0}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, max_exchanges: parseInt(e.target.value) || 0})}
+                        disabled={!isEditingDefault && useDefaultOptions}
+                        className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Chat wraps up after the AI answers this many (0 = no limit)</p>
+                      {(editingChatOptions.max_exchanges ?? 0) > 0 && (editingChatOptions.require_minimum_exchanges ?? 0) > (editingChatOptions.max_exchanges ?? 0) && (
+                        <p className="text-xs text-amber-700 mt-1">Minimum Exchanges is higher than this, so the minimum becomes {editingChatOptions.max_exchanges}.</p>
+                      )}
+                    </div>
+                    <div className={`${!useDefaultOptions && isOptionModified('max_exchanges_action', editingChatOptions.max_exchanges_action, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-gray-700">At the Response Limit</label>
+                        {!useDefaultOptions && isOptionModified('max_exchanges_action', editingChatOptions.max_exchanges_action, applicableDefault) && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">Modified</span>
+                            <button
+                              type="button"
+                              onClick={() => setEditingChatOptions({...editingChatOptions, max_exchanges_action: applicableDefault?.max_exchanges_action ?? 'end'})}
+                              className="text-xs text-gray-500 hover:text-purple-600"
+                              title={`Reset to default (${applicableDefault?.max_exchanges_action ?? 'end'})`}
+                            >
+                              ↩
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <select
+                        value={editingChatOptions.max_exchanges_action ?? 'end'}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, max_exchanges_action: e.target.value})}
+                        disabled={(!isEditingDefault && useDefaultOptions) || !(editingChatOptions.max_exchanges > 0)}
+                        className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white ${useDefaultOptions || !(editingChatOptions.max_exchanges > 0) ? 'bg-gray-50 text-gray-500' : ''}`}
+                      >
+                        <option value="end">End the chat</option>
+                        <option value="ask">Let the student finish or keep talking</option>
+                      </select>
+                      <p className="text-xs text-gray-500 mt-1">"Keep talking" removes the limit for that chat</p>
                     </div>
                     <div className={`${!useDefaultOptions && isOptionModified('max_message_length', editingChatOptions.max_message_length, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
                       <div className="flex items-center justify-between mb-1">

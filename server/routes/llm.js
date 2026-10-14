@@ -5,6 +5,7 @@ import { chatWithFallback } from '../services/chatFallback.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
 import { resolveInstructorForStudentCase, resolveSectionForStudentCase } from '../services/keyResolver.js';
 import { loadChatContext, buildChatSystemPrompt, protagonistLabel, sanitizeStudentName } from '../services/chatPrompt.js';
+import { activityBehaviour } from '../services/activityTypes.js';
 import { listTurns, appendTurns, historyForModel, writeTranscript } from '../services/chatTurns.js';
 import fs from 'fs/promises';
 import path from 'path';
@@ -381,8 +382,24 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       return res.status(400).json({ data: null, error: { message: 'This chat has no model assigned' } });
     }
     const context = await loadChatContext(chat);
+    const turns = await listTurns(caseChatId);
+    // The chat's limits, enforced here as well as in the page so a stale page or a direct
+    // request cannot pass them. Exchanges are answered student messages: refused hints,
+    // refused openings and the wrap-up message never reach this route, so they never count.
+    const maxExchanges = Number(context.chatOptions.max_exchanges) || 0;
+    const limitAction = context.chatOptions.max_exchanges_action || 'end';
+    const maxLength = Number(context.chatOptions.max_message_length) || 0;
+    const exchangesBefore = turns.filter((t) => t.role === 'student').length;
+    if (maxLength > 0 && message.length > maxLength) {
+      return res.status(400).json({ data: null, error: { code: 'MESSAGE_TOO_LONG', message: `Please keep your message under ${maxLength} characters.` } });
+    }
+    // 'ask' lets the student choose to keep talking past the limit, so only 'end' is a hard cap.
+    if (maxExchanges > 0 && limitAction !== 'ask' && exchangesBefore >= maxExchanges) {
+      return res.status(409).json({ data: null, error: { code: 'EXCHANGE_LIMIT_REACHED', message: 'You have used all your responses for this chat.' } });
+    }
+    const isFinalExchange = maxExchanges > 0 && exchangesBefore + 1 === maxExchanges;
     const systemPrompt = buildChatSystemPrompt(context, sanitizeStudentName(studentName));
-    const history = historyForModel(await listTurns(caseChatId));
+    const history = historyForModel(turns);
     const askedAt = new Date();
     const modelConfig = await getModelConfig(modelId);
     if (!modelConfig) {
@@ -398,7 +415,9 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       modelId,
       systemPrompt,
       history,
-      message,
+      // The final-turn note goes to the model only; the stored turn and transcript keep the
+      // student's own words.
+      message: isFinalExchange ? message + activityBehaviour(context.mode).finalTurnNote : message,
       config: { caseId, instructorId, sectionId, caseChatId, purpose: 'student_chat' },
     });
     const durationMs = Date.now() - startTime;
@@ -433,7 +452,7 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       durationMs
     }).catch(() => {}); // Fire and forget - errors handled internally
 
-    res.json({ data: { text, meta: { ...meta, model_id: modelIdUsed, backup } }, error: null });
+    res.json({ data: { text, meta: { ...meta, model_id: modelIdUsed, backup, exchanges_used: exchangesBefore + 1 } }, error: null });
   } catch (error) {
     if (error?.code === 'INSTRUCTOR_SETUP_INCOMPLETE') {
       return res.status(409).json({ data: null, error: { code: error.code, message: "This section isn't ready yet — your instructor still needs to finish setup.", provider: error.provider } });

@@ -144,6 +144,13 @@ const App: React.FC = () => {
   const [chatFontSize, setChatFontSize] = useState<string>('text-sm');
   const [caseFontSize, setCaseFontSize] = useState<string>('text-sm');
   const [hintsUsed, setHintsUsed] = useState<number>(0);
+  // Student messages the AI has answered in this chat, as counted by the server (meta.exchanges_used).
+  // Refused hints, refused openings and the wrap-up message are never sent, so they never count.
+  const [exchangesUsed, setExchangesUsed] = useState<number>(0);
+  // Maximum Responses with "ask": the student has reached the limit and must choose.
+  const [limitChoicePending, setLimitChoicePending] = useState(false);
+  // ...and chose "Keep talking": no further limit for this chat.
+  const [continuedPastLimit, setContinuedPastLimit] = useState(false);
   const [currentCaseChatId, setCurrentCaseChatId] = useState<string | null>(null);
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -182,7 +189,9 @@ const App: React.FC = () => {
     timeout_chat: false,
     allow_finish_button: false,
     restart_chat: false,
-    allow_exit: false
+    allow_exit: false,
+    max_exchanges: 0,
+    max_exchanges_action: 'end'
   };
 
   // Available cases for selected section
@@ -762,6 +771,9 @@ const App: React.FC = () => {
     setIsLoading(true);
     setError(null);
     setHintsUsed(0);  // Reset hint counter at start of conversation
+    setExchangesUsed(0);
+    setLimitChoicePending(false);
+    setContinuedPastLimit(false);
     setLastReply(null);
     try {
       // Use active case data or default
@@ -838,6 +850,70 @@ const App: React.FC = () => {
     }
   }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId, chatOptions, teachBackMode, availablePersonas, studentDBId]);
   
+  // Ends the chat: the farewell, then the optional feedback and transcript questions, then
+  // evaluation. Every way a chat ends comes here: the "time is up" phrase and the Finish
+  // button (after the minimum check), the timer (a hard end) and Maximum Responses (no
+  // student message to add: the AI has just answered the last one).
+  const wrapUpChat = (finalUserMessage: Message | null) => {
+    const finalTurn = finalUserMessage ? [finalUserMessage] : [];
+    setLimitChoicePending(false);
+
+    // Check chat options to determine next phase
+    const askForFeedback = chatOptions?.ask_for_feedback ?? false;
+    const askSaveTranscript = chatOptions?.ask_save_transcript ?? false;
+    
+    if (askForFeedback) {
+        // Ask for feedback (existing behavior)
+        const ceoPermissionRequest: Message = {
+            role: MessageRole.MODEL, at: Date.now(),
+            content: teachBackMode
+              ? TEACH_BACK_COPY.feedbackPermission(studentFirstName)
+              : `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. **Would you be willing to provide feedback by answering a few questions about our interaction?**`
+        };
+        setMessages(prev => [...prev, ...finalTurn, ceoPermissionRequest]);
+        setConversationPhase(ConversationPhase.AWAITING_HELPFUL_PERMISSION);
+    } else if (askSaveTranscript) {
+        // Skip feedback, ask for transcript permission
+        const ceoTranscriptRequest: Message = {
+            role: MessageRole.MODEL, at: Date.now(),
+            content: teachBackMode
+              ? TEACH_BACK_COPY.transcriptPermission(studentFirstName)
+              : `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?**`
+        };
+        setMessages(prev => [...prev, ...finalTurn, ceoTranscriptRequest]);
+        setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
+    } else {
+        // Skip both feedback and transcript permission
+        const ceoFarewell: Message = {
+            role: MessageRole.MODEL, at: Date.now(),
+            content: teachBackMode
+              ? TEACH_BACK_COPY.farewell(studentFirstName)
+              : `${studentFirstName}, thank you for meeting with me today. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. Click the button below to proceed to the evaluation.`
+        };
+        setMessages(prev => [...prev, ...finalTurn, ceoFarewell]);
+        setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
+    }
+  };
+  // After each answered message: count it, and at Maximum Responses either wrap up ('end') or
+  // let the student choose ('ask'). After "Keep talking" there is no further limit.
+  const maxExchanges = chatOptions?.max_exchanges ?? 0;
+  // A minimum above the maximum could never be met once the student keeps talking; cap it.
+  const minExchangesSetting = chatOptions?.require_minimum_exchanges ?? 0;
+  const effectiveMinExchanges = maxExchanges > 0 ? Math.min(minExchangesSetting, maxExchanges) : minExchangesSetting;
+  const afterAnsweredExchange = (serverCount?: number) => {
+    const used = serverCount ?? exchangesUsed + 1;
+    setExchangesUsed(used);
+    if (maxExchanges > 0 && used >= maxExchanges && !continuedPastLimit) {
+      if (chatOptions?.max_exchanges_action === 'ask') setLimitChoicePending(true);
+      else wrapUpChat(null);
+    }
+  };
+
+  const handleKeepTalking = () => {
+    setLimitChoicePending(false);
+    setContinuedPastLimit(true);
+  };
+
   const handleSendMessage = async (userMessage: string) => {
     if (conversationPhase === ConversationPhase.CHATTING) {
         // Start timer on first user message (only if there are exactly 1 message - the initial CEO greeting)
@@ -855,9 +931,8 @@ const App: React.FC = () => {
         const lowerCaseMessage = userMessage.toLowerCase();
         if (lowerCaseMessage.includes("time is up") || lowerCaseMessage.includes("time's up") || lowerCaseMessage.includes("i would like to finish this chat conversation")) {
             // Check minimum exchanges requirement
-            const minExchanges = chatOptions?.require_minimum_exchanges ?? 0;
-            const userMessageCount = messages.filter(m => m.role === MessageRole.USER).length;
-            if (minExchanges > 0 && userMessageCount < minExchanges) {
+            const minExchanges = effectiveMinExchanges;
+            if (minExchanges > 0 && exchangesUsed < minExchanges) {
               const ceoWarning: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
                 content: teachBackMode
@@ -867,43 +942,7 @@ const App: React.FC = () => {
               setMessages(prev => [...prev, { role: MessageRole.USER, at: Date.now(), content: userMessage }, ceoWarning]);
               return;
             }
-            const finalUserMessage: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
-
-            // Check chat options to determine next phase
-            const askForFeedback = chatOptions?.ask_for_feedback ?? false;
-            const askSaveTranscript = chatOptions?.ask_save_transcript ?? false;
-            
-            if (askForFeedback) {
-                // Ask for feedback (existing behavior)
-                const ceoPermissionRequest: Message = {
-                    role: MessageRole.MODEL, at: Date.now(),
-                    content: teachBackMode
-                      ? TEACH_BACK_COPY.feedbackPermission(studentFirstName)
-                      : `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. **Would you be willing to provide feedback by answering a few questions about our interaction?**`
-                };
-                setMessages(prev => [...prev, finalUserMessage, ceoPermissionRequest]);
-                setConversationPhase(ConversationPhase.AWAITING_HELPFUL_PERMISSION);
-            } else if (askSaveTranscript) {
-                // Skip feedback, ask for transcript permission
-                const ceoTranscriptRequest: Message = {
-                    role: MessageRole.MODEL, at: Date.now(),
-                    content: teachBackMode
-                      ? TEACH_BACK_COPY.transcriptPermission(studentFirstName)
-                      : `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?**`
-                };
-                setMessages(prev => [...prev, finalUserMessage, ceoTranscriptRequest]);
-                setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
-            } else {
-                // Skip both feedback and transcript permission
-                const ceoFarewell: Message = {
-                    role: MessageRole.MODEL, at: Date.now(),
-                    content: teachBackMode
-                      ? TEACH_BACK_COPY.farewell(studentFirstName)
-                      : `${studentFirstName}, thank you for meeting with me today. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. Click the button below to proceed to the evaluation.`
-                };
-                setMessages(prev => [...prev, finalUserMessage, ceoFarewell]);
-                setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
-            }
+            wrapUpChat({ role: MessageRole.USER, at: Date.now(), content: userMessage });
             return;
         }
         
@@ -970,9 +1009,22 @@ const App: React.FC = () => {
             setLastReply(response);
             const modelMessage: Message = { role: MessageRole.MODEL, at: Date.now(), content: response.text };
             setMessages((prev) => [...prev, modelMessage]);
+            afterAnsweredExchange(response.exchangesUsed);
             // No transcript save here: the server records the exchange and writes the transcript.
         } catch (e) {
             console.error("Failed to send message:", e);
+            // Limits the server enforces: no retry. Over the response limit, the chat wraps up.
+            const code = (e as { code?: string })?.code;
+            if (code === 'EXCHANGE_LIMIT_REACHED') {
+                setMessages((prev) => prev.slice(0, -1));
+                wrapUpChat(null);
+                return;
+            }
+            if (code === 'MESSAGE_TOO_LONG') {
+                setMessages((prev) => prev.slice(0, -1));
+                setError((e as Error).message);
+                return;
+            }
             playErrorSound();
             setError("Sorry, there is a delay in AI model response. Please wait 30 seconds.");
             const errorMessage: Message = {
@@ -987,6 +1039,7 @@ const App: React.FC = () => {
                 try {
                     const retryResponse = await chatSession.sendMessage({ message: userMessage });
                     setLastReply(retryResponse);
+                    afterAnsweredExchange(retryResponse.exchangesUsed);
                     // Success - remove the "interrupted" message and add success messages
                     setMessages((prev) => {
                         const withoutError = prev.slice(0, -1); // Remove the "interrupted" message
@@ -1502,6 +1555,9 @@ const App: React.FC = () => {
     setConversationPhase(ConversationPhase.PRE_CHAT);
     setCurrentCaseChatId(null);
     setHintsUsed(0);
+    setExchangesUsed(0);
+    setLimitChoicePending(false);
+    setContinuedPastLimit(false);
 
     // Immediately start a new conversation with the same settings, on a new chat record
     if (studentFirstName && selectedChatModel) {
@@ -2063,11 +2119,19 @@ const App: React.FC = () => {
             warningMinutes={5}
             onTimeUp={() => {
               // Auto-submit "time is up" when timer expires (only if timeout_chat is enabled)
-              if (chatOptions?.timeout_chat) {
-                handleSendMessage("time is up");
+              // A time limit is a hard end, so it skips the minimum-exchanges check.
+              if (chatOptions?.timeout_chat && conversationPhase === ConversationPhase.CHATTING) {
+                wrapUpChat({ role: MessageRole.USER, at: Date.now(), content: "time is up" });
               }
             }}
           />
+        </div>
+      )}
+      {maxExchanges > 0 && conversationPhase === ConversationPhase.CHATTING && (
+        <div className={`flex justify-end px-3 py-1 text-xs font-medium text-gray-600 ${currentCaseChatId && chatOptions?.show_timer !== false ? '' : 'mt-12'}`} aria-live="polite">
+          {continuedPastLimit
+            ? `${exchangesUsed} responses (past the limit of ${maxExchanges})`
+            : `${Math.min(exchangesUsed, maxExchanges)} of ${maxExchanges} responses used`}
         </div>
       )}
       <ChatWindow
@@ -2173,9 +2237,9 @@ const App: React.FC = () => {
             {/* Chat control buttons */}
             {conversationPhase === ConversationPhase.CHATTING && (chatOptions?.allow_finish_button || chatOptions?.allow_exit || chatOptions?.restart_chat) && (
               <div className="px-4 py-2 bg-white border-t border-gray-200 flex gap-2 justify-end">
-                {chatOptions?.allow_finish_button && (() => {
-                  const minExchanges = chatOptions?.require_minimum_exchanges ?? 0;
-                  const userMessageCount = messages.filter(m => m.role === MessageRole.USER).length;
+                {chatOptions?.allow_finish_button && !limitChoicePending && (() => {
+                  const minExchanges = effectiveMinExchanges;
+                  const userMessageCount = exchangesUsed;
                   const meetsMinimum = minExchanges === 0 || userMessageCount >= minExchanges;
                   const isDisabled = !meetsMinimum || isLoading;
                   const tooltipText = !meetsMinimum 
@@ -2213,8 +2277,29 @@ const App: React.FC = () => {
                 )}
               </div>
             )}
-            {/* Position Selection prompt - shown while awaiting position selection */}
-            {awaitingPositionSelection && conversationPhase === ConversationPhase.CHATTING ? (
+            {/* Maximum Responses reached with "ask": finish now or keep talking */}
+            {limitChoicePending && conversationPhase === ConversationPhase.CHATTING ? (
+              <div className="p-4 bg-blue-50 border-t border-blue-200 text-center">
+                <p className="text-sm font-medium text-gray-700 mb-3">
+                  You've used all {maxExchanges} of your responses. Finish now, or keep talking if you'd like.
+                </p>
+                <div className="flex justify-center gap-3">
+                  <button
+                    onClick={() => wrapUpChat(null)}
+                    className="px-4 py-2 text-sm font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+                  >
+                    Finish and get my evaluation
+                  </button>
+                  <button
+                    onClick={handleKeepTalking}
+                    className="px-4 py-2 text-sm font-medium text-blue-700 bg-white border border-blue-300 rounded-lg hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                  >
+                    Keep talking
+                  </button>
+                </div>
+              </div>
+            ) : /* Position Selection prompt - shown while awaiting position selection */
+            awaitingPositionSelection && conversationPhase === ConversationPhase.CHATTING ? (
               <div className="p-4 bg-blue-50 border-t border-blue-200">
                 <p className="text-sm font-medium text-gray-700 text-center">
                   Please select your initial position from the options above to continue the conversation.
