@@ -19,21 +19,31 @@ interface Props {
   allowHtml?: AllowHtml;
   /** Required when allowHtml is "sanitized". */
   sanitizePreset?: SanitizePreset;
+  /**
+   * Size text from the parent (`className`) instead of fixed small sizes, with headings relative
+   * to it. The student reading panel uses this so its font-size control works and the reading
+   * looks like the instructor's preview, scaled.
+   */
+  scaleWithText?: boolean;
 }
 
-function buildComponents() {
+function buildComponents(scaled = false) {
+  // Fixed sizes for the dashboard previews; relative sizes when the text scales with its parent.
+  const size = scaled
+    ? { h1: 'text-[1.5em]', h2: 'text-[1.3em]', h3: 'text-[1.15em]', h4: 'text-[1em]', body: '', small: '' }
+    : { h1: 'text-xl', h2: 'text-lg', h3: 'text-base', h4: 'text-sm', body: 'text-sm', small: 'text-sm' };
   const Img = (p: React.ImgHTMLAttributes<HTMLImageElement>) => (
     <img {...p} src={resolvePublicAssetUrl(p.src)} alt={p.alt ?? ''} />
   );
 
   return {
-    h1: (p: any) => <h1 className="text-xl font-bold text-gray-900 mt-3 mb-2" {...p} />,
-    h2: (p: any) => <h2 className="text-lg font-bold text-gray-900 mt-3 mb-2" {...p} />,
-    h3: (p: any) => <h3 className="text-base font-semibold text-gray-900 mt-2 mb-1" {...p} />,
-    h4: (p: any) => <h4 className="text-sm font-semibold text-gray-800 mt-2 mb-1" {...p} />,
-    p: (p: any) => <p className="text-sm text-gray-800 my-2 leading-relaxed" {...p} />,
-    ul: (p: any) => <ul className="list-disc pl-5 my-2 space-y-1 text-sm text-gray-800" {...p} />,
-    ol: (p: any) => <ol className="list-decimal pl-5 my-2 space-y-1 text-sm text-gray-800" {...p} />,
+    h1: (p: any) => <h1 className={`${size.h1} font-bold text-gray-900 mt-3 mb-2`} {...p} />,
+    h2: (p: any) => <h2 className={`${size.h2} font-bold text-gray-900 mt-3 mb-2`} {...p} />,
+    h3: (p: any) => <h3 className={`${size.h3} font-semibold text-gray-900 mt-2 mb-1`} {...p} />,
+    h4: (p: any) => <h4 className={`${size.h4} font-semibold text-gray-800 mt-2 mb-1`} {...p} />,
+    p: (p: any) => <p className={`${size.body} text-gray-800 my-2 leading-relaxed`} {...p} />,
+    ul: (p: any) => <ul className={`list-disc pl-5 my-2 space-y-1 ${size.body} text-gray-800`} {...p} />,
+    ol: (p: any) => <ol className={`list-decimal pl-5 my-2 space-y-1 ${size.body} text-gray-800`} {...p} />,
     li: (p: any) => <li className="leading-relaxed" {...p} />,
     strong: (p: any) => <strong className="font-semibold text-gray-900" {...p} />,
     em: (p: any) => <em className="italic" {...p} />,
@@ -73,7 +83,7 @@ function buildComponents() {
     },
     table: (p: any) => (
       <div className="overflow-x-auto my-3">
-        <table className="min-w-full border-collapse border border-gray-300 text-sm" {...p} />
+        <table className={`min-w-full border-collapse border border-gray-300 ${size.small}`} {...p} />
       </div>
     ),
     thead: (p: any) => <thead className="bg-gray-50" {...p} />,
@@ -85,6 +95,7 @@ function buildComponents() {
 }
 
 const markdownComponents = buildComponents();
+const scaledMarkdownComponents = buildComponents(true);
 
 function buildRehypePlugins(allowHtml: AllowHtml, sanitizePreset?: SanitizePreset) {
   if (!allowHtml) return [];
@@ -102,6 +113,7 @@ const MarkdownPreview: React.FC<Props> = ({
   className,
   allowHtml = false,
   sanitizePreset,
+  scaleWithText = false,
 }) => {
   const hasContent = markdown && markdown.trim().length > 0;
   const rehypePlugins = useMemo(
@@ -115,7 +127,7 @@ const MarkdownPreview: React.FC<Props> = ({
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           rehypePlugins={rehypePlugins as Parameters<typeof ReactMarkdown>[0]['rehypePlugins']}
-          components={markdownComponents}
+          components={scaleWithText ? scaledMarkdownComponents : markdownComponents}
         >
           {markdown}
         </ReactMarkdown>
