@@ -30,8 +30,8 @@ interface Props {
 function buildComponents(scaled = false) {
   // Fixed sizes for the dashboard previews; relative sizes when the text scales with its parent.
   const size = scaled
-    ? { h1: 'text-[1.5em]', h2: 'text-[1.3em]', h3: 'text-[1.15em]', h4: 'text-[1em]', body: '', small: '' }
-    : { h1: 'text-xl', h2: 'text-lg', h3: 'text-base', h4: 'text-sm', body: 'text-sm', small: 'text-sm' };
+    ? { h1: 'text-[1.5em]', h2: 'text-[1.3em]', h3: 'text-[1.15em]', h4: 'text-[1em]', body: '', code: 'text-[0.85em]' }
+    : { h1: 'text-xl', h2: 'text-lg', h3: 'text-base', h4: 'text-sm', body: 'text-sm', code: 'text-xs' };
   const Img = (p: React.ImgHTMLAttributes<HTMLImageElement>) => (
     <img {...p} src={resolvePublicAssetUrl(p.src)} alt={p.alt ?? ''} />
   );
@@ -51,22 +51,17 @@ function buildComponents(scaled = false) {
     blockquote: (p: any) => (
       <blockquote className="border-l-4 border-gray-300 pl-3 italic text-gray-700 my-2" {...p} />
     ),
-    code: (props: any) => {
-      const { inline, className, children, ...rest } = props;
-      if (inline) {
-        return (
-          <code className="px-1 py-0.5 bg-gray-100 rounded text-xs font-mono text-pink-700" {...rest}>
-            {children}
-          </code>
-        );
-      }
-      return (
-        <code className={`block bg-gray-100 rounded p-2 text-xs font-mono overflow-x-auto ${className || ''}`} {...rest}>
-          {children}
-        </code>
-      );
-    },
-    pre: (p: any) => <pre className="bg-gray-100 rounded p-2 my-2 overflow-x-auto" {...p} />,
+    // react-markdown 10 no longer tells `code` whether it is inline, so `code` is styled inline
+    // and `pre` (only ever around a code block) carries the block styling and resets its child.
+    code: ({ node, className, ...rest }: any) => (
+      <code className={`px-1 py-0.5 bg-gray-100 rounded ${size.code} font-mono text-pink-700 ${className || ''}`} {...rest} />
+    ),
+    pre: ({ node, ...p }: any) => (
+      <pre
+        className={`bg-gray-100 rounded p-2 my-2 overflow-x-auto ${size.code} font-mono text-gray-800 [&>code]:p-0 [&>code]:text-[1em] [&>code]:text-gray-800`}
+        {...p}
+      />
+    ),
     hr: () => <hr className="my-3 border-gray-200" />,
     a: ({ href, children, ...rest }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => {
       const isInApp = typeof href === 'string' && href.startsWith('#');
@@ -83,7 +78,7 @@ function buildComponents(scaled = false) {
     },
     table: (p: any) => (
       <div className="overflow-x-auto my-3">
-        <table className={`min-w-full border-collapse border border-gray-300 ${size.small}`} {...p} />
+        <table className={`min-w-full border-collapse border border-gray-300 ${size.body}`} {...p} />
       </div>
     ),
     thead: (p: any) => <thead className="bg-gray-50" {...p} />,

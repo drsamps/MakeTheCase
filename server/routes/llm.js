@@ -74,9 +74,22 @@ async function loadFileContent(caseId, filename, fileType, convertedText, fileId
   return text;
 }
 
+// A case file's format for the reading panel: its file_format, else its filename's extension.
+function readingFormatOf(file) {
+  if (file.file_format) return String(file.file_format).toLowerCase();
+  const ext = path.extname(file.filename || '').slice(1).toLowerCase();
+  return ext || null;
+}
+
 // Load case data including markdown content for prompts
 // Now uses ordered prompt context from case_files table
-async function loadCaseData(caseId) {
+//
+// With { readingParts: true } it also returns `reading_parts`: the same case text as
+// case_content, one part per file or outline, each with its file_format, so the student
+// reading panel can render Markdown files as Markdown and PDF / plain text line by line
+// (components/ReadingText.tsx). case_content itself is unchanged: it builds the chat prompt,
+// which must stay byte-for-byte stable (server/scripts/check-chat-prompt.js).
+async function loadCaseData(caseId, { readingParts = false } = {}) {
   const [cases] = await pool.execute(
     `SELECT case_id, case_title, activity_type
      FROM cases WHERE case_id = ?`,
@@ -89,6 +102,7 @@ async function loadCaseData(caseId) {
   caseData.case_content = '';
   caseData.teaching_note = '';
   caseData.supplementary_content = '';
+  const parts = [];
 
   // Try to load files from database with ordering
   let [baseFiles] = await pool.execute(
@@ -167,6 +181,7 @@ async function loadCaseData(caseId) {
         if (content) {
           if (file.file_type === 'case') {
             caseData.case_content += (caseData.case_content ? '\n\n' : '') + content;
+            parts.push({ kind: 'file', file_format: readingFormatOf(file), content });
           } else if (file.file_type === 'teaching_note') {
             caseData.teaching_note += (caseData.teaching_note ? '\n\n' : '') + content;
           } else {
@@ -195,6 +210,7 @@ async function loadCaseData(caseId) {
 
           if (file.file_type === 'case') {
             caseData.case_content += `\n\n${outlineLabel}\n${outlineContent}`;
+            parts.push({ kind: 'outline', file_format: readingFormatOf(outline) || 'md', content: outlineContent });
           } else if (file.file_type === 'teaching_note') {
             caseData.teaching_note += `\n\n${outlineLabel}\n${outlineContent}`;
           } else {
@@ -225,6 +241,7 @@ async function loadCaseData(caseId) {
         const parentType = outline.parent_file_type || 'case';
         if (parentType === 'case') {
           caseData.case_content += (caseData.case_content ? '\n\n' : '') + outlineContent;
+          parts.push({ kind: 'outline', file_format: readingFormatOf(outline) || 'md', content: outlineContent });
         } else if (parentType === 'teaching_note') {
           caseData.teaching_note += (caseData.teaching_note ? '\n\n' : '') + outlineContent;
         } else {
@@ -244,6 +261,7 @@ async function loadCaseData(caseId) {
     try {
       const casePath = path.join(CASE_FILES_DIR, caseId, 'case.md');
       caseData.case_content = await fs.readFile(casePath, 'utf-8');
+      parts.push({ kind: 'file', file_format: 'md', content: caseData.case_content });
     } catch (e) {
       console.error(`[loadCaseData] Failed to read case file: ${path.join(CASE_FILES_DIR, caseId, 'case.md')}`, e.message);
     }
@@ -260,6 +278,7 @@ async function loadCaseData(caseId) {
     console.warn(`[loadCaseData] No case content loaded for: ${caseId}`);
   }
 
+  if (readingParts) caseData.reading_parts = parts;
   return caseData;
 }
 
@@ -272,7 +291,7 @@ router.get('/case-data/:caseId', verifyToken, async (req, res) => {
   console.log(`[case-data] Loading case data for: ${caseId}`);
   
   try {
-    const caseData = await loadCaseData(caseId);
+    const caseData = await loadCaseData(caseId, { readingParts: true });
     if (!caseData) {
       console.error(`[case-data] Case not found in database: ${caseId}`);
       return res.status(404).json({ data: null, error: { message: `Case "${caseId}" not found in database` } });

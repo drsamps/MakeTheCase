@@ -5,6 +5,7 @@ import WebFetchModal, { FetchPreview } from './caseFiles/WebFetchModal';
 import { quote } from '../utils/confirmLabels';
 import HelpTooltip from './ui/HelpTooltip';
 import { CaseFilesHelp } from '../help/dashboard';
+import { readingFormatOf } from './ReadingText';
 
 interface Case {
   case_id: string;
@@ -1383,6 +1384,7 @@ export const CaseFilesManager: React.FC = () => {
               ) : (
                 <TextEditorPanel
                   value={textModalContent}
+                  fileFormat={readingFormatOf(textModalFile.file_format, textModalFile.filename)}
                   onChange={(value) => {
                     setTextModalContent(value);
                     setTextModalDirty(true);
