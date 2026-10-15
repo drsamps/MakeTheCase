@@ -10,6 +10,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { convertFile } from '../services/fileConverter.js';
+import { MARKDOWN, readingFormatOf, textFormatOfConversion } from '../../utils/readingFormat.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,6 +35,7 @@ async function loadFileContent(caseId, filename, fileType, convertedText, fileId
   }
 
   let text = null;
+  let textFormat = null;
 
   // First try the uploads directory (new files)
   const uploadsPath = path.join(CASE_FILES_DIR, caseId, 'uploads', filename);
@@ -43,6 +45,7 @@ async function loadFileContent(caseId, filename, fileType, convertedText, fileId
     const ext = path.extname(filename);
     const result = await convertFile(uploadsPath, ext);
     text = result.text;
+    textFormat = textFormatOfConversion(result.format);
     console.log(`[loadFileContent] Converted ${filename}: ${text ? text.length + ' chars' : 'empty'}`);
   } catch (e) {
     console.log(`[loadFileContent] File not in uploads or conversion failed for ${filename}:`, e.message);
@@ -53,6 +56,7 @@ async function loadFileContent(caseId, filename, fileType, convertedText, fileId
     const standardPath = path.join(CASE_FILES_DIR, caseId, `${fileType}.md`);
     try {
       text = await fs.readFile(standardPath, 'utf-8');
+      textFormat = MARKDOWN;
       console.log(`[loadFileContent] Loaded from standard path: ${standardPath}`);
     } catch (e) {
       console.log(`[loadFileContent] Standard path not found: ${standardPath}`);
@@ -62,8 +66,8 @@ async function loadFileContent(caseId, filename, fileType, convertedText, fileId
   // Lazy backfill: store the converted text so we don't repeat this work
   if (text && fileId) {
     pool.execute(
-      'UPDATE case_files SET converted_text = ?, converted_at = NOW() WHERE id = ? AND converted_text IS NULL',
-      [text, fileId]
+      'UPDATE case_files SET converted_text = ?, text_format = ?, converted_at = NOW() WHERE id = ? AND converted_text IS NULL',
+      [text, textFormat, fileId]
     ).then(() => {
       console.log(`[loadFileContent] Backfilled converted_text for file ${fileId} (${text.length} chars)`);
     }).catch(err => {
@@ -74,20 +78,13 @@ async function loadFileContent(caseId, filename, fileType, convertedText, fileId
   return text;
 }
 
-// A case file's format for the reading panel: its file_format, else its filename's extension.
-function readingFormatOf(file) {
-  if (file.file_format) return String(file.file_format).toLowerCase();
-  const ext = path.extname(file.filename || '').slice(1).toLowerCase();
-  return ext || null;
-}
-
 // Load case data including markdown content for prompts
 // Now uses ordered prompt context from case_files table
 //
 // With { readingParts: true } it also returns `reading_parts`: the same case text as
-// case_content, one part per file or outline, each with its file_format, so the student
-// reading panel can render Markdown files as Markdown and PDF / plain text line by line
-// (components/ReadingText.tsx). case_content itself is unchanged: it builds the chat prompt,
+// case_content, one part per file or outline, each with its reading format
+// (utils/readingFormat.js), so the student reading panel can render Markdown as Markdown and
+// PDF / plain text line by line (components/ReadingText.tsx). case_content itself is unchanged: it builds the chat prompt,
 // which must stay byte-for-byte stable (server/scripts/check-chat-prompt.js).
 async function loadCaseData(caseId, { readingParts = false } = {}) {
   const [cases] = await pool.execute(
@@ -107,7 +104,7 @@ async function loadCaseData(caseId, { readingParts = false } = {}) {
   // Try to load files from database with ordering
   let [baseFiles] = await pool.execute(
     `SELECT id, filename, file_type, file_format, proprietary, proprietary_confirmed_by,
-            include_in_chat_prompt, prompt_order, converted_text
+            include_in_chat_prompt, prompt_order, converted_text, text_format
      FROM case_files
      WHERE case_id = ? AND include_in_chat_prompt = 1 AND is_outline = 0
      ORDER BY prompt_order ASC, created_at ASC`,
@@ -134,7 +131,7 @@ async function loadCaseData(caseId, { readingParts = false } = {}) {
     // First try file_type='case'
     let [fallbackCaseFiles] = await pool.execute(
       `SELECT id, filename, file_type, file_format, proprietary, proprietary_confirmed_by,
-              include_in_chat_prompt, prompt_order, converted_text
+              include_in_chat_prompt, prompt_order, converted_text, text_format
        FROM case_files
        WHERE case_id = ? AND file_type = 'case' AND is_outline = 0
        ORDER BY prompt_order ASC, created_at ASC
@@ -147,7 +144,7 @@ async function loadCaseData(caseId, { readingParts = false } = {}) {
       console.log(`[loadCaseData] No file_type='case' found, trying any file for ${caseId}...`);
       [fallbackCaseFiles] = await pool.execute(
         `SELECT id, filename, file_type, file_format, proprietary, proprietary_confirmed_by,
-                include_in_chat_prompt, prompt_order, converted_text
+                include_in_chat_prompt, prompt_order, converted_text, text_format
          FROM case_files
          WHERE case_id = ? AND is_outline = 0
          ORDER BY prompt_order ASC, created_at ASC`,
@@ -181,7 +178,7 @@ async function loadCaseData(caseId, { readingParts = false } = {}) {
         if (content) {
           if (file.file_type === 'case') {
             caseData.case_content += (caseData.case_content ? '\n\n' : '') + content;
-            parts.push({ kind: 'file', file_format: readingFormatOf(file), content });
+            parts.push({ kind: 'file', format: readingFormatOf(file), content });
           } else if (file.file_type === 'teaching_note') {
             caseData.teaching_note += (caseData.teaching_note ? '\n\n' : '') + content;
           } else {
@@ -210,7 +207,7 @@ async function loadCaseData(caseId, { readingParts = false } = {}) {
 
           if (file.file_type === 'case') {
             caseData.case_content += `\n\n${outlineLabel}\n${outlineContent}`;
-            parts.push({ kind: 'outline', file_format: readingFormatOf(outline) || 'md', content: outlineContent });
+            parts.push({ kind: 'outline', format: MARKDOWN, content: outlineContent });
           } else if (file.file_type === 'teaching_note') {
             caseData.teaching_note += `\n\n${outlineLabel}\n${outlineContent}`;
           } else {
@@ -241,7 +238,7 @@ async function loadCaseData(caseId, { readingParts = false } = {}) {
         const parentType = outline.parent_file_type || 'case';
         if (parentType === 'case') {
           caseData.case_content += (caseData.case_content ? '\n\n' : '') + outlineContent;
-          parts.push({ kind: 'outline', file_format: readingFormatOf(outline) || 'md', content: outlineContent });
+          parts.push({ kind: 'outline', format: MARKDOWN, content: outlineContent });
         } else if (parentType === 'teaching_note') {
           caseData.teaching_note += (caseData.teaching_note ? '\n\n' : '') + outlineContent;
         } else {
@@ -261,7 +258,7 @@ async function loadCaseData(caseId, { readingParts = false } = {}) {
     try {
       const casePath = path.join(CASE_FILES_DIR, caseId, 'case.md');
       caseData.case_content = await fs.readFile(casePath, 'utf-8');
-      parts.push({ kind: 'file', file_format: 'md', content: caseData.case_content });
+      parts.push({ kind: 'file', format: MARKDOWN, content: caseData.case_content });
     } catch (e) {
       console.error(`[loadCaseData] Failed to read case file: ${path.join(CASE_FILES_DIR, caseId, 'case.md')}`, e.message);
     }
@@ -328,9 +325,10 @@ router.get('/case-data/:caseId', verifyToken, async (req, res) => {
     
     console.log(`[case-data] Successfully loaded case: ${caseId} (${caseData.case_content.length} chars)`);
     // Students get what their screen shows: the case and supplementary materials, never the
-    // teaching note (the server builds the chat prompt, services/chatPrompt.js).
-    const { teaching_note, ...studentView } = caseData;
-    res.json({ data: req.user.role === 'student' ? studentView : caseData, error: null });
+    // teaching note (the server builds the chat prompt, services/chatPrompt.js). The case text
+    // goes once, as reading_parts; the joined case_content is the prompt's copy and stays here.
+    const { teaching_note, case_content, ...studentView } = caseData;
+    res.json({ data: req.user.role === 'student' ? studentView : { ...studentView, teaching_note }, error: null });
   } catch (error) {
     console.error(`[case-data] Error loading case data for ${caseId}:`, error);
     console.error(`[case-data] CASE_FILES_DIR: ${CASE_FILES_DIR}`);

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { api } from '../../services/apiClient';
 import TextEditorPanel from './TextEditorPanel';
+import type { ReadingFormat } from '../ReadingText';
 
 /** What POST /case-files/:caseId/fetch-url returns for { preview: true }. */
 export interface FetchPreview {
@@ -10,6 +11,8 @@ export interface FetchPreview {
   degraded: boolean;
   final_url: string;
   content_type: string | null;
+  /** The text's format: Markdown for a web page, the conversion's for a fetched file. */
+  text_format: ReadingFormat;
 }
 
 interface Props {
@@ -165,6 +168,7 @@ const WebFetchModal: React.FC<Props> = ({ caseId, fileType, fileTypeLabel, url, 
           <TextEditorPanel
             value={text}
             onChange={setText}
+            format={isPaste ? 'markdown' : preview!.text_format}
             placeholder={isPaste ? 'Paste the text here. Markdown (# headings, - lists, | tables |) is fine.' : undefined}
             status={!isPaste && text !== preview!.text ? <span className="text-xs text-orange-600 font-medium">Edited</span> : undefined}
           />

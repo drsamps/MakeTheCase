@@ -1,6 +1,5 @@
 
 
-import { BUSINESS_CASE_TEXT } from './data/business_case';
 import { USEFUL_CASE_FACTS } from './data/useful_facts';
 import type { ReadingPart } from './components/ReadingText';
 
@@ -18,8 +17,7 @@ export interface CaseData {
   protagonist_role?: string;   // Scenario-specific role (e.g., "CEO of Benihana")
   chat_topic?: string;
   chat_question: string;
-  case_content: string;        // The business case text, joined (the chat prompt's copy)
-  reading_parts?: ReadingPart[]; // The same text per file, with each file's format, for the reading panel
+  reading_parts?: ReadingPart[]; // The case text per file, with each file's format, for the reading panel
   teaching_note?: string;      // Staff only: never sent to students
   supplementary_content?: string; // Additional materials (chapters, readings, articles, etc.)
 }
@@ -32,7 +30,6 @@ export const DEFAULT_CASE_DATA: CaseData = {
   protagonist_initials: 'KB',
   chat_topic: 'Catering business strategy',
   chat_question: CEO_QUESTION,
-  case_content: BUSINESS_CASE_TEXT,
   teaching_note: USEFUL_CASE_FACTS,
 };
 

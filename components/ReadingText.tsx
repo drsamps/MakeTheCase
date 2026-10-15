@@ -1,36 +1,23 @@
 import React from 'react';
 import MarkdownPreview from './caseWriter/MarkdownPreview';
+import { MARKDOWN, PLAIN_TEXT } from '../utils/readingFormat.js';
 
 /**
  * One case file (or outline) of a student reading, as GET /api/llm/case-data returns it in
- * `reading_parts`. case_content is the same text joined, kept for the chat prompt.
+ * `reading_parts`, with the format of its text (utils/readingFormat.js).
  */
 export interface ReadingPart {
   kind: 'file' | 'outline';
-  file_format: string | null;
+  format: ReadingFormat;
   content: string;
 }
 
-// Markdown sources: .md files, web pages and pasted text (stored as 'md'), and Word files
-// (mammoth converts them to Markdown). PDF and .txt text has no Markdown structure: pdf-parse
-// ends every visual line with one newline and never writes a blank line, so as Markdown a
-// whole PDF would run into one paragraph.
-const MARKDOWN_FORMATS = new Set(['md', 'markdown', 'docx', 'doc']);
+export type ReadingFormat = typeof MARKDOWN | typeof PLAIN_TEXT;
 
-/** The format to render a case file as: its file_format, else its filename's extension. */
-export function readingFormatOf(fileFormat: string | null | undefined, filename?: string | null): string | null {
-  if (fileFormat) return fileFormat.toLowerCase();
-  const match = /\.([a-z0-9]+)$/i.exec(filename || '');
-  return match ? match[1].toLowerCase() : null;
-}
-
-export function isMarkdownFormat(fileFormat: string | null | undefined): boolean {
-  return MARKDOWN_FORMATS.has((fileFormat || '').toLowerCase());
-}
-
-// mammoth writes Word bookmarks as empty anchors (<a id="_Toc…"></a>), which show as literal
-// text because readings render without raw HTML.
-const stripWordBookmarks = (text: string) => text.replace(/<a id="[^"]*"><\/a>/g, '');
+// mammoth writes Word bookmarks as empty anchors (<a id="_Toc…"></a>), which would show as
+// literal text because readings render without raw HTML. An empty anchor shows nothing in any
+// Markdown reading, so they are dropped from all of them.
+const stripEmptyAnchors = (text: string) => text.replace(/<a\s+id="[^"]*"\s*>\s*<\/a>/gi, '');
 
 /**
  * Plain-text readings (PDF, .txt), one paragraph per line, as the reading panel always showed
@@ -54,7 +41,8 @@ const PlainReading: React.FC<{ text: string }> = ({ text }) => (
 
 interface Props {
   text: string;
-  fileFormat: string | null | undefined;
+  /** The text's format: utils/readingFormat.js (readingFormatOf for a case_files row). */
+  format: ReadingFormat;
   className?: string;
   /** Size text from `className` (the student font control) instead of fixed preview sizes. */
   scaleWithText?: boolean;
@@ -67,10 +55,9 @@ interface Props {
  * two views match. Memoized: a long reading takes tens of milliseconds to parse, and the chat
  * screen re-renders on every turn.
  */
-const ReadingText: React.FC<Props> = ({ text, fileFormat, className, scaleWithText = false, emptyText }) => {
-  if (isMarkdownFormat(fileFormat)) {
-    const markdown = fileFormat === 'docx' || fileFormat === 'doc' ? stripWordBookmarks(text) : text;
-    return <MarkdownPreview markdown={markdown} scaleWithText={scaleWithText} className={className} emptyText={emptyText} />;
+const ReadingText: React.FC<Props> = ({ text, format, className, scaleWithText = false, emptyText }) => {
+  if (format === MARKDOWN) {
+    return <MarkdownPreview markdown={stripEmptyAnchors(text)} scaleWithText={scaleWithText} className={className} emptyText={emptyText} />;
   }
   if (!text.trim()) {
     return <div className={className}><p className="text-gray-400 italic text-sm">{emptyText ?? ''}</p></div>;

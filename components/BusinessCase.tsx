@@ -1,16 +1,17 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import { BUSINESS_CASE_TEXT } from '../data/business_case';
 import FontSizeControl from './FontSizeControl';
 import ReadingText, { type ReadingPart } from './ReadingText';
+import { MARKDOWN } from '../utils/readingFormat.js';
+
+const DEFAULT_READING: ReadingPart[] = [{ kind: 'file', format: MARKDOWN, content: BUSINESS_CASE_TEXT }];
 
 interface BusinessCaseProps {
   fontSize: string;
   onFontSizeChange: (size: string) => void;
   fontSizes: string[];
   defaultFontSize: string;
-  // Optional props for dynamic case content
   caseTitle?: string;
-  caseContent?: string;
   /** The reading one file at a time with each file's format (GET /api/llm/case-data). */
   readingParts?: ReadingPart[];
 }
@@ -21,17 +22,12 @@ const BusinessCase: React.FC<BusinessCaseProps> = ({
   fontSizes, 
   defaultFontSize,
   caseTitle,
-  caseContent,
   readingParts,
 }) => {
   const title = caseTitle || "Malawi's Pizza Catering Case";
-  // Each file renders by its own format. Without parts: the built-in Malawi's case (Markdown),
-  // or case text from an older server, shown line by line as before.
-  const parts = useMemo<ReadingPart[]>(() => {
-    if (readingParts && readingParts.length > 0) return readingParts;
-    if (caseContent) return [{ kind: 'file', file_format: 'txt', content: caseContent }];
-    return [{ kind: 'file', file_format: 'md', content: BUSINESS_CASE_TEXT }];
-  }, [readingParts, caseContent]);
+  // Each file renders by its own format. No parts (the case could not be loaded): the built-in
+  // Malawi's Pizza case.
+  const parts = readingParts && readingParts.length > 0 ? readingParts : DEFAULT_READING;
 
   const handleCopyPaste = (e: React.ClipboardEvent) => {
     e.preventDefault();
@@ -58,7 +54,7 @@ const BusinessCase: React.FC<BusinessCaseProps> = ({
         {parts.map((part, i) => (
           <section key={i} className={i > 0 ? 'mt-6 pt-4 border-t border-gray-200' : undefined}>
             {part.kind === 'outline' && <h2 className="text-[1.3em] font-bold text-gray-900 mb-2">Outline</h2>}
-            <ReadingText text={part.content} fileFormat={part.file_format} scaleWithText emptyText="" />
+            <ReadingText text={part.content} format={part.format} scaleWithText emptyText="" />
           </section>
         ))}
       </div>

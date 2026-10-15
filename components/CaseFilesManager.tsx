@@ -5,7 +5,7 @@ import WebFetchModal, { FetchPreview } from './caseFiles/WebFetchModal';
 import { quote } from '../utils/confirmLabels';
 import HelpTooltip from './ui/HelpTooltip';
 import { CaseFilesHelp } from '../help/dashboard';
-import { readingFormatOf } from './ReadingText';
+import { readingFormatOf } from '../utils/readingFormat.js';
 
 interface Case {
   case_id: string;
@@ -20,6 +20,7 @@ interface CaseFile {
   file_type: string;
   file_type_label: string;
   file_format: string | null;
+  text_format?: string | null;
   // 'imported' / 'imported_text': installed from an activity package, with or without the original file
   file_source: 'uploaded' | 'ai_prepped' | 'downloaded' | 'case_writer' | 'web' | 'pasted' | 'imported' | 'imported_text';
   source_url: string | null;
@@ -1384,7 +1385,7 @@ export const CaseFilesManager: React.FC = () => {
               ) : (
                 <TextEditorPanel
                   value={textModalContent}
-                  fileFormat={readingFormatOf(textModalFile.file_format, textModalFile.filename)}
+                  format={readingFormatOf(textModalFile)}
                   onChange={(value) => {
                     setTextModalContent(value);
                     setTextModalDirty(true);

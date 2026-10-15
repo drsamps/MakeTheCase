@@ -41,6 +41,7 @@ import { createCourseCase } from '../caseVersionSync.js';
 import { writeCaseDefaults } from '../activityDefaults.js';
 import { generateUniqueCaseId } from '../caseIds.js';
 import { getActivityType } from '../../../utils/activityTypes.js';
+import { MARKDOWN, readingFormatOf } from '../../../utils/readingFormat.js';
 import { AUDIENCE_ID_PREFIX, PackError, assertValidPack, canonicalJson, extensionOf, sha256 } from './format.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -481,15 +482,21 @@ async function installActivity(conn, req, pack, activity, plan, { personaIdMap, 
       fileSize = Buffer.byteLength(text, 'utf8');
     }
     const isOutline = Boolean(doc.outline_of);
+    // The text renders by its own format (utils/readingFormat.js), from the package's `format`:
+    // the original file's format, which a text-only document keeps although it is stored as
+    // 'md' here (a PDF's text has no Markdown structure). Outlines are Markdown.
+    const textFormat = text === null ? null
+      : isOutline || !doc.format ? MARKDOWN
+      : readingFormatOf({ file_format: doc.format });
     const [result] = await conn.execute(
       `INSERT INTO case_files
          (case_id, parent_file_id, filename, file_type, is_outline, is_latest_outline, processing_status,
-          outline_content, converted_text, converted_text_original, converted_at,
+          outline_content, converted_text, converted_text_original, text_format, converted_at,
           file_format, file_source, source_url, proprietary, include_in_chat_prompt, prompt_order,
           file_version, original_filename, file_size)
-       VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ${text === null ? 'NULL' : 'NOW()'}, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ${text === null ? 'NULL' : 'NOW()'}, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [caseId, isOutline ? fileIdByKey.get(doc.outline_of) : null, filename, doc.role, isOutline ? 1 : 0,
-       isOutline && doc.latest_outline ? 1 : 0, isOutline ? text : null, text, text,
+       isOutline && doc.latest_outline ? 1 : 0, isOutline ? text : null, text, text, textFormat,
        fileFormat, fileSource, doc.source_url ?? null, doc.proprietary ? 1 : 0, doc.include_in_prompt === false ? 0 : 1,
        doc.prompt_order ?? 0, doc.version_label ?? null, doc.title, fileSize]
     );
