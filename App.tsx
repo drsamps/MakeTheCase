@@ -136,6 +136,10 @@ const App: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatSession, setChatSession] = useState<LLMChatSession | null>(null);
   const [conversationPhase, setConversationPhase] = useState<ConversationPhase>(ConversationPhase.PRE_CHAT);
+  // The current phase for callbacks that finish after a re-render (a reply in flight when the
+  // timer wraps the chat up), whose own `conversationPhase` is stale.
+  const conversationPhaseRef = useRef(conversationPhase);
+  conversationPhaseRef.current = conversationPhase;
   const [evaluationResult, setEvaluationResult] = useState<EvaluationResult | null>(null);
   const [helpfulScore, setHelpfulScore] = useState<number | null>(null);
   const [likedFeedback, setLikedFeedback] = useState<string | null>(null);
@@ -901,6 +905,9 @@ const App: React.FC = () => {
   const minExchangesSetting = chatOptions?.require_minimum_exchanges ?? 0;
   const effectiveMinExchanges = maxExchanges > 0 ? Math.min(minExchangesSetting, maxExchanges) : minExchangesSetting;
   const afterAnsweredExchange = (serverCount?: number) => {
+    // A reply that lands after the chat has already wrapped up (the timer ran out while it was
+    // in flight) must not wrap it up a second time.
+    if (conversationPhaseRef.current !== ConversationPhase.CHATTING) return;
     const used = serverCount ?? exchangesUsed + 1;
     setExchangesUsed(used);
     if (maxExchanges > 0 && used >= maxExchanges && !continuedPastLimit) {
@@ -1039,7 +1046,6 @@ const App: React.FC = () => {
                 try {
                     const retryResponse = await chatSession.sendMessage({ message: userMessage });
                     setLastReply(retryResponse);
-                    afterAnsweredExchange(retryResponse.exchangesUsed);
                     // Success - remove the "interrupted" message and add success messages
                     setMessages((prev) => {
                         const withoutError = prev.slice(0, -1); // Remove the "interrupted" message
@@ -1050,6 +1056,9 @@ const App: React.FC = () => {
                         ];
                     });
                     setError(null);
+                    // After the messages, as on the normal path: a wrap-up adds its question
+                    // after the reply instead of being sliced off as the "interrupted" message.
+                    afterAnsweredExchange(retryResponse.exchangesUsed);
                 } catch (retryError) {
                     console.error("Retry failed:", retryError);
                     // Update the error message to indicate continued failure
@@ -1221,8 +1230,23 @@ const App: React.FC = () => {
           content: response.text,
         };
         setMessages(prev => [...prev, modelMessage]);
+        // The server counts the position as an answered response, so the page does too.
+        afterAnsweredExchange(response.exchangesUsed);
       } catch (err) {
         console.error('Failed to get AI response:', err);
+        // Limits the server enforces, handled as in handleSendMessage. Nothing was recorded.
+        const code = (err as { code?: string })?.code;
+        if (code === 'EXCHANGE_LIMIT_REACHED') {
+          setMessages(prev => prev.slice(0, -1));
+          wrapUpChat(null);
+          return;
+        }
+        if (code === 'MESSAGE_TOO_LONG') {
+          setMessages(prev => prev.slice(0, -1));
+          setError((err as Error).message);
+          setAwaitingPositionSelection(true);
+          return;
+        }
         const errorMessage: Message = {
           role: MessageRole.MODEL, at: Date.now(),
           content: "Okay, can you explain why you recommend that action?"

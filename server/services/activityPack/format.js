@@ -200,6 +200,15 @@ export function assertChatOptions(chatOptions, what) {
     }
     if (typeof value === 'string') text(value, `${what}.${key}`);
   }
+  // Options whose values are a closed set: an unknown value is refused, not read as the default.
+  const { max_exchanges: maxExchanges, max_exchanges_action: limitAction } = chatOptions;
+  if (maxExchanges !== undefined && maxExchanges !== null
+      && !(Number.isInteger(maxExchanges) && maxExchanges >= 0 && maxExchanges <= 50)) {
+    throw invalid(`${what}.max_exchanges must be a whole number from 0 to 50`);
+  }
+  if (limitAction !== undefined && limitAction !== null && !['end', 'ask'].includes(limitAction)) {
+    throw invalid(`${what}.max_exchanges_action must be "end" or "ask"`);
+  }
 }
 
 /**

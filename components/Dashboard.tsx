@@ -6625,7 +6625,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         min="0"
                         max="50"
                         value={editingChatOptions.max_exchanges ?? 0}
-                        onChange={(e) => setEditingChatOptions({...editingChatOptions, max_exchanges: parseInt(e.target.value) || 0})}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, max_exchanges: Math.min(50, Math.max(0, parseInt(e.target.value) || 0))})}
                         disabled={!isEditingDefault && useDefaultOptions}
                         className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />

@@ -397,7 +397,10 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
     if (maxExchanges > 0 && limitAction !== 'ask' && exchangesBefore >= maxExchanges) {
       return res.status(409).json({ data: null, error: { code: 'EXCHANGE_LIMIT_REACHED', message: 'You have used all your responses for this chat.' } });
     }
-    const isFinalExchange = maxExchanges > 0 && exchangesBefore + 1 === maxExchanges;
+    // The model is told it is answering the last message only when the chat then ends ('end'):
+    // in 'ask' the student may keep talking, so the protagonist must not close the meeting.
+    const isFinalExchange = maxExchanges > 0 && limitAction === 'end' && exchangesBefore + 1 === maxExchanges;
+    const modelMessage = isFinalExchange ? message + activityBehaviour(context.mode).finalTurnNote : message;
     const systemPrompt = buildChatSystemPrompt(context, sanitizeStudentName(studentName));
     const history = historyForModel(turns);
     const askedAt = new Date();
@@ -417,7 +420,7 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       history,
       // The final-turn note goes to the model only; the stored turn and transcript keep the
       // student's own words.
-      message: isFinalExchange ? message + activityBehaviour(context.mode).finalTurnNote : message,
+      message: modelMessage,
       config: { caseId, instructorId, sectionId, caseChatId, purpose: 'student_chat' },
     });
     const durationMs = Date.now() - startTime;
@@ -445,7 +448,7 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       modelId: modelIdUsed,
       systemPrompt,
       history,
-      currentMessage: message,
+      currentMessage: modelMessage, // what the model received, final-turn note included
       currentMessageAt: askedAt.getTime(),
       response: text,
       meta,
