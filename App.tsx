@@ -2249,7 +2249,7 @@ const App: React.FC = () => {
               fontSizes={FONT_SIZES}
               defaultFontSize={DEFAULT_FONT_SIZE}
               caseTitle={activeCaseData?.case_title}
-              caseContent={activeCaseData?.case_content}
+              readingParts={activeCaseData?.reading_parts}
             />
           </div>
           {chatPanel}

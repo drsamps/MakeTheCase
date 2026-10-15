@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import { convertFile } from '../services/fileConverter.js';
 import { fetchForCaseFile } from '../services/caseFileFetch.js';
+import { MARKDOWN, textFormatOfConversion } from '../../utils/readingFormat.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -163,7 +164,7 @@ router.get('/:caseId', verifyToken, requireAdminOrInstructor, requireCaseAccess(
               include_in_chat_prompt, prompt_order, file_version, original_filename,
               file_size, processing_status, processing_model, outline_content,
               processed_at, created_at, is_outline, is_latest_outline,
-              fetched_final_url, fetched_at, text_edited_at,
+              fetched_final_url, fetched_at, text_edited_at, text_format,
               converted_text IS NOT NULL AS has_text
        FROM case_files
        WHERE case_id = ?
@@ -256,12 +257,14 @@ router.post('/:caseId/upload', verifyToken, requireAdminOrInstructor, requireCas
 
       // Convert file to text at upload time so we never re-parse PDFs later
       let convertedText = null;
+      let textFormat = null;
       const textFormats = ['pdf', 'docx', 'doc', 'md', 'txt'];
       if (textFormats.includes(fileFormat)) {
         try {
           const ext = path.extname(req.file.originalname);
-          const { text } = await convertFile(req.file.path, ext);
+          const { text, format } = await convertFile(req.file.path, ext);
           convertedText = text || null;
+          textFormat = convertedText ? textFormatOfConversion(format) : null;
         } catch (convErr) {
           console.warn('[CaseFiles] Text conversion at upload failed (will retry later):', convErr.message);
         }
@@ -273,9 +276,9 @@ router.post('/:caseId/upload', verifyToken, requireAdminOrInstructor, requireCas
           case_id, filename, file_type, file_format, file_source,
           proprietary, include_in_chat_prompt, prompt_order, file_version,
           original_filename, file_size, processing_status,
-          converted_text, converted_text_original, converted_at, created_at
+          converted_text, converted_text_original, text_format, converted_at, created_at
         ) VALUES (?, ?, ?, ?, 'uploaded', ?, ?, ?, ?, ?, ?, 'pending',
-                  ?, ?, ${convertedText ? 'NOW()' : 'NULL'}, NOW())`,
+                  ?, ?, ?, ${convertedText ? 'NOW()' : 'NULL'}, NOW())`,
         [
           caseId,
           req.file.filename,
@@ -288,7 +291,8 @@ router.post('/:caseId/upload', verifyToken, requireAdminOrInstructor, requireCas
           req.file.originalname,
           stats.size,
           convertedText,
-          convertedText
+          convertedText,
+          textFormat
         ]
       );
 
@@ -421,7 +425,7 @@ async function caseExists(caseId) {
 async function selectFileForResponse(id) {
   const [rows] = await pool.execute(
     `SELECT id, case_id, filename, file_type, file_format, file_source, source_url,
-            fetched_final_url, fetched_at, text_edited_at,
+            fetched_final_url, fetched_at, text_edited_at, text_format,
             proprietary, include_in_chat_prompt, prompt_order, file_version,
             original_filename, file_size, processing_status, created_at
      FROM case_files WHERE id = ?`,
@@ -479,7 +483,8 @@ router.post('/:caseId/fetch-url', verifyToken, requireAdminOrInstructor, require
           text: fetched.text,
           degraded: fetched.degraded,
           final_url: fetched.finalUrl,
-          content_type: fetched.contentType
+          content_type: fetched.contentType,
+          text_format: fetched.textFormat
         },
         error: null
       });
@@ -513,7 +518,8 @@ router.post('/:caseId/fetch-url', verifyToken, requireAdminOrInstructor, require
         file_size: fetched.buffer.length,
         final_url: fetched.finalUrl,
         content_type: fetched.contentType,
-        original_text: fetched.text
+        original_text: fetched.text,
+        text_format: fetched.textFormat
       };
     } else {
       row = {
@@ -527,7 +533,8 @@ router.post('/:caseId/fetch-url', verifyToken, requireAdminOrInstructor, require
         // The preview's text, for Revert. It came from this instructor's own preview.
         original_text: typeof req.body.original_text === 'string' && req.body.original_text.length <= MAX_TEXT_CHARS
           ? req.body.original_text
-          : fields.text
+          : fields.text,
+        text_format: MARKDOWN
       };
     }
 
@@ -537,14 +544,14 @@ router.post('/:caseId/fetch-url', verifyToken, requireAdminOrInstructor, require
         fetched_final_url, fetched_content_type, fetched_at,
         proprietary, include_in_chat_prompt, prompt_order, file_version,
         original_filename, file_size, processing_status,
-        converted_text, converted_text_original, converted_at, text_edited_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NOW(), ?, NOW())`,
+        converted_text, converted_text_original, text_format, converted_at, text_edited_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, NOW(), ?, NOW())`,
       [
         caseId, row.filename, fields.file_type, row.file_format, row.file_source, url,
         row.final_url, row.content_type,
         fields.proprietary, fields.include_in_chat_prompt, fields.prompt_order, fields.file_version,
         row.original_filename, row.file_size,
-        fields.text, row.original_text, fields.text === row.original_text ? null : new Date()
+        fields.text, row.original_text, row.text_format, fields.text === row.original_text ? null : new Date()
       ]
     );
 
@@ -583,8 +590,8 @@ router.post('/:caseId/paste', verifyToken, requireAdminOrInstructor, requireCase
         case_id, filename, file_type, file_format, file_source, source_url,
         proprietary, include_in_chat_prompt, prompt_order, file_version,
         original_filename, file_size, processing_status,
-        converted_text, converted_text_original, converted_at, created_at
-      ) VALUES (?, ?, ?, 'md', 'pasted', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NOW(), NOW())`,
+        converted_text, converted_text_original, text_format, converted_at, created_at
+      ) VALUES (?, ?, ?, 'md', 'pasted', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 'markdown', NOW(), NOW())`,
       [
         caseId, textOnlyFilename('pasted'), fields.file_type, sourceUrl,
         fields.proprietary, fields.include_in_chat_prompt, fields.prompt_order, fields.file_version,
@@ -652,13 +659,13 @@ router.post('/:fileId/refetch', verifyToken, requireAdminOrInstructor, requireCa
       `UPDATE case_files
           SET filename = ?, file_format = ?, file_source = ?, file_size = ?,
               original_filename = ?,
-              converted_text = ?, converted_text_original = ?, converted_at = NOW(), text_edited_at = NULL,
+              converted_text = ?, converted_text_original = ?, text_format = ?, converted_at = NOW(), text_edited_at = NULL,
               fetched_final_url = ?, fetched_content_type = ?, fetched_at = NOW()
         WHERE id = ?`,
       [
         filename, fileFormat, fileSource, fileSize,
         file.original_filename || title,
-        fetched.text, fetched.text,
+        fetched.text, fetched.text, fetched.textFormat,
         fetched.finalUrl, fetched.contentType,
         file.id
       ]
@@ -1194,13 +1201,13 @@ router.post('/:fileId/reconvert', verifyToken, requireAdminOrInstructor, require
       });
     }
 
-    const { text } = await convertFile(filePath, path.extname(filePath));
+    const { text, format } = await convertFile(filePath, path.extname(filePath));
 
     await pool.execute(
       `UPDATE case_files
-          SET converted_text = ?, converted_text_original = ?, converted_at = NOW(), text_edited_at = NULL
+          SET converted_text = ?, converted_text_original = ?, text_format = ?, converted_at = NOW(), text_edited_at = NULL
         WHERE id = ?`,
-      [text || null, text || null, fileId]
+      [text || null, text || null, text ? textFormatOfConversion(format) : null, fileId]
     );
 
     res.json({

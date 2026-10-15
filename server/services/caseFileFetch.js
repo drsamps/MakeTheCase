@@ -24,6 +24,7 @@ import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import { fetchUrlBytes, decodeText } from './urlFetcher.js';
 import { convertFile } from './fileConverter.js';
+import { MARKDOWN, PLAIN_TEXT, textFormatOfConversion } from '../../utils/readingFormat.js';
 
 // Below this many characters of article text we assume Readability found a nav menu
 // or a JS-rendered shell, fall back to the whole body, and flag the result.
@@ -220,7 +221,7 @@ async function convertBytes(buffer, ext) {
   await fsp.writeFile(tmpPath, buffer);
   try {
     const result = await convertFile(tmpPath, ext);
-    return result?.text || '';
+    return { text: result?.text || '', textFormat: textFormatOfConversion(result?.format) };
   } finally {
     await fsp.unlink(tmpPath).catch(() => {});
   }
@@ -240,7 +241,7 @@ function titleFromUrl(finalUrl) {
  * Fetch a URL for Case Files.
  *
  * @returns {Promise<{
- *   kind: 'web'|'file', title: string, text: string, degraded: boolean,
+ *   kind: 'web'|'file', title: string, text: string, textFormat: 'markdown'|'text', degraded: boolean,
  *   finalUrl: string, contentType: string|null,
  *   ext: string|null, buffer: Buffer|null
  * }>} `ext` and `buffer` are set only for kind 'file'.
@@ -261,6 +262,7 @@ export async function fetchForCaseFile(urlString) {
       kind: 'web',
       title: title || titleFromUrl(finalUrl),
       text: markdown,
+      textFormat: MARKDOWN,
       degraded,
       finalUrl,
       contentType: contentType || null,
@@ -277,9 +279,10 @@ export async function fetchForCaseFile(urlString) {
     );
   }
 
-  const text = ext === '.txt' || ext === '.md'
-    ? decodeText(buffer, contentTypeHeader).trim()
-    : (await convertBytes(buffer, ext)).trim();
+  const converted = ext === '.txt' || ext === '.md'
+    ? { text: decodeText(buffer, contentTypeHeader), textFormat: ext === '.md' ? MARKDOWN : PLAIN_TEXT }
+    : await convertBytes(buffer, ext);
+  const text = converted.text.trim();
   if (!text) {
     throw new Error(`No text could be extracted from that file (a scanned PDF has none). ${PASTE_INSTEAD}`);
   }
@@ -287,6 +290,7 @@ export async function fetchForCaseFile(urlString) {
     kind: 'file',
     title: titleFromUrl(finalUrl),
     text,
+    textFormat: converted.textFormat,
     degraded: false,
     finalUrl,
     contentType,

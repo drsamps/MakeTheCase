@@ -5,9 +5,13 @@ const CaseFilesHelp: React.FC = () => (
     <h4>The text is what the AI reads</h4>
     <p>
       Every case file is turned into text, and that text (not the original PDF or page) is what goes into the chat
-      prompt. Open <strong>Text</strong> on any row to read or edit it, and use <strong>Preview</strong> to see headings,
-      lists and tables formatted.
+      prompt. Open <strong>Text</strong> on any row to read or edit it, and use <strong>Preview</strong> to see it as students
+      will read it.
     </p>
+    <ul>
+      <li>Word files, web pages and pasted text are Markdown: <code>#</code> headings, lists and tables show formatted.</li>
+      <li>PDF and plain-text files show line by line, with short lines as headings. Markdown typed into their text shows as typed.</li>
+    </ul>
 
     <h4>Add from web page</h4>
     <ul>

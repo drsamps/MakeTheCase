@@ -69,6 +69,12 @@ Content > Case Files → **Add from web page** fetches a URL, shows the text for
 - **Downloads.** `GET /:fileId/download` sends the original (always as an attachment, `nosniff`; the path comes only from the DB row and must stay inside the case folder). `GET /:fileId/download-text` sends the current text, which is what the AI reads. Both need view access to the case.
 - **On/off:** the `case_files_url_fetch_enabled` setting (default `1`) gates fetch and re-fetch; `GET /api/case-files/config/web-fetch` tells the UI. Paste always works.
 
+## Text format (migration 087)
+
+`case_files.text_format` records whether `converted_text` is Markdown (`markdown`) or plain text (`text`). It is set wherever the text is produced: upload, re-extract, lazy backfill, fetch, re-fetch, paste and package install. `utils/readingFormat.js` holds the rule and, for rows from before the migration (NULL), guesses from `file_format`.
+
+The student reading panel and the Case Files → Text → Preview render each file by this format (`components/ReadingText.tsx`). Markdown text uses `MarkdownPreview`. PDF and plain text show one paragraph per line, since pdf-parse text has no blank lines and would run into one Markdown paragraph. `GET /api/llm/case-data` sends the case text as `reading_parts`, one per file or outline. The joined `case_content` stays on the server for the chat prompt.
+
 ## Orphaned Outline Fix
 
 A related fix was made to `loadCaseData()` in `server/routes/llm.js`. Previously, AI-generated outlines (from Case Prep) were only included in prompts as children of their parent file. If the parent file had `include_in_chat_prompt = 0` (e.g., the instructor wanted to use only the outline, not the raw case), the outline was silently dropped.

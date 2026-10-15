@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import MarkdownPreview from '../caseWriter/MarkdownPreview';
+import ReadingText, { type ReadingFormat } from '../ReadingText';
+import { MARKDOWN } from '../../utils/readingFormat.js';
 
 interface Props {
   value: string;
@@ -9,13 +10,20 @@ interface Props {
   /** Shown at the right of the header row (e.g. "Unsaved changes"). */
   status?: React.ReactNode;
   placeholder?: string;
+  /**
+   * The text's format (utils/readingFormat.js), so Preview shows it as students see it:
+   * Markdown formatted, PDF and plain text line by line. Defaults to Markdown (pasted text).
+   */
+  format?: ReadingFormat;
 }
 
 /**
- * The text a case file contributes to the chat prompt: an editable textarea with a
- * Markdown preview. Shared by the Extracted Text modal and the Add-from-web review.
+ * The text a case file contributes to the chat prompt: an editable textarea with a preview
+ * that shows the text as students will read it (components/ReadingText.tsx): Markdown text
+ * formatted, PDF and plain text line by line. Shared by the Extracted Text modal and the
+ * Add-from-web review.
  */
-const TextEditorPanel: React.FC<Props> = ({ value, onChange, meta, status, placeholder }) => {
+const TextEditorPanel: React.FC<Props> = ({ value, onChange, meta, status, placeholder, format = MARKDOWN }) => {
   const [preview, setPreview] = useState(false);
 
   return (
@@ -48,8 +56,9 @@ const TextEditorPanel: React.FC<Props> = ({ value, onChange, meta, status, place
         </div>
       </div>
       {preview ? (
-        <MarkdownPreview
-          markdown={value}
+        <ReadingText
+          text={value}
+          format={format}
           emptyText="No text"
           className="w-full h-[50vh] overflow-auto border rounded p-4 bg-gray-50 text-sm"
         />
