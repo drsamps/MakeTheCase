@@ -180,7 +180,29 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     default: 0,
     min: 0,
     max: 20,
-    description: 'Require N exchanges before allowing "time is up" (0 = no minimum)',
+    description: 'Student messages the AI must answer before the student can finish (0 = no minimum)',
+    category: 'chat_control'
+  },
+  {
+    key: 'max_exchanges',
+    label: 'Maximum Responses',
+    type: 'number',
+    default: 0,
+    min: 0,
+    max: 50,
+    description: 'The chat wraps up after the AI answers this many student messages (0 = no limit)',
+    category: 'chat_control'
+  },
+  {
+    key: 'max_exchanges_action',
+    label: 'At the Response Limit',
+    type: 'select',
+    default: 'end',
+    options: [
+      { value: 'end', label: 'End the chat' },
+      { value: 'ask', label: 'Let the student finish or keep talking' }
+    ],
+    description: 'What happens when the student reaches Maximum Responses',
     category: 'chat_control'
   },
   {

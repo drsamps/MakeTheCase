@@ -15,6 +15,8 @@ export interface LLMChatReply {
   /** Model that actually answered (a ranked backup when `backup` is true). */
   modelId: string;
   backup: boolean;
+  /** Student messages the AI has answered in this chat, this one included (server count). */
+  exchangesUsed?: number;
 }
 
 export interface LLMChatSession {
@@ -49,13 +51,15 @@ export const createChatSession = (
     const result = await parseOrThrow(response);
     if (!response.ok || result.error) {
       const msg = result?.error?.message || `Server returned ${response.status}`;
-      throw new Error(msg);
+      // The code lets the page tell a limit (EXCHANGE_LIMIT_REACHED, MESSAGE_TOO_LONG) from a failure.
+      throw Object.assign(new Error(msg), { code: result?.error?.code as string | undefined });
     }
 
     return {
       text: result.data?.text || '',
       modelId: result.data?.meta?.model_id || modelId,
       backup: Boolean(result.data?.meta?.backup),
+      exchangesUsed: typeof result.data?.meta?.exchanges_used === 'number' ? result.data.meta.exchanges_used : undefined,
     };
   },
 });

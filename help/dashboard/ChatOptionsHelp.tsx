@@ -96,10 +96,12 @@ const ChatOptionsHelp: React.FC = () => (
     <ul>
       <li><strong>Allow Repeat</strong> - Allow students to repeat the chat multiple times</li>
       <li><strong>Auto-end on Timeout</strong> - Automatically end the chat when the scenario time limit hits zero. The minutes are set on each case scenario (Content &gt; Cases &gt; Scenarios); this checkbox only auto-submits when that timer expires. It also requires <strong>Show Timer</strong> to be on — the visible countdown is what triggers the auto-end.</li>
-      <li><strong>Allow Finish Button</strong> - Provide students a "Finish Chat" button to conclude the chat when done (only shows after Minimum Exchanges requirement is met)</li>
+      <li><strong>Allow Finish Button</strong> - Provide students a "Finish Chat" button to conclude the chat when done (enabled once the Minimum Exchanges requirement is met)</li>
       <li><strong>Allow Restart</strong> - Provide students a "Restart Chat" button to restart the current case chat</li>
       <li><strong>Allow Exit</strong> - Provide students a "Cancel Chat" button to cancel and perhaps start over</li>
-      <li><strong>Minimum Exchanges</strong> - Required exchanges before "time is up" is accepted (0 = none)</li>
+      <li><strong>Minimum Exchanges</strong> - How many student messages the AI must answer before the student can finish with "time is up" or the Finish button (0 = none). Refused hints and too-short openings do not count. The timer still ends the chat on time even below the minimum.</li>
+      <li><strong>Maximum Responses</strong> - The chat wraps up after the AI answers this many student messages (0 = no limit). The AI is told when it is answering the last one, so it closes the conversation, and students see a "3 of 5 responses used" counter.</li>
+      <li><strong>At the Response Limit</strong> - <strong>End the chat</strong> goes straight to the wrap-up and evaluation. <strong>Let the student finish or keep talking</strong> asks the student; "Keep talking" removes the limit for that chat, and the whole conversation is graded.</li>
       <li><strong>Max Message Length</strong> - Character limit per student message (0 = unlimited)</li>
     </ul>
 

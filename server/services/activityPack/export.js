@@ -404,6 +404,12 @@ async function collectActivity(req, item, opts, shared) {
     const effective = parseJson(bundle.chat_options ?? (await resolveChatOptions(sectionId, null)));
     if (effective && typeof effective === 'object') {
       chatOptions = Object.fromEntries(Object.entries(effective).filter(([k]) => KNOWN_CHAT_OPTION_KEYS.has(k)));
+      // Maximum Responses switched off means the same as an older server without the option, so
+      // leave both keys out: an older installer refuses any key it does not know.
+      if (!(Number(chatOptions.max_exchanges) > 0)) {
+        delete chatOptions.max_exchanges;
+        delete chatOptions.max_exchanges_action;
+      }
     }
     let rubricKey = null;
     if (bundle.rubric_id !== null) {

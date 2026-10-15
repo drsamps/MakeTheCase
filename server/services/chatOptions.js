@@ -40,6 +40,8 @@ export const DEFAULT_CHAT_OPTIONS = {
   restart_chat: false,
   allow_exit: false,
   require_minimum_exchanges: 0,  // 0 = no minimum, N = require N exchanges before "time is up"
+  max_exchanges: 0,              // 0 = no limit, N = the chat wraps up after the AI answers N student messages
+  max_exchanges_action: 'end',   // at the limit: 'end' wraps up; 'ask' lets the student finish or keep talking
   max_message_length: 0,         // 0 = unlimited, N = max N characters per message
   // Position tracking override (position config is now per-scenario)
   disable_position_tracking: false  // Override to disable scenario-level position tracking

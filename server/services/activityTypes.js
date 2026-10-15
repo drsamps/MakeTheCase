@@ -15,6 +15,8 @@
  * prepareEvalInputs({ caseChatId, sectionId, caseId, caseData, rubric, rubricChosen })
  *                                                                      -> { caseData, rubric }
  * finishEvaluation(result, transcript, protagonistName)               -> result
+ * finalTurnNote                                                       -> string, added to the
+ *   student's last message (Maximum Responses) for the model only; never stored or shown
  */
 
 import { CASE_CHAT, TEACH_BACK, normalizeActivityType } from '../../utils/activityTypes.js';
@@ -39,6 +41,12 @@ function teachBackGreeting(caseData, studentName) {
   return `Hi ${studentName}, I'm ${introduceAudience(caseData.protagonist)}. I'm supposed to understand **${caseData.chat_question}** and honestly I don't get it yet. Could you explain it to me?`;
 }
 
+// Sent to the model with the student's last allowed message (chat option max_exchanges), so its
+// reply closes the conversation instead of asking another question. Appended to that message,
+// not the system prompt, which must stay byte-for-byte stable for prompt caching.
+const CASE_CHAT_FINAL_TURN_NOTE = '\n\n(Note for this reply only: this is the student\'s final message in this conversation. Respond to it, then close the meeting warmly in one or two sentences. Do not ask another question.)';
+const TEACH_BACK_FINAL_TURN_NOTE = '\n\n(Note for this reply only: this is the student\'s final message in this conversation. Respond to it, say briefly what you now understand, and thank them. Do not ask another question.)';
+
 const BEHAVIOUR = {
   [CASE_CHAT]: {
     buildSystemPrompt,
@@ -46,6 +54,7 @@ const BEHAVIOUR = {
     buildCoachPrompt,
     prepareEvalInputs: async ({ caseData, rubric }) => ({ caseData, rubric }),
     finishEvaluation: (result) => result,
+    finalTurnNote: CASE_CHAT_FINAL_TURN_NOTE,
   },
   // Teach-back is judged against the audience the student chose, and against its own criteria
   // unless the assignment names a rubric. Its "student quotes" are checked against the
@@ -56,6 +65,7 @@ const BEHAVIOUR = {
     buildCoachPrompt: buildTeachBackCoachPrompt,
     prepareEvalInputs: teachBackEvalInputs,
     finishEvaluation: verifyEvidence,
+    finalTurnNote: TEACH_BACK_FINAL_TURN_NOTE,
   },
 };
 
