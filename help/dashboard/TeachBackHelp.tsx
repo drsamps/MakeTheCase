@@ -58,10 +58,11 @@ const TeachBackHelp: React.FC = () => (
 
     <h4>What the Student Sees First</h4>
     <p>
-      An instruction panel above the chat names the activity, the audience (with its intro line), the
-      topic, and the length: the number of messages (Maximum Responses), the time limit, and the
-      minimum, all from your settings. It says the clock starts with their first message (or their
-      position pick), so they can skim the reading first. Below it, the audience&apos;s opening
+      An instruction bar across the top of the chat names the activity, the audience (with its intro
+      line) and the topic, then lists instructions from your settings: review the reading, how many
+      messages they can send (Maximum Responses), the time limit and the minimum. It says the clock
+      starts with their first message (or their position pick), so they can review the reading
+      first. Below it, the audience&apos;s opening
       message: your saved one, or a standard one for an audience you have not drafted.
     </p>
 

@@ -43,7 +43,7 @@ const isDisabledFlag = (value: unknown): boolean =>
 /**
  * Whether the chat opens by asking the student to pick a position (position tracking on,
  * capture method 'explicit', and the scenario has positions). startConversation acts on it and
- * the teach-back intro panel describes it, so both read this one rule.
+ * the teach-back intro bar describes it, so both read this one rule.
  */
 const needsPositionPick = (
   usesPositions: boolean,
@@ -2161,7 +2161,7 @@ const App: React.FC = () => {
   // Check if case content should be shown (defaults to true if not specified)
   const showCaseContent = chatOptions?.show_case !== false;
 
-  // Teach-back: the instruction panel above the first message (components/TeachBackIntro.tsx).
+  // Teach-back: the instruction bar above the first message (components/TeachBackIntro.tsx).
   const teachBackIntro = (() => {
     if (!teachBackMode) return undefined;
     const scenario = selectedScenarioId ? availableScenarios.find(s => s.scenario_id === selectedScenarioId) : null;

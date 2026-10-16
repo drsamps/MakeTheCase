@@ -39,7 +39,7 @@ function buildPrompt({ caseTitle, scenarioName, topic, situation, audiences }) {
 
   return `You are helping an instructor set up a "teach-back" activity. A student will explain a topic from a reading to an AI character (an "audience") who does not understand it yet. For each audience below, write two things.
 
-1. "intro": ONE short, playful, slightly funny sentence (under 25 words) about this audience, shown to the student in an instruction panel before the chat. Capture the audience's quirk with a light, specific image; do not just restate their description. Write in the third person, starting with the name shown to the student. Do not say they are eager or want to learn (the panel says that next). Do not mention scores or grading.
+1. "intro": ONE short, playful, slightly funny sentence (under 25 words) about this audience, shown to the student in an instruction bar above the chat. Capture the audience's quirk with a light, specific image; do not just restate their description. Write in the third person, starting with the name shown to the student. Do not say they are eager or want to learn (the bar says that next). Do not mention scores or grading.
    Examples of the tone wanted (for other audiences; write fresh lines, do not reuse these):
    - "Uncle Ray has fixed every car on the block and suspects this works like a carburetor."
    - "The new intern owns four highlighters and no idea which parts matter yet."

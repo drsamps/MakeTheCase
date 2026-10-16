@@ -180,7 +180,7 @@ New scenario settings go in this JSON column, not new columns (it will be rename
 - **Nested by visibility.** `student` is the only subtree sent to students (`sectionCases.js#forStudent` strips the rest, including legacy position keys). AI-only text goes in a separate subtree (e.g. `ai`), never under `student`.
 - **One writer:** `server/services/scenarioSettings.js#writeScenarioSettings` (a `JSON_SET` merge). The scenario route takes `student_settings` separately and never lets a whole-column write drop `student`; legacy position keys there are still read by `evaluations.js`.
 - `student` holds the teach-back `situation` and per-persona `{ intro, opening }` (keys = persona ids). Openings must contain `{studentName}`; `teachBackGreeting` uses the saved opening, else `templateOpening()`, so every student who picks an audience reads the same words. Students never trigger an AI call for it: openings are drafted on request in the scenario editor (`POST /api/cases/:caseId/scenario-drafts`, `services/scenarioDrafts.js`, purpose `scenario_drafts`, billed to the caller) and saved by the instructor.
-- The teach-back intro panel (`components/TeachBackIntro.tsx`, copy in `teachBack.ts#teachBackIntroText`) is page UI only: not a chat turn, not sent to the model, not in transcripts.
+- The teach-back intro bar (`components/TeachBackIntro.tsx`, copy in `teachBack.ts#teachBackIntroText`) is page UI only: not a chat turn, not sent to the model, not in transcripts.
 - Packages carry `student` (validated by the same registry, persona keys remapped on install) and require the `scenario_settings:student` token.
 
 ### Activity packages (download a case, install it on another server)

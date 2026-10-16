@@ -155,49 +155,49 @@ const capitalise = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
  * The intro bar's text. Strings may contain **bold** spans (rendered by TeachBackIntro).
  * Students never see the words "teach-back": the heading names the case and scenario.
  */
-export function teachBackIntroText(f: TeachBackIntroFacts): { heading: string; teachLine: string; topic: string; body: string[] } {
+export function teachBackIntroText(f: TeachBackIntroFacts): {
+  heading: string; teachLine: string; topic: string; about: string; instructions: string[];
+} {
   const audience = introduceAudience(f.audienceName) || 'your listener';
-  const body: string[] = [];
+  // "Messages" are the student's own: what they send, never the audience's replies.
+  const instructions: string[] = [];
 
-  body.push(`${f.intro?.trim() || `${capitalise(audience)} is new to this topic.`} Underneath it all, they really want to understand it and are eager for you to explain, so don't hold back!`);
-
-  body.push(f.showReading
-    ? `You can skim the reading ${f.readingWhere === 'left' ? 'on the left' : 'above'} before you start, and refer to it throughout the conversation.`
+  instructions.push(f.showReading
+    ? `You should review the reading ${f.readingWhere === 'left' ? 'on the left' : 'above'} before you start, and refer to it throughout the conversation.`
     : 'Draw on the reading you studied for this activity.');
 
-  const pickNote = f.positionFirst ? ' (picking your position counts as one)' : '';
+  const pickNote = f.positionFirst ? ' (the position you pick counts as your first message)' : '';
   let pickNoted = false;
-  const length: string[] = [];
   if (f.maxMessages > 0) {
     pickNoted = true;
     const keepGoing = f.canKeepGoing ? ', and you can choose to keep going after that' : '';
     if (f.timeLimitMinutes > 0 && f.autoEnd) {
-      length.push(`You have up to **${plural(f.maxMessages, 'message')}** or **${plural(f.timeLimitMinutes, 'minute')}**, whichever comes first${pickNote}${keepGoing}.`);
+      instructions.push(`You can send them up to **${plural(f.maxMessages, 'message')}** or use **${plural(f.timeLimitMinutes, 'minute')}**, whichever comes first${pickNote}${keepGoing}.`);
     } else {
-      length.push(`You have **${plural(f.maxMessages, 'message')}**${pickNote}${keepGoing}.`);
-      if (f.timeLimitMinutes > 0) length.push(`Aim to finish in about **${plural(f.timeLimitMinutes, 'minute')}**.`);
+      instructions.push(`You can send them up to **${plural(f.maxMessages, 'message')}**${pickNote}${keepGoing}.`);
+      if (f.timeLimitMinutes > 0) instructions.push(`Aim to finish in about **${plural(f.timeLimitMinutes, 'minute')}**.`);
     }
   } else if (f.timeLimitMinutes > 0) {
-    length.push(f.autoEnd
-      ? `You have **${plural(f.timeLimitMinutes, 'minute')}**.`
-      : `Aim for about **${plural(f.timeLimitMinutes, 'minute')}**.`);
+    instructions.push(f.autoEnd
+      ? `You can take up to **${plural(f.timeLimitMinutes, 'minute')}**.`
+      : `Aim to finish in about **${plural(f.timeLimitMinutes, 'minute')}**.`);
   }
   if (f.timeLimitMinutes > 0) {
-    length.push(`The clock starts when you ${f.positionFirst ? 'pick your position' : 'send your first message'}${f.showReading ? ', so take your time with the reading first' : ''}.`);
+    instructions.push(`The clock starts when you ${f.positionFirst ? 'pick your position' : 'send your first message'}.`);
   }
   if (f.minMessages > 0) {
-    length.push(`Send at least **${plural(f.minMessages, 'message')}** before you finish${pickNoted ? '' : pickNote}.`);
+    instructions.push(`Send at least **${plural(f.minMessages, 'message')}** before you finish${pickNoted ? '' : pickNote}.`);
   }
-  if (length.length > 0) body.push(length.join(' '));
 
-  body.push(`${f.allowFinish
+  instructions.push(f.allowFinish
     ? 'When you think they\'ve got it, click **Finish Chat** (or type "time is up").'
-    : 'When you think they\'ve got it, type "time is up".'} Good luck!`);
+    : 'When you think they\'ve got it, type "time is up".');
 
   return {
     heading: `Welcome to this "${f.caseTitle}" activity${f.scenarioName ? ` on: ${f.scenarioName}` : ''}!`,
-    teachLine: `In this activity, you'll teach ${audience} about:`,
+    teachLine: `You'll teach ${audience} about:`,
     topic: f.topic,
-    body,
+    about: `${f.intro?.trim() || `${capitalise(audience)} is new to this topic.`} Underneath it all, they really want to understand it and are eager for you to explain.`,
+    instructions,
   };
 }

@@ -23,7 +23,7 @@ interface ChatWindowProps {
   onPositionSelect?: (position: PositionOption) => void;
   /** Replaces the case-chat question above the position buttons (teach-back). */
   positionPrompt?: string;
-  /** An instruction panel shown above the first message, scrolling with the chat (teach-back). */
+  /** An instruction bar shown above the first message, full width, scrolling with the chat (teach-back). */
   intro?: React.ReactNode;
 }
 
@@ -63,7 +63,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const introShownFor = useRef<Message | undefined | null>(null);
 
   useEffect(() => {
-    // With an intro panel, start at the top so it is read before the first message: once per
+    // With an intro bar, start at the top so it is read before the first message: once per
     // chat. If the student's first message is later taken back (rejected as too long), the chat
     // is back to one message but the error and position buttons are at the bottom.
     if (intro && messages.length <= 1 && !isLoading && introShownFor.current !== messages[0]) {
@@ -82,14 +82,17 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const personaName = personaDisplayName || 'Protagonist';
   const protagonistTitle = `${protagonistName}, ${personaName} protagonist of ${caseTitle} (AI model: ${chatModelName || '...'})`;
 
+  // The intro sits outside the padded wrapper so it spans the chat edge to edge. first:rounded-t-xl
+  // clips it to the chat panel's rounded corners when nothing (error, timer, counter) is above.
   return (
-    <div 
+    <div
       ref={containerRef}
-      className="flex-1 p-6 space-y-6 overflow-y-auto"
+      className="flex-1 overflow-y-auto first:rounded-t-xl"
       onCopy={handleCopyPaste}
       onCut={handleCopyPaste}
     >
       {intro}
+      <div className="p-6 space-y-6">
       {messages.map((msg, index) => (
         <React.Fragment key={index}>
           <div
@@ -160,6 +163,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         </div>
       )}
       <div ref={messagesEndRef} />
+      </div>
     </div>
   );
 };

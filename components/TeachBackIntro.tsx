@@ -8,9 +8,12 @@ const renderBold = (text: string) =>
   );
 
 /**
- * The instruction panel above a teach-back chat: what the activity is, who the student is
+ * The instruction bar above a teach-back chat: what the activity is, who the student is
  * teaching, the topic and the length. Page UI only: never a chat turn, never sent to the model,
  * not in the transcript. Copy is in teachBack.ts#teachBackIntroText.
+ *
+ * Deliberately unlike a chat bubble: it spans the chat frame edge to edge (ChatWindow renders it
+ * outside its padded message list), with no shadow and its own colour.
  */
 const TeachBackIntro: React.FC<{ facts: TeachBackIntroFacts }> = ({ facts }) => {
   const text = teachBackIntroText(facts);
@@ -18,14 +21,21 @@ const TeachBackIntro: React.FC<{ facts: TeachBackIntroFacts }> = ({ facts }) => 
     <div
       role="note"
       aria-label="Activity instructions"
-      className="mx-auto max-w-2xl rounded-xl border border-indigo-200 bg-indigo-50 px-5 py-4 text-sm leading-relaxed text-indigo-950 shadow-sm"
+      className="border-b-2 border-amber-300 bg-amber-50 px-6 py-5 text-sm leading-relaxed text-gray-900"
     >
-      <p className="text-base font-semibold">{text.heading}</p>
-      <p className="mt-2">{text.teachLine}</p>
-      <p className="mt-1 rounded-lg bg-white/70 px-3 py-2 font-semibold">{renderBold(text.topic)}</p>
-      {text.body.map((line, i) => (
-        <p key={i} className="mt-2">{renderBold(line)}</p>
-      ))}
+      <div className="mx-auto max-w-3xl">
+        <p className="text-base font-semibold">{text.heading}</p>
+        <p className="mt-3">{text.teachLine}</p>
+        <p className="mt-1 rounded-md border border-amber-300 bg-white px-3 py-2 font-semibold">{renderBold(text.topic)}</p>
+        <p className="mt-2">{renderBold(text.about)}</p>
+        <p className="mt-4 text-xs font-bold uppercase tracking-wide text-amber-800">Instructions</p>
+        <ul className="mt-1 list-disc space-y-1 pl-5">
+          {text.instructions.map((line, i) => (
+            <li key={i}>{renderBold(line)}</li>
+          ))}
+        </ul>
+        <p className="mt-3 font-semibold">Good luck!</p>
+      </div>
     </div>
   );
 };

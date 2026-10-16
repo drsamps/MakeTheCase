@@ -103,7 +103,7 @@ to upload the reading as the case document.
 | **Chat Question** | **What the audience needs explained.** A topic, not a decision: "why safety stock rises with demand variability", never "should we raise safety stock". Students see it as "you'll teach … about: *your topic*", so write a phrase, not a question |
 | Additional Prompt Instructions | Optional, **never shown to students**. Anything specific to this topic, e.g. "the student should get as far as the square-root relationship" |
 | **The audience's situation** | Optional, **shown to students**. Why the audience needs the topic, written to follow "I …": "am about to take over the store's ordering". The audience tells it in its opening and keeps it in mind for the whole chat |
-| **Openings & introductions** | Click **Draft with AI** to write, for every enabled audience, a playful intro line (shown in the panel above the chat) and an opening message. Read and edit each one, then save. Every student who picks that audience reads the same opening, with `{studentName}` replaced by their first name. An audience with no opening gets a standard one. Drafting uses your weekly AI allowance; students never trigger an AI call for it |
+| **Openings & introductions** | Click **Draft with AI** to write, for every enabled audience, a playful intro line (shown in the instruction bar above the chat) and an opening message. Read and edit each one, then save. Every student who picks that audience reads the same opening, with `{studentName}` replaced by their first name. An audience with no opening gets a standard one. Drafting uses your weekly AI allowance; students never trigger an AI call for it |
 | Chat Time Limit | 20 minutes is a good start (see the table below) |
 | Positions | Optional. Leave empty unless you want to track where students stand (see below) |
 
@@ -154,10 +154,12 @@ Save. The assignment now carries a **Teach-back** badge wherever it is listed.
 ## What the student sees
 
 1. They pick their audience on the start screen ("Choose Your Audience").
-2. An instruction panel above the chat names the activity and topic, introduces the audience
-   (the intro line), and states the length from the assignment's settings: Maximum Responses
-   as a number of messages, the time limit, the minimum, and that the clock starts with their
-   first message or position pick. It stays at the top of the chat, so they can scroll back to it.
+2. An instruction bar across the top of the chat (amber, full width, so it is not mistaken
+   for a message) names the activity and topic and introduces the audience (the intro line).
+   Under **Instructions** it lists, from the assignment's settings: review the reading, the
+   length (Maximum Responses as the number of messages *they* can send, the time limit), that
+   the clock starts with their first message or position pick, the minimum, and how to finish.
+   It stays at the top of the chat, so they can scroll back to it.
 3. The audience's opening: the saved one for that audience (or a standard one), greeting them
    by name, telling the situation, and asking them to help it understand the topic.
 4. Each turn it reflects their words back, says when something lands and thanks them, then

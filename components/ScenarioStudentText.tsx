@@ -117,7 +117,7 @@ const ScenarioStudentText: React.FC<Props> = ({ caseId, scenarioName, topic, val
       <div>
         <h4 className="text-sm font-semibold text-indigo-950">Teach-back: what students see first</h4>
         <p className="text-xs text-gray-600 mt-1">
-          Students see an instruction panel and then the audience&apos;s opening message. Every student who
+          Students see an instruction bar and then the audience&apos;s opening message. Every student who
           picks the same audience reads the same opening, with their own name. An audience with no
           opening gets a standard one.
         </p>
@@ -206,7 +206,7 @@ const ScenarioStudentText: React.FC<Props> = ({ caseId, scenarioName, topic, val
                   )}
                 </div>
               </div>
-              <label className="block text-xs font-medium text-gray-600 mt-2">Intro line (in the instruction panel)</label>
+              <label className="block text-xs font-medium text-gray-600 mt-2">Intro line (in the instruction bar)</label>
               <input
                 type="text"
                 value={entry.intro || ''}
