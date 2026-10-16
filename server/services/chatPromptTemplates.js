@@ -205,6 +205,14 @@ ${caseData.case_content}
     ? `\n**Instructions for this Topic:**\n${caseData.prompt_instructions}\n`
     : '';
 
+  // Why this listener needs the topic, as the instructor wrote it (scenario settings, student
+  // subtree). The opening already told the student; this keeps later replies in the same story.
+  // Only present when set, so prompts without one are unchanged byte for byte.
+  const situation = caseData.scenario_student?.situation?.trim().replace(/[.!\s]+$/, '');
+  const situationSection = situation
+    ? `\n**Your Situation (in your own words):**\nI ${situation}, so I need to understand this.\n`
+    : '';
+
   // Hints are in character: the audience can only restate its own question more clearly.
   const freeHints = options.freeHints ?? 1;
   let hintPenaltyText;
@@ -224,7 +232,7 @@ You are not a teacher, a grader, or an assistant. You are the one who does not u
 
 **What ${studentName} Is Explaining to You:**
 ${caseData.chat_question}
-${scenarioSection}${audienceSection}${additionalPersonality}
+${situationSection}${scenarioSection}${audienceSection}${additionalPersonality}
 **How to Reply:**
 1.  **Reflect before you ask.** Put what ${studentName} just said back in your own words — "so if I've got this, X leads to Y because…?" — so they can hear what you actually took in, and correct you if you have it wrong.
 2.  **Understanding is earned, and it arrives in stages.** You start out knowing nothing about this. After a first explanation you understand only part of it: say what you took in, then ask about the piece that is still missing — usually the reason behind it, a concrete example, or how it differs from something that sounds similar. Do NOT say that something "clicked" or "made sense" in your first two replies. Say an idea has landed only when ${studentName} has really covered it, in words you could repeat back, and then name the specific thing that did it. Do not praise every reply, and never reuse a stock phrase ("that made it click", "now I get it") — say something specific, or say nothing about it.

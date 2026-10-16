@@ -31,6 +31,7 @@ import crypto from 'crypto';
 import { isKnownActivityType, getActivityType } from '../../../utils/activityTypes.js';
 import { KNOWN_CHAT_OPTION_KEYS } from '../chatOptions.js';
 import { CAPTURE_METHODS, SELECTION_MODES } from '../activityDefaults.js';
+import { validateStudentSettings } from '../../../utils/scenarioSettings.js';
 
 export const PACK_FORMAT = 'makethecase.activity-pack';
 export const FORMAT_VERSION = 1;
@@ -213,17 +214,24 @@ export function assertChatOptions(chatOptions, what) {
 
 /**
  * A scenario's chat_options_override holds chat options plus the scenario's position settings
- * (types.ts ScenarioPositionSettings; routes/evaluations.js reads them). export.js sends only
+ * (types.ts ScenarioPositionSettings; routes/evaluations.js reads them), and the scenario
+ * settings subtrees registered in utils/scenarioSettings.js (`student`). export.js sends only
  * these keys and assertScenarioOverride() refuses any other, as for chat options.
  */
 export const SCENARIO_POSITION_KEYS = ['position_tracking_enabled', 'position_capture_method', 'position_options', 'position_labels', 'track_position_change'];
-export const isScenarioOverrideKey = (key) => KNOWN_CHAT_OPTION_KEYS.has(key) || SCENARIO_POSITION_KEYS.includes(key);
+export const SCENARIO_SETTINGS_SUBTREES = ['student'];
+export const isScenarioOverrideKey = (key) =>
+  KNOWN_CHAT_OPTION_KEYS.has(key) || SCENARIO_POSITION_KEYS.includes(key) || SCENARIO_SETTINGS_SUBTREES.includes(key);
 
 function assertScenarioOverride(override, what) {
   if (!isObject(override)) throw invalid(`${what} must be an object`);
   if (Buffer.byteLength(JSON.stringify(override), 'utf8') > TEXT_BYTES) throw invalid(`${what} is too large`);
-  const { position_tracking_enabled, position_capture_method, position_options, position_labels, track_position_change, ...chatOptions } = override;
+  const { position_tracking_enabled, position_capture_method, position_options, position_labels, track_position_change, student, ...chatOptions } = override;
   assertChatOptions(chatOptions, what);
+  if (student !== undefined && student !== null) {
+    const { error } = validateStudentSettings(student);
+    if (error) throw invalid(`${what}: ${error}`);
+  }
   bool(position_tracking_enabled, `${what}.position_tracking_enabled`);
   bool(track_position_change, `${what}.track_position_change`);
   if (position_capture_method !== undefined && position_capture_method !== null && !CAPTURE_METHODS.includes(position_capture_method)) {

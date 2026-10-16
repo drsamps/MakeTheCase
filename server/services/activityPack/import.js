@@ -385,6 +385,14 @@ function storedFilename(displayName, ext, used) {
   return name;
 }
 
+/** The per-audience entries of a scenario's student text, keyed by the ids the personas have on this server. */
+function withTargetStudentPersonaIds(override, personaIdMap) {
+  const personas = override?.student?.personas;
+  if (!personas || typeof personas !== 'object') return override;
+  const moved = Object.fromEntries(Object.entries(personas).map(([id, entry]) => [personaIdMap.get(id) || id, entry]));
+  return { ...override, student: { ...override.student, personas: moved } };
+}
+
 /** Persona ids in chat options, moved to the ids the personas have on this server. */
 function withTargetPersonaIds(chatOptions, personaIdMap) {
   if (!chatOptions || typeof chatOptions !== 'object') return chatOptions;
@@ -421,7 +429,9 @@ async function installActivity(conn, req, pack, activity, plan, { personaIdMap, 
   const positionIdByKey = new Map();
   let baseScenarioId = null;
   for (const s of activity.scenarios) {
-    const override = s.chat_options_override ? withTargetPersonaIds(s.chat_options_override, personaIdMap) : null;
+    const override = s.chat_options_override
+      ? withTargetStudentPersonaIds(withTargetPersonaIds(s.chat_options_override, personaIdMap), personaIdMap)
+      : null;
     const [result] = await conn.execute(
       `INSERT INTO case_scenarios
          (case_id, scenario_uid, scenario_name, protagonist, protagonist_initials, protagonist_role, chat_topic,

@@ -175,6 +175,14 @@ A case is a self-contained activity: documents, scenarios and positions, an acti
 - The type is fixed once the case is assigned, listed on a course, or has chats (409 `ACTIVITY_TYPE_IN_USE`). Another activity on the same reading is a **Copy** of the case.
 - **Case default settings** (`cases.default_settings`, `default_rubric_id`; `server/services/activityDefaults.js`) are COPIED into a new course Main version, or a section assignment that follows none, when the case is attached. They are never followed afterwards; course versions stay the live settings.
 
+### Scenario settings JSON (`case_scenarios.chat_options_override`, 2026-10-15)
+New scenario settings go in this JSON column, not new columns (it will be renamed `settings`). The registry is `utils/scenarioSettings.js`; rules in its header:
+- **Nested by visibility.** `student` is the only subtree sent to students (`sectionCases.js#forStudent` strips the rest, including legacy position keys). AI-only text goes in a separate subtree (e.g. `ai`), never under `student`.
+- **One writer:** `server/services/scenarioSettings.js#writeScenarioSettings` (a `JSON_SET` merge). The scenario route takes `student_settings` separately and never lets a whole-column write drop `student`; legacy position keys there are still read by `evaluations.js`.
+- `student` holds the teach-back `situation` and per-persona `{ intro, opening }` (keys = persona ids). Openings must contain `{studentName}`; `teachBackGreeting` uses the saved opening, else `templateOpening()`, so every student who picks an audience reads the same words. Students never trigger an AI call for it: openings are drafted on request in the scenario editor (`POST /api/cases/:caseId/scenario-drafts`, `services/scenarioDrafts.js`, purpose `scenario_drafts`, billed to the caller) and saved by the instructor.
+- The teach-back intro panel (`components/TeachBackIntro.tsx`, copy in `teachBack.ts#teachBackIntroText`) is page UI only: not a chat turn, not sent to the model, not in transcripts.
+- Packages carry `student` (validated by the same registry, persona keys remapped on install) and require the `scenario_settings:student` token.
+
 ### Activity packages (download a case, install it on another server)
 `Content > Cases`: **Download**, **Install from file**, **Copy**. Code: `server/services/activityPack/` (`format.js`, `capabilities.js`, `zip.js`, `export.js`, `import.js`), `server/routes/activityPacks.js`, `components/CasePackages.tsx`. Rules that fail silently (also in the header of `activityPack/index.js`):
 - **Fail closed.** An unknown format version, `requires` token, activity type, chat option, document role, persona kind or enum is refused, never ignored. This is what stops a package from a newer server installing on an older one, and it cannot be added later to servers already deployed. Anything a new release adds that an older installer would mishandle by ignoring needs a token in `capabilities.js`.

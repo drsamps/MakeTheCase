@@ -13,6 +13,7 @@ import { stripTurnTiming } from '../../utils/transcriptFormat.js';
 import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
+import { parseScenarioOverride } from '../../utils/scenarioSettings.js';
 import { resolveInstructorForSection, resolveInstructorForCaseChat } from '../services/keyResolver.js';
 import {
   parseEvaluationResponse,
@@ -707,7 +708,8 @@ async function inferPositionAfterEvaluation(case_chat_id) {
 
   if (chatRows.length > 0) {
     const chat = chatRows[0];
-    const scenarioSettings = chat.chat_options_override ? JSON.parse(chat.chat_options_override) : {};
+    // mysql2 returns the JSON column parsed; parseScenarioOverride takes either form.
+    const scenarioSettings = parseScenarioOverride(chat.chat_options_override) || {};
     const transcriptText = chat.transcript;
 
     // Check if AI inference is needed

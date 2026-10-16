@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../services/apiClient';
 import InlineStatus from './ui/InlineStatus';
 import { CaseScenario } from '../types';
+import ScenarioStudentText, { ScenarioStudentSettings } from './ScenarioStudentText';
+import { isTeachBackType } from '../teachBack';
+import { readScenarioSettings } from '../utils/scenarioSettings.js';
 import {
   DndContext,
   closestCenter,
@@ -23,6 +26,8 @@ import { CSS } from '@dnd-kit/utilities';
 interface ScenarioManagerProps {
   caseId: string;
   caseTitle: string;
+  /** The case's activity type; teach-back scenarios get the student-text editor. */
+  activityType?: string | null;
   onClose: () => void;
   onScenariosChanged?: () => void;
 }
@@ -202,9 +207,14 @@ async function orThrow<T>(request: Promise<{ data: T | null; error: { message: s
 export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   caseId,
   caseTitle,
+  activityType,
   onClose,
   onScenariosChanged
 }) => {
+  const teachBack = isTeachBackType(activityType);
+  // Student-visible text in the scenario's settings document (utils/scenarioSettings.js).
+  const emptyStudentText: ScenarioStudentSettings = { situation: '', personas: {} };
+  const [studentText, setStudentText] = useState<ScenarioStudentSettings>(emptyStudentText);
   const [scenarios, setScenarios] = useState<CaseScenario[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -308,6 +318,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     setSavedFlash(null);
     setEditingScenario(null);
     setFormData(defaultFormData);
+    setStudentText(emptyStudentText);
     setPositions([]);
     setShowForm(true);
   };
@@ -328,6 +339,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       chat_time_warning: scenario.chat_time_warning || 5,
       enabled: scenario.enabled
     });
+    setStudentText(readScenarioSettings(scenario.chat_options_override).student);
     setPositions([]);
     fetchPositions(scenario.id);
     setShowForm(true);
@@ -349,7 +361,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       prompt_instructions: formData.prompt_instructions,
       chat_time_limit: formData.chat_time_limit,
       chat_time_warning: formData.chat_time_warning,
-      enabled: formData.enabled
+      enabled: formData.enabled,
+      // Merged into chat_options_override on the server; sent only by the teach-back editor.
+      ...(teachBack && { student_settings: studentText }),
     };
 
     setIsSaving(true);
@@ -554,7 +568,10 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   const previewRole = formData.protagonist_role.trim();
   const previewTopic = formData.chat_topic.trim();
   const previewRoleText = previewRole ? ` (${previewRole})` : '';
-  const studentFacingScenarioText = `Chat with ${previewProtagonist || '{protagonist}'}${previewRoleText} about ${previewTopic || '{chat_topic}'}`;
+  // Matches the student start screen (App.tsx), which names the topic for teach-back.
+  const studentFacingScenarioText = teachBack
+    ? `Explain: ${previewTopic || formData.chat_question.trim() || '{chat_topic}'}`
+    : `Chat with ${previewProtagonist || '{protagonist}'}${previewRoleText} about ${previewTopic || '{chat_topic}'}`;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -864,14 +881,31 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   rows={3}
                   placeholder="The main question for students to discuss..."
                 />
-                {/* The mode lives on the assignment, not the scenario, so this is static
-                    guidance rather than a conditional label. See docs/teach-back-setup.md. */}
                 <p className="text-xs text-gray-500 mt-1">
-                  On a <strong>teach-back</strong> assignment this is <em>what the audience needs
-                  explained</em> (e.g. &quot;why safety stock rises with demand variability&quot;), and
-                  positions and arguments are not used.
+                  {teachBack ? (
+                    <>
+                      This is <em>the topic the audience needs explained</em>, shown to students as
+                      &quot;you&apos;ll teach … about: <strong>your topic</strong>&quot;. Write it as a
+                      phrase, not a question, e.g. &quot;why safety stock rises with demand variability&quot;.
+                    </>
+                  ) : (
+                    <>
+                      On a <strong>teach-back</strong> case this is <em>what the audience needs
+                      explained</em> (e.g. &quot;why safety stock rises with demand variability&quot;).
+                    </>
+                  )}
                 </p>
               </div>
+
+              {teachBack && (
+                <ScenarioStudentText
+                  caseId={caseId}
+                  scenarioName={formData.scenario_name}
+                  topic={formData.chat_question}
+                  value={studentText}
+                  onChange={setStudentText}
+                />
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">

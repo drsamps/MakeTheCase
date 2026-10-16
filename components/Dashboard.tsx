@@ -10377,6 +10377,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         <ScenarioManager
           caseId={managingScenarioCase.case_id}
           caseTitle={managingScenarioCase.case_title}
+          activityType={managingScenarioCase.activity_type}
           onClose={() => {
             setShowScenarioManager(false);
             setManagingScenarioCase(null);

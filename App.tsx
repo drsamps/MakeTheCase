@@ -10,6 +10,8 @@ import { CaseData, DEFAULT_CASE_DATA } from './constants';
 import { api, getApiBaseUrl, getAuthHeaders, refreshAuthToken } from './services/apiClient';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
+import TeachBackIntro from './components/TeachBackIntro';
+import { readScenarioSettings } from './utils/scenarioSettings.js';
 import MessageInput from './components/MessageInput';
 import Evaluation from './components/Evaluation';
 import Login from './components/Login';
@@ -37,6 +39,21 @@ const isEnabledFlag = (value: unknown): boolean =>
 
 const isDisabledFlag = (value: unknown): boolean =>
   value === false || value === 0 || value === '0' || value === 'false';
+
+/**
+ * Whether the chat opens by asking the student to pick a position (position tracking on,
+ * capture method 'explicit', and the scenario has positions). startConversation acts on it and
+ * the teach-back intro panel describes it, so both read this one rule.
+ */
+const needsPositionPick = (
+  usesPositions: boolean,
+  caseInfo: { position_tracking_enabled?: unknown; position_capture_method?: string | null } | null | undefined,
+  scenario: { positions?: unknown[] | null } | null | undefined
+): boolean =>
+  usesPositions
+  && isEnabledFlag(caseInfo?.position_tracking_enabled)
+  && (caseInfo?.position_capture_method || 'explicit') === 'explicit'
+  && (scenario?.positions?.length || 0) > 0;
 
 
 /** Yes/no for feedback/transcript permission replies. Avoids substring false positives (e.g. includes('y') matches "today"). */
@@ -838,18 +855,10 @@ const App: React.FC = () => {
 
       // Check if we need position selection in chat (for 'explicit' capture method)
       const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-      const isPosTrackingEnabled = activityUsesPositions && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
-      const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
       const selectedScenario = selectedScenarioId
         ? availableScenarios.find(s => s.scenario_id === selectedScenarioId)
         : null;
-      const positionsAvailable = selectedScenario?.positions?.length > 0;
-
-      if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && positionsAvailable) {
-        setAwaitingPositionSelection(true);
-      } else {
-        setAwaitingPositionSelection(false);
-      }
+      setAwaitingPositionSelection(needsPositionPick(activityUsesPositions, activeCaseInfo, selectedScenario));
     } catch (e) {
       console.error("Failed to start conversation:", e);
       setError("Failed to initialize the chat session. Please check your API key and refresh the page.");
@@ -2051,7 +2060,11 @@ const App: React.FC = () => {
                                   )}
                                 </div>
                                 <span className="block text-sm text-gray-600 mt-0.5">
-                                  Chat with {scenario.protagonist}{protagonistRole} about {scenario.chat_topic}.
+                                  {isTeachBackType(caseItem.activity_type)
+                                    // Teach-back: the audience is chosen below, so the scenario's
+                                    // protagonist is only a placeholder; name the topic instead.
+                                    ? <>Explain: {scenario.chat_topic || scenario.chat_question}</>
+                                    : <>Chat with {scenario.protagonist}{protagonistRole} about {scenario.chat_topic}.</>}
                                 </span>
                                 {!availability.available && availability.message && (
                                   <span className="block text-xs text-amber-600 mt-1">
@@ -2148,6 +2161,36 @@ const App: React.FC = () => {
   // Check if case content should be shown (defaults to true if not specified)
   const showCaseContent = chatOptions?.show_case !== false;
 
+  // Teach-back: the instruction panel above the first message (components/TeachBackIntro.tsx).
+  const teachBackIntro = (() => {
+    if (!teachBackMode) return undefined;
+    const scenario = selectedScenarioId ? availableScenarios.find(s => s.scenario_id === selectedScenarioId) : null;
+    const studentText = readScenarioSettings(scenario?.chat_options_override).student;
+    const persona = availablePersonas.find((p) => p.persona_id === selectedPersonaId);
+    const caseInfo = availableCases.find(c => c.case_id === selectedCaseId);
+    const positionFirst = needsPositionPick(activityUsesPositions, caseInfo, scenario);
+    return (
+      <TeachBackIntro
+        facts={{
+          caseTitle: activeCaseData?.case_title || '',
+          scenarioName: scenario?.scenario_name || undefined,
+          audienceName: persona?.persona_name || activeCaseData?.protagonist || '',
+          intro: selectedPersonaId ? studentText.personas[selectedPersonaId]?.intro : undefined,
+          topic: activeCaseData?.chat_question || '',
+          maxMessages: maxExchanges,
+          canKeepGoing: chatOptions?.max_exchanges_action === 'ask',
+          minMessages: effectiveMinExchanges,
+          timeLimitMinutes: Number(scenario?.chat_time_limit) > 0 ? Number(scenario.chat_time_limit) : 0,
+          autoEnd: Boolean(chatOptions?.timeout_chat),
+          allowFinish: Boolean(chatOptions?.allow_finish_button),
+          positionFirst,
+          showReading: showCaseContent,
+          readingWhere: isLargeScreen ? 'left' : 'above',
+        }}
+      />
+    );
+  })();
+
   // Chat panel content - reused for both layouts
   const chatPanel = (
     <aside className="w-full h-full flex flex-col bg-gray-200 rounded-xl shadow-lg">
@@ -2170,8 +2213,10 @@ const App: React.FC = () => {
       {maxExchanges > 0 && conversationPhase === ConversationPhase.CHATTING && (
         <div className={`flex justify-end px-3 py-1 text-xs font-medium text-gray-600 ${currentCaseChatId && chatOptions?.show_timer !== false ? '' : 'mt-12'}`} aria-live="polite">
           {continuedPastLimit
-            ? `${exchangesUsed} responses (past the limit of ${maxExchanges})`
-            : `${Math.min(exchangesUsed, maxExchanges)} of ${maxExchanges} responses used`}
+            ? `${exchangesUsed} ${teachBackMode ? 'messages' : 'responses'} (past the limit of ${maxExchanges})`
+            : teachBackMode
+              ? `${Math.min(exchangesUsed, maxExchanges)} of ${maxExchanges} messages sent`
+              : `${Math.min(exchangesUsed, maxExchanges)} of ${maxExchanges} responses used`}
         </div>
       )}
       <ChatWindow
@@ -2195,6 +2240,7 @@ const App: React.FC = () => {
           return selectedScenario?.positions || [];
         })()}
         onPositionSelect={handleInitialPositionSelect}
+        intro={teachBackIntro}
       />
       {conversationPhase === ConversationPhase.FEEDBACK_COMPLETE ? (
           (() => {
@@ -2331,7 +2377,7 @@ const App: React.FC = () => {
             {limitChoicePending && conversationPhase === ConversationPhase.CHATTING ? (
               <div className="p-4 bg-blue-50 border-t border-blue-200 text-center">
                 <p className="text-sm font-medium text-gray-700 mb-3">
-                  You've used all {maxExchanges} of your responses. Finish now, or keep talking if you'd like.
+                  You've used all {maxExchanges} of your {teachBackMode ? 'messages' : 'responses'}. Finish now, or keep talking if you'd like.
                 </p>
                 <div className="flex justify-center gap-3">
                   <button

@@ -30,6 +30,7 @@ import { getSectionCaseChatOptions } from './chatOptions.js';
 import { resolveAvailablePersonas } from './personaService.js';
 import { activityBehaviour } from './activityTypes.js';
 import { getActivityType, normalizeActivityType } from '../../utils/activityTypes.js';
+import { readScenarioSettings } from '../../utils/scenarioSettings.js';
 
 const MAX_NAME_LENGTH = 40;
 
@@ -67,7 +68,7 @@ export async function loadChatContext(chat) {
   if (chat.scenario_id) {
     const [scenarios] = await pool.execute(
       `SELECT protagonist, protagonist_initials, protagonist_role, chat_topic, chat_question,
-              prompt_instructions, arguments_for, arguments_against
+              prompt_instructions, arguments_for, arguments_against, chat_options_override
          FROM case_scenarios WHERE id = ? AND case_id = ?`,
       [chat.scenario_id, chat.case_id]
     );
@@ -93,6 +94,9 @@ export async function loadChatContext(chat) {
         prompt_instructions: scenario.prompt_instructions || undefined,
         arguments_for: argumentsFor,
         arguments_against: argumentsAgainst,
+        // Student-visible scenario text (utils/scenarioSettings.js): the audience's situation and
+        // each audience's saved opening. Read by the teach-back greeting and system prompt.
+        scenario_student: readScenarioSettings(scenario.chat_options_override).student,
       };
     }
   }
@@ -135,5 +139,5 @@ export function protagonistLabel(ctx) {
  * @param {string} studentName - already sanitized
  */
 export function buildGreeting(ctx, studentName) {
-  return activityBehaviour(ctx.mode).buildGreeting(ctx.caseData, studentName);
+  return activityBehaviour(ctx.mode).buildGreeting(ctx.caseData, studentName, ctx.chat.persona);
 }

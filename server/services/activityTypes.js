@@ -10,13 +10,16 @@
  * that already hold the case data read `caseData.activity_type` and need no extra query.
  *
  * buildSystemPrompt(studentName, personaId, caseData, options)        -> string
- * buildGreeting(caseData, studentName)                                -> string (turn 0)
+ * buildGreeting(caseData, studentName, personaId)                     -> string (turn 0)
  * buildCoachPrompt(chatHistory, studentName, caseData, freeHints, rubric) -> string
  * prepareEvalInputs({ caseChatId, sectionId, caseId, caseData, rubric, rubricChosen })
  *                                                                      -> { caseData, rubric }
  * finishEvaluation(result, transcript, protagonistName)               -> result
  * finalTurnNote                                                       -> string, added to the
  *   student's last message (Maximum Responses) for the model only; never stored or shown
+ * savedOpenings                                                       -> boolean: buildGreeting
+ *   uses the opening the instructor saved per persona (scenario settings, `student.personas`),
+ *   so the scenario editor offers "Draft with AI" for them (POST /cases/:id/scenario-drafts)
  */
 
 import { CASE_CHAT, TEACH_BACK, normalizeActivityType } from '../../utils/activityTypes.js';
@@ -24,21 +27,26 @@ import { buildSystemPrompt, buildTeachBackSystemPrompt } from './chatPromptTempl
 import { buildCoachPrompt } from './promptBuilder.js';
 import { buildTeachBackCoachPrompt } from './teachBackCoachPrompt.js';
 import { teachBackEvalInputs, verifyEvidence } from './teachBack.js';
+import { fillOpening, templateOpening } from '../../utils/scenarioSettings.js';
 
 function caseChatGreeting(caseData, studentName) {
   const roleDescription = caseData.protagonist_role || 'the protagonist';
   return `Hello ${studentName}, I am ${caseData.protagonist}, ${roleDescription} of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
 }
 
-// An audience's display name, phrased so it reads after "I'm". Audience names are written from
-// the STUDENT's side of the picker ("Your grandmother", "A skeptical colleague"), so "I'm Your
-// grandmother" would be wrong. Only a known leading article or possessive is lowercased: "Sam, a
-// curious beginner" and an instructor-made name like "Professor Kim" keep their capital.
-const introduceAudience = (name) =>
-  (name || '').trim().replace(/^(your|a|an|the|my|our|someone|somebody)(?=\s)/i, (w) => w.toLowerCase());
-
-function teachBackGreeting(caseData, studentName) {
-  return `Hi ${studentName}, I'm ${introduceAudience(caseData.protagonist)}. I'm supposed to understand **${caseData.chat_question}** and honestly I don't get it yet. Could you explain it to me?`;
+// The opening the instructor saved for this audience in this scenario (drafted with AI in the
+// scenario editor, then edited), so every student who picks it reads the same words. Without one,
+// a fixed template. Both are in utils/scenarioSettings.js.
+function teachBackGreeting(caseData, studentName, personaId) {
+  const student = caseData.scenario_student;
+  const saved = personaId ? student?.personas?.[personaId]?.opening : null;
+  if (saved) return fillOpening(saved, studentName);
+  return templateOpening({
+    audienceName: caseData.protagonist,
+    studentName,
+    topic: caseData.chat_question,
+    situation: student?.situation,
+  });
 }
 
 // Sent to the model with the student's last allowed message (chat option max_exchanges), so its
@@ -62,6 +70,7 @@ const BEHAVIOUR = {
     finishEvaluation: (result) => result,
     finalTurnNote: CASE_CHAT_FINAL_TURN_NOTE,
     positionPickNote: '',
+    savedOpenings: false,
   },
   // Teach-back is judged against the audience the student chose, and against its own criteria
   // unless the assignment names a rubric. Its "student quotes" are checked against the
@@ -74,6 +83,7 @@ const BEHAVIOUR = {
     finishEvaluation: verifyEvidence,
     finalTurnNote: TEACH_BACK_FINAL_TURN_NOTE,
     positionPickNote: TEACH_BACK_POSITION_PICK_NOTE,
+    savedOpenings: true,
   },
 };
 

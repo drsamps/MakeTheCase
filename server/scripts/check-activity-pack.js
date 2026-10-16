@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
 import { pool } from '../db.js';
 import { LIMITS, PackError, activityContentHash, assertValidPack, canonicalJson, sha256 } from '../services/activityPack/format.js';
-import { requirementsFor, serverCapabilities } from '../services/activityPack/capabilities.js';
+import { requirementsFor, serverCapabilities, SCENARIO_STUDENT_TEXT_TOKEN } from '../services/activityPack/capabilities.js';
 import { openPack, zipPack } from '../services/activityPack/zip.js';
 import { buildPackFile, sealPack } from '../services/activityPack/export.js';
 import { inspectPackFile, installPackFile } from '../services/activityPack/index.js';
@@ -218,6 +218,27 @@ await check('requires lists one token per activity type, all known to this serve
   for (const token of fixture().manifest.requires) assert.ok(serverCapabilities().includes(token));
 });
 
+// A teach-back scenario's saved situation and per-audience intro and opening
+// (utils/scenarioSettings.js, `student` subtree of chat_options_override).
+const withStudentText = (pack) => {
+  pack.activities[1].scenarios[0].chat_options_override = {
+    student: {
+      situation: "am taking over the store's ordering",
+      personas: { 'audience-beginner': { intro: 'Sam catches on fast.', opening: 'Hi, {studentName}! I need to understand this.' } },
+    },
+  };
+};
+
+await check('scenario student text travels, and requires its token', async () => {
+  const pack = fixture();
+  withStudentText(pack);
+  sealPack(pack);
+  assert.ok(pack.manifest.requires.includes(SCENARIO_STUDENT_TEXT_TOKEN));
+  assert.ok(serverCapabilities().includes(SCENARIO_STUDENT_TEXT_TOKEN));
+  const after = await openAndValidate(await zipPack(pack));
+  assert.deepEqual(after.activities[1].scenarios[0].chat_options_override, pack.activities[1].scenarios[0].chat_options_override);
+});
+
 console.log('\nRefusals (each of these must NOT install)');
 
 await check('a file that is not a ZIP', () => refuses('NOT_A_PACK', () => openPack(crypto.randomBytes(4096))));
@@ -347,6 +368,16 @@ await check('settings that name a scenario, position or rubric not in the packag
   ]) {
     await refuses('INVALID_PACK', async () => openAndValidate(await zipped(change)), /not in the package/);
   }
+});
+
+await check('scenario student text with an unknown key', async () => {
+  const buffer = await zipped((pack) => { withStudentText(pack); pack.activities[1].scenarios[0].chat_options_override.student.ai_notes = 'x'; });
+  await refuses('INVALID_PACK', () => openAndValidate(buffer), /Unknown student setting/);
+});
+
+await check('a scenario opening without the {studentName} placeholder', async () => {
+  const buffer = await zipped((pack) => { withStudentText(pack); pack.activities[1].scenarios[0].chat_options_override.student.personas['audience-beginner'].opening = 'Hello there.'; });
+  await refuses('INVALID_PACK', () => openAndValidate(buffer), /studentName/);
 });
 
 await check('a field longer than its database column', async () => {

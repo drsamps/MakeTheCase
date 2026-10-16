@@ -23,6 +23,8 @@ interface ChatWindowProps {
   onPositionSelect?: (position: PositionOption) => void;
   /** Replaces the case-chat question above the position buttons (teach-back). */
   positionPrompt?: string;
+  /** An instruction panel shown above the first message, scrolling with the chat (teach-back). */
+  intro?: React.ReactNode;
 }
 
 const renderMessageContent = (content: string) => {
@@ -47,15 +49,28 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   awaitingPositionSelection = false,
   positionOptions = [],
   onPositionSelect,
-  positionPrompt
+  positionPrompt,
+  intro
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  // The opening message the view was last scrolled to the top for (see below).
+  const introShownFor = useRef<Message | undefined | null>(null);
+
   useEffect(() => {
+    // With an intro panel, start at the top so it is read before the first message: once per
+    // chat. If the student's first message is later taken back (rejected as too long), the chat
+    // is back to one message but the error and position buttons are at the bottom.
+    if (intro && messages.length <= 1 && !isLoading && introShownFor.current !== messages[0]) {
+      introShownFor.current = messages[0];
+      containerRef.current?.scrollTo({ top: 0 });
+      return;
+    }
     scrollToBottom();
   }, [messages, isLoading]);
 
@@ -69,10 +84,12 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
   return (
     <div 
+      ref={containerRef}
       className="flex-1 p-6 space-y-6 overflow-y-auto"
       onCopy={handleCopyPaste}
       onCut={handleCopyPaste}
     >
+      {intro}
       {messages.map((msg, index) => (
         <React.Fragment key={index}>
           <div

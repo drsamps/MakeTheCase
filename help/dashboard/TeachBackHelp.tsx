@@ -27,6 +27,10 @@ const TeachBackHelp: React.FC = () => (
       <li><strong>Write the Chat Question</strong> as the thing to be explained, not a decision to be
         made: &quot;why safety stock rises with demand variability&quot;, not &quot;should we raise
         safety stock&quot;.</li>
+      <li><strong>Set what students see first</strong> (in the same scenario form): an optional
+        <em>situation</em> (why the audience needs the topic), then <strong>Draft with AI</strong> to
+        write a playful intro line and an opening message for each audience. Read and edit them, then
+        save. Every student who picks an audience reads the same opening, with their own name.</li>
       <li><strong>Write a teach-back rubric.</strong> This is the step that matters most. The default
         rubric was written for case chat.</li>
       <li><strong>Assign it</strong>, and tick your audiences under Allowed Audiences in Chat
@@ -51,6 +55,15 @@ const TeachBackHelp: React.FC = () => (
       are two separate calls, and the marker is never told which audience was chosen. A warm, thankful
       audience cannot raise a score, and a sceptical one cannot lower it.
     </div>
+
+    <h4>What the Student Sees First</h4>
+    <p>
+      An instruction panel above the chat names the activity, the audience (with its intro line), the
+      topic, and the length: the number of messages (Maximum Responses), the time limit, and the
+      minimum, all from your settings. It says the clock starts with their first message (or their
+      position pick), so they can skim the reading first. Below it, the audience&apos;s opening
+      message: your saved one, or a standard one for an audience you have not drafted.
+    </p>
 
     <h4>Hints</h4>
     <p>

@@ -19,6 +19,7 @@ import {
   linkSectionToVersion,
 } from '../services/caseVersionSync.js';
 import { parseDateInput } from '../utils/dateInput.js';
+import { studentScenarioSettings } from '../../utils/scenarioSettings.js';
 
 // SETTINGS WRITERS BELOW CARRY guardFollowedCaseSettings. A section_cases row that follows a
 // course case version (version_id set) has its settings written through from that version, so a
@@ -57,7 +58,8 @@ async function attachAvailablePersonas(parsedChatOptions, activityType) {
 
 // What a STUDENT may see of a section-case row. The server builds the chat prompt
 // (services/chatPrompt.js), so scenario prompt_instructions, position arguments, persona
-// instructions and chatbot_personality stay on the server. Staff get the full row.
+// instructions and chatbot_personality stay on the server, and of a scenario's settings document
+// only the `student` subtree is sent. Staff get the full row.
 function forStudent(row) {
   const opts = normalizeChatOptions(row.chat_options);
   const { chatbot_personality, ...chatOptions } = opts || {};
@@ -66,8 +68,10 @@ function forStudent(row) {
     chat_options: opts ? chatOptions : opts,
     available_personas: (row.available_personas || []).map(({ instructions, ...p }) => p),
     ...(row.scenarios && {
-      scenarios: row.scenarios.map(({ prompt_instructions, ...scenario }) => ({
+      scenarios: row.scenarios.map(({ prompt_instructions, chat_options_override, ...scenario }) => ({
         ...scenario,
+        // Only the `student` subtree of the scenario's settings (utils/scenarioSettings.js).
+        chat_options_override: studentScenarioSettings(chat_options_override),
         ...(scenario.positions && {
           positions: scenario.positions.map(({ arguments_for, arguments_against, ...p }) => p),
         }),

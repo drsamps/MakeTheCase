@@ -16,6 +16,7 @@
 
 import { parseAllowedPersonaIds } from './utils/personas';
 import { CASE_CHAT, TEACH_BACK } from './utils/activityTypes.js';
+import { introduceAudience } from './utils/scenarioSettings.js';
 
 export { CASE_CHAT, TEACH_BACK };
 
@@ -119,3 +120,84 @@ export const TEACH_BACK_COPY = {
   openingTooShort: (minWords: number) =>
     `I'm not following yet — could you start by explaining it properly, in at least ${minWords} words? Take it from the beginning, as if I know nothing about it.`,
 };
+
+/** What the intro bar above a teach-back chat says, from the assignment's settings. */
+export interface TeachBackIntroFacts {
+  caseTitle: string;
+  scenarioName?: string;
+  /** The audience's display name as the student picked it ("Your grandmother"). */
+  audienceName: string;
+  /** The playful line saved for this audience in this scenario (scenario settings, student subtree). */
+  intro?: string;
+  topic: string;
+  /** Maximum Responses (0 = none); the server counts the student's answered messages. */
+  maxMessages: number;
+  /** "Keep talking" is offered at the limit (max_exchanges_action 'ask'). */
+  canKeepGoing: boolean;
+  /** Require Minimum Exchanges (already capped at the maximum). */
+  minMessages: number;
+  /** The scenario's time limit in minutes (0 = none). */
+  timeLimitMinutes: number;
+  /** Auto-End on Timeout. */
+  autoEnd: boolean;
+  allowFinish: boolean;
+  /** The student picks a position first ("Student selects position"); that click counts as a message and starts the clock. */
+  positionFirst: boolean;
+  /** Show Case Content is on; `readingWhere` is where the reading pane sits. */
+  showReading: boolean;
+  readingWhere: 'left' | 'above';
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const capitalise = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/**
+ * The intro bar's text. Strings may contain **bold** spans (rendered by TeachBackIntro).
+ * Students never see the words "teach-back": the heading names the case and scenario.
+ */
+export function teachBackIntroText(f: TeachBackIntroFacts): { heading: string; teachLine: string; topic: string; body: string[] } {
+  const audience = introduceAudience(f.audienceName) || 'your listener';
+  const body: string[] = [];
+
+  body.push(`${f.intro?.trim() || `${capitalise(audience)} is new to this topic.`} Underneath it all, they really want to understand it and are eager for you to explain, so don't hold back!`);
+
+  body.push(f.showReading
+    ? `You can skim the reading ${f.readingWhere === 'left' ? 'on the left' : 'above'} before you start, and refer to it throughout the conversation.`
+    : 'Draw on the reading you studied for this activity.');
+
+  const pickNote = f.positionFirst ? ' (picking your position counts as one)' : '';
+  let pickNoted = false;
+  const length: string[] = [];
+  if (f.maxMessages > 0) {
+    pickNoted = true;
+    const keepGoing = f.canKeepGoing ? ', and you can choose to keep going after that' : '';
+    if (f.timeLimitMinutes > 0 && f.autoEnd) {
+      length.push(`You have up to **${plural(f.maxMessages, 'message')}** or **${plural(f.timeLimitMinutes, 'minute')}**, whichever comes first${pickNote}${keepGoing}.`);
+    } else {
+      length.push(`You have **${plural(f.maxMessages, 'message')}**${pickNote}${keepGoing}.`);
+      if (f.timeLimitMinutes > 0) length.push(`Aim to finish in about **${plural(f.timeLimitMinutes, 'minute')}**.`);
+    }
+  } else if (f.timeLimitMinutes > 0) {
+    length.push(f.autoEnd
+      ? `You have **${plural(f.timeLimitMinutes, 'minute')}**.`
+      : `Aim for about **${plural(f.timeLimitMinutes, 'minute')}**.`);
+  }
+  if (f.timeLimitMinutes > 0) {
+    length.push(`The clock starts when you ${f.positionFirst ? 'pick your position' : 'send your first message'}${f.showReading ? ', so take your time with the reading first' : ''}.`);
+  }
+  if (f.minMessages > 0) {
+    length.push(`Send at least **${plural(f.minMessages, 'message')}** before you finish${pickNoted ? '' : pickNote}.`);
+  }
+  if (length.length > 0) body.push(length.join(' '));
+
+  body.push(`${f.allowFinish
+    ? 'When you think they\'ve got it, click **Finish Chat** (or type "time is up").'
+    : 'When you think they\'ve got it, type "time is up".'} Good luck!`);
+
+  return {
+    heading: `Welcome to this "${f.caseTitle}" activity${f.scenarioName ? ` on: ${f.scenarioName}` : ''}!`,
+    teachLine: `In this activity, you'll teach ${audience} about:`,
+    topic: f.topic,
+    body,
+  };
+}
