@@ -228,7 +228,7 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
     // Every successful exit goes through here so unverified "student quotes" never ship, and
     // so the saved evaluation is exactly what the student is shown.
     const sendResult = async (data) => {
-      const result = activity.finishEvaluation(data, chatHistory, caseData.protagonist);
+      const result = activity.finishEvaluation(data, chatHistory, caseData);
       const { helpful, liked, improve } = cleanFeedback(feedback);
       const evaluationId = uuidv4();
       await pool.execute(

@@ -101,7 +101,16 @@ to upload the reading as the case document.
 | **Chat Question** | **What the audience needs explained.** A topic, not a decision: "why safety stock rises with demand variability", never "should we raise safety stock" |
 | Additional Prompt Instructions | Optional. Anything specific to this topic, e.g. "the student should get as far as the square-root relationship" |
 | Chat Time Limit | 20 minutes is a good start (see the table below) |
-| Positions | Leave empty |
+| Positions | Optional. Leave empty unless you want to track where students stand (see below) |
+
+**Tracking positions (optional).** If the topic has a stance a student can take ("safety
+stock should rise with demand variability" / "…should not"), add those as positions and turn
+on **Enable position tracking** on the assignment with **Student selects position**. After
+the audience's greeting the student clicks one; it goes in as their first message and the
+audience asks them to explain it. That click counts as one exchange, so allow for it in
+**Require Minimum Exchanges**; the Minimum Words floor applies to their first typed
+explanation. With **Track position change** on, the student picks a final position at the
+end, and both show in **Results → Positions**.
 
 ## Step 4 — Write the rubric (the step that matters most)
 
@@ -134,6 +143,7 @@ Four or five criteria at 5 points each works well. You do not need all of the ab
 | **Show Timer** + **Auto-End on Timeout** | On | The time limit is set on the scenario, and it is your main cost control |
 | **Rubric** | your teach-back rubric | Set on the assignment row, next to the case |
 | **Allow Finish Button** | On | Lets a student stop when they have said everything they can |
+| **Position Tracking** | Off, unless the scenario has positions | See *Tracking positions* in Step 3 |
 
 Save. The assignment now carries a **Teach-back** badge wherever it is listed.
 
@@ -170,3 +180,4 @@ required*. The student teaches each topic in turn. No extra setup.
 | The audience lectures instead of asking | Check the audience's own instructions — if they grant it knowledge, remove that. It should describe who the listener is, not what they know |
 | The audience's name is not the one you expected | In teach-back the name comes from the audience the student picked, not from the scenario's protagonist |
 | Feedback is graded oddly | Check you selected your teach-back rubric on the assignment row and not the default one |
+| Position buttons do not appear after the greeting | Position tracking is off on the assignment, the capture method is not *Student selects position*, or the scenario the student chose has no positions |

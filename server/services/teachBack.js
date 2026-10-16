@@ -10,7 +10,7 @@
 import { pool } from '../db.js';
 import { getRubricById } from './rubricService.js';
 import { parseTranscript } from '../../utils/transcriptFormat.js';
-import { verifyQuote } from './issueAnalytics/common.js';
+import { verifyQuote, positionTextMatcher } from './issueAnalytics/common.js';
 
 /**
  * Audience personas are distinguished from case-chat personas by an id prefix rather than
@@ -39,8 +39,20 @@ export const isAudiencePersonaId = (personaId) =>
  */
 export async function teachBackEvalInputs({ caseChatId, sectionId, caseId, caseData, rubric, rubricChosen = false }) {
   let listener = null;
-  const [chatRows] = await pool.execute('SELECT persona FROM case_chats WHERE id = ?', [caseChatId]);
+  const [chatRows] = await pool.execute('SELECT persona, scenario_id, initial_position_id FROM case_chats WHERE id = ?', [caseChatId]);
   const personaId = chatRows[0]?.persona;
+
+  // The position the student started from. With "Student selects position" its full wording
+  // was posted as their first message; that text is the instructor's, so the judge is told
+  // not to credit it (buildTeachBackCoachPrompt) and verifyEvidence never quotes it.
+  let pickedPosition = null;
+  if (chatRows[0]?.initial_position_id) {
+    const [posRows] = await pool.execute(
+      'SELECT position FROM scenario_positions WHERE position_id = ? AND scenario_id = ?',
+      [chatRows[0].initial_position_id, chatRows[0].scenario_id]
+    );
+    pickedPosition = posRows[0]?.position || null;
+  }
   if (isAudiencePersonaId(personaId)) {
     const [personaRows] = await pool.execute(
       'SELECT persona_name FROM personas WHERE persona_id = ?',
@@ -60,8 +72,10 @@ export async function teachBackEvalInputs({ caseChatId, sectionId, caseId, caseD
     else if (rubric?.rubric_id !== assignedId) evalRubric = await getRubricById(assignedId);
   }
 
+  let evalCaseData = listener ? { ...(caseData || {}), protagonist: listener } : caseData;
+  if (pickedPosition) evalCaseData = { ...(evalCaseData || {}), picked_position: pickedPosition };
   return {
-    caseData: listener ? { ...(caseData || {}), protagonist: listener } : caseData,
+    caseData: evalCaseData,
     rubric: evalRubric,
   };
 }
@@ -69,18 +83,19 @@ export async function teachBackEvalInputs({ caseChatId, sectionId, caseId, caseD
 /**
  * Drop any `evidence` that is not verbatim from one of the student's own turns. The
  * evaluation screen shows it in quotation marks as the student's words, so a paraphrase, a
- * fabricated quote or a line lifted from the listener must not get that far. Mutates and
- * returns `result`.
+ * fabricated quote, a line lifted from the listener or the wording of a clicked position
+ * (`caseData.picked_position`) must not get that far. Mutates and returns `result`.
  */
-export function verifyEvidence(result, transcript, listenerName) {
+export function verifyEvidence(result, transcript, caseData = {}) {
   if (!result || !Array.isArray(result.criteria)) return result;
   const text = String(transcript ?? '');
   const { turns } = parseTranscript(text, {
     studentNames: ['Student'],
-    protagonistNames: [listenerName].filter(Boolean),
+    protagonistNames: [caseData?.protagonist].filter(Boolean),
   });
+  const isPositionText = positionTextMatcher([caseData?.picked_position]);
   for (const criterion of result.criteria) {
-    if (criterion.evidence && !verifyQuote(text, turns, criterion.evidence)) {
+    if (criterion.evidence && (!verifyQuote(text, turns, criterion.evidence) || isPositionText(criterion.evidence))) {
       criterion.evidence = undefined;
     }
   }

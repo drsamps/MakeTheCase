@@ -6695,8 +6695,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               )}
             </div>
 
-            {/* Advanced Section. Hidden in teach-back: it holds only the position-tracking
-                override, and teach-back has no positions. */}
+            {/* Advanced Section. Hidden for an activity type without positions: it holds only
+                the position-tracking override. */}
             <div className={`border-b border-gray-200 ${editingActivityType && !getActivityType(editingActivityType).usesPositions ? 'hidden' : ''}`}>
               <button
                 type="button"

@@ -114,10 +114,18 @@ IMPORTANT: "score" and "totalScore" MUST be integers (not strings, not "4/5", no
 === END EVALUATION RUBRIC ===
 `;
 
+  // A position the student clicked was posted as their message in the instructor's wording.
+  // Per-chat, so it goes in the dynamic part and the cached prefix above stays unchanged.
+  const pickedPositionNote = caseData.picked_position
+    ? `
+**Note on the student's position:** The student began by picking a position from a list the instructor wrote: "${caseData.picked_position}". If a student message is exactly that text, it was a click, not the student's own explanation: give it no credit and never quote it as evidence. Judge only what the student wrote after it.
+`
+    : '';
+
   // DYNAMIC CONTENT (per-request)
   const dynamicContent = `
 **Student Being Evaluated:** ${studentName}
-
+${pickedPositionNote}
 **Conversation Transcript:**
 ---
 ${chatHistory}

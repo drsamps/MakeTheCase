@@ -47,6 +47,12 @@ function teachBackGreeting(caseData, studentName) {
 const CASE_CHAT_FINAL_TURN_NOTE = '\n\n(Note for this reply only: this is the student\'s final message in this conversation. Respond to it, then close the meeting warmly in one or two sentences. Do not ask another question.)';
 const TEACH_BACK_FINAL_TURN_NOTE = '\n\n(Note for this reply only: this is the student\'s final message in this conversation. Respond to it, say briefly what you now understand, and thank them. Do not ask another question.)';
 
+// Sent with a position the student clicked ("Student selects position"), appended the same way.
+// The click posts the instructor's wording as the student's message; in teach-back that is a
+// stance, not an explanation, so the audience must ask for one instead of reflecting it back.
+// Case chat has none: its protagonist already treats the first message as the recommendation.
+const TEACH_BACK_POSITION_PICK_NOTE = '\n\n(Note for this reply only: the student did not write this message. They picked it from a list of positions, so it is where they stand, not an explanation. Do not reflect it back as something you have understood. Acknowledge it briefly and ask them to explain why, from the beginning.)';
+
 const BEHAVIOUR = {
   [CASE_CHAT]: {
     buildSystemPrompt,
@@ -55,6 +61,7 @@ const BEHAVIOUR = {
     prepareEvalInputs: async ({ caseData, rubric }) => ({ caseData, rubric }),
     finishEvaluation: (result) => result,
     finalTurnNote: CASE_CHAT_FINAL_TURN_NOTE,
+    positionPickNote: '',
   },
   // Teach-back is judged against the audience the student chose, and against its own criteria
   // unless the assignment names a rubric. Its "student quotes" are checked against the
@@ -66,6 +73,7 @@ const BEHAVIOUR = {
     prepareEvalInputs: teachBackEvalInputs,
     finishEvaluation: verifyEvidence,
     finalTurnNote: TEACH_BACK_FINAL_TURN_NOTE,
+    positionPickNote: TEACH_BACK_POSITION_PICK_NOTE,
   },
 };
 

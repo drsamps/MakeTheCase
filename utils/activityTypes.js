@@ -24,7 +24,9 @@ export const DEFAULT_ACTIVITY_TYPE = CASE_CHAT;
  *                 `audience-`; every other persona is a 'protagonist' personality.
  * characterFrom   who the AI is in the chat: the scenario's protagonist, or the persona the
  *                 student picked (teach-back: "Your grandmother").
- * usesPositions   whether the student takes a position that can be tracked.
+ * usesPositions   whether the student takes a position that can be tracked. Every current type
+ *                 does; the trait (and the checks on it in App.tsx and Dashboard.tsx) is kept
+ *                 for a future type without positions, so set it deliberately on a new one.
  */
 export const ACTIVITY_TYPES = {
   [CASE_CHAT]: {
@@ -43,7 +45,7 @@ export const ACTIVITY_TYPES = {
     summary: 'The student explains the reading to an AI audience',
     personaKind: 'audience',
     characterFrom: 'persona',
-    usesPositions: false,
+    usesPositions: true,
   },
 };
 

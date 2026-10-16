@@ -21,6 +21,8 @@ interface ChatWindowProps {
   awaitingPositionSelection?: boolean;
   positionOptions?: PositionOption[];
   onPositionSelect?: (position: PositionOption) => void;
+  /** Replaces the case-chat question above the position buttons (teach-back). */
+  positionPrompt?: string;
 }
 
 const renderMessageContent = (content: string) => {
@@ -44,7 +46,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   caseTitle = "Malawi's Pizza",
   awaitingPositionSelection = false,
   positionOptions = [],
-  onPositionSelect
+  onPositionSelect,
+  positionPrompt
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -99,7 +102,11 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           {index === 0 && msg.role === MessageRole.MODEL && awaitingPositionSelection && positionOptions.length > 0 && (
             <div className="flex justify-start pl-[52px]">
               <div className="max-w-md lg:max-w-lg">
-                <p className="text-sm text-gray-600 mb-2"><strong>What is your position on this issue?</strong> (choose the one you most agree with, even though your opinion may be divided)</p>
+                {positionPrompt ? (
+                  <p className="text-sm text-gray-600 mb-2"><strong>{positionPrompt}</strong></p>
+                ) : (
+                  <p className="text-sm text-gray-600 mb-2"><strong>What is your position on this issue?</strong> (choose the one you most agree with, even though your opinion may be divided)</p>
+                )}
                 <div className="flex flex-col gap-2">
                   {positionOptions.map((pos) => (
                     <button

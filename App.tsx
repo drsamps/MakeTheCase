@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Message, MessageRole, ConversationPhase, EvaluationResult, Section, CaseChat, ChatStatus } from './types';
 import { createChatSession, getEvaluation, type LLMChatReply } from './services/llmService';
 import { TEACH_BACK, TEACH_BACK_COPY, DEFAULT_TEACH_BACK_MIN_WORDS, countWords, initialsOf, isTeachBackType } from './teachBack';
+import { getActivityType } from './utils/activityTypes.js';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
 import { api, getApiBaseUrl, getAuthHeaders, refreshAuthToken } from './services/apiClient';
@@ -204,7 +205,10 @@ const App: React.FC = () => {
   // Teach-back reverses the activity: the AI is the one who does not understand, and the
   // student explains the reading to it. The activity type is the case's (`activity_type` on
   // each assigned case), not a chat option; a missing type is the case chat. See teachBack.ts.
-  const teachBackMode = isTeachBackType(availableCases.find((c) => c.case_id === selectedCaseId)?.activity_type);
+  const selectedActivityType = availableCases.find((c) => c.case_id === selectedCaseId)?.activity_type;
+  const teachBackMode = isTeachBackType(selectedActivityType);
+  // Whether this activity type tracks a student position at all (utils/activityTypes.js).
+  const activityUsesPositions = getActivityType(selectedActivityType).usesPositions;
   const [isLoadingAvailableCases, setIsLoadingAvailableCases] = useState(false);
   const [studentSavedSectionId, setStudentSavedSectionId] = useState<string | null>(null);
   const [enrolledSectionIds, setEnrolledSectionIds] = useState<string[]>([]);
@@ -834,7 +838,7 @@ const App: React.FC = () => {
 
       // Check if we need position selection in chat (for 'explicit' capture method)
       const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-      const isPosTrackingEnabled = !teachBackMode && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+      const isPosTrackingEnabled = activityUsesPositions && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
       const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
       const selectedScenario = selectedScenarioId
         ? availableScenarios.find(s => s.scenario_id === selectedScenarioId)
@@ -852,7 +856,7 @@ const App: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId, chatOptions, teachBackMode, availablePersonas, studentDBId]);
+  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId, chatOptions, teachBackMode, activityUsesPositions, availablePersonas, studentDBId]);
   
   // Ends the chat: the farewell, then the optional feedback and transcript questions, then
   // evaluation. Every way a chat ends comes here: the "time is up" phrase and the Finish
@@ -921,19 +925,24 @@ const App: React.FC = () => {
     setContinuedPastLimit(true);
   };
 
+  // The chat timer starts with the student's first message, typed or a clicked position. The
+  // server ignores a second start.
+  const startChatTimer = async () => {
+    if (!currentCaseChatId) return;
+    try {
+      await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/start-timer`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+    } catch (err) {
+      console.error('Failed to start timer:', err);
+    }
+  };
+
   const handleSendMessage = async (userMessage: string) => {
     if (conversationPhase === ConversationPhase.CHATTING) {
         // Start timer on first user message (only if there are exactly 1 message - the initial CEO greeting)
-        if (currentCaseChatId && messages.length === 1) {
-          try {
-            await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/start-timer`, {
-              method: 'POST',
-              headers: getAuthHeaders(),
-            });
-          } catch (err) {
-            console.error('Failed to start timer:', err);
-          }
-        }
+        if (messages.length === 1) await startChatTimer();
 
         const lowerCaseMessage = userMessage.toLowerCase();
         if (lowerCaseMessage.includes("time is up") || lowerCaseMessage.includes("time's up") || lowerCaseMessage.includes("i would like to finish this chat conversation")) {
@@ -963,7 +972,8 @@ const App: React.FC = () => {
             // The refused attempt stays on screen (like a refused hint), so "no opening
             // yet" cannot be "no student message yet": it is "no student message has
             // reached the floor yet". Otherwise the retry would go through unfloored.
-            const openingAccepted = messages.some(m => m.role === MessageRole.USER && countWords(m.content) >= minWords);
+            // A clicked position is the instructor's wording, so it is never the opening.
+            const openingAccepted = messages.some(m => m.role === MessageRole.USER && !m.positionPick && countWords(m.content) >= minWords);
             if (minWords > 0 && !openingAccepted && countWords(userMessage) < minWords) {
                 setMessages((prev) => [...prev,
                     { role: MessageRole.USER, at: Date.now(), content: userMessage },
@@ -1212,10 +1222,14 @@ const App: React.FC = () => {
       }
     }
 
+    // The click is the student's first message, so the timer starts now.
+    await startChatTimer();
+
     // Add position as user message and trigger AI response
     const userPositionMessage: Message = {
       role: MessageRole.USER, at: Date.now(),
-      content: position.position
+      content: position.position,
+      positionPick: true,
     };
     setMessages(prev => [...prev, userPositionMessage]);
 
@@ -1249,7 +1263,9 @@ const App: React.FC = () => {
         }
         const errorMessage: Message = {
           role: MessageRole.MODEL, at: Date.now(),
-          content: "Okay, can you explain why you recommend that action?"
+          content: teachBackMode
+            ? TEACH_BACK_COPY.positionReplyFallback()
+            : "Okay, can you explain why you recommend that action?"
         };
         setMessages(prev => [...prev, errorMessage]);
       } finally {
@@ -1320,7 +1336,7 @@ const App: React.FC = () => {
 
       // Include position_id if explicit capture method is enabled (from assignment-level settings)
       const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-      const isPosTrackingEnabled = !teachBackMode && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+      const isPosTrackingEnabled = activityUsesPositions && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
       const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
 
       if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && selectedInitialPositionId) {
@@ -1728,7 +1744,7 @@ const App: React.FC = () => {
     // Position tracking settings from assignment level (section_cases table)
     // These come from the active-case endpoint response
     const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-    const isPositionTrackingEnabled = !teachBackMode && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+    const isPositionTrackingEnabled = activityUsesPositions && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
     const positionCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
     const trackPositionChange = !isDisabledFlag(activeCaseInfo?.track_position_change);
 
@@ -2171,6 +2187,7 @@ const App: React.FC = () => {
         protagonistInitials={activeCaseData?.protagonist_initials}
         caseTitle={activeCaseData?.case_title}
         awaitingPositionSelection={awaitingPositionSelection && conversationPhase === ConversationPhase.CHATTING}
+        positionPrompt={teachBackMode ? TEACH_BACK_COPY.positionPrompt() : undefined}
         positionOptions={(() => {
           const selectedScenario = selectedScenarioId
             ? availableScenarios.find(s => s.scenario_id === selectedScenarioId)
@@ -2183,7 +2200,7 @@ const App: React.FC = () => {
           (() => {
             // Get position tracking settings for final position selection
             const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-            const isPosTrackingEnabled = !teachBackMode && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+            const isPosTrackingEnabled = activityUsesPositions && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
             const trackPosChange = !isDisabledFlag(activeCaseInfo?.track_position_change);
             const selectedScenario = selectedScenarioId
               ? availableScenarios.find((s: any) => s.scenario_id === selectedScenarioId)
@@ -2205,11 +2222,20 @@ const App: React.FC = () => {
                   return (
                     <div className="p-4 bg-green-50 rounded-lg border border-green-200">
                       <div className="text-sm text-gray-700 mb-3 space-y-2">
-                        <p>{protagonistName}'s original inquiry was: <strong>{chatQuestion}</strong></p>
+                        {teachBackMode ? (
+                          <p>You were asked to explain: <strong>{chatQuestion}</strong></p>
+                        ) : (
+                          <p>{protagonistName}'s original inquiry was: <strong>{chatQuestion}</strong></p>
+                        )}
                         {initialPositionText && (
                           <p>Your initial position on this was: {initialPositionText}</p>
                         )}
-                        <p>Has your position changed based on this simulated conversation with {protagonistName}?<br />What is your <strong>final position</strong> on this issue? (click one)</p>
+                        <p>
+                          {teachBackMode
+                            ? TEACH_BACK_COPY.finalPositionQuestion()
+                            : `Has your position changed based on this simulated conversation with ${protagonistName}?`}
+                          <br />What is your <strong>final position</strong> on this issue? (click one)
+                        </p>
                       </div>
                       <div className="flex flex-col gap-2 items-start">
                         {finalPositions.map((pos: { position_id: number; position_name: string; position: string }) => (

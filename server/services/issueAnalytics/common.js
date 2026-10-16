@@ -140,19 +140,27 @@ export function verifyQuote(text, turns, quote) {
 }
 
 /**
+ * `(quote) => boolean`: whether a quote is (part of) one of these position wordings, or
+ * contains one. Used to keep the instructor's position text from passing as a student quote.
+ */
+export function positionTextMatcher(texts) {
+  const positionTexts = texts
+    .map(t => normalizeWithMap(t || '').out.trim())
+    .filter(t => t.length >= 8);
+  return (quote) => {
+    const q = normalizeWithMap(String(quote ?? '')).out.trim();
+    return q.length > 0 && positionTexts.some(t => t.includes(q) || q.includes(t));
+  };
+}
+
+/**
  * The position axis for a scenario. With positions, a lean is one of their names; without,
  * the fallback for / against / mixed relative to the question.
  */
 export function leanContext(positions, scenario = null) {
   // Picking a position posts its full wording as the student's message. That text is the
   // instructor's, not the student's, so it is never kept as a quote.
-  const positionTexts = positions
-    .map(p => normalizeWithMap(p.position || '').out.trim())
-    .filter(t => t.length >= 8);
-  const isPositionText = (quote) => {
-    const q = normalizeWithMap(String(quote ?? '')).out.trim();
-    return q.length > 0 && positionTexts.some(t => t.includes(q) || q.includes(t));
-  };
+  const isPositionText = positionTextMatcher(positions.map(p => p.position));
   if (positions.length > 0) {
     return {
       mode: 'positions',

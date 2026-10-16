@@ -417,7 +417,21 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
     // The model is told it is answering the last message only when the chat then ends ('end'):
     // in 'ask' the student may keep talking, so the protagonist must not close the meeting.
     const isFinalExchange = maxExchanges > 0 && limitAction === 'end' && exchangesBefore + 1 === maxExchanges;
-    const modelMessage = isFinalExchange ? message + activityBehaviour(context.mode).finalTurnNote : message;
+    const behaviour = activityBehaviour(context.mode);
+    // A clicked position is the first student message, in exactly the position's wording (the
+    // page saves initial_position_id before sending it). Only the model sees the note; the
+    // stored turn is the message as sent.
+    let isPositionPick = false;
+    if (behaviour.positionPickNote && exchangesBefore === 0 && chat.initial_position_id) {
+      const [posRows] = await pool.execute(
+        'SELECT position FROM scenario_positions WHERE position_id = ? AND scenario_id = ?',
+        [chat.initial_position_id, chat.scenario_id]
+      );
+      isPositionPick = !!posRows[0]?.position && posRows[0].position.trim() === String(message).trim();
+    }
+    const modelMessage = message
+      + (isPositionPick ? behaviour.positionPickNote : '')
+      + (isFinalExchange ? behaviour.finalTurnNote : '');
     const systemPrompt = buildChatSystemPrompt(context, sanitizeStudentName(studentName));
     const history = historyForModel(turns);
     const askedAt = new Date();

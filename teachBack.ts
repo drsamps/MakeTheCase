@@ -104,6 +104,18 @@ export const TEACH_BACK_COPY = {
   hintsExhausted: (hintsAllowed: number) =>
     `I've already asked you to rephrase ${hintsAllowed} time${hintsAllowed === 1 ? '' : 's'}, and I don't know the material myself. Let's keep going with what you can tell me.`,
 
+  // Position tracking: the prompt above the position buttons, the reply shown if the AI call
+  // after a position pick fails, and the end-of-chat question (the case chat's names the
+  // protagonist; here that is the audience).
+  positionPrompt: () =>
+    `Before you explain it, where do you stand? Pick the position closest to yours, then tell me why.`,
+
+  positionReplyFallback: () =>
+    `Okay — so that's where you stand. Could you explain to me why?`,
+
+  finalPositionQuestion: () =>
+    `Has explaining it changed your mind?`,
+
   openingTooShort: (minWords: number) =>
     `I'm not following yet — could you start by explaining it properly, in at least ${minWords} words? Take it from the beginning, as if I know nothing about it.`,
 };

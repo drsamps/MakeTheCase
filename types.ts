@@ -8,6 +8,8 @@ export interface Message {
   content: string;
   /** Epoch ms when the message entered the chat; drives transcript turn timing. */
   at?: number;
+  /** A position the student clicked (in the instructor's wording), not text they typed. */
+  positionPick?: boolean;
 }
 
 export enum ConversationPhase {
