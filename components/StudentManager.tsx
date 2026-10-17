@@ -311,7 +311,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
         }
         const response = await api.patch(`/students/${editingStudent.id}`, updateData);
         if (response.error) {
-          setError(response.error.message || response.error);
+          setError(response.error.message);
           return;
         }
 
@@ -345,7 +345,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
         };
         const response = await api.post('/students', createData);
         if (response.error) {
-          setError(response.error.message || response.error);
+          setError(response.error.message);
           return;
         }
 
@@ -376,7 +376,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
     try {
       const response = await api.delete(`/students/${student.id}`);
       if (response.error) {
-        setError(response.error.message || response.error);
+        setError(response.error.message);
       } else {
         fetchStudents();
       }
@@ -400,7 +400,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
         password: newPassword,
       });
       if (response.error) {
-        setError(response.error.message || response.error);
+        setError(response.error.message);
       } else {
         setShowPasswordModal(false);
         setResetPasswordStudent(null);

@@ -459,6 +459,7 @@ const App: React.FC = () => {
               if (!existing.has(sec.section_id)) {
                 merged.push({
                   section_id: sec.section_id,
+                  course_id: sec.course_id ?? null,
                   section_title: sec.section_title,
                   year_term: sec.year_term,
                   chat_model: sec.chat_model,

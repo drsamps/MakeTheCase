@@ -9,6 +9,7 @@
     "server:watch": "nodemon --watch server --ext js,json server/index.js",
     "dev:all": "concurrently \"npm run server:watch\" \"npm run dev\"",
     "build": "vite build",
+    "typecheck": "tsc --noEmit -p .",
     "preview": "vite preview",
     "create-admin": "node server/scripts/create-admin.js",
     "seed-malawis": "node server/scripts/seed-malawis-pizza.js",

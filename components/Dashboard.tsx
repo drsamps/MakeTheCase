@@ -165,7 +165,6 @@ interface StudentDetail {
   case_id: string | null;
   case_title: string | null;
   evaluation_id: string | null;
-  case_chat_id: string | null;
   allow_rechat: boolean;
 }
 
@@ -609,7 +608,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   // Scenario management
   const [showScenarioManager, setShowScenarioManager] = useState(false);
-  const [managingScenarioCase, setManagingScenarioCase] = useState<Case | null>(null);
+  const [managingScenarioCase, setManagingScenarioCase] = useState<Pick<Case, 'case_id' | 'case_title' | 'activity_type'> | null>(null);
 
   // Section-Case management
   const [showSectionCasesModal, setShowSectionCasesModal] = useState(false);
@@ -1215,7 +1214,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     setError(null);
     setStudentDetails([]);
   
-    let studentsData: { id: string, full_name: string, persona: string | null, finished_at: string | null, section_id: string | null, created_at: string | null }[] | null = null;
+    let studentsData: { id: string, full_name: string, favorite_persona: string | null, finished_at: string | null, section_id: string | null, created_at: string | null }[] | null = null;
     let studentsError: any = null;
 
     if (sectionId === 'other_courses') {
@@ -1260,7 +1259,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     } else {
       const { data, error } = await api
         .from('students')
-        .select('id, full_name, persona, finished_at, section_id, created_at')
+        .select('id, full_name, favorite_persona, finished_at, section_id, created_at')
         .eq('section_id', sectionId);
       studentsData = data as any;
       studentsError = error;
@@ -1284,7 +1283,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     // If filtering by case, only fetch evaluations for that specific case
     let evaluationsQuery = api
       .from('evaluations')
-      .select('id, student_id, case_id, score, hints, helpful, created_at, chat_model, super_model, summary, criteria, transcript, liked, improve, allow_rechat, persona')
+      .select('id, student_id, case_id, score, hints, helpful, created_at, chat_model, super_model, summary, criteria, liked, improve, allow_rechat, persona')
       .in('student_id', studentIds);
     
     if (caseIdFilter && caseIdFilter !== 'all') {
@@ -1321,7 +1320,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         super_model: null,
         summary: null,
         criteria: null,
-        transcript: null,
         liked: null,
         improve: null,
         created_at: student.created_at,
@@ -1367,7 +1365,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               super_model: evaluation.super_model ?? null,
               summary: evaluation.summary ?? null,
               criteria: evaluation.criteria ?? null,
-              transcript: evaluation.transcript ?? null,
               liked: evaluation.liked ?? null,
               improve: evaluation.improve ?? null,
               created_at: evaluation.created_at,
@@ -1398,7 +1395,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       super_model: null,
       summary: null,
       criteria: null,
-      transcript: null,
       liked: null,
       improve: null,
       created_at: student.created_at,
@@ -2924,8 +2920,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   // View scenario details in modal
-  const handleViewScenario = async (scenario: any, caseId: string, caseTitle: string) => {
-    setViewingScenario({ ...scenario, case_id: caseId, case_title: caseTitle });
+  const handleViewScenario = async (scenario: any, caseId: string, caseTitle: string, activityType?: string) => {
+    setViewingScenario({ ...scenario, case_id: caseId, case_title: caseTitle, activity_type: activityType });
     setViewingScenarioPositions([]);
     setIsLoadingViewScenarioPositions(true);
 
@@ -5091,7 +5087,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                                     </label>
                                                     <button
                                                       type="button"
-                                                      onClick={() => handleViewScenario(scenario, sc.case_id, sc.case_title)}
+                                                      onClick={() => handleViewScenario(scenario, sc.case_id, sc.case_title, sc.activity_type)}
                                                       className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
                                                     >
                                                       (view details)
@@ -5196,7 +5192,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                             onClick={() => {
                                               setPrimaryTab('content');
                                               setContentSubTab('cases');
-                                              setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title } as Case);
+                                              setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title, activity_type: sc.activity_type });
                                               setShowScenarioManager(true);
                                               setExpandedScenarios(null);
                                             }}
@@ -5273,7 +5269,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                             onClick={() => {
                                               setPrimaryTab('content');
                                               setContentSubTab('cases');
-                                              setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title } as Case);
+                                              setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title, activity_type: sc.activity_type });
                                               setShowScenarioManager(true);
                                               setExpandedScenarios(null);
                                             }}
@@ -5628,7 +5624,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     return sectionCasesList.find((sc: any) => sc.case_id === chatOptionsCase);
   };
 
-  const goToCaseScenarios = (sectionCase?: { case_id: string; case_title?: string } | null) => {
+  const goToCaseScenarios = (sectionCase?: { case_id: string; case_title?: string; activity_type?: string } | null) => {
     setPrimaryTab('content');
     setContentSubTab('cases');
     if (casesList.length === 0) fetchCases();
@@ -5636,8 +5632,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       setManagingScenarioCase({
         case_id: sectionCase.case_id,
         case_title: sectionCase.case_title || sectionCase.case_id,
-        enabled: true,
-      } as Case);
+        activity_type: sectionCase.activity_type,
+      });
       setShowScenarioManager(true);
     }
   };
@@ -10506,7 +10502,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               <button
                 onClick={() => {
                   // Open ScenarioManager for this scenario's case
-                  const caseInfo = { case_id: viewingScenario.case_id, case_title: viewingScenario.case_title };
+                  const caseInfo = { case_id: viewingScenario.case_id, case_title: viewingScenario.case_title, activity_type: viewingScenario.activity_type };
                   setViewingScenario(null);
                   setManagingScenarioCase(caseInfo);
                   setShowScenarioManager(true);

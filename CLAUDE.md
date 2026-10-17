@@ -14,6 +14,7 @@ npm run dev            # Frontend only (Vite dev server, port 3000)
 npm run server         # Backend only (Express, port 3001)
 npm run server:watch   # Backend with nodemon auto-restart
 npm run build          # Build frontend for production
+npm run typecheck      # tsc --noEmit; keep it at 0 errors (vite build does not type-check)
 npm run create-admin   # Create admin: node server/scripts/create-admin.js email password
 npm run seed-malawis   # Seed sample case data
 npm run migrate        # Apply all pending SQL migrations (tracked in schema_migrations table)
