@@ -75,6 +75,18 @@ Content > Case Files → **Add from web page** fetches a URL, shows the text for
 
 The student reading panel and the Case Files → Text → Preview render each file by this format (`components/ReadingText.tsx`). Markdown text uses `MarkdownPreview`. PDF and plain text show one paragraph per line, since pdf-parse text has no blank lines and would run into one Markdown paragraph. `GET /api/llm/case-data` sends the case text as `reading_parts`, one per file or outline. The joined `case_content` stays on the server for the chat prompt.
 
+## The reading editor (migration 088)
+
+The fetch/paste review and the Text window share `components/caseFiles/ReadingEditor.tsx`: EasyMDE beside a preview drawn by `ReadingText` (the student renderer, so the preview is never a second opinion), and a row of formatting buttons whose logic is `utils/readingMarkdown.js`, ported from Quizzer's `ingest/to_markdown.py` (`docs/2026-08-05_source_markdown.md` there has the reasoning). Rules that fail silently:
+
+- **The format travels with the text.** Auto-format turns plain text into Markdown and Text only does the reverse, so the editor reports `(text, format)` together and every save sends `text_format` (`PUT /converted-text`, `fetch-url`, `paste`; anything but `markdown` / `text` is a 400). A text saved without its new format renders wrongly to every student: literal `##`, or a PDF's lines run into one paragraph.
+- **`text_format_original` pairs with `converted_text_original`.** `PUT /converted-text` copies `text_format` into it before overwriting (only while there is no original yet: SET runs left to right), Revert restores both, and every writer that sets the original sets it too. `GET /converted-text` returns `original_text` / `original_text_format` (the current text when nothing was edited) for Restore auto-format.
+- **Restore and re-derive are separate buttons.** *Restore auto-format* puts back the original's automatic formatting: the original Markdown for a web page or Word file, `textToMarkdown(original)` for a PDF. *Auto-format this text* runs the heuristics on what is in the box and is shown only while the text is plain: on a web page's Markdown it would do nothing, and re-deriving structure from flattened text loses most of it.
+- **Plain text is edited in a plain box,** with no Markdown toolbar: syntax typed there would show its symbols to students.
+- **Upload is unchanged.** A new PDF is still saved as plain text; Auto-format is the instructor's choice, so the chat prompt for existing cases does not change.
+- **Packages carry `text_format`** (`activityPack/format.js#impliedTextFormat` is what an older installer assumes from the original's format). A document whose stated format differs from it, such as an auto-formatted PDF, adds the `document:text_format` token so an older server refuses the package instead of showing `##` to students; other packages install anywhere.
+- EasyMDE is loaded lazily (`React.lazy`), so it is not in the student bundle; if it fails, a plain textarea takes over. Its preview, side-by-side, fullscreen, autosave and spell-checker download are off, and links insert a template instead of calling `prompt()`.
+
 ## Orphaned Outline Fix
 
 A related fix was made to `loadCaseData()` in `server/routes/llm.js`. Previously, AI-generated outlines (from Case Prep) were only included in prompts as children of their parent file. If the parent file had `include_in_chat_prompt = 0` (e.g., the instructor wanted to use only the outline, not the raw case), the outline was silently dropped.
@@ -92,5 +104,8 @@ Now, outlines whose parent is excluded from the prompt are included as standalon
 | `server/migrations/083_case_files_web_fetch.sql` | Fetch columns, `converted_text_original`, `text_edited_at`, `case_files_url_fetch_enabled` |
 | `server/routes/llm.js` | `loadFileContent()` with cache + backfill, `loadCaseData()` with orphan outline fix |
 | `components/CaseFilesManager.tsx` | Admin UI for Text, Reconvert, Download, Visit, and other file actions |
-| `components/caseFiles/WebFetchModal.tsx`, `TextEditorPanel.tsx` | Fetch/paste review window; shared editor with Preview |
+| `components/caseFiles/WebFetchModal.tsx` | Fetch/paste review window |
+| `components/caseFiles/ReadingEditor.tsx`, `MarkdownCodeEditor.tsx` | The shared reading editor: formatting buttons, EasyMDE (lazy), student preview |
+| `utils/readingMarkdown.js` | Auto-format, Text only, Remove links/images, the AI word check (`server/scripts/check-reading-markdown.js`) |
+| `server/migrations/088_case_files_text_format_original.sql` | `text_format_original` |
 | `services/apiClient.ts` | Frontend API client (includes `api.put()` method) |

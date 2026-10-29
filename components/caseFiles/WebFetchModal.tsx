@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { api } from '../../services/apiClient';
-import TextEditorPanel from './TextEditorPanel';
+import ReadingEditor from './ReadingEditor';
 import type { ReadingFormat } from '../ReadingText';
+import { MARKDOWN } from '../../utils/readingFormat.js';
 
 /** What POST /case-files/:caseId/fetch-url returns for { preview: true }. */
 export interface FetchPreview {
@@ -37,13 +38,16 @@ const WebFetchModal: React.FC<Props> = ({ caseId, fileType, fileTypeLabel, url, 
   const isPaste = !preview;
   const [title, setTitle] = useState(preview?.title || '');
   const [text, setText] = useState(preview?.text || '');
+  // Pasted text is Markdown until Text only says otherwise.
+  const [format, setFormat] = useState<ReadingFormat>(preview?.text_format || MARKDOWN);
   const [sourceUrl, setSourceUrl] = useState('');
   const [proprietary, setProprietary] = useState(false);
   const [includeInPrompt, setIncludeInPrompt] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const hasWork = isPaste ? text.trim().length > 0 : text !== preview!.text;
+  const edited = !isPaste && (text !== preview!.text || format !== preview!.text_format);
+  const hasWork = isPaste ? text.trim().length > 0 : edited;
 
   const handleCancel = () => {
     if (hasWork && !confirm(isPaste ? 'Discard the pasted text?' : 'Discard your edits to the fetched text?')) return;
@@ -64,6 +68,7 @@ const WebFetchModal: React.FC<Props> = ({ caseId, fileType, fileTypeLabel, url, 
     const common = {
       title: title.trim(),
       text,
+      text_format: format,
       file_type: fileType,
       proprietary,
       include_in_chat_prompt: includeInPrompt,
@@ -90,7 +95,7 @@ const WebFetchModal: React.FC<Props> = ({ caseId, fileType, fileTypeLabel, url, 
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
+      <div className="bg-white rounded-lg w-full max-w-7xl max-h-[95vh] flex flex-col">
         <div className="px-6 py-4 border-b flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h3 className="text-xl font-bold">{isPaste ? 'Paste text' : 'Review fetched text'}</h3>
@@ -175,20 +180,27 @@ const WebFetchModal: React.FC<Props> = ({ caseId, fileType, fileTypeLabel, url, 
             </label>
           </div>
 
-          <TextEditorPanel
+          <ReadingEditor
             value={text}
-            onChange={setText}
-            format={isPaste ? 'markdown' : preview!.text_format}
+            format={format}
+            onChange={(value, nextFormat) => {
+              setText(value);
+              setFormat(nextFormat);
+            }}
+            original={isPaste ? null : { text: preview!.text, format: preview!.text_format }}
             placeholder={isPaste ? 'Paste the text here. Markdown (# headings, - lists, | tables |) is fine.' : undefined}
-            status={!isPaste && text !== preview!.text ? <span className="text-xs text-orange-600 font-medium">Edited</span> : undefined}
+            status={edited ? <span className="text-xs text-orange-600 font-medium">Edited</span> : undefined}
           />
         </div>
 
         <div className="px-6 py-4 border-t flex items-center justify-between gap-2">
           <div>
-            {!isPaste && text !== preview!.text && (
+            {edited && (
               <button
-                onClick={() => setText(preview!.text)}
+                onClick={() => {
+                  setText(preview!.text);
+                  setFormat(preview!.text_format);
+                }}
                 className="text-sm text-gray-600 hover:text-gray-800"
                 title="Undo your edits and use the text as fetched"
               >

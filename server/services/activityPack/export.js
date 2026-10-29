@@ -42,6 +42,7 @@ import { readCaseDefaults, settingsFromSectionCase, settingsFromVersion } from '
 import { slugifyTitle } from '../caseIds.js';
 import { getAppVersion, getSchemaLevel } from '../appVersion.js';
 import { getActivityType } from '../../../utils/activityTypes.js';
+import { MARKDOWN, readingFormatOf } from '../../../utils/readingFormat.js';
 import { requirementsFor } from './capabilities.js';
 import {
   AUDIENCE_ID_PREFIX,
@@ -229,7 +230,7 @@ async function collectDocuments(caseRow, activityKey, opts, shared) {
   const [rows] = await pool.execute(
     `SELECT id, case_id, parent_file_id, filename, original_filename, file_type, file_format, file_source,
             source_url, proprietary, include_in_chat_prompt, prompt_order, file_version,
-            is_outline, is_latest_outline, outline_content, converted_text
+            is_outline, is_latest_outline, outline_content, converted_text, text_format
        FROM case_files WHERE case_id = ? ORDER BY prompt_order ASC, created_at ASC, id ASC`,
     [caseRow.case_id]
   );
@@ -307,6 +308,9 @@ async function collectDocuments(caseRow, activityKey, opts, shared) {
       outline_of: row.is_outline && parentKey ? parentKey : null,
       latest_outline: Boolean(row.is_outline && parentKey && row.is_latest_outline),
       text: text ? `documents/${key}.md` : null,
+      // How the text renders. Requires document:text_format only when it differs from what the
+      // original format implies (capabilities.js), so most packages still install anywhere.
+      text_format: text ? (row.is_outline ? MARKDOWN : readingFormatOf(row)) : null,
       text_sha256: text ? sha256(text) : null,
       text_chars: text ? text.length : 0,
       original,

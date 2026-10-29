@@ -15,7 +15,7 @@ import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import { convertFile } from '../services/fileConverter.js';
 import { fetchForCaseFile } from '../services/caseFileFetch.js';
-import { MARKDOWN, textFormatOfConversion } from '../../utils/readingFormat.js';
+import { MARKDOWN, PLAIN_TEXT, readingFormatOf, textFormatOfConversion } from '../../utils/readingFormat.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -276,9 +276,9 @@ router.post('/:caseId/upload', verifyToken, requireAdminOrInstructor, requireCas
           case_id, filename, file_type, file_format, file_source,
           proprietary, include_in_chat_prompt, prompt_order, file_version,
           original_filename, file_size, processing_status,
-          converted_text, converted_text_original, text_format, converted_at, created_at
+          converted_text, converted_text_original, text_format, text_format_original, converted_at, created_at
         ) VALUES (?, ?, ?, ?, 'uploaded', ?, ?, ?, ?, ?, ?, 'pending',
-                  ?, ?, ?, ${convertedText ? 'NOW()' : 'NULL'}, NOW())`,
+                  ?, ?, ?, ?, ${convertedText ? 'NOW()' : 'NULL'}, NOW())`,
         [
           caseId,
           req.file.filename,
@@ -292,6 +292,7 @@ router.post('/:caseId/upload', verifyToken, requireAdminOrInstructor, requireCas
           stats.size,
           convertedText,
           convertedText,
+          textFormat,
           textFormat
         ]
       );
@@ -374,6 +375,17 @@ function cleanTitle(value, fallback) {
   return title || fallback;
 }
 
+/**
+ * A text format sent by the editor (utils/readingFormat.js), or null when absent. Anything else
+ * is refused rather than ignored: a wrong format renders a reading wrongly to every student.
+ * @returns {{ format: 'markdown'|'text'|null } | { error: string }}
+ */
+function readTextFormat(value) {
+  if (value === undefined || value === null || value === '') return { format: null };
+  if (value === MARKDOWN || value === PLAIN_TEXT) return { format: value };
+  return { error: `text_format must be "${MARKDOWN}" or "${PLAIN_TEXT}"` };
+}
+
 /** Placeholder `filename` for a text-only row (the column is NOT NULL). */
 function textOnlyFilename(source) {
   return `${source}-${Date.now()}-${randomUUID().slice(0, 8)}.md`;
@@ -391,10 +403,14 @@ function readSaveFields(body) {
   if (text.length > MAX_TEXT_CHARS) {
     return { error: `The text is over the ${MAX_TEXT_CHARS.toLocaleString()} character limit` };
   }
+  const textFormat = readTextFormat(body.text_format);
+  if (textFormat.error) return { error: textFormat.error };
   return {
     fields: {
       file_type,
       text,
+      // The format the editor left the text in (Auto-format / Text only); null = the extraction's.
+      text_format: textFormat.format,
       proprietary: body.proprietary === true || body.proprietary === '1' ? 1 : 0,
       include_in_chat_prompt: body.include_in_chat_prompt === false || body.include_in_chat_prompt === '0' ? 0 : 1,
       prompt_order: parseInt(body.prompt_order, 10) || 0,
@@ -545,14 +561,15 @@ router.post('/:caseId/fetch-url', verifyToken, requireAdminOrInstructor, require
         fetched_final_url, fetched_content_type, fetched_at,
         proprietary, include_in_chat_prompt, prompt_order, file_version,
         original_filename, file_size, processing_status,
-        converted_text, converted_text_original, text_format, converted_at, text_edited_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, NOW(), ?, NOW())`,
+        converted_text, converted_text_original, text_format, text_format_original, converted_at, text_edited_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), ?, NOW())`,
       [
         caseId, row.filename, fields.file_type, row.file_format, row.file_source, url,
         row.final_url, row.content_type,
         fields.proprietary, fields.include_in_chat_prompt, fields.prompt_order, fields.file_version,
         row.original_filename, row.file_size,
-        fields.text, row.original_text, row.text_format, fields.text === row.original_text ? null : new Date()
+        fields.text, row.original_text, fields.text_format || row.text_format, row.text_format,
+        fields.text === row.original_text ? null : new Date()
       ]
     );
 
@@ -591,13 +608,13 @@ router.post('/:caseId/paste', verifyToken, requireAdminOrInstructor, requireCase
         case_id, filename, file_type, file_format, file_source, source_url,
         proprietary, include_in_chat_prompt, prompt_order, file_version,
         original_filename, file_size, processing_status,
-        converted_text, converted_text_original, text_format, converted_at, created_at
-      ) VALUES (?, ?, ?, 'md', 'pasted', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 'markdown', NOW(), NOW())`,
+        converted_text, converted_text_original, text_format, text_format_original, converted_at, created_at
+      ) VALUES (?, ?, ?, 'md', 'pasted', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NOW(), NOW())`,
       [
         caseId, textOnlyFilename('pasted'), fields.file_type, sourceUrl,
         fields.proprietary, fields.include_in_chat_prompt, fields.prompt_order, fields.file_version,
         title, Buffer.byteLength(fields.text, 'utf8'),
-        fields.text, fields.text
+        fields.text, fields.text, fields.text_format || MARKDOWN, fields.text_format || MARKDOWN
       ]
     );
 
@@ -660,13 +677,14 @@ router.post('/:fileId/refetch', verifyToken, requireAdminOrInstructor, requireCa
       `UPDATE case_files
           SET filename = ?, file_format = ?, file_source = ?, file_size = ?,
               original_filename = ?,
-              converted_text = ?, converted_text_original = ?, text_format = ?, converted_at = NOW(), text_edited_at = NULL,
+              converted_text = ?, converted_text_original = ?, text_format = ?, text_format_original = ?,
+              converted_at = NOW(), text_edited_at = NULL,
               fetched_final_url = ?, fetched_content_type = ?, fetched_at = NOW()
         WHERE id = ?`,
       [
         filename, fileFormat, fileSource, fileSize,
         file.original_filename || title,
-        fetched.text, fetched.text, fetched.textFormat,
+        fetched.text, fetched.text, fetched.textFormat, fetched.textFormat,
         fetched.finalUrl, fetched.contentType,
         file.id
       ]
@@ -696,7 +714,9 @@ router.post('/:fileId/revert-text', verifyToken, requireAdminOrInstructor, requi
   try {
     const [result] = await pool.execute(
       `UPDATE case_files
-          SET converted_text = converted_text_original, converted_at = NOW(), text_edited_at = NULL
+          SET converted_text = converted_text_original,
+              text_format = COALESCE(text_format_original, text_format),
+              converted_at = NOW(), text_edited_at = NULL
         WHERE id = ? AND converted_text_original IS NOT NULL`,
       [req.params.fileId]
     );
@@ -1079,7 +1099,7 @@ router.get('/:fileId/converted-text', verifyToken, requireAdminOrInstructor, req
     const [files] = await pool.execute(
       `SELECT id, case_id, filename, original_filename, file_type, file_format,
               file_source, source_url, fetched_at, text_edited_at,
-              converted_text, converted_at, converted_text_original IS NOT NULL AS has_original_text
+              converted_text, converted_at, converted_text_original, text_format, text_format_original
        FROM case_files WHERE id = ?`,
       [fileId]
     );
@@ -1092,6 +1112,10 @@ router.get('/:fileId/converted-text', verifyToken, requireAdminOrInstructor, req
     }
 
     const f = files[0];
+    // The editor's Restore / Text only work from the first extraction and its format; a row
+    // never edited has none stored, and its current text is that extraction.
+    const textFormat = readingFormatOf(f);
+    const hasOriginal = f.converted_text_original != null;
     res.json({
       data: {
         id: f.id,
@@ -1104,7 +1128,12 @@ router.get('/:fileId/converted-text', verifyToken, requireAdminOrInstructor, req
         source_url: f.source_url,
         fetched_at: f.fetched_at,
         text_edited_at: f.text_edited_at,
-        has_original_text: !!f.has_original_text
+        has_original_text: hasOriginal,
+        text_format: textFormat,
+        original_text: hasOriginal ? f.converted_text_original : f.converted_text,
+        original_text_format: hasOriginal && f.text_format_original
+          ? readingFormatOf({ text_format: f.text_format_original })
+          : textFormat
       },
       error: null
     });
@@ -1130,6 +1159,10 @@ router.put('/:fileId/converted-text', verifyToken, requireAdminOrInstructor, req
         error: { message: 'converted_text is required' }
       });
     }
+    const textFormat = readTextFormat(req.body.text_format);
+    if (textFormat.error) {
+      return res.status(400).json({ data: null, error: { message: textFormat.error } });
+    }
 
     const [files] = await pool.execute(
       'SELECT id FROM case_files WHERE id = ?',
@@ -1143,16 +1176,20 @@ router.put('/:fileId/converted-text', verifyToken, requireAdminOrInstructor, req
       });
     }
 
-    // SET runs left to right in MySQL: keep the first extraction before overwriting it,
-    // then flag the row as edited unless the text matches that original.
+    // SET runs left to right in MySQL: keep the first extraction and its format before
+    // overwriting them (the format first, while converted_text_original still says whether
+    // there was an original), then flag the row as edited unless the text matches that original.
+    // The editor sends text_format when Auto-format or Text only changed it; omitted keeps it.
     await pool.execute(
       `UPDATE case_files
-          SET converted_text_original = COALESCE(converted_text_original, converted_text),
+          SET text_format_original = IF(converted_text_original IS NULL, text_format, text_format_original),
+              converted_text_original = COALESCE(converted_text_original, converted_text),
               converted_text = ?,
+              text_format = COALESCE(?, text_format),
               converted_at = NOW(),
               text_edited_at = IF(converted_text <=> converted_text_original, NULL, NOW())
         WHERE id = ?`,
-      [converted_text || null, fileId]
+      [converted_text || null, textFormat.format, fileId]
     );
 
     res.json({
@@ -1207,9 +1244,14 @@ router.post('/:fileId/reconvert', verifyToken, requireAdminOrInstructor, require
 
     await pool.execute(
       `UPDATE case_files
-          SET converted_text = ?, converted_text_original = ?, text_format = ?, converted_at = NOW(), text_edited_at = NULL
+          SET converted_text = ?, converted_text_original = ?, text_format = ?, text_format_original = ?,
+              converted_at = NOW(), text_edited_at = NULL
         WHERE id = ?`,
-      [text || null, text || null, text ? textFormatOfConversion(format) : null, fileId]
+      [
+        text || null, text || null,
+        text ? textFormatOfConversion(format) : null, text ? textFormatOfConversion(format) : null,
+        fileId
+      ]
     );
 
     res.json({
