@@ -96,6 +96,16 @@ export const TEACH_BACK_COPY = {
   transcriptPermission: (firstName: string) =>
     `Thank you, ${firstName} — I understand this much better than when we started. **Would you be willing to let me pass this conversation transcript to the developers to help improve these conversations for future students?**`,
 
+  // Later feedback-phase messages (the case chat's speak of "this case situation").
+  helpfulScoreQuestion: () =>
+    "Great! On a scale of 1 to 5, how helpful was explaining this to me for your own understanding of the topic? (1=not helpful, 5=extremely helpful)",
+
+  transcriptPermissionAfterFeedback: () =>
+    "Thank you for teaching me today. **Would you be willing to let me pass this conversation transcript to the developers to help improve these conversations for future students?** This would be **a big help** 😊.",
+
+  farewellAfterDecline: () =>
+    "Thank you for teaching me today. Click the button below to proceed to the evaluation.",
+
   farewell: (firstName: string) =>
     `Thank you, ${firstName} — I understand this much better than when we started, and I appreciate you taking the time to walk me through it. Click the button below to proceed to the evaluation.`,
 

@@ -25,14 +25,6 @@ export enum ConversationPhase {
   EVALUATING,
 }
 
-export enum CEOPersona {
-  STRICT = 'strict',
-  MODERATE = 'moderate',
-  LIBERAL = 'liberal',
-  LEADING = 'leading',
-  SYCOPHANTIC = 'sycophantic',
-}
-
 export enum ChatStatus {
   STARTED = 'started',
   IN_PROGRESS = 'in_progress',

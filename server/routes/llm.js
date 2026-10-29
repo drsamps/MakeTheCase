@@ -12,6 +12,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { convertFile } from '../services/fileConverter.js';
 import { MARKDOWN, readingFormatOf, textFormatOfConversion } from '../../utils/readingFormat.js';
+import { isStudentVisibleRole } from '../../utils/documentRoles.js';
+import { DEFAULT_CHAT_OPTIONS } from '../services/chatOptions.js';
+
+// Same rule as the page (teachBack.ts#countWords).
+const countWords = (text) => String(text || '').trim().split(/\s+/).filter(Boolean).length;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -101,6 +106,13 @@ async function loadCaseData(caseId, { readingParts = false } = {}) {
   caseData.teaching_note = '';
   caseData.supplementary_content = '';
   const parts = [];
+  // The supplementary text a student may read: supplementary_content without ai_only roles such
+  // as instructor notes (utils/documentRoles.js). supplementary_content itself goes to the AI.
+  let studentSupplementary = '';
+  const addSupplementary = (role, text) => {
+    caseData.supplementary_content += text;
+    if (isStudentVisibleRole(role)) studentSupplementary += text;
+  };
 
   // Try to load files from database with ordering
   let [baseFiles] = await pool.execute(
@@ -186,8 +198,7 @@ async function loadCaseData(caseId, { readingParts = false } = {}) {
             const typeLabel = file.file_type.startsWith('other:')
               ? file.file_type.substring(6)
               : file.file_type.replace('_', ' ').toUpperCase();
-            caseData.supplementary_content +=
-              `\n\n=== ${typeLabel}: ${file.filename} ===\n${content}`;
+            addSupplementary(file.file_type, `\n\n=== ${typeLabel}: ${file.filename} ===\n${content}`);
           }
         }
       } catch (e) {
@@ -215,8 +226,7 @@ async function loadCaseData(caseId, { readingParts = false } = {}) {
             const typeLabel = file.file_type.startsWith('other:')
               ? file.file_type.substring(6)
               : file.file_type.replace('_', ' ').toUpperCase();
-            caseData.supplementary_content +=
-              `\n\n=== ${typeLabel}: ${file.filename} ===\n${outlineLabel}\n${outlineContent}`;
+            addSupplementary(file.file_type, `\n\n=== ${typeLabel}: ${file.filename} ===\n${outlineLabel}\n${outlineContent}`);
           }
         } catch (e) {
           console.error(`[loadCaseData] Failed to load outline ${outline.filename}:`, e.message);
@@ -246,8 +256,7 @@ async function loadCaseData(caseId, { readingParts = false } = {}) {
           const typeLabel = parentType.startsWith('other:')
             ? parentType.substring(6)
             : parentType.replace('_', ' ').toUpperCase();
-          caseData.supplementary_content +=
-            `\n\n=== ${typeLabel} OUTLINE ===\n${outlineContent}`;
+          addSupplementary(parentType, `\n\n=== ${typeLabel} OUTLINE ===\n${outlineContent}`);
         }
         console.log(`[loadCaseData] Included standalone outline ${outline.filename} (parent excluded from prompt)`);
       } catch (e) {
@@ -276,7 +285,10 @@ async function loadCaseData(caseId, { readingParts = false } = {}) {
     console.warn(`[loadCaseData] No case content loaded for: ${caseId}`);
   }
 
-  if (readingParts) caseData.reading_parts = parts;
+  if (readingParts) {
+    caseData.reading_parts = parts;
+    caseData.student_supplementary_content = studentSupplementary;
+  }
   return caseData;
 }
 
@@ -328,8 +340,11 @@ router.get('/case-data/:caseId', verifyToken, async (req, res) => {
     // Students get what their screen shows: the case and supplementary materials, never the
     // teaching note (the server builds the chat prompt, services/chatPrompt.js). The case text
     // goes once, as reading_parts; the joined case_content is the prompt's copy and stays here.
-    const { teaching_note, case_content, ...studentView } = caseData;
-    res.json({ data: req.user.role === 'student' ? studentView : { ...studentView, teaching_note }, error: null });
+    // Instructor notes are AI-only like the teaching note (utils/documentRoles.js), so students
+    // get the supplementary text without them.
+    const { teaching_note, case_content, student_supplementary_content, ...rest } = caseData;
+    const studentView = { ...rest, supplementary_content: student_supplementary_content };
+    res.json({ data: req.user.role === 'student' ? studentView : { ...rest, teaching_note }, error: null });
   } catch (error) {
     console.error(`[case-data] Error loading case data for ${caseId}:`, error);
     console.error(`[case-data] CASE_FILES_DIR: ${CASE_FILES_DIR}`);
@@ -421,13 +436,27 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
     // A clicked position is the first student message, in exactly the position's wording (the
     // page saves initial_position_id before sending it). Only the model sees the note; the
     // stored turn is the message as sent.
-    let isPositionPick = false;
-    if (behaviour.positionPickNote && exchangesBefore === 0 && chat.initial_position_id) {
+    let pickedText = null;
+    if ((behaviour.positionPickNote || behaviour.openingWordFloor) && chat.initial_position_id) {
       const [posRows] = await pool.execute(
         'SELECT position FROM scenario_positions WHERE position_id = ? AND scenario_id = ?',
         [chat.initial_position_id, chat.scenario_id]
       );
-      isPositionPick = !!posRows[0]?.position && posRows[0].position.trim() === String(message).trim();
+      pickedText = posRows[0]?.position?.trim() || null;
+    }
+    const isPick = (text) => pickedText !== null && pickedText === String(text).trim();
+    const isPositionPick = Boolean(behaviour.positionPickNote) && exchangesBefore === 0 && isPick(message);
+    // Teach-back's word floor on the opening explanation (chat option teach_back_min_words),
+    // enforced here as well as in the page, so a stale page cannot spend a chat on "idk". The
+    // opening is the first student message that is not a clicked position; once one has been
+    // answered, later replies are not floored.
+    if (behaviour.openingWordFloor) {
+      const minWords = Number(context.chatOptions.teach_back_min_words ?? DEFAULT_CHAT_OPTIONS.teach_back_min_words) || 0;
+      const studentTurns = turns.filter((t) => t.role === 'student');
+      const openingAnswered = studentTurns.some((t, i) => !(i === 0 && isPick(t.content)));
+      if (minWords > 0 && !openingAnswered && !isPick(message) && countWords(message) < minWords) {
+        return res.status(400).json({ data: null, error: { code: 'OPENING_TOO_SHORT', min_words: minWords, message: `Please start with an explanation of at least ${minWords} words.` } });
+      }
     }
     const modelMessage = message
       + (isPositionPick ? behaviour.positionPickNote : '')

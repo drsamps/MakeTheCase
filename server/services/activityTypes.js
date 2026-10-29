@@ -17,12 +17,14 @@
  * finishEvaluation(result, transcript, protagonistName)               -> result
  * finalTurnNote                                                       -> string, added to the
  *   student's last message (Maximum Responses) for the model only; never stored or shown
+ * openingWordFloor                                                    -> boolean: the student's
+ *   first explanation must reach chat option teach_back_min_words (enforced in /api/llm/chat)
  * savedOpenings                                                       -> boolean: buildGreeting
  *   uses the opening the instructor saved per persona (scenario settings, `student.personas`),
  *   so the scenario editor offers "Draft with AI" for them (POST /cases/:id/scenario-drafts)
  */
 
-import { CASE_CHAT, TEACH_BACK, normalizeActivityType } from '../../utils/activityTypes.js';
+import { CASE_CHAT, TEACH_BACK, normalizeActivityType, listActivityTypes } from '../../utils/activityTypes.js';
 import { buildSystemPrompt, buildTeachBackSystemPrompt } from './chatPromptTemplates.js';
 import { buildCoachPrompt } from './promptBuilder.js';
 import { buildTeachBackCoachPrompt } from './teachBackCoachPrompt.js';
@@ -70,6 +72,7 @@ const BEHAVIOUR = {
     finishEvaluation: (result) => result,
     finalTurnNote: CASE_CHAT_FINAL_TURN_NOTE,
     positionPickNote: '',
+    openingWordFloor: false,
     savedOpenings: false,
   },
   // Teach-back is judged against the audience the student chose, and against its own criteria
@@ -83,6 +86,7 @@ const BEHAVIOUR = {
     finishEvaluation: verifyEvidence,
     finalTurnNote: TEACH_BACK_FINAL_TURN_NOTE,
     positionPickNote: TEACH_BACK_POSITION_PICK_NOTE,
+    openingWordFloor: true,
     savedOpenings: true,
   },
 };
@@ -90,5 +94,30 @@ const BEHAVIOUR = {
 /** The builders for an activity type (case chat when the type is missing or unknown). */
 export function activityBehaviour(activityType) {
   return BEHAVIOUR[normalizeActivityType(activityType)];
+}
+
+// Types whose AI character is the persona the student picked (Teach-back's audience), not the
+// scenario's protagonist. Keys are code constants (utils/activityTypes.js), checked before use.
+const PERSONA_CHARACTER_TYPES = listActivityTypes()
+  .filter((t) => t.characterFrom === 'persona')
+  .map((t) => t.id)
+  .filter((id) => /^[a-z_]+$/.test(id));
+
+/**
+ * SQL for the name the AI went by in a chat, which is the name its transcript turns carry: the
+ * picked persona's name for persona-character types, else the scenario's protagonist (as
+ * services/chatPrompt.js#loadChatContext does). Needs the joins from aiSpeakerJoinsSql() and the
+ * scenario joined as `scenario`.
+ */
+export function aiSpeakerNameSql({ kase = 'ai_case', persona = 'ai_persona', scenario = 'cs' } = {}) {
+  if (PERSONA_CHARACTER_TYPES.length === 0) return `${scenario}.protagonist`;
+  const types = PERSONA_CHARACTER_TYPES.map((id) => `'${id}'`).join(', ');
+  return `CASE WHEN ${kase}.activity_type IN (${types}) THEN COALESCE(${persona}.persona_name, ${scenario}.protagonist) ELSE ${scenario}.protagonist END`;
+}
+
+/** The joins aiSpeakerNameSql() reads, for a query with case_chats as `chat`. */
+export function aiSpeakerJoinsSql({ chat = 'cc', kase = 'ai_case', persona = 'ai_persona' } = {}) {
+  return `LEFT JOIN cases ${kase} ON ${kase}.case_id = ${chat}.case_id
+         LEFT JOIN personas ${persona} ON ${persona}.persona_id = ${chat}.persona`;
 }
 

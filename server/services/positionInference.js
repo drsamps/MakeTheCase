@@ -5,12 +5,18 @@
  * when capture method is 'ai_inferred'.
  *
  * Updated to support the new scenario_positions table with position IDs.
+ *
+ * One path (2026-10-29): grading (routes/evaluations.js), the status endpoints and the admin
+ * route all call inferPositionsFromChat, which reads section_cases.position_capture_method via
+ * shouldInferPositions. The legacy inferPositionFromTranscript (old scenario override settings,
+ * a dropped cases.arguments_* column, a hardcoded model) is gone.
  */
 
 import { pool } from '../db.js';
 import { chatWithLLM } from './llmRouter.js';
 import { resolveInstructorForCaseChat, resolveSectionForCaseChat } from './keyResolver.js';
 import { stripTurnTiming } from '../../utils/transcriptFormat.js';
+import { resolveSectionModel } from './modelChoice.js';
 
 /**
  * Build the system prompt for position inference
@@ -22,7 +28,7 @@ function buildInferencePrompt(chatQuestion, positions) {
 
   return `You are an expert at analyzing conversations and determining a person's stance on issues.
 
-Your task is to analyze a conversation between a student and a business case protagonist, and determine:
+Your task is to analyze a conversation between a student and an AI conversation partner (such as a case protagonist or a listener the student is explaining to), and determine the student's stance:
 1. The student's INITIAL position at the start of the conversation (based on their first few responses)
 2. The student's FINAL position at the end of the conversation (based on their conclusion)
 
@@ -104,10 +110,10 @@ function parseInferenceResponse(responseText, positions) {
  * Infer positions from a chat transcript
  *
  * @param {string} caseChatId - The case_chat ID to analyze
- * @param {string} modelId - The LLM model to use for inference
+ * @param {string} [modelId] - The LLM model to use; defaults to the section's supervisor model
  * @returns {object} - Inference results with position IDs and confidence scores
  */
-export async function inferPositionsFromChat(caseChatId, modelId = 'gemini-1.5-flash') {
+export async function inferPositionsFromChat(caseChatId, modelId = null) {
   // Get chat details including scenario and transcript
   const [chatRows] = await pool.execute(
     `SELECT cc.id, cc.scenario_id, cc.case_id, cc.status,
@@ -156,8 +162,10 @@ export async function inferPositionsFromChat(caseChatId, modelId = 'gemini-1.5-f
 
   const instructorId = await resolveInstructorForCaseChat(caseChatId);
   const sectionId = await resolveSectionForCaseChat(caseChatId);
+  const inferenceModel = modelId || (await resolveSectionModel(sectionId, 'super_model'));
+  if (!inferenceModel) throw new Error('No model available for position inference');
   const response = await chatWithLLM({
-    modelId,
+    modelId: inferenceModel,
     systemPrompt,
     history: [],
     message: userMessage,
@@ -264,84 +272,7 @@ export async function shouldInferPositions(caseChatId) {
          chat.position_inferred_at === null;
 }
 
-/**
- * Legacy function for backward compatibility
- * Infer position from a transcript string (old interface)
- */
-export async function inferPositionFromTranscript(transcript, caseData, positionOptions, modelId, instructorId = null) {
-  if (!transcript || transcript.trim().length === 0) {
-    console.log('[PositionInference] No transcript provided');
-    return null;
-  }
-
-  if (!positionOptions || positionOptions.length < 2) {
-    positionOptions = ['for', 'against'];
-  }
-
-  // Build a simple prompt for legacy usage
-  const optionsStr = positionOptions.join(', ');
-  const prompt = `You are analyzing a student's conversation with a case protagonist to determine their stance.
-
-CASE: ${caseData.case_title || 'Unknown Case'}
-CENTRAL QUESTION: ${caseData.chat_question || 'What should be done?'}
-
-${caseData.arguments_for ? `ARGUMENTS FOR:\n${caseData.arguments_for}\n` : ''}
-${caseData.arguments_against ? `ARGUMENTS AGAINST:\n${caseData.arguments_against}\n` : ''}
-
-TRANSCRIPT:
-${stripTurnTiming(transcript)}
-
-Based on the student's statements and conclusions, determine their position.
-Available positions: ${optionsStr}
-
-Respond ONLY with valid JSON:
-{
-  "position": "<one of: ${optionsStr}>",
-  "confidence": <number between 0.0 and 1.0>,
-  "reasoning": "<1-2 sentence explanation>"
-}`;
-
-  try {
-    const response = await chatWithLLM({
-      modelId: modelId || 'gemini-1.5-flash',
-      systemPrompt: 'You are an expert at analyzing conversations and determining a person\'s stance on issues. Respond only with valid JSON.',
-      history: [],
-      message: prompt,
-      config: {
-        temperature: 0.3,
-        instructorId,
-        caseId: caseData?.case_id || null,
-        purpose: 'position_inference',
-      }
-    });
-
-    // Parse the JSON response
-    let jsonStr = response.text.trim();
-    const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-      jsonStr = jsonMatch[1].trim();
-    }
-
-    const result = JSON.parse(jsonStr);
-
-    if (!result.position || !positionOptions.includes(result.position.toLowerCase())) {
-      console.error('[PositionInference] Invalid position in response:', result.position);
-      return null;
-    }
-
-    return {
-      position: result.position.toLowerCase(),
-      confidence: typeof result.confidence === 'number' ? Math.max(0, Math.min(1, result.confidence)) : 0.5,
-      reasoning: result.reasoning || 'No reasoning provided',
-    };
-  } catch (error) {
-    console.error('[PositionInference] Error inferring position:', error);
-    return null;
-  }
-}
-
 export default {
   inferPositionsFromChat,
   shouldInferPositions,
-  inferPositionFromTranscript
 };

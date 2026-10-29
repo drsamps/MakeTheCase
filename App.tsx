@@ -18,7 +18,6 @@ import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import CaseWriterShell from './components/caseWriter/CaseWriterShell';
 import ResizablePanes from './components/ResizablePanes';
-import ScenarioSelector from './components/ScenarioSelector';
 import ChatTimer from './components/ChatTimer';
 import FeedbackWidget from './components/feedback/FeedbackWidget';
 
@@ -1052,6 +1051,12 @@ const App: React.FC = () => {
                 setError((e as Error).message);
                 return;
             }
+            // The server's copy of the Teach-back opening floor (the page normally refuses first).
+            if (code === 'OPENING_TOO_SHORT') {
+                const minWords = chatOptions?.teach_back_min_words ?? DEFAULT_TEACH_BACK_MIN_WORDS;
+                setMessages((prev) => [...prev, { role: MessageRole.MODEL, at: Date.now(), content: TEACH_BACK_COPY.openingTooShort(minWords) }]);
+                return;
+            }
             playErrorSound();
             setError("Sorry, there is a delay in AI model response. Please wait 30 seconds.");
             const errorMessage: Message = {
@@ -1097,7 +1102,9 @@ const App: React.FC = () => {
         if (affirmative) {
             const ceoScoreRequest: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: "Great! On a scale of 1 to 5, how helpful was our conversation in your thinking through this case situation? (1=not helpful, 5=extremely helpful)"
+                content: teachBackMode
+                  ? TEACH_BACK_COPY.helpfulScoreQuestion()
+                  : "Great! On a scale of 1 to 5, how helpful was our conversation in your thinking through this case situation? (1=not helpful, 5=extremely helpful)"
             };
             setMessages(prev => [...prev, ceoScoreRequest]);
             setConversationPhase(ConversationPhase.AWAITING_HELPFUL_SCORE);
@@ -1108,7 +1115,9 @@ const App: React.FC = () => {
             if (askSaveTranscript) {
                 const ceoTranscriptRequest: Message = {
                     role: MessageRole.MODEL, at: Date.now(),
-                    content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** This would be **a big help** in developing this AI chat case teaching tool 😊."
+                    content: teachBackMode
+                      ? TEACH_BACK_COPY.transcriptPermissionAfterFeedback()
+                      : "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** This would be **a big help** in developing this AI chat case teaching tool 😊."
                 };
                 setMessages(prev => [...prev, ceoTranscriptRequest]);
                 setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
@@ -1116,7 +1125,9 @@ const App: React.FC = () => {
                 // Skip transcript permission
                 const ceoFarewell: Message = {
                     role: MessageRole.MODEL, at: Date.now(),
-                    content: "It has been a delight talking with you today. Click the button below to proceed to the evaluation."
+                    content: teachBackMode
+                      ? TEACH_BACK_COPY.farewellAfterDecline()
+                      : "It has been a delight talking with you today. Click the button below to proceed to the evaluation."
                 };
                 setMessages(prev => [...prev, ceoFarewell]);
                 setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
@@ -1161,7 +1172,9 @@ const App: React.FC = () => {
         if (askSaveTranscript) {
             const ceoTranscriptRequest: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** This would be **a big help** in developing this AI chat case teaching tool 😊.",
+                content: teachBackMode
+                  ? TEACH_BACK_COPY.transcriptPermissionAfterFeedback()
+                  : "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** This would be **a big help** in developing this AI chat case teaching tool 😊.",
             };
             setMessages(prev => [...prev, userImproveReply, ceoTranscriptRequest]);
             setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
@@ -2456,6 +2469,7 @@ const App: React.FC = () => {
           onLogout={handleStudentLogout}
           onTitleContextNav={handleRestart}
           showDetails={chatOptions?.show_evaluation_details !== false}
+          freeHints={chatOptions?.free_hints ?? 1}
         />
         <FeedbackWidget userId={sessionUser?.id || null} />
       </>

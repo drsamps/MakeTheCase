@@ -8,6 +8,7 @@ import { getAccessibleSectionIds } from '../../middleware/instructorAccess.js';
 import { getSetting } from '../promptService.js';
 import { getWeeklyUsage } from '../usageGuard.js';
 import { loadPrompt, loadRunContext, nameHints, prepareTranscript, sha256 } from './common.js';
+import { aiSpeakerNameSql, aiSpeakerJoinsSql } from '../activityTypes.js';
 
 export class HttpError extends Error {
   constructor(status, message) {
@@ -130,11 +131,12 @@ export async function loadScopeChats(scope) {
   let sql = `
     SELECT cc.id AS case_chat_id, cc.student_id, cc.section_id,
            st.full_name, st.first_name, st.last_name,
-           cs.protagonist AS scenario_protagonist,
+           ${aiSpeakerNameSql()} AS ai_speaker,
            t.transcript
       FROM case_chats cc
       JOIN students st ON st.id = cc.student_id
       LEFT JOIN case_scenarios cs ON cs.id = cc.scenario_id
+      ${aiSpeakerJoinsSql()}
       -- transcripts.case_chat_id is only a non-unique index and the upsert is SELECT-then-INSERT,
       -- so two rapid auto-saves can leave two rows. Pin the newest: a second row here would plan
       -- the same chat twice and blow up the (run_id, case_chat_id) primary key mid-transaction.

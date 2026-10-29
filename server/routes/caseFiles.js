@@ -18,6 +18,7 @@ import { fetchForCaseFile } from '../services/caseFileFetch.js';
 import { formatInputError, formatReadingWithAI } from '../services/readingFormatAI.js';
 import { getEffectiveInstructorId } from '../services/resourceAccess.js';
 import { MARKDOWN, PLAIN_TEXT, readingFormatOf, textFormatOfConversion } from '../../utils/readingFormat.js';
+import { DOCUMENT_ROLES } from '../../utils/documentRoles.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,7 +27,7 @@ const CASE_FILES_DIR = path.join(__dirname, '../../case_files');
 const router = express.Router();
 
 // Predefined file types (outline reserved for AI-generated derived files)
-const PREDEFINED_FILE_TYPES = ['case', 'teaching_note', 'chapter', 'reading', 'article', 'instructor_notes', 'outline'];
+const PREDEFINED_FILE_TYPES = DOCUMENT_ROLES;
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({

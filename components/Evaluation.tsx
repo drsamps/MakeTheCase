@@ -42,7 +42,14 @@ interface EvaluationProps {
   onLogout?: () => void;
   onTitleContextNav?: () => void;
   showDetails?: boolean; // Show detailed criteria (default: true)
+  freeHints?: number; // chat option free_hints; the hint note is left out when unknown
 }
+
+/** The hint note, worded for the assignment's free hints (chat option free_hints). */
+const hintRule = (freeHints: number) =>
+  freeHints === 0
+    ? 'Each hint reduces your final score by one point.'
+    : `You get ${freeHints === 1 ? 'one free hint' : `${freeHints} free hints`}. Each additional hint reduces your final score by one point.`;
 
 const LoadingSpinner: React.FC<{ modelName: string | null }> = ({ modelName }) => (
     <div className="flex flex-col items-center justify-center text-center p-4">
@@ -54,7 +61,7 @@ const LoadingSpinner: React.FC<{ modelName: string | null }> = ({ modelName }) =
 );
 
 // FIX: Correctly type the component's props using React.FC<EvaluationProps> to resolve type errors.
-const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart, superModelName, onLogout, onTitleContextNav, showDetails = true }) => {
+const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart, superModelName, onLogout, onTitleContextNav, showDetails = true, freeHints }) => {
   if (!result) {
     return (
         <div className="flex items-center justify-center min-h-screen bg-gray-200">
@@ -89,7 +96,7 @@ const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart,
           <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
               <h3 className="text-lg font-semibold text-yellow-800">Hints Requested: {result.hints}</h3>
               <p className="text-sm text-yellow-700 mt-1">
-                  You get one free hint. Each additional hint reduces your final score by one point. This adjustment is already reflected in your total score.
+                  {typeof freeHints === 'number' && `${hintRule(freeHints)} `}This adjustment is already reflected in your total score.
               </p>
           </div>
         )}

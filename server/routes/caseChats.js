@@ -9,6 +9,7 @@ import { requireChatOwner, requireSelfStudent } from '../middleware/chatOwner.js
 import { resolveSectionModel } from '../services/modelChoice.js';
 import { loadChatContext, buildGreeting, sanitizeStudentName } from '../services/chatPrompt.js';
 import { appendTurns } from '../services/chatTurns.js';
+import { getSectionCaseChatOptions } from '../services/chatOptions.js';
 
 const router = express.Router();
 
@@ -428,21 +429,12 @@ router.get('/check-repeats/:studentId/:caseId', requireSelfStudent('studentId'),
     const { studentId, caseId } = req.params;
     const { section_id } = req.query;
 
-    // Get the chat_repeats setting from section_cases
-    let chatRepeats = 0; // Default: no repeats allowed (single chat only)
-
+    // The chat_repeats setting: the assignment's own options, else the section or global
+    // default (an assignment that follows the defaults stores NULL). 0 = a single chat only.
+    let chatRepeats = 0;
     if (section_id) {
-      const [sectionCase] = await pool.execute(
-        'SELECT chat_options FROM section_cases WHERE section_id = ? AND case_id = ?',
-        [section_id, caseId]
-      );
-
-      if (sectionCase.length > 0 && sectionCase[0].chat_options) {
-        const options = typeof sectionCase[0].chat_options === 'string'
-          ? JSON.parse(sectionCase[0].chat_options)
-          : sectionCase[0].chat_options;
-        chatRepeats = options.chat_repeats ?? 0;
-      }
+      const options = await getSectionCaseChatOptions(section_id, caseId);
+      chatRepeats = Number(options?.chat_repeats ?? 0) || 0;
     }
 
     // Count completed chats for this student/case

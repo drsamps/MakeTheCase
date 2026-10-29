@@ -18,6 +18,7 @@ import { pool } from '../../db.js';
 import { FALLBACK_LEANS, buildRosterMasker, maskNames, sha256 } from './common.js';
 import { instructorName, parseJsonArray } from './scope.js';
 import { parseTranscript } from '../../../utils/transcriptFormat.js';
+import { aiSpeakerNameSql, aiSpeakerJoinsSql } from '../activityTypes.js';
 
 /**
  * Re-check the analysed transcripts against their current text. Keyed off CONTENT, never
@@ -82,15 +83,22 @@ async function rosterForMasking(run, students) {
 }
 
 /**
- * The classmate masker for one run: its roster, minus the scenario protagonist's name, which
- * students write constantly and which is not a classmate's even when a classmate shares it.
+ * The classmate masker for one run: its roster, minus the names the AI went by in the run's
+ * chats (the scenario protagonist, or each Teach-back audience), which students write
+ * constantly and which are not a classmate's even when a classmate shares one.
  */
 async function rosterMaskerForRun(run, students) {
-  const [[scenario]] = run.scenario_id
-    ? await pool.execute('SELECT protagonist FROM case_scenarios WHERE id = ?', [run.scenario_id])
-    : [[]];
+  const [aiNames] = await pool.execute(
+    `SELECT DISTINCT ${aiSpeakerNameSql()} AS ai_speaker
+       FROM issue_analysis_run_chats rc
+       JOIN case_chats cc ON cc.id = rc.case_chat_id
+       LEFT JOIN case_scenarios cs ON cs.id = cc.scenario_id
+       ${aiSpeakerJoinsSql()}
+      WHERE rc.run_id = ?`,
+    [run.id]
+  );
   return buildRosterMasker(await rosterForMasking(run, students), {
-    exclude: [scenario?.protagonist].filter(Boolean),
+    exclude: aiNames.map((r) => r.ai_speaker).filter(Boolean),
   });
 }
 
@@ -260,20 +268,21 @@ export async function transcriptView(run, caseChatId, { names = false, start = n
   const s = students.get(caseChatId);
   if (!s) return null;
   const [[row]] = await pool.execute(
-    `SELECT t.transcript, cs.protagonist AS scenario_protagonist, rc.transcript_hash
+    `SELECT t.transcript, ${aiSpeakerNameSql()} AS ai_speaker, rc.transcript_hash
        FROM case_chats cc
        JOIN issue_analysis_run_chats rc ON rc.case_chat_id = cc.id AND rc.run_id = ?
        LEFT JOIN transcripts t ON t.id = (SELECT t2.id FROM transcripts t2
                                            WHERE t2.case_chat_id = cc.id
                                            ORDER BY t2.created_at DESC, t2.id DESC LIMIT 1)
        LEFT JOIN case_scenarios cs ON cs.id = cc.scenario_id
+       ${aiSpeakerJoinsSql()}
       WHERE cc.id = ?`,
     [run.id, caseChatId]
   );
   const text = row?.transcript || '';
   const parsed = parseTranscript(text, {
     studentNames: [s.full_name, s.first_name].filter(Boolean),
-    protagonistNames: [row?.scenario_protagonist].filter(Boolean),
+    protagonistNames: [row?.ai_speaker].filter(Boolean),
   });
   const hlStart = Number.isInteger(start) ? start : null;
   const hlEnd = Number.isInteger(end) ? end : null;
@@ -295,7 +304,7 @@ export async function transcriptView(run, caseChatId, { names = false, start = n
     }
     return {
       role: t.role,
-      speaker: t.role === 'student' ? (names ? s.full_name : s.anon) : t.role === 'protagonist' ? (row?.scenario_protagonist || 'Protagonist') : '',
+      speaker: t.role === 'student' ? (names ? s.full_name : s.anon) : t.role === 'protagonist' ? (row?.ai_speaker || 'Protagonist') : '',
       pieces: pieces.filter(p => p.text),
     };
   });

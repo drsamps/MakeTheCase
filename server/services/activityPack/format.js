@@ -33,6 +33,7 @@ import { KNOWN_CHAT_OPTION_KEYS } from '../chatOptions.js';
 import { CAPTURE_METHODS, SELECTION_MODES } from '../activityDefaults.js';
 import { validateStudentSettings } from '../../../utils/scenarioSettings.js';
 import { MARKDOWN, PLAIN_TEXT, readingFormatOf } from '../../../utils/readingFormat.js';
+import { DOCUMENT_ROLES, isDocumentRole } from '../../../utils/documentRoles.js';
 
 export const PACK_FORMAT = 'makethecase.activity-pack';
 export const FORMAT_VERSION = 1;
@@ -41,10 +42,8 @@ export const PACK_FILE_EXTENSION = '.mtc.zip';
 export const PERSONA_KINDS = ['protagonist', 'audience'];
 export const AUDIENCE_ID_PREFIX = 'audience-';
 
-/** Document roles: case_files.file_type. `other:Label` is the instructor's own label. */
-export const DOCUMENT_ROLES = ['case', 'teaching_note', 'chapter', 'reading', 'article', 'instructor_notes', 'outline'];
-export const isDocumentRole = (role) =>
-  typeof role === 'string' && (DOCUMENT_ROLES.includes(role) || (role.startsWith('other:') && role.length > 6 && role.length <= 50));
+/** Document roles: case_files.file_type, listed in utils/documentRoles.js. */
+export { DOCUMENT_ROLES, isDocumentRole };
 
 /**
  * The format a document's text renders in when the package does not say (utils/readingFormat.js):

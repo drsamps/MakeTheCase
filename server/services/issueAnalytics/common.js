@@ -8,6 +8,7 @@ import { jsonrepair } from 'jsonrepair';
 import { pool } from '../../db.js';
 import { getActivePrompt } from '../promptService.js';
 import { parseTranscript } from '../../../utils/transcriptFormat.js';
+import { getActivityType } from '../../../utils/activityTypes.js';
 
 export const FALLBACK_LEANS = ['for', 'against', 'mixed'];
 export const THEME_TYPES = ['topic', 'argument', 'friction'];
@@ -66,7 +67,7 @@ function defangTags(s) {
 /** Candidate names for legacy transcripts ("Jane Doe: ...", "Sylvia Cooper: ..."). */
 export function nameHints(chat) {
   const studentNames = [chat.full_name, chat.first_name].filter(Boolean);
-  const protagonistNames = [chat.scenario_protagonist].filter(Boolean);
+  const protagonistNames = [chat.ai_speaker].filter(Boolean);
   return { studentNames, protagonistNames };
 }
 
@@ -197,7 +198,7 @@ export function leanContext(positions, scenario = null) {
 /** Case, scenario and positions for a run, in the shape the prompts need. */
 export async function loadRunContext(run) {
   const [[caseRow]] = await pool.execute(
-    'SELECT case_id, case_title FROM cases WHERE case_id = ?',
+    'SELECT case_id, case_title, activity_type FROM cases WHERE case_id = ?',
     [run.case_id]
   );
   let scenario = null;
@@ -217,9 +218,15 @@ export async function loadRunContext(run) {
       )
     : [[]];
   const lean = leanContext(positions, scenario);
-  const scenarioText = scenario
-    ? `${scenario.scenario_name || 'Scenario'}. The AI played ${scenario.protagonist || 'the protagonist'}${scenario.protagonist_role ? `, ${scenario.protagonist_role}` : ''}.`
-    : 'The AI played the case protagonist.';
+  // Persona-character types (Teach-back): the AI was whichever listener each student picked, not
+  // the scenario's placeholder protagonist. Case chat's wording is unchanged, so its cached
+  // pass-1 facts stay valid.
+  const personaCharacter = getActivityType(caseRow?.activity_type).characterFrom === 'persona';
+  const scenarioText = personaCharacter
+    ? `${scenario?.scenario_name || 'Scenario'}. The student explained the topic to an AI listener they chose; the listener's turns are prompts, not the student's content.`
+    : scenario
+      ? `${scenario.scenario_name || 'Scenario'}. The AI played ${scenario.protagonist || 'the protagonist'}${scenario.protagonist_role ? `, ${scenario.protagonist_role}` : ''}.`
+      : 'The AI played the case protagonist.';
   return {
     caseRow,
     scenario,

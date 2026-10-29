@@ -29,6 +29,7 @@ import {
   prepareTranscript, renderOnce, sha256, THEME_TYPES, verifyQuote,
 } from './common.js';
 import { parseJsonArray } from './scope.js';
+import { aiSpeakerNameSql, aiSpeakerJoinsSql } from '../activityTypes.js';
 
 const CONCURRENCY = 2;
 const HEARTBEAT_MS = 60_000;
@@ -241,11 +242,12 @@ async function executeRun(runId, job) {
 
     const [pending] = await pool.execute(
       `SELECT rc.case_chat_id, rc.section_id, st.full_name, st.first_name, st.last_name,
-              cs.protagonist AS scenario_protagonist, t.transcript
+              ${aiSpeakerNameSql()} AS ai_speaker, t.transcript
          FROM issue_analysis_run_chats rc
          JOIN case_chats cc ON cc.id = rc.case_chat_id
          JOIN students st ON st.id = rc.student_id
          LEFT JOIN case_scenarios cs ON cs.id = cc.scenario_id
+         ${aiSpeakerJoinsSql()}
          -- Newest transcript only; a duplicate row would analyse (and bill) one chat twice.
          LEFT JOIN transcripts t ON t.id = (SELECT t2.id FROM transcripts t2
                                              WHERE t2.case_chat_id = rc.case_chat_id
@@ -453,11 +455,12 @@ async function executeRescan(themeId, job) {
     const vendor = await modelVendor(run.model_id);
     const [chats] = await pool.execute(
       `SELECT rc.case_chat_id, rc.student_id, rc.section_id, st.full_name, st.first_name,
-              cs.protagonist AS scenario_protagonist, t.transcript
+              ${aiSpeakerNameSql()} AS ai_speaker, t.transcript
          FROM issue_analysis_run_chats rc
          JOIN case_chats cc ON cc.id = rc.case_chat_id
          JOIN students st ON st.id = rc.student_id
          LEFT JOIN case_scenarios cs ON cs.id = cc.scenario_id
+         ${aiSpeakerJoinsSql()}
          -- Newest transcript only; duplicates would re-scan one chat twice (see loadScopeChats).
          LEFT JOIN transcripts t ON t.id = (SELECT t2.id FROM transcripts t2
                                              WHERE t2.case_chat_id = rc.case_chat_id

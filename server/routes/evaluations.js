@@ -7,13 +7,12 @@ import { requireSelfStudent } from '../middleware/chatOwner.js';
 import { loadChatContext, protagonistLabel } from '../services/chatPrompt.js';
 import { listTurns, historyForGrading, writeTranscript } from '../services/chatTurns.js';
 import { resolveSectionModel } from '../services/modelChoice.js';
-import { inferPositionFromTranscript } from '../services/positionInference.js';
+import { inferPositionsFromChat, shouldInferPositions } from '../services/positionInference.js';
 import { activityBehaviour } from '../services/activityTypes.js';
 import { stripTurnTiming } from '../../utils/transcriptFormat.js';
 import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
-import { parseScenarioOverride } from '../../utils/scenarioSettings.js';
 import { resolveInstructorForSection, resolveInstructorForCaseChat } from '../services/keyResolver.js';
 import {
   parseEvaluationResponse,
@@ -28,6 +27,23 @@ import {
 // is the same for every type. The type is the case's, returned by loadCaseData().
 
 const router = express.Router();
+
+/**
+ * The case data a chat is graded against: the case plus that chat's scenario (protagonist,
+ * question) and, for persona-character types, the persona as the AI's name, exactly as the
+ * chat prompt saw it (services/chatPrompt.js#loadChatContext). Plain loadCaseData() has no
+ * scenario, so the coach prompt used to name "the case protagonist" instead of the person
+ * the transcript shows. Null when the case no longer exists.
+ * @param {{ id, case_id, section_id, scenario_id, persona, initial_position_id }} chat
+ */
+async function gradingCaseData(chat) {
+  try {
+    return (await loadChatContext(chat)).caseData;
+  } catch (error) {
+    if (error.status === 404) return null;
+    throw error;
+  }
+}
 
 // Field list for SELECT queries (keeps things DRY)
 // NOTE: transcript, persona, hints, chat_model removed - now in case_chats and transcripts tables
@@ -214,12 +230,9 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
     const assignedRubricId = rubricRows[0]?.rubric_id;
     let rubric = (assignedRubricId && await getRubricById(assignedRubricId)) || await getDefaultRubric();
 
-    // 4. Load case data
-    const { loadCaseData, getModelConfig } = await import('./llm.js');
-    let caseData = await loadCaseData(case_id);
-    if (!caseData) {
-      return res.status(404).json({ data: null, error: { message: 'Case not found' } });
-    }
+    // 4. Case data as the chat saw it: the case plus this chat's scenario (protagonist, question)
+    const { getModelConfig } = await import('./llm.js');
+    let caseData = context.caseData;
 
     // Teach-back is judged against the audience the student chose, and against its own
     // criteria unless the assignment names a rubric (a rubric is always passed in here).
@@ -405,7 +418,8 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
 
     // 2. Get case_chat details
     const [chatRows] = await pool.execute(
-      `SELECT cc.case_id, cc.student_id, cc.section_id, s.full_name, c.case_title
+      `SELECT cc.id, cc.case_id, cc.student_id, cc.section_id, cc.scenario_id, cc.persona, cc.initial_position_id,
+              s.full_name, c.case_title
        FROM case_chats cc
        JOIN students s ON cc.student_id = s.id
        JOIN cases c ON cc.case_id = c.case_id
@@ -427,8 +441,7 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
 
     // 4. Load case data
     console.log('[Re-evaluate] Step 4: Loading case data...');
-    const { loadCaseData } = await import('./llm.js');
-    let caseData = await loadCaseData(case_id);
+    let caseData = await gradingCaseData(chatRows[0]);
     if (!caseData) {
       return res.status(404).json({ data: null, error: { message: 'Case not found' } });
     }
@@ -529,7 +542,7 @@ router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, r
     // Get case_chat details
     console.log('[Preview-prompt] Step 2: Getting case_chat details...');
     const [chatRows] = await pool.execute(
-      `SELECT cc.case_id, cc.section_id, s.full_name
+      `SELECT cc.id, cc.case_id, cc.section_id, cc.scenario_id, cc.persona, cc.initial_position_id, s.full_name
        FROM case_chats cc
        JOIN students s ON cc.student_id = s.id
        WHERE cc.id = ?`,
@@ -547,8 +560,7 @@ router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, r
     console.log('[Preview-prompt] Step 3: Got rubric:', rubric?.rubric_id);
 
     console.log('[Preview-prompt] Step 4: Loading case data...');
-    const { loadCaseData } = await import('./llm.js');
-    let caseData = await loadCaseData(case_id);
+    let caseData = await gradingCaseData(chatRows[0]);
     console.log('[Preview-prompt] Step 4: Got case data:', !!caseData);
     const previewActivity = activityBehaviour(caseData?.activity_type);
     ({ caseData, rubric } = await previewActivity.prepareEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric, rubricChosen: !!rubric_id }));
@@ -691,91 +703,16 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   }
 });
 
-// AI position inference after a chat is graded: when the scenario's settings ask for an
-// ai_inferred position and the chat has none yet, infer it from the saved transcript. Moved
+// AI position inference after a chat is graded: when the assignment asks for an ai_inferred
+// position and the chat has not been inferred yet, infer it from the saved transcript. Moved
 // from the old POST /api/evaluations (removed: the browser no longer saves evaluations; /run
 // does). Runs after the response is sent; failures are logged, never shown to the student.
 async function inferPositionAfterEvaluation(case_chat_id) {
-  const [chatRows] = await pool.execute(
-    `SELECT cc.*, cs.chat_options_override, c.case_title, t.transcript
-     FROM case_chats cc
-     LEFT JOIN case_scenarios cs ON cc.scenario_id = cs.id
-     LEFT JOIN cases c ON cc.case_id = c.case_id
-     LEFT JOIN transcripts t ON t.case_chat_id = cc.id
-     WHERE cc.id = ?`,
-    [case_chat_id]
-  );
-
-  if (chatRows.length > 0) {
-    const chat = chatRows[0];
-    // mysql2 returns the JSON column parsed; parseScenarioOverride takes either form.
-    const scenarioSettings = parseScenarioOverride(chat.chat_options_override) || {};
-    const transcriptText = chat.transcript;
-
-    // Check if AI inference is needed
-    const needsInference =
-      scenarioSettings.position_tracking_enabled === true &&
-      scenarioSettings.position_capture_method === 'ai_inferred' &&
-      (!chat.initial_position || !chat.final_position) &&
-      transcriptText; // Make sure we have a transcript to analyze
-
-    if (needsInference) {
-      const positionOptions = scenarioSettings.position_options || ['for', 'against'];
-
-      // Get case data for the prompt
-      const [caseRows] = await pool.execute(
-        `SELECT case_title, arguments_for, arguments_against
-         FROM cases WHERE case_id = ?`,
-        [chat.case_id]
-      );
-
-      const caseData = caseRows.length > 0 ? caseRows[0] : {};
-      if (chat.case_title) caseData.case_title = chat.case_title;
-
-      // Get chat question from scenario
-      if (chat.scenario_id) {
-        const [scenarioRows] = await pool.execute(
-          `SELECT chat_question FROM case_scenarios WHERE id = ?`,
-          [chat.scenario_id]
-        );
-        if (scenarioRows.length > 0) {
-          caseData.chat_question = scenarioRows[0].chat_question;
-        }
-      }
-
-      // Infer position using AI
-      const modelId = chat.chat_model || 'gemini-1.5-flash'; // Use chat model or default
-      const inferenceInstructorId = await resolveInstructorForSection(chat.section_id);
-      const inferenceResult = await inferPositionFromTranscript(
-        transcriptText,
-        caseData,
-        positionOptions,
-        modelId,
-        inferenceInstructorId
-      );
-
-      if (inferenceResult && inferenceResult.position) {
-        // Update case_chat with inferred position
-        await pool.execute(
-          `UPDATE case_chats
-           SET initial_position = ?, final_position = ?, position_method = 'ai_inferred'
-           WHERE id = ?`,
-          [inferenceResult.position, inferenceResult.position, case_chat_id]
-        );
-
-        // Log the inferred position
-        await pool.execute(
-          `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
-           VALUES (?, 'initial', ?, 'ai', ?)`,
-          [case_chat_id, inferenceResult.position, `AI inference (confidence: ${inferenceResult.confidence.toFixed(2)}): ${inferenceResult.reasoning}`]
-        );
-
-        console.log(`[AI Position Inference] Chat ${case_chat_id}: ${inferenceResult.position} (confidence: ${inferenceResult.confidence.toFixed(2)})`);
-      } else {
-        console.warn(`[AI Position Inference] Failed to infer position for chat ${case_chat_id}`);
-      }
-    }
-  }
+  // The assignment's settings decide (section_cases.position_capture_method = 'ai_inferred'), and
+  // the section's supervisor model infers (services/positionInference.js).
+  if (!(await shouldInferPositions(case_chat_id))) return;
+  const result = await inferPositionsFromChat(case_chat_id);
+  console.log(`[AI Position Inference] Chat ${case_chat_id}: ${result.initial_position_name ?? '-'} -> ${result.final_position_name ?? '-'} (confidence: ${result.overall_confidence.toFixed(2)})`);
 }
 
 // DELETE /api/evaluations/:id - Delete evaluation (admin only - for testing/cleanup)

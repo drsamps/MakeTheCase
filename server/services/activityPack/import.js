@@ -41,6 +41,7 @@ import { createCourseCase } from '../caseVersionSync.js';
 import { writeCaseDefaults } from '../activityDefaults.js';
 import { generateUniqueCaseId } from '../caseIds.js';
 import { getActivityType } from '../../../utils/activityTypes.js';
+import { isStudentVisibleRole } from '../../../utils/documentRoles.js';
 import { AUDIENCE_ID_PREFIX, PackError, assertValidPack, canonicalJson, extensionOf, impliedTextFormat, sha256 } from './format.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -295,7 +296,7 @@ export async function planInstall(req, pack, options = {}) {
         include_in_prompt: d.include_in_prompt !== false,
       })),
       omitted: (pack.manifest.omitted || []).filter((o) => o && o.activity === activity.key),
-      has_reading: activity.documents.some((d) => d.role !== 'teaching_note' && d.role !== 'instructor_notes' && d.include_in_prompt !== false),
+      has_reading: activity.documents.some((d) => isStudentVisibleRole(d.role) && d.include_in_prompt !== false),
     });
   }
   const installing = pack.activities.filter((a) => activityPlans.find((p) => p.key === a.key).action !== 'skip');
