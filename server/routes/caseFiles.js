@@ -482,6 +482,7 @@ router.post('/:caseId/fetch-url', verifyToken, requireAdminOrInstructor, require
           title: fetched.title,
           text: fetched.text,
           degraded: fetched.degraded,
+          container_fallback: fetched.containerFallback,
           final_url: fetched.finalUrl,
           content_type: fetched.contentType,
           text_format: fetched.textFormat
@@ -679,7 +680,8 @@ router.post('/:fileId/refetch', verifyToken, requireAdminOrInstructor, requireCa
       data: {
         ...(await selectFileForResponse(file.id)),
         converted_text_length: fetched.text.length,
-        degraded: fetched.degraded
+        degraded: fetched.degraded,
+        container_fallback: fetched.containerFallback
       },
       error: null
     });

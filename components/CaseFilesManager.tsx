@@ -332,6 +332,8 @@ export const CaseFilesManager: React.FC = () => {
       }
       if (response.data?.degraded) {
         setError('Fetched, but very little text was found. The page may be built by JavaScript or behind a paywall; check the text, or paste it instead.');
+      } else if (response.data?.container_fallback) {
+        setSuccess(`Fetched again (${(response.data?.converted_text_length ?? 0).toLocaleString()} chars). Reader view found only part of the article, so the page's whole main section was kept: check the text for leftover menus or captions.`);
       } else {
         setSuccess(`Fetched again (${(response.data?.converted_text_length ?? 0).toLocaleString()} chars)`);
       }

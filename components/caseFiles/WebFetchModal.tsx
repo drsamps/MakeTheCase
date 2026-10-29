@@ -9,6 +9,8 @@ export interface FetchPreview {
   title: string;
   text: string;
   degraded: boolean;
+  /** Reader view found only part of the page, so the page's whole main section was kept. */
+  container_fallback?: boolean;
   final_url: string;
   content_type: string | null;
   /** The text's format: Markdown for a web page, the conversion's for a fetched file. */
@@ -109,6 +111,14 @@ const WebFetchModal: React.FC<Props> = ({ caseId, fileType, fileTypeLabel, url, 
               <strong>Very little text was found.</strong> The page may be built by JavaScript, behind a paywall or a
               login, or blocking automated readers. If the text below isn't the article, cancel, open the page in your
               browser, copy the text, and use <em>Paste text instead</em>.
+            </div>
+          )}
+
+          {preview?.container_fallback && !preview.degraded && (
+            <div className="bg-blue-50 border border-blue-200 text-blue-900 rounded px-3 py-2 text-sm">
+              <strong>The whole main section of the page was kept.</strong> Reader view found only part of this
+              article, so the text below is everything in the page's main section. Trim any leftover menus, captions
+              or "related articles" lists.
             </div>
           )}
 
