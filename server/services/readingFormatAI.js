@@ -33,6 +33,10 @@ export const MAX_FORMAT_CHARS = MAX_AI_FORMAT_CHARS;
 export const MIN_WORD_RETENTION = 0.97;
 /** Share of the reply's words that may be new (a heading's number, a list's renumbering). */
 export const MAX_WORDS_ADDED = 0.03;
+/** And in words, whatever the length: 3% of a 5,000-word reading is a 150-word paragraph
+ *  dropped or a planted instruction obeyed. 50 leaves room for a long PDF's running heads and
+ *  joined hyphenations, which are not content. */
+export const MAX_WORDS_CHANGED = 50;
 const MAX_OUTPUT_TOKENS = 16000;
 // A reasoning model spends part of its output allowance thinking before it writes; at 16k a long
 // reading is cut off, fails the word check and reads as "the AI rewrote it". The ids are matched
@@ -53,18 +57,30 @@ function stripFence(content) {
 }
 
 /**
+ * Why `text` cannot be formatted (an Error with `code` EMPTY | TOO_LONG and `status`), or null.
+ * The route checks this before it commits to a 200 and starts its heartbeat.
+ * @returns {Error|null}
+ */
+export function formatInputError(text) {
+  if (typeof text !== 'string' || !text.trim()) return formatError('EMPTY', 'There is no text to format.', 400);
+  if (text.length > MAX_FORMAT_CHARS) {
+    return formatError('TOO_LONG',
+      `This reading is ${text.length.toLocaleString()} characters, and Format with AI is limited to `
+      + `${MAX_FORMAT_CHARS.toLocaleString()}. Use Auto-format, or edit the headings by hand.`, 413);
+  }
+  return null;
+}
+
+/**
  * @param {{ text: string, caseId: string, instructorId: string|null }} input
- * @returns {Promise<{ markdown: string, model_id: string, retained: number, added: number }>}
+ * @returns {Promise<{ markdown: string, model_id: string, retained: number, added: number,
+ *   words_lost: number, words_added: number }>}
  * @throws Error with `code`: EMPTY | TOO_LONG | PROMPT_MISSING | REWROTE (and llmRouter's errors,
  *   e.g. INSTRUCTOR_COST_CAP_EXCEEDED)
  */
 export async function formatReadingWithAI({ text, caseId, instructorId }) {
-  if (typeof text !== 'string' || !text.trim()) throw formatError('EMPTY', 'There is no text to format.', 400);
-  if (text.length > MAX_FORMAT_CHARS) {
-    throw formatError('TOO_LONG',
-      `This reading is ${text.length.toLocaleString()} characters, and Format with AI is limited to `
-      + `${MAX_FORMAT_CHARS.toLocaleString()}. Use Auto-format, or edit the headings by hand.`, 413);
-  }
+  const inputError = formatInputError(text);
+  if (inputError) throw inputError;
 
   let template;
   try {
@@ -91,18 +107,23 @@ export async function formatReadingWithAI({ text, caseId, instructorId }) {
 
   const markdown = stripFence(reply);
   const check = wordRetention(text, markdown);
-  if (!markdown || check.retained < MIN_WORD_RETENTION || check.added > MAX_WORDS_ADDED) {
-    console.warn(`[READING_FORMAT] discarded ${model.model_id} output for case ${caseId}: retained ${check.retained.toFixed(3)}, added ${check.added.toFixed(3)}`);
-    const pct = (n) => `${Math.round(n * 100)}%`;
+  const lostTooMany = check.retained < MIN_WORD_RETENTION || check.lostCount > MAX_WORDS_CHANGED;
+  const addedTooMany = check.added > MAX_WORDS_ADDED || check.addedCount > MAX_WORDS_CHANGED;
+  if (!markdown || lostTooMany || addedTooMany) {
+    console.warn(`[READING_FORMAT] discarded ${model.model_id} output for case ${caseId}: lost ${check.lostCount} words (retained ${check.retained.toFixed(3)}), added ${check.addedCount} (${check.added.toFixed(3)})`);
+    const words = (n) => `${n.toLocaleString()} word${n === 1 ? '' : 's'}`;
     const why = !markdown
       ? 'returned nothing'
-      : check.retained < MIN_WORD_RETENTION
-        ? `kept only ${pct(check.retained)} of the original words`
-        : `added words of its own (${pct(check.added)} of its version)`;
+      : lostTooMany
+        ? `left out ${words(check.lostCount)} of the original`
+        : `added ${words(check.addedCount)} of its own`;
     throw formatError('REWROTE',
       `The AI rewrote the reading instead of formatting it (it ${why}), so its version was discarded and your text is unchanged. `
       + 'Try again, use Auto-format, or format the headings by hand.', 422,
       { retained: check.retained, added: check.added, missing: check.missing.slice(0, 8), extra: check.extra.slice(0, 8) });
   }
-  return { markdown, model_id: model.model_id, retained: check.retained, added: check.added };
+  return {
+    markdown, model_id: model.model_id, retained: check.retained, added: check.added,
+    words_lost: check.lostCount, words_added: check.addedCount,
+  };
 }

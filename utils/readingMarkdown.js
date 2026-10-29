@@ -77,7 +77,7 @@ const MD_LINK = /(?<!!)\[([^\]\n]*)\]\([^)\n]*\)/g;
 const MD_LINKED_IMAGE = /\[(!\[[^\]\n]*\]\([^)\n]*\))\]\([^)\n]*\)/g;
 
 const MD_INLINE_STRIP = /[*_`~[\]()#>]/g;
-const MD_LINK_TEXT = /!?\[([^\]]*)\]\([^)]*\)/g;
+const MD_LINK_TEXT = /!?\[([^\]\n]*)\]\([^)\n]*\)/g;
 const MD_FENCE = /^\s*```.*$/gm;
 const MD_TABLE_RULE = /^\s*\|?[\s:\-|]+\|[\s:\-|]*$/gm;
 const MD_LEADING_MARKER = /^[ \t]*(?:[-*+]|\d+[.)]|#{1,6}|>)[ \t]+/gm;
@@ -146,7 +146,10 @@ export function markdownWords(text) {
  * share of the original's words still present; `added` the share of the formatted text's
  * words that were not in the original.
  *
- * @returns {{ retained: number, added: number, missing: string[], extra: string[] }}
+ * `lostCount` / `addedCount` are the same as word counts, for limits that must not grow with
+ * the reading's length.
+ *
+ * @returns {{ retained: number, added: number, lostCount: number, addedCount: number, missing: string[], extra: string[] }}
  */
 export function wordRetention(original, formatted) {
   const before = markdownWords(original);
@@ -176,6 +179,8 @@ export function wordRetention(original, formatted) {
   return {
     retained: before.length ? removed.kept / before.length : 1,
     added: after.length ? (after.length - inserted.kept) / after.length : 0,
+    lostCount: before.length - removed.kept,
+    addedCount: after.length - inserted.kept,
     missing: removed.lost,
     extra: inserted.lost,
   };
@@ -313,6 +318,10 @@ function headingLevel(line, aloneInBlock) {
   if (!LETTER.test(stripped)) return 0;
   if (/[.,;]$/.test(stripped)) return 0;
   if (BULLET_LINE.test(line) || ORDERED_LINE.test(line)) return 0;
+  // A heading does not start in lower case; a wrapped line that begins "part of the..." or
+  // "case managers..." is the middle of a sentence (HEADING_KEYWORD is case-insensitive).
+  const head = Array.from(stripped)[0];
+  if (LOWER.test(head)) return 0;
 
   const numbered = NUMBERED_HEADING.exec(stripped);
   if (numbered && LETTER.test(numbered[2])) {
@@ -410,7 +419,11 @@ function blockToMarkdown(block) {
       continue;
     }
 
-    const level = headingLevel(line, alone);
+    // A line that continues an open paragraph's hard-wrapped sentence ("...each\n15 percent of
+    // the total...") is never a heading: under-marking leaves it readable, a false heading
+    // chops the sentence in two.
+    const continuing = paragraph.length > 0 && continues(paragraph[paragraph.length - 1], line, typical);
+    const level = continuing ? 0 : headingLevel(line, alone);
     if (level) {
       closeParagraph();
       ordered = new Map();

@@ -15,7 +15,7 @@ import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import { convertFile } from '../services/fileConverter.js';
 import { fetchForCaseFile } from '../services/caseFileFetch.js';
-import { MAX_FORMAT_CHARS, formatReadingWithAI } from '../services/readingFormatAI.js';
+import { formatInputError, formatReadingWithAI } from '../services/readingFormatAI.js';
 import { getEffectiveInstructorId } from '../services/resourceAccess.js';
 import { MARKDOWN, PLAIN_TEXT, readingFormatOf, textFormatOfConversion } from '../../utils/readingFormat.js';
 
@@ -636,18 +636,10 @@ const FORMAT_HEARTBEAT_MS = 10_000;
 // reading laid out as Markdown, or refuses it if the AI changed the words. Saves nothing.
 // Billed to the caller's weekly AI cap (services/readingFormatAI.js). Body: { text }
 router.post('/:caseId/format-text', verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'edit'), async (req, res) => {
-  const text = typeof req.body?.text === 'string' ? req.body.text : '';
-  if (!text.trim()) {
-    return res.status(400).json({ data: null, error: { code: 'EMPTY', message: 'There is no text to format.' } });
-  }
-  if (text.length > MAX_FORMAT_CHARS) {
-    return res.status(413).json({
-      data: null,
-      error: {
-        code: 'TOO_LONG',
-        message: `This reading is ${text.length.toLocaleString()} characters, and Format with AI is limited to ${MAX_FORMAT_CHARS.toLocaleString()}. Use Auto-format, or edit the headings by hand.`
-      }
-    });
+  const text = req.body?.text;
+  const inputError = formatInputError(text);
+  if (inputError) {
+    return res.status(inputError.status).json({ data: null, error: { code: inputError.code, message: inputError.message } });
   }
   if (!(await caseExists(req.params.caseId))) {
     return res.status(404).json({ data: null, error: { message: 'Case not found' } });
@@ -657,6 +649,8 @@ router.post('/:caseId/format-text', verifyToken, requireAdminOrInstructor, requi
   // before the answer is known.
   res.status(200).set({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   const heartbeat = setInterval(() => res.write(' '), FORMAT_HEARTBEAT_MS);
+  // The editor was closed or the connection dropped: stop writing to a closed socket.
+  res.on('close', () => clearInterval(heartbeat));
   const finish = (body) => {
     clearInterval(heartbeat);
     res.end(JSON.stringify(body));

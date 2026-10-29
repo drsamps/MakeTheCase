@@ -54,8 +54,10 @@ const NON_CONTENT_SELECTOR = 'script, style, noscript, template, svg, canvas, if
 const CONTAINER_RATIO = 3;
 
 // Removed from that container: page furniture, nested articles (teaser cards for other
-// stories) and anything the page hides.
-const CONTAINER_NOISE_SELECTOR = `${NON_CONTENT_SELECTOR}, article, [hidden], [aria-hidden="true"]`;
+// stories) and anything the page hides. Not <header>: inside an article it holds the article's
+// own title and byline; the site's header sits outside the article.
+const CONTAINER_NOISE_SELECTOR = 'script, style, noscript, template, svg, canvas, iframe, form, nav, footer, aside, '
+  + 'article, [hidden], [aria-hidden="true"]';
 
 const textLength = (el) => (el.textContent || '').replace(/\s+/g, ' ').trim().length;
 
@@ -253,7 +255,9 @@ export function htmlToMarkdown(html, finalUrl) {
   if (articleChars < MIN_ARTICLE_CHARS) {
     // A JS-rendered shell, a paywall interstitial, or a layout Reader Mode can't parse.
     doc.querySelectorAll(NON_CONTENT_SELECTOR).forEach(el => el.remove());
-    const bodyChars = (doc.body?.textContent || '').trim().length;
+    // Measured like articleChars (whitespace collapsed), so an indented JS shell's newlines
+    // neither beat a short article nor count as readable text.
+    const bodyChars = doc.body ? textLength(doc.body) : 0;
     if (bodyChars > articleChars) {
       markdown = toMarkdown(td, doc, doc.body.innerHTML);
     }

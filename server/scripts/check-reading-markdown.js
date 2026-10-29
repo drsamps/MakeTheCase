@@ -31,6 +31,13 @@ check('a keyword heading fires inside a block of running text', () => {
   assert.equal(textToMarkdown('Chapter 4\nThe text begins here.'), '## Chapter 4\n\nThe text begins here.');
 });
 
+check('a wrapped line that starts with a keyword or a number is not a heading', () => {
+  const pdf = 'The market grew quickly and by the end of the decade the largest\n'
+    + 'part of the market it served had consolidated into three firms, each\n'
+    + '15 percent of the total volume while the remaining share was split.';
+  assert.equal(textToMarkdown(pdf), pdf.replace(/\n/g, ' '));
+});
+
 check('an all-caps line is a heading even inside a block', () => {
   assert.equal(textToMarkdown('SUPPLY CHAIN BASICS\nThe text begins here.'), '## SUPPLY CHAIN BASICS\n\nThe text begins here.');
 });
@@ -184,6 +191,16 @@ check('wordRetention: formatting keeps every word, a summary does not', () => {
   const summary = wordRetention(original, 'The firm grew in retail and wholesale.');
   assert.ok(summary.retained < 0.97);
   assert.ok(summary.missing.includes('quickly'));
+});
+
+check('wordRetention reports words lost and added as counts, for a limit that does not grow', () => {
+  const long = Array.from({ length: 5000 }, (_, i) => `w${i}`).join(' ');
+  const dropped = long.split(' ').slice(0, 4860).join(' ');
+  const check = wordRetention(long, dropped);
+  assert.ok(check.retained > 0.97, 'a 140-word paragraph is under 3% of 5,000 words');
+  assert.equal(check.lostCount, 140);
+  assert.equal(check.addedCount, 0);
+  assert.equal(wordRetention('a b c', 'a b c d e').addedCount, 2);
 });
 
 check('wordRetention counts repetitions and catches added text', () => {

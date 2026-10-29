@@ -100,6 +100,11 @@ const ReadingEditor: React.FC<Props> = ({ value, format, onChange, original, cas
     const timer = setTimeout(() => setPreviewText(value), PREVIEW_DELAY_MS);
     return () => clearTimeout(timer);
   }, [value]);
+  // A format change (Text only, Auto-format, Restore) arrives with its new text: show both at
+  // once, or the preview briefly renders the old text in the new format.
+  useEffect(() => {
+    setPreviewText(valueRef.current);
+  }, [format]);
 
   const updateView = (change: Partial<typeof view>) => {
     const next = { ...view, ...change };
@@ -123,6 +128,10 @@ const ReadingEditor: React.FC<Props> = ({ value, format, onChange, original, cas
     ? value !== original.text && value !== autoFormatted && value !== lastAppliedRef.current
     : value.trim() !== '';
 
+  // The toolbar's Undo can take a change back only when the Markdown editor was already open:
+  // from plain text the editor mounts fresh, with the new text and no history.
+  const undoHint = isMarkdown ? ' Undo in the toolbar takes it back.' : '';
+
   const apply = (text: string, nextFormat: ReadingFormat, message: string | null) => {
     lastAppliedRef.current = text;
     onChange(text, nextFormat);
@@ -145,7 +154,8 @@ const ReadingEditor: React.FC<Props> = ({ value, format, onChange, original, cas
     setAiStartedAt(Date.now());
     setAiSeconds(0);
     setNote(null);
-    const response = await api.post<{ markdown: string; model_id: string }>(`/case-files/${encodeURIComponent(caseId)}/format-text`, { text: sent });
+    const response = await api.post<{ markdown: string; model_id: string; words_lost: number; words_added: number }>(
+      `/case-files/${encodeURIComponent(caseId)}/format-text`, { text: sent });
     setAiStartedAt(null);
     if (response.error || !response.data) {
       setNote(response.error?.message || 'Format with AI failed.');
@@ -158,14 +168,19 @@ const ReadingEditor: React.FC<Props> = ({ value, format, onChange, original, cas
       setNoteIsError(false);
       return;
     }
-    apply(response.data.markdown, MARKDOWN,
-      `Formatted by ${response.data.model_id}, and checked word by word against the original. Undo in the toolbar takes it back.`);
+    // Say what changed rather than "nothing": a few words may go (page headers, joined
+    // hyphenations) and the instructor should know to look.
+    const { words_lost: lost = 0, words_added: added = 0 } = response.data;
+    const changed = lost || added
+      ? ` Compared with the original, ${lost.toLocaleString()} word${lost === 1 ? '' : 's'} left out and ${added.toLocaleString()} added (page headers and joined line breaks are typical).`
+      : ' Every word of the original is still there.';
+    apply(response.data.markdown, MARKDOWN, `Formatted by ${response.data.model_id}.${changed}${undoHint}`);
   };
 
   const handleRestore = () => {
     if (autoFormatted === null) return;
     if (hasHandEdits && !confirm('Put back the automatic formatting of the original text? Your edits will be replaced.')) return;
-    apply(autoFormatted, MARKDOWN, 'Automatic formatting restored. Undo in the toolbar takes it back.');
+    apply(autoFormatted, MARKDOWN, `Automatic formatting restored.${undoHint}`);
   };
 
   const handleTextOnly = () => {
