@@ -13,21 +13,11 @@
  */
 
 import { jsonrepair } from 'jsonrepair';
-import { pool } from '../db.js';
 import { generateOutlineWithLLM } from './llmRouter.js';
+import { defaultModel } from './modelChoice.js';
 import { STUDENT_NAME_TOKEN, STUDENT_SETTINGS_LIMITS } from '../../utils/scenarioSettings.js';
 
 const DRAFT_PURPOSE = 'scenario_drafts';
-
-/** The default chat model (models.default_model is a RANK: 1 is the default). */
-async function draftModel() {
-  const [rows] = await pool.execute(
-    `SELECT model_id, vendor, temperature, reasoning_effort FROM models
-      WHERE enabled = 1 ORDER BY (default_model = 1) DESC, model_id ASC LIMIT 1`
-  );
-  if (rows.length === 0) throw Object.assign(new Error('No AI model is enabled.'), { status: 409 });
-  return rows[0];
-}
 
 function buildPrompt({ caseTitle, scenarioName, topic, situation, audiences }) {
   const list = audiences.map((a) => [
@@ -142,7 +132,7 @@ const isCapError = (err) => err?.code === 'INSTRUCTOR_COST_CAP_EXCEEDED';
  *   incomplete: boolean, cap_reached: boolean }>}
  */
 export async function draftStudentText({ caseId, caseTitle, scenarioName, topic, situation, audiences, instructorId }) {
-  const model = await draftModel();
+  const model = await defaultModel();
   const draftBatch = async (batch) => {
     const { text } = await generateOutlineWithLLM({
       modelId: model.model_id,

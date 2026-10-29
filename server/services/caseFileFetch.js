@@ -47,6 +47,39 @@ const HTML_TYPES = new Set(['text/html', 'application/xhtml+xml', '']);
 // Elements that never carry article text, removed before the body-text fallback.
 const NON_CONTENT_SELECTOR = 'script, style, noscript, template, svg, canvas, iframe, form, nav, header, footer, aside';
 
+// Readability keeps one block of text and the blocks directly beside it. A page that splits
+// its article across separate wrappers (one per section, each with its own FAQ) comes back as
+// its first section only. When the page's own <article> (or <main>) holds this many times more
+// text, keep that instead and flag it, so the instructor checks for leftovers.
+const CONTAINER_RATIO = 3;
+
+// Removed from that container: page furniture, nested articles (teaser cards for other
+// stories) and anything the page hides. Not <header>: inside an article it holds the article's
+// own title and byline; the site's header sits outside the article.
+const CONTAINER_NOISE_SELECTOR = 'script, style, noscript, template, svg, canvas, iframe, form, nav, footer, aside, '
+  + 'article, [hidden], [aria-hidden="true"]';
+
+const textLength = (el) => (el.textContent || '').replace(/\s+/g, ' ').trim().length;
+
+/**
+ * The page's main content container, cleaned: the largest <article> that is not inside another
+ * article, else the largest <main> / [role=main]. Works on clones; the document is untouched.
+ *
+ * @returns {{ element: Element, chars: number } | null}
+ */
+function mainContainer(doc) {
+  const articles = Array.from(doc.querySelectorAll('article')).filter(a => !a.parentElement?.closest('article'));
+  const candidates = articles.length > 0 ? articles : Array.from(doc.querySelectorAll('main, [role="main"]'));
+  let best = null;
+  for (const candidate of candidates) {
+    const element = candidate.cloneNode(true);
+    element.querySelectorAll(CONTAINER_NOISE_SELECTOR).forEach(el => el.remove());
+    const chars = textLength(element);
+    if (!best || chars > best.chars) best = { element, chars };
+  }
+  return best;
+}
+
 function safeHttpUrl(href, base) {
   try {
     const url = new URL(href, base);
@@ -65,8 +98,13 @@ function buildTurndown(baseUrl) {
     emDelimiter: '_'
   });
   td.use(gfm);
-  // Images would load remote content in the preview and mean nothing to the AI.
-  td.remove(['script', 'style', 'noscript', 'iframe', 'img', 'picture', 'svg', 'canvas']);
+  td.remove(['script', 'style', 'noscript']);
+  // Images would load remote content in the preview and mean nothing to the AI. This has to be
+  // a rule, not td.remove(): turndown tries its built-in image rule before the remove list.
+  td.addRule('dropMedia', {
+    filter: ['img', 'picture', 'svg', 'canvas', 'iframe'],
+    replacement: () => ''
+  });
   // Links: absolute http(s) only, resolved against the final URL; anything else
   // (javascript:, mailto:, in-page anchors) keeps its text and drops the link.
   td.addRule('safeLinks', {
@@ -175,7 +213,10 @@ function tidyMarkdown(md) {
 /**
  * Convert a web page's HTML to Markdown.
  *
- * @returns {{ markdown: string, title: string|null, degraded: boolean }}
+ * `containerFallback` is set when Readability found only part of the article and the page's
+ * whole main container was kept instead (it may carry captions or menus to trim).
+ *
+ * @returns {{ markdown: string, title: string|null, degraded: boolean, containerFallback: boolean }}
  */
 export function htmlToMarkdown(html, finalUrl) {
   // JSDOM logs every CSS parse error the page contains; swallow them.
@@ -193,19 +234,30 @@ export function htmlToMarkdown(html, finalUrl) {
     // Readability mutates the document, so clone first; the fallback needs the original.
     const article = new Readability(doc.cloneNode(true)).parse();
     if (article?.content) {
-      articleChars = (article.textContent || '').trim().length;
+      articleChars = (article.textContent || '').replace(/\s+/g, ' ').trim().length;
       markdown = toMarkdown(td, doc, article.content);
       if (article.title) title = article.title.trim();
     }
   } catch {
-    // Readability throws on some malformed documents; the fallback handles it.
+    // Readability throws on some malformed documents; the fallbacks handle it.
+  }
+
+  // Before the body fallback below, which strips the document in place.
+  let containerFallback = false;
+  const container = mainContainer(doc);
+  if (container && container.chars >= MIN_ARTICLE_CHARS && container.chars >= CONTAINER_RATIO * articleChars) {
+    markdown = toMarkdown(td, doc, container.element.innerHTML);
+    articleChars = container.chars;
+    containerFallback = true;
   }
 
   let degraded = false;
   if (articleChars < MIN_ARTICLE_CHARS) {
     // A JS-rendered shell, a paywall interstitial, or a layout Reader Mode can't parse.
     doc.querySelectorAll(NON_CONTENT_SELECTOR).forEach(el => el.remove());
-    const bodyChars = (doc.body?.textContent || '').trim().length;
+    // Measured like articleChars (whitespace collapsed), so an indented JS shell's newlines
+    // neither beat a short article nor count as readable text.
+    const bodyChars = doc.body ? textLength(doc.body) : 0;
     if (bodyChars > articleChars) {
       markdown = toMarkdown(td, doc, doc.body.innerHTML);
     }
@@ -213,7 +265,7 @@ export function htmlToMarkdown(html, finalUrl) {
   }
 
   dom.window.close();
-  return { markdown, title, degraded };
+  return { markdown, title, degraded, containerFallback };
 }
 
 async function convertBytes(buffer, ext) {
@@ -242,6 +294,7 @@ function titleFromUrl(finalUrl) {
  *
  * @returns {Promise<{
  *   kind: 'web'|'file', title: string, text: string, textFormat: 'markdown'|'text', degraded: boolean,
+ *   containerFallback: boolean,
  *   finalUrl: string, contentType: string|null,
  *   ext: string|null, buffer: Buffer|null
  * }>} `ext` and `buffer` are set only for kind 'file'.
@@ -251,7 +304,7 @@ export async function fetchForCaseFile(urlString) {
 
   if (HTML_TYPES.has(contentType)) {
     // An origin that sends no Content-Type is almost always serving HTML.
-    const { markdown, title, degraded } = htmlToMarkdown(decodeText(buffer, contentTypeHeader), finalUrl);
+    const { markdown, title, degraded, containerFallback } = htmlToMarkdown(decodeText(buffer, contentTypeHeader), finalUrl);
     if (!markdown.trim()) {
       throw new Error(
         'No readable text could be extracted from that page. It is likely built by JavaScript, '
@@ -264,6 +317,7 @@ export async function fetchForCaseFile(urlString) {
       text: markdown,
       textFormat: MARKDOWN,
       degraded,
+      containerFallback,
       finalUrl,
       contentType: contentType || null,
       ext: null,
@@ -292,6 +346,7 @@ export async function fetchForCaseFile(urlString) {
     text,
     textFormat: converted.textFormat,
     degraded: false,
+    containerFallback: false,
     finalUrl,
     contentType,
     ext,

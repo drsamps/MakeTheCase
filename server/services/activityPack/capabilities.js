@@ -16,7 +16,8 @@
  * WHAT GETS A TOKEN. Anything an installer that did not know about it would mishandle by
  * ignoring. Format 1 itself is the baseline (every server that can install at all understands
  * all of it), so the tokens are the activity types (`activity_type:<id>`, one per type in
- * utils/activityTypes.js) and features added since (`scenario_settings:student`). A release
+ * utils/activityTypes.js) and features added since (`scenario_settings:student`,
+ * `document:text_format`). A release
  * that adds, say, a new kind of scenario setting adds a token here and has the exporter write
  * it whenever a package uses that setting.
  *
@@ -26,7 +27,7 @@
 
 import { listActivityTypes, getActivityType, isKnownActivityType } from '../../../utils/activityTypes.js';
 import { getAppVersion } from '../appVersion.js';
-import { FORMAT_VERSION, PACK_FORMAT, PackError } from './format.js';
+import { FORMAT_VERSION, PACK_FORMAT, PackError, impliedTextFormat } from './format.js';
 
 export const SUPPORTED_FORMAT_VERSIONS = [FORMAT_VERSION];
 
@@ -36,18 +37,28 @@ export const activityTypeToken = (activityType) => `activity_type:${activityType
 // the audience's situation and per-audience intros and openings). Added 2026-10-15.
 export const SCENARIO_STUDENT_TEXT_TOKEN = 'scenario_settings:student';
 
+// A document whose text is in a different format from the one its original file implies
+// (format.js#impliedTextFormat): a PDF auto-formatted into Markdown in the Case Files editor, or
+// a web page turned into plain text. An older installer would render it in the implied format.
+// Added 2026-10-29. Packages without such a document do not carry it and install anywhere.
+export const DOCUMENT_TEXT_FORMAT_TOKEN = 'document:text_format';
+
 /** Every `requires` token this server understands. */
 export function serverCapabilities() {
-  return [...listActivityTypes().map((type) => activityTypeToken(type.id)), SCENARIO_STUDENT_TEXT_TOKEN];
+  return [...listActivityTypes().map((type) => activityTypeToken(type.id)), SCENARIO_STUDENT_TEXT_TOKEN, DOCUMENT_TEXT_FORMAT_TOKEN];
 }
 
 const usesScenarioStudentText = (activity) =>
   (activity.scenarios || []).some((s) => s.chat_options_override?.student);
 
+const usesStatedTextFormat = (activity) =>
+  (activity.documents || []).some((d) => d.text_format && d.text_format !== impliedTextFormat(d));
+
 /** The tokens a package with these activities needs: one per distinct activity type, plus one per feature used. */
 export function requirementsFor(activities) {
   const tokens = activities.map((a) => activityTypeToken(a.activity_type));
   if (activities.some(usesScenarioStudentText)) tokens.push(SCENARIO_STUDENT_TEXT_TOKEN);
+  if (activities.some(usesStatedTextFormat)) tokens.push(DOCUMENT_TEXT_FORMAT_TOKEN);
   return [...new Set(tokens)].sort();
 }
 
@@ -55,6 +66,7 @@ export function requirementsFor(activities) {
 function describeToken(token) {
   const [kind, value] = String(token).split(':');
   if (token === SCENARIO_STUDENT_TEXT_TOKEN) return 'saved openings and intro text on scenarios';
+  if (token === DOCUMENT_TEXT_FORMAT_TOKEN) return 'documents formatted in the Case Files editor';
   if (kind === 'activity_type') {
     return isKnownActivityType(value) ? `${getActivityType(value).label} activities` : `"${value}" activities`;
   }

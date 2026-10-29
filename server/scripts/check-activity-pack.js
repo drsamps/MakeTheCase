@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
 import { pool } from '../db.js';
 import { LIMITS, PackError, activityContentHash, assertValidPack, canonicalJson, sha256 } from '../services/activityPack/format.js';
-import { requirementsFor, serverCapabilities, SCENARIO_STUDENT_TEXT_TOKEN } from '../services/activityPack/capabilities.js';
+import { requirementsFor, serverCapabilities, SCENARIO_STUDENT_TEXT_TOKEN, DOCUMENT_TEXT_FORMAT_TOKEN } from '../services/activityPack/capabilities.js';
 import { openPack, zipPack } from '../services/activityPack/zip.js';
 import { buildPackFile, sealPack } from '../services/activityPack/export.js';
 import { inspectPackFile, installPackFile } from '../services/activityPack/index.js';
@@ -239,7 +239,34 @@ await check('scenario student text travels, and requires its token', async () =>
   assert.deepEqual(after.activities[1].scenarios[0].chat_options_override, pack.activities[1].scenarios[0].chat_options_override);
 });
 
+// A PDF's text, auto-formatted into Markdown in the Case Files editor (utils/readingMarkdown.js).
+const withFormattedPdf = (pack) => {
+  Object.assign(pack.activities[1].documents[0], { title: 'reading.pdf', format: 'pdf', text_format: 'markdown' });
+};
+
+await check('a text format that differs from its original requires document:text_format', async () => {
+  const pack = fixture();
+  withFormattedPdf(pack);
+  sealPack(pack);
+  assert.ok(pack.manifest.requires.includes(DOCUMENT_TEXT_FORMAT_TOKEN));
+  assert.ok(serverCapabilities().includes(DOCUMENT_TEXT_FORMAT_TOKEN));
+  const after = await openAndValidate(await zipPack(pack));
+  assert.equal(after.activities[1].documents[0].text_format, 'markdown');
+});
+
+await check('a text format its original implies needs no token', async () => {
+  const pack = fixture();
+  Object.assign(pack.activities[1].documents[0], { format: 'pdf', text_format: 'text' });
+  pack.activities[0].documents.forEach((d) => { d.text_format = 'markdown'; });
+  sealPack(pack);
+  assert.ok(!pack.manifest.requires.includes(DOCUMENT_TEXT_FORMAT_TOKEN));
+});
+
 console.log('\nRefusals (each of these must NOT install)');
+
+await check('an unknown text format', async () => refuses('INVALID_PACK', async () => openAndValidate(await zipped((pack) => {
+  pack.activities[1].documents[0].text_format = 'html';
+}))));
 
 await check('a file that is not a ZIP', () => refuses('NOT_A_PACK', () => openPack(crypto.randomBytes(4096))));
 

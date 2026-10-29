@@ -8,6 +8,20 @@
 import { pool } from '../db.js';
 
 /**
+ * The default model's row, for instructor AI features with no section (Draft with AI, Format
+ * with AI): the default (rank 1), else the first enabled model by id. 409 when none is enabled.
+ * @returns {Promise<{ model_id: string, vendor: string|null, temperature: number|null, reasoning_effort: string|null }>}
+ */
+export async function defaultModel() {
+  const [rows] = await pool.execute(
+    `SELECT model_id, vendor, temperature, reasoning_effort FROM models
+      WHERE enabled = 1 ORDER BY (default_model = 1) DESC, model_id ASC LIMIT 1`
+  );
+  if (rows.length === 0) throw Object.assign(new Error('No AI model is enabled.'), { status: 409 });
+  return rows[0];
+}
+
+/**
  * @param {string|null} sectionId
  * @param {'chat_model'|'super_model'} kind
  * @returns {Promise<string|null>}

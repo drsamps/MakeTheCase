@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { api, getApiBaseUrl, getAuthHeaders } from '../services/apiClient';
-import TextEditorPanel from './caseFiles/TextEditorPanel';
+import ReadingEditor, { type OriginalText } from './caseFiles/ReadingEditor';
 import WebFetchModal, { FetchPreview } from './caseFiles/WebFetchModal';
+import type { ReadingFormat } from './ReadingText';
 import { quote } from '../utils/confirmLabels';
 import HelpTooltip from './ui/HelpTooltip';
 import { CaseFilesHelp } from '../help/dashboard';
-import { readingFormatOf } from '../utils/readingFormat.js';
+import { MARKDOWN, readingFormatOf } from '../utils/readingFormat.js';
 
 interface Case {
   case_id: string;
@@ -115,6 +116,8 @@ export const CaseFilesManager: React.FC = () => {
   const [textModalConvertedAt, setTextModalConvertedAt] = useState<string | null>(null);
   const [textModalEditedAt, setTextModalEditedAt] = useState<string | null>(null);
   const [textModalHasOriginal, setTextModalHasOriginal] = useState(false);
+  const [textModalFormat, setTextModalFormat] = useState<ReadingFormat>(MARKDOWN);
+  const [textModalOriginal, setTextModalOriginal] = useState<OriginalText | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -332,6 +335,8 @@ export const CaseFilesManager: React.FC = () => {
       }
       if (response.data?.degraded) {
         setError('Fetched, but very little text was found. The page may be built by JavaScript or behind a paywall; check the text, or paste it instead.');
+      } else if (response.data?.container_fallback) {
+        setSuccess(`Fetched again (${(response.data?.converted_text_length ?? 0).toLocaleString()} chars). Reader view found only part of the article, so the page's whole main section was kept: check the text for leftover menus or captions.`);
       } else {
         setSuccess(`Fetched again (${(response.data?.converted_text_length ?? 0).toLocaleString()} chars)`);
       }
@@ -441,6 +446,7 @@ export const CaseFilesManager: React.FC = () => {
     setTextModalConvertedAt(null);
     setTextModalEditedAt(null);
     setTextModalHasOriginal(false);
+    setTextModalOriginal(null);
     try {
       const response = await api.get(`/case-files/${file.id}/converted-text`);
       if (response.error) {
@@ -452,6 +458,10 @@ export const CaseFilesManager: React.FC = () => {
       setTextModalConvertedAt(d.converted_at || null);
       setTextModalEditedAt(d.text_edited_at || null);
       setTextModalHasOriginal(!!d.has_original_text);
+      setTextModalFormat(d.text_format || readingFormatOf(file));
+      setTextModalOriginal(d.original_text != null
+        ? { text: d.original_text, format: d.original_text_format || d.text_format || readingFormatOf(file) }
+        : null);
     } catch (err: any) {
       setError(err.message || 'Failed to load text');
       setTextModalFile(null);
@@ -466,6 +476,7 @@ export const CaseFilesManager: React.FC = () => {
     try {
       const response = await api.put(`/case-files/${textModalFile.id}/converted-text`, {
         converted_text: textModalContent,
+        text_format: textModalFormat,
       });
       if (response.error) {
         throw new Error(response.error.message);
@@ -1338,7 +1349,7 @@ export const CaseFilesManager: React.FC = () => {
       {/* Converted Text Modal */}
       {textModalFile && (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
+          <div className="bg-white rounded-lg w-full max-w-7xl max-h-[95vh] flex flex-col">
             <div className="px-6 py-4 border-b flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-bold">Extracted Text</h3>
@@ -1383,13 +1394,16 @@ export const CaseFilesManager: React.FC = () => {
                   </button>
                 </div>
               ) : (
-                <TextEditorPanel
+                <ReadingEditor
                   value={textModalContent}
-                  format={readingFormatOf(textModalFile)}
-                  onChange={(value) => {
+                  format={textModalFormat}
+                  onChange={(value, format) => {
                     setTextModalContent(value);
+                    setTextModalFormat(format);
                     setTextModalDirty(true);
                   }}
+                  original={textModalOriginal}
+                  caseId={textModalFile.case_id}
                   meta={
                     <>
                       {textModalConvertedAt && (

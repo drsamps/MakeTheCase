@@ -32,6 +32,7 @@ import { isKnownActivityType, getActivityType } from '../../../utils/activityTyp
 import { KNOWN_CHAT_OPTION_KEYS } from '../chatOptions.js';
 import { CAPTURE_METHODS, SELECTION_MODES } from '../activityDefaults.js';
 import { validateStudentSettings } from '../../../utils/scenarioSettings.js';
+import { MARKDOWN, PLAIN_TEXT, readingFormatOf } from '../../../utils/readingFormat.js';
 
 export const PACK_FORMAT = 'makethecase.activity-pack';
 export const FORMAT_VERSION = 1;
@@ -44,6 +45,17 @@ export const AUDIENCE_ID_PREFIX = 'audience-';
 export const DOCUMENT_ROLES = ['case', 'teaching_note', 'chapter', 'reading', 'article', 'instructor_notes', 'outline'];
 export const isDocumentRole = (role) =>
   typeof role === 'string' && (DOCUMENT_ROLES.includes(role) || (role.startsWith('other:') && role.length > 6 && role.length <= 50));
+
+/**
+ * The format a document's text renders in when the package does not say (utils/readingFormat.js):
+ * outlines and documents with no stated original format are Markdown, others follow the original
+ * file's format (a PDF's text is plain). This is what an installer without `document:text_format`
+ * assumes, so a document whose `text_format` differs from it needs that token (capabilities.js):
+ * a PDF the instructor auto-formatted into Markdown would otherwise show its `##` to students.
+ */
+export function impliedTextFormat(doc) {
+  return doc.outline_of || !doc.format ? MARKDOWN : readingFormatOf({ file_format: doc.format });
+}
 
 /** Original files a package may carry: the Case Files upload list (routes/caseFiles.js). */
 export const ORIGINAL_EXTENSIONS = ['.pdf', '.docx', '.doc', '.md', '.txt', '.jpg', '.jpeg', '.png'];
@@ -294,6 +306,9 @@ function checkDocument(doc, activity, pack) {
   }
   str(doc.title, `${what} title`, { max: 255, required: true });
   str(doc.format, `${what} format`, { max: 20 });
+  if (doc.text_format !== null && doc.text_format !== undefined && doc.text_format !== MARKDOWN && doc.text_format !== PLAIN_TEXT) {
+    throw invalid(`${what} has an unknown text format "${String(doc.text_format).slice(0, 20)}"`);
+  }
   str(doc.source, `${what} source`, { max: 30 });
   str(doc.version_label, `${what} version`, { max: 100 });
   if (doc.source_url !== null && doc.source_url !== undefined) {
