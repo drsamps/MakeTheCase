@@ -1403,6 +1403,7 @@ export const CaseFilesManager: React.FC = () => {
                     setTextModalDirty(true);
                   }}
                   original={textModalOriginal}
+                  caseId={textModalFile.case_id}
                   meta={
                     <>
                       {textModalConvertedAt && (

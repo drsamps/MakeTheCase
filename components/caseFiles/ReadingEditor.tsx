@@ -1,8 +1,9 @@
 import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import ReadingText, { type ReadingFormat } from '../ReadingText';
+import { api } from '../../services/apiClient';
 import { MARKDOWN, PLAIN_TEXT } from '../../utils/readingFormat.js';
 import {
-  countImages, countLinks, markdownToText, removeImages, removeLinks, textToMarkdown,
+  MAX_AI_FORMAT_CHARS, countImages, countLinks, markdownToText, removeImages, removeLinks, textToMarkdown,
 } from '../../utils/readingMarkdown.js';
 
 const MarkdownCodeEditor = React.lazy(() => import('./MarkdownCodeEditor'));
@@ -20,6 +21,8 @@ interface Props {
   onChange: (value: string, format: ReadingFormat) => void;
   /** For Restore auto-format; null or absent for pasted text, which has no extraction. */
   original?: OriginalText | null;
+  /** The case the reading belongs to; Format with AI is offered only with it (and bills the caller). */
+  caseId?: string;
   /** Extra details after the word count (e.g. "fetched 10/8/2026"). */
   meta?: React.ReactNode;
   /** Shown at the right of the header row (e.g. "Unsaved changes"). */
@@ -76,13 +79,20 @@ class EditorBoundary extends React.Component<{ fallback: React.ReactNode; childr
  * - Text only: strip the formatting from what is in the box; students see plain paragraphs.
  * - Auto-format this text: only while the text is plain. Restoring and re-deriving are separate
  *   buttons on purpose: re-deriving a web page's structure from its plain text loses most of it.
+ * - Format with AI: server/services/readingFormatAI.js, which discards any reply that changed the
+ *   words; the editor never sees one. Billed to the instructor who clicks.
  * - Remove links / Remove images: shown only when there are some.
  * Plain text is edited in a plain box: Markdown typed there would show its symbols to students.
  */
-const ReadingEditor: React.FC<Props> = ({ value, format, onChange, original, meta, status, placeholder }) => {
+const ReadingEditor: React.FC<Props> = ({ value, format, onChange, original, caseId, meta, status, placeholder }) => {
   const [view, setView] = useState(readView);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const [note, setNote] = useState<string | null>(null);
+  const [noteIsError, setNoteIsError] = useState(false);
+  const [aiStartedAt, setAiStartedAt] = useState<number | null>(null);
+  const [aiSeconds, setAiSeconds] = useState(0);
+  const valueRef = useRef(value);
+  valueRef.current = value;
   const [previewText, setPreviewText] = useState(value);
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
@@ -106,12 +116,50 @@ const ReadingEditor: React.FC<Props> = ({ value, format, onChange, original, met
   const links = useMemo(() => (isMarkdown ? countLinks(value) : 0), [isMarkdown, value]);
   const images = useMemo(() => (isMarkdown ? countImages(value) : 0), [isMarkdown, value]);
   const showingAutoFormat = autoFormatted !== null && isMarkdown && value === autoFormatted;
-  // Edits that a Restore would throw away: the text is neither the extraction nor its formatting.
-  const hasHandEdits = original ? value !== original.text && value !== autoFormatted : value.trim() !== '';
+  // Edits that a Restore would throw away: typing, as opposed to the extraction, its formatting,
+  // or what one of these buttons last produced (which Undo can bring back anyway).
+  const lastAppliedRef = useRef<string | null>(null);
+  const hasHandEdits = original
+    ? value !== original.text && value !== autoFormatted && value !== lastAppliedRef.current
+    : value.trim() !== '';
 
   const apply = (text: string, nextFormat: ReadingFormat, message: string | null) => {
+    lastAppliedRef.current = text;
     onChange(text, nextFormat);
     setNote(message);
+    setNoteIsError(false);
+  };
+
+  useEffect(() => {
+    if (aiStartedAt === null) return;
+    const timer = setInterval(() => setAiSeconds(Math.round((Date.now() - aiStartedAt) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [aiStartedAt]);
+
+  const aiRunning = aiStartedAt !== null;
+  const tooLongForAI = value.length > MAX_AI_FORMAT_CHARS;
+
+  const handleFormatWithAI = async () => {
+    if (!caseId || aiRunning) return;
+    const sent = value;
+    setAiStartedAt(Date.now());
+    setAiSeconds(0);
+    setNote(null);
+    const response = await api.post<{ markdown: string; model_id: string }>(`/case-files/${encodeURIComponent(caseId)}/format-text`, { text: sent });
+    setAiStartedAt(null);
+    if (response.error || !response.data) {
+      setNote(response.error?.message || 'Format with AI failed.');
+      setNoteIsError(true);
+      return;
+    }
+    // Typing goes on while the AI works; its version is of the text as it was sent.
+    if (valueRef.current !== sent && !confirm('The text changed while the AI was formatting it. Replace it with the AI\'s version of the earlier text?')) {
+      setNote('The AI\'s version was not used, because the text changed while it worked.');
+      setNoteIsError(false);
+      return;
+    }
+    apply(response.data.markdown, MARKDOWN,
+      `Formatted by ${response.data.model_id}, and checked word by word against the original. Undo in the toolbar takes it back.`);
   };
 
   const handleRestore = () => {
@@ -216,6 +264,19 @@ const ReadingEditor: React.FC<Props> = ({ value, format, onChange, original, met
             Auto-format this text
           </button>
         )}
+        {caseId && (
+          <button
+            type="button"
+            onClick={handleFormatWithAI}
+            disabled={aiRunning || !value.trim() || tooLongForAI}
+            className={actionButton}
+            title={tooLongForAI
+              ? `Format with AI takes up to ${MAX_AI_FORMAT_CHARS.toLocaleString()} characters; this text has ${value.length.toLocaleString()}`
+              : 'Ask the AI to lay the text out as Markdown without changing its words (uses your weekly AI budget)'}
+          >
+            {aiRunning ? `Formatting with AI… ${aiSeconds}s` : 'Format with AI'}
+          </button>
+        )}
         {links > 0 && (
           <button type="button" onClick={handleRemoveLinks} className={actionButton} title="Unlink every link; the linked words stay">
             Remove links ({links})
@@ -236,7 +297,7 @@ const ReadingEditor: React.FC<Props> = ({ value, format, onChange, original, met
           {view.preview ? 'Hide preview' : 'Show preview'}
         </button>
       </div>
-      <p className="text-xs text-gray-600 min-h-[1.25rem] mb-1" aria-live="polite">{note}</p>
+      <p className={`text-xs min-h-[1.25rem] mb-1 ${noteIsError ? 'text-red-700' : 'text-gray-600'}`} aria-live="polite">{note}</p>
 
       <div className={`grid gap-3 ${view.preview ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
         <div className="min-w-0">
@@ -264,7 +325,7 @@ const ReadingEditor: React.FC<Props> = ({ value, format, onChange, original, met
                 text={previewText}
                 format={format}
                 emptyText="No text"
-                className="flex-1 min-h-0 w-full overflow-auto border rounded p-4 bg-gray-50 text-sm"
+                className="flex-1 min-h-0 w-full overflow-auto break-words border rounded p-4 bg-gray-50 text-sm"
               />
             </div>
           </div>

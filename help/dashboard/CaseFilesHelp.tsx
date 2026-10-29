@@ -16,6 +16,7 @@ const CaseFilesHelp: React.FC = () => (
     <h4>Formatting buttons</h4>
     <ul>
       <li><strong>Auto-format this text</strong> (plain text only) joins lines a PDF broke mid-sentence and guesses headings and lists. Check the headings: they are guessed from the shape of each line.</li>
+      <li><strong>Format with AI</strong> asks the AI to lay the text out (headings, paragraphs, lists, tables) without changing its words. It is checked word by word: if the AI left words out or added its own, its version is thrown away and your text stays as it was. It uses your weekly AI budget and takes up to 30,000 characters; a long reading can take a minute or two.</li>
       <li><strong>Restore auto-format</strong> puts back the original text with its automatic formatting.</li>
       <li><strong>Text only</strong> removes headings, lists, bold and links and keeps every word.</li>
       <li><strong>Remove links</strong> unlinks every link and keeps the linked words, so students can't follow a link out of the activity.</li>

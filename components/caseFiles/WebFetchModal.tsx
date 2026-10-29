@@ -188,6 +188,7 @@ const WebFetchModal: React.FC<Props> = ({ caseId, fileType, fileTypeLabel, url, 
               setFormat(nextFormat);
             }}
             original={isPaste ? null : { text: preview!.text, format: preview!.text_format }}
+            caseId={caseId}
             placeholder={isPaste ? 'Paste the text here. Markdown (# headings, - lists, | tables |) is fine.' : undefined}
             status={edited ? <span className="text-xs text-orange-600 font-medium">Edited</span> : undefined}
           />

@@ -15,6 +15,8 @@ import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import { convertFile } from '../services/fileConverter.js';
 import { fetchForCaseFile } from '../services/caseFileFetch.js';
+import { MAX_FORMAT_CHARS, formatReadingWithAI } from '../services/readingFormatAI.js';
+import { getEffectiveInstructorId } from '../services/resourceAccess.js';
 import { MARKDOWN, PLAIN_TEXT, readingFormatOf, textFormatOfConversion } from '../../utils/readingFormat.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -622,6 +624,56 @@ router.post('/:caseId/paste', verifyToken, requireAdminOrInstructor, requireCase
   } catch (error) {
     console.error('[CaseFiles] Error saving pasted text:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// A space is written this often while Format with AI runs. Apache proxies /makethecase/api with no
+// ProxyTimeout, so a request silent for 60 s fails (docs/model-fallback.md); formatting a long
+// reading can take longer. Leading whitespace is valid JSON, so the client parses the body as usual.
+const FORMAT_HEARTBEAT_MS = 10_000;
+
+// POST /api/case-files/:caseId/format-text - "Format with AI" in the reading editor. Returns the
+// reading laid out as Markdown, or refuses it if the AI changed the words. Saves nothing.
+// Billed to the caller's weekly AI cap (services/readingFormatAI.js). Body: { text }
+router.post('/:caseId/format-text', verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'edit'), async (req, res) => {
+  const text = typeof req.body?.text === 'string' ? req.body.text : '';
+  if (!text.trim()) {
+    return res.status(400).json({ data: null, error: { code: 'EMPTY', message: 'There is no text to format.' } });
+  }
+  if (text.length > MAX_FORMAT_CHARS) {
+    return res.status(413).json({
+      data: null,
+      error: {
+        code: 'TOO_LONG',
+        message: `This reading is ${text.length.toLocaleString()} characters, and Format with AI is limited to ${MAX_FORMAT_CHARS.toLocaleString()}. Use Auto-format, or edit the headings by hand.`
+      }
+    });
+  }
+  if (!(await caseExists(req.params.caseId))) {
+    return res.status(404).json({ data: null, error: { message: 'Case not found' } });
+  }
+
+  // From here the status is 200 and the outcome is in the body: the heartbeat has to start
+  // before the answer is known.
+  res.status(200).set({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  const heartbeat = setInterval(() => res.write(' '), FORMAT_HEARTBEAT_MS);
+  const finish = (body) => {
+    clearInterval(heartbeat);
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const result = await formatReadingWithAI({
+      text,
+      caseId: req.params.caseId,
+      instructorId: getEffectiveInstructorId(req)
+    });
+    finish({ data: result, error: null });
+  } catch (err) {
+    if (err?.code === 'INSTRUCTOR_COST_CAP_EXCEEDED') {
+      return finish({ data: null, error: { code: err.code, message: 'You have reached your weekly AI usage cap, so Format with AI is unavailable until Monday. Auto-format still works.' } });
+    }
+    if (!err?.code || err.code === 'PROMPT_MISSING') console.error('[CaseFiles] Format with AI failed:', err);
+    finish({ data: null, error: { code: err?.code || 'FAILED', message: err?.code ? err.message : `Format with AI failed: ${err?.message || err}`, detail: err?.detail } });
   }
 });
 

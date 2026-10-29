@@ -29,6 +29,12 @@
  * keywords, ALL CAPS, bullets and reflow work as in Quizzer.
  */
 
+/**
+ * Characters of reading one Format with AI call may take (services/readingFormatAI.js): the
+ * reply is as long as the input, so the input is capped, and never chunked.
+ */
+export const MAX_AI_FORMAT_CHARS = 30_000;
+
 // --- heuristic tuning (PDF and plain text only) -------------------------------------------
 
 /** A heading is short. Above this a line is prose that happens to be alone. */
