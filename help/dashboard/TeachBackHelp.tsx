@@ -4,8 +4,10 @@ const TeachBackHelp: React.FC = () => (
   <>
     <h4>What Teach-Back Is</h4>
     <p>
-      Every case is one of two activities, chosen by <strong>Activity type</strong> when the case is
-      created under Content &rarr; Cases. The type is fixed once the case is assigned.
+      Every case is one activity, chosen by <strong>Activity type</strong> when the case is created
+      under Content &rarr; Cases. The type is fixed once the case is assigned. Teach-back is one of
+      several types; the others are Case chat, Debate, Apply, Liken to Me, Pitch, Role Play and
+      Defend.
     </p>
     <ul>
       <li><strong>Case chat</strong> - the student argues a position with the case protagonist, who
@@ -13,6 +15,9 @@ const TeachBackHelp: React.FC = () => (
       <li><strong>Teach-back</strong> - the roles reverse. The AI plays someone who does <em>not</em>
         understand the reading, and the student has to make them understand it.</li>
     </ul>
+    <p>
+      For when to reach for each type, and how to build one, see <code>docs/studychat-guide.md</code>.
+    </p>
 
     <h4>Setting One Up</h4>
     <ol>
