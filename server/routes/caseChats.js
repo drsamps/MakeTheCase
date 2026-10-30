@@ -1244,7 +1244,8 @@ router.patch('/:id/final-position', requireChatOwner('id'), async (req, res) => 
 router.post('/:id/infer-position', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { id } = req.params;
-    const { model_id = 'gemini-1.5-flash' } = req.body;
+    // No model named: the section's supervisor model, as after grading (positionInference.js).
+    const { model_id = null } = req.body || {};
 
     // Check if chat exists
     const [existing] = await pool.execute(

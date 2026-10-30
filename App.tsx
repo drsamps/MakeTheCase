@@ -1053,7 +1053,9 @@ const App: React.FC = () => {
             }
             // The server's copy of the Teach-back opening floor (the page normally refuses first).
             if (code === 'OPENING_TOO_SHORT') {
-                const minWords = chatOptions?.teach_back_min_words ?? DEFAULT_TEACH_BACK_MIN_WORDS;
+                // The server's number wins: this page's options may be older than the server's.
+                const minWords = (e as { minWords?: number })?.minWords
+                    ?? chatOptions?.teach_back_min_words ?? DEFAULT_TEACH_BACK_MIN_WORDS;
                 setMessages((prev) => [...prev, { role: MessageRole.MODEL, at: Date.now(), content: TEACH_BACK_COPY.openingTooShort(minWords) }]);
                 return;
             }

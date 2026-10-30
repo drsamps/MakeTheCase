@@ -51,8 +51,12 @@ export const createChatSession = (
     const result = await parseOrThrow(response);
     if (!response.ok || result.error) {
       const msg = result?.error?.message || `Server returned ${response.status}`;
-      // The code lets the page tell a limit (EXCHANGE_LIMIT_REACHED, MESSAGE_TOO_LONG) from a failure.
-      throw Object.assign(new Error(msg), { code: result?.error?.code as string | undefined });
+      // The code lets the page tell a limit (EXCHANGE_LIMIT_REACHED, MESSAGE_TOO_LONG) from a failure;
+      // min_words is the server's floor for OPENING_TOO_SHORT.
+      throw Object.assign(new Error(msg), {
+        code: result?.error?.code as string | undefined,
+        minWords: typeof result?.error?.min_words === 'number' ? result.error.min_words : undefined,
+      });
     }
 
     return {

@@ -2,13 +2,13 @@
 
 The plan is in [StudyChat-plan.md](StudyChat-plan.md); decisions D1–D8 are in its Context section. This file says where the work stands and what to do next. **Update it at the end of every session.**
 
-Last updated: 2026-10-29, on the laptop without MySQL (MSB-SSAMPSON18).
+Last updated: 2026-10-29 (evening), on the desktop with MySQL (MSB-SSAMPSON20).
 
 ## Where things stand
 
 - **Branch:** `studychat`, created from `reading-import` at `3b1c7d9`. `reading-import` is not merged into local `main`, so `studychat` contains its commits too. Nothing is pushed.
-- **Phase 0 (fixes): coded and committed, NOT yet verified against a database.**
-- Phases 1–6: not started.
+- **Phase 0 (fixes): committed and verified on the dev database** (see "Phase 0 verification" below). Two small fixes came out of it and are committed.
+- Phases 1–6: not started. Phase 1 waits for your go-ahead.
 
 ### What Phase 0 changed
 
@@ -29,6 +29,32 @@ Checks that passed without a database:
 - `check-activity-pack.js` (31/31 offline)
 - every changed server module loads
 
+### Phase 0 verification (2026-10-29, dev `ceochat` on localhost)
+
+| Check | Result |
+|---|---|
+| `npm run typecheck`, `check-chat-prompt.js` | 0 errors; 13/13 |
+| `check-activity-pack.js --db` | 37/37, round trip included |
+| `npm run migrate:dry` | nothing pending |
+| Collation of the new Issue Analytics joins | no risk: `case_chats.persona`, `personas.persona_id`, `cases.case_id` and the name columns are all `utf8mb4_unicode_ci`; the joins run on all 367 chats. The 185 chats with no speaker name are legacy chats with no scenario, as before |
+| Student `/llm/case-data` on a case with an `instructor_notes` file | notes absent, supplementary reading present, no teaching note. Staff get both. The AI chat prompt still contains the notes |
+| Teach-back short opening | the page refuses it without a request; a direct POST gets 400 `OPENING_TOO_SHORT`; a stale page (server floor raised after load) shows the audience's refusal reply |
+| Teach-back graded end to end | 3 criteria scored; with `position_capture_method = 'ai_inferred'`, `position_inferred_at` was set using the section's model (gpt-5-mini) |
+| Teach-back transcript and Issue Analytics | transcript turns, the speaker SQL, a real run (estimate, run, transcript view) all name the audience ("Sam, a curious beginner"), not the scenario placeholder |
+| Case chat graded, then admin Preview prompt | names Kent Beck (7 times), never "the case protagonist", and includes the scenario question. The Issue Analytics estimate for that case still reuses 6 of 8 cached transcripts, so case-chat wording did not change the cache key |
+| Evaluation page (Teach-back) | renders; hint note reads from `free_hints` |
+
+Not checked on screen: the Teach-back wording in the feedback phases (`ask_for_feedback` was off in the test assignment). It is copy only and passes typecheck.
+
+**Fixed during verification** (second commit):
+- `POST /api/case-chats/:id/infer-position` (admin) still defaulted to `gemini-1.5-flash`. It now defaults to the section's supervisor model, like grading.
+- On a server `OPENING_TOO_SHORT`, the page quoted its own word count. The error now carries the server's `min_words` (`services/llmService.ts`), and the page uses it.
+
+**Found, not fixed (decide later):**
+1. **`chat_repeats` does nothing for students.** Only `GET /api/case-chats/check-repeats` reads it, and no client calls that endpoint; `POST /case-chats` does not enforce it. Whether a student can chat again is decided by `evaluations.allow_rechat` (and `allow_repeat`). So Phase 0's fix to that endpoint has no visible effect. Either enforce it (server at chat start + the case list) or drop the option. **Question for you.**
+2. **AI-inferred assignments still ask the student for a final position.** `App.tsx` `shouldShowFinalPosition` checks tracking and change tracking but not the capture method. Fix with the positions work in Phase 3 (assigned positions touch the same code).
+3. `inferPositionsFromChat` joins `transcripts` without pinning the newest row (Issue Analytics pins it). Harmless unless a chat has duplicate transcript rows; fix when that file is next touched.
+
 ## Your to-do list on the other computer
 
 1. **Before opening anything:** check that OneDrive has finished syncing (the cloud icon shows no pending changes). Right-click the `MakeTheCase` folder → **Always keep on this device**.
@@ -47,7 +73,9 @@ Checks that passed without a database:
 
 ## Next steps for Claude
 
-### A. Verify Phase 0 (dev database `ceochat` on localhost)
+### A. Verify Phase 0 (dev database `ceochat` on localhost) — DONE 2026-10-29
+
+Kept for the record; results are in "Phase 0 verification" above.
 
 1. `node server/scripts/check-activity-pack.js --db` must pass all checks, including the round trip. On the laptop it failed only because MySQL was unreachable (ECONNREFUSED).
 2. `npm run migrate:dry`: Phase 0 added no migration, so nothing should be pending from this work.
@@ -75,3 +103,7 @@ Follow the plan's §3 and the Phase 1 section. Capture the extended goldens **af
 - **Shell heredocs eat backslashes.** A Node edit script in a heredoc turned `/\s+/` into `/s+/` (a word-count bug, caught in review). Use the Edit tool for anything containing regexes or backslashes, and re-read the diff.
 - **Recursive `grep -r` over this OneDrive folder takes minutes** (it reads `case_files/`, `node_modules/`, …). Use the Grep tool, or restrict the paths.
 - The machine-specific MySQL path is in `.claude/PLATFORM.md` (gitignored).
+- **Live-test recipe that worked (desktop).** API: `SERVER_PORT=3011 node server/index.js`. Web: the `makethecase-test-3010` entry in `.claude/launch.json` (Vite on 3010 with `SERVER_PORT=3011`). Throwaway data: a `zz-studychat-1` student in `case-chat-testers` and a `zz-studychat-tb` Teach-back case (case, reading and `instructor_notes` files with `converted_text`, one scenario with two positions, an `ai_inferred` assignment). Delete the student and the case afterwards (cascades), plus any `issue_analysis_runs` for the case. Drive the API with `curl` and a token from `generateToken()`; set `student_auth_token` in the page for the browser.
+- To let a test student chat again, set `evaluations.allow_rechat = TRUE`; `chat_repeats` is not read by the page.
+- A chat session object in the page is created at chat start, so a hot reload of `services/llmService.ts` does not reach a chat already open: reload the page.
+- Live AI cost of a full verification pass: a few cents (gpt-5-mini).
