@@ -8,7 +8,9 @@
  *   POST   /api/activity-types/:key/clone      { label, from_version? } -> { key }
  *   PUT    /api/activity-types/:key/draft      { definition, notes? }   (validated; traits fixed once published)
  *   DELETE /api/activity-types/:key/draft
- *   POST   /api/activity-types/:key/preview    { definition?, case_id, scenario_id?, persona_id?, student_name? }
+ *   POST   /api/activity-types/:key/preview    { definition?, case_id?, scenario_id?, persona_id?, student_name? }
+ *   POST   /api/activity-types/:key/test-chat  { definition?, case_id?, scenario_id?, persona_id?, history, message }
+ *   POST   /api/activity-types/:key/test-grade { definition?, case_id?, scenario_id?, persona_id?, history }
  *   POST   /api/activity-types/:key/publish
  *   POST   /api/activity-types/:key/restore    { version_no } -> copied into the draft
  *   PATCH  /api/activity-types/:key            { enabled }
@@ -30,6 +32,14 @@ import {
 } from '../services/activityTypeStore.js';
 import { loadChatContext, buildChatSystemPrompt, buildGreeting, sanitizeStudentName } from '../services/chatPrompt.js';
 import { formatTranscript } from '../../utils/transcriptFormat.js';
+import { previewBehaviour } from '../services/activityTypes.js';
+import { extractSignals, neutralizeSignalTags } from '../../utils/activityEngine/signals.js';
+import { chatWithFallback } from '../services/chatFallback.js';
+import { evaluateWithLLM } from '../services/llmRouter.js';
+import { defaultModel } from '../services/modelChoice.js';
+import { getEffectiveInstructorId } from '../services/resourceAccess.js';
+import { parseEvaluationResponse } from '../services/evaluationNormalizer.js';
+import { settleTouchpoints } from '../services/teachBack.js';
 
 const router = express.Router();
 const adminAuth = [verifyToken, requireRole(['admin']), requirePermission('activity_types')];
@@ -146,25 +156,150 @@ router.delete('/:key/draft', ...adminAuth, checkKey, async (req, res) => {
   }
 });
 
+/** Sample inputs for a preview or Test chat with no real case: every slot has something in it. */
+function sampleContext(definition) {
+  const behaviour = previewBehaviour(definition);
+  const persona = definition.traits.character === 'persona';
+  return {
+    chat: { persona: null },
+    behaviour,
+    chatOptions: {},
+    options: { freeHints: 1, personaData: { instructions: 'You are a thoughtful person who asks plain questions.' } },
+    caseData: {
+      case_title: 'Sample Reading',
+      case_content: 'Safety stock protects a firm from demand variability. Holding more stock raises carrying cost. Acme sells 100 units a week, lost 12% of its sales last year to stockouts, and its carrying cost is 25% a year.',
+      supplementary_content: '',
+      teaching_note: 'Good answers weigh the carrying cost against the sales lost to stockouts.',
+      arguments_for: 'Stockouts cost 12% of sales.',
+      arguments_against: 'Carrying cost is 25% a year.',
+      goal: 'Students can use evidence from the reading to reach a decision.',
+      protagonist: persona ? 'Sam, a curious beginner' : 'Pat Ray',
+      protagonist_role: persona ? undefined : 'COO of Acme',
+      chat_topic: 'safety stock',
+      chat_question: 'Should Acme double its safety stock?',
+      prompt_instructions: undefined,
+      position: definition.traits.positions === 'off' ? undefined : 'Acme should double its safety stock',
+      opposing_position: definition.traits.positions === 'off' ? undefined : 'Acme should keep its safety stock as it is',
+      position_assigned: definition.traits.capture_methods.includes('assigned'),
+      scenario_student: { situation: '', personas: {} },
+      touchpoints: [
+        { key: 'carrying_cost', label: 'Carrying cost', description: 'What holding the stock costs' },
+        { key: 'stockouts', label: 'Lost sales from stockouts', description: '' },
+      ],
+      submission_text: definition.traits.material === 'student_submission' ? 'Sample submission: I argue that Acme should double its safety stock, because stockouts cost more than carrying the stock.' : undefined,
+    },
+  };
+}
+
+/** The definition to preview or test: the one posted, else the draft, else the current version. */
+async function definitionFor(req) {
+  if (req.body?.definition) return req.body.definition;
+  const detail = await getTypeDetail(req.params.key);
+  return detail.draft?.definition || detail.current?.definition || null;
+}
+
+/** A real case, or the sample text when no case is chosen. */
+async function testContext(req, definition) {
+  const { case_id: caseId = null, scenario_id: scenarioId = null, persona_id: personaId = null } = req.body || {};
+  if (!caseId) return sampleContext(definition);
+  return loadChatContext(
+    { id: null, case_id: caseId, section_id: null, scenario_id: scenarioId || null, persona: personaId || null, initial_position_id: null },
+    { definition }
+  );
+}
+
+const MAX_TEST_TURNS = 80;
+const MAX_TEST_TEXT = 4000;
+
+/** The posted test conversation, or an HTTP error: admins only, but still bounded. */
+function testHistory(body) {
+  const history = Array.isArray(body?.history) ? body.history : [];
+  if (history.length > MAX_TEST_TURNS) throw new ActivityTypeError(400, 'TEST_TOO_LONG', 'This test chat is too long. Start over.');
+  return history.map((t) => ({
+    role: t?.role === 'student' ? 'student' : 'protagonist',
+    content: String(t?.content ?? '').slice(0, MAX_TEST_TEXT * 4),
+  }));
+}
+
 /**
- * The prompts a definition produces for a real case and scenario, without starting a chat: the
- * chat system prompt, the greeting, the coach prompt (on a two-line sample transcript) and the
- * student view. Uses the posted definition, else the draft, else the current version.
+ * Chat with a definition as a student would (Phase 5). Nothing is stored: the screen keeps the
+ * conversation and sends it with each turn, so no case_chats or chat_turns row exists and no
+ * Results, Monitor or Issue Analytics view can pick it up. Billed to the caller through the usual
+ * guard (purpose 'activity_type_test'). Signals are returned so the author can see them.
+ */
+router.post('/:key/test-chat', ...adminAuth, checkKey, async (req, res) => {
+  try {
+    const message = String(req.body?.message ?? '').trim();
+    if (!message) return res.status(400).json({ data: null, error: { message: 'Type a message first' } });
+    if (message.length > MAX_TEST_TEXT) return res.status(400).json({ data: null, error: { message: `Keep test messages under ${MAX_TEST_TEXT} characters` } });
+    const definition = await definitionFor(req);
+    if (!definition) return res.status(404).json({ data: null, error: { message: 'This type has nothing to test' } });
+    const ctx = await testContext(req, definition);
+    const modelId = req.body?.model_id || (await defaultModel()).model_id;
+    const signals = ctx.behaviour.signals || {};
+    const usesSignals = Boolean(signals.complete || signals.touchpoints);
+    const { text: rawText, modelIdUsed } = await chatWithFallback({
+      modelId,
+      systemPrompt: buildChatSystemPrompt(ctx, 'Sam'),
+      history: testHistory(req.body).map((t) => ({ role: t.role === 'student' ? 'user' : 'model', content: t.content })),
+      message: usesSignals ? neutralizeSignalTags(message) : message,
+      config: { caseId: req.body?.case_id || null, instructorId: getEffectiveInstructorId(req), purpose: 'activity_type_test' },
+    });
+    const result = usesSignals
+      ? extractSignals(rawText, signals, (ctx.caseData.touchpoints || []).map((t) => t.key))
+      : { text: rawText, signals: null };
+    res.json({ data: { text: result.text || '...', signals: result.signals, model_id: modelIdUsed }, error: null });
+  } catch (error) {
+    if (error?.code === 'INSTRUCTOR_COST_CAP_EXCEEDED') {
+      return res.status(429).json({ data: null, error: { code: error.code, message: 'You have reached your weekly AI usage cap.' } });
+    }
+    if (error?.status === 404) return res.status(404).json({ data: null, error: { message: error.message } });
+    sendError(res, error, 'Error in activity type test chat:');
+  }
+});
+
+/** Grade a test conversation with the definition's grading prompt. Saves nothing. Billed to the caller. */
+router.post('/:key/test-grade', ...adminAuth, checkKey, async (req, res) => {
+  try {
+    const definition = await definitionFor(req);
+    if (!definition) return res.status(404).json({ data: null, error: { message: 'This type has nothing to test' } });
+    const ctx = await testContext(req, definition);
+    const history = testHistory(req.body);
+    if (!history.some((t) => t.role === 'student')) return res.status(400).json({ data: null, error: { message: 'There is no conversation to grade yet' } });
+    const label = ctx.caseData.protagonist || 'AI';
+    const chatHistory = history.map((t) => `${t.role === 'student' ? 'Student' : label}: ${t.content}`).join('\n\n');
+    const prompt = ctx.behaviour.buildCoachPrompt(chatHistory, 'Sam', ctx.caseData, ctx.options.freeHints ?? 1, null);
+    const modelId = req.body?.model_id || (await defaultModel()).model_id;
+    const { getModelConfig } = await import('./llm.js');
+    const modelConfig = await getModelConfig(modelId);
+    if (!modelConfig) return res.status(404).json({ data: null, error: { message: 'Model not found' } });
+    const { text } = await evaluateWithLLM({
+      modelId,
+      vendor: modelConfig.vendor,
+      prompt,
+      config: { ...modelConfig, instructorId: getEffectiveInstructorId(req), caseId: req.body?.case_id || null, purpose: 'activity_type_test' },
+    });
+    const parsed = parseEvaluationResponse(text);
+    const { touchpoints: reported, ...graded } = parsed;
+    const finished = ctx.behaviour.finishEvaluation(graded, chatHistory, ctx.caseData);
+    res.json({ data: { ...finished, touchpoints: settleTouchpoints(reported, ctx.caseData.touchpoints, chatHistory, ctx.caseData) }, error: null });
+  } catch (error) {
+    if (error?.status === 404) return res.status(404).json({ data: null, error: { message: error.message } });
+    sendError(res, error, 'Error in activity type test grade:');
+  }
+});
+
+/**
+ * The prompts a definition produces, without starting a chat: the chat system prompt, the greeting,
+ * the coach prompt (on a two-line sample transcript) and the student view. On a real case and
+ * scenario, or on sample text when no case is chosen. Uses the posted definition, else the draft,
+ * else the current version.
  */
 router.post('/:key/preview', ...adminAuth, checkKey, async (req, res) => {
   try {
-    const { case_id: caseId, scenario_id: scenarioId = null, persona_id: personaId = null } = req.body || {};
-    if (!caseId) return res.status(400).json({ data: null, error: { message: 'Choose a case to preview with' } });
-    let definition = req.body?.definition;
-    if (!definition) {
-      const detail = await getTypeDetail(req.params.key);
-      definition = detail.draft?.definition || detail.current?.definition;
-    }
+    const definition = await definitionFor(req);
     if (!definition) return res.status(404).json({ data: null, error: { message: 'This type has nothing to preview' } });
-    const ctx = await loadChatContext(
-      { id: null, case_id: caseId, section_id: null, scenario_id: scenarioId || null, persona: personaId || null, initial_position_id: null },
-      { definition }
-    );
+    const ctx = await testContext(req, definition);
     const studentName = sanitizeStudentName(req.body?.student_name || 'Sam');
     const greeting = buildGreeting(ctx, studentName);
     const sample = formatTranscript(

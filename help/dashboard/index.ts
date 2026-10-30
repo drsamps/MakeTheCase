@@ -26,6 +26,8 @@ export { default as VisibilityHelp } from './VisibilityHelp';
 export { default as CaseFilesHelp } from './CaseFilesHelp';
 export { default as CasePackagesHelp } from './CasePackagesHelp';
 
+export { default as ActivityTypesHelp } from './ActivityTypesHelp';
+
 // Future help content exports:
 // export { default as AssignmentsHelp } from './AssignmentsHelp';
 // export { default as SectionsHelp } from './SectionsHelp';

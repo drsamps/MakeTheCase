@@ -13,6 +13,29 @@ Last updated: 2026-10-30 (Phase 2), on the desktop with MySQL (MSB-SSAMPSON20).
 - **Phase 3 (DEBATE, APPLY, LIKEN2ME): committed and verified on the dev database** (see "Phase 3" below). Migration 092 is applied on the dev `ceochat`, not on production. Run `npm run seed-activity-types` after migrating, then restart the server.
 - **Phase 4 (signals, touchpoints, PITCH, ROLEPLAY): committed and verified on the dev database** (see "Phase 4" below). Migration 093 is applied on the dev `ceochat`, not on production.
 
+- **Phase 5 (full admin editor): committed and verified on the dev database** (see "Phase 5" below). No migration.
+
+### Phase 5: what changed
+
+| Part | Files |
+|---|---|
+| Compare two versions, or the draft with the current one (History tab): every changed field, old and new |  |
+| Preview on sample text, so a type can be checked with no case |  |
+| Test chat: chat with a definition, unsaved edits included, as a student would, then Grade this. Nothing is stored (the screen holds the conversation). Signals are shown to the author. Billed under purpose  | , ,  |
+| Help, docs, CLAUDE.md rules | , ,  |
+
+### Phase 5 verification (2026-10-30, dev )
+
+| Check | Result |
+|---|---|
+|  | 0 errors |
+| API (22 steps, real gpt-5-mini) | all seven types preview on sample text with no unfilled slot; test chat answers with signals stripped and returned; test grade returns 3 criteria and touchpoints; no  row is added; usage logged; an invalid draft is refused; a student gets 403 |
+| Browser | Admin > Activity Types: Test chat tab opens with its pickers and starts; a clone published, edited and compared shows "1 field changed" with old and new text; the clone deleted through the API |
+
+**Found while testing, fixed:** I passed the whole default-model row as the model id. Chat only appeared to work because a backup model answered; grading failed, which is how it surfaced.
+
+**For your review:** an admin who isn't acting as an instructor has no instructor id, so Test chat goes to the system key with no weekly cap, the same as Draft with AI. The screen says so. Test chat was not typed into on screen; its API was exercised and its Start button was.
+
 ### Phase 4: what changed
 
 | Part | Files |

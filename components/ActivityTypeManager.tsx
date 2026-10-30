@@ -3,6 +3,9 @@ import { api, getApiBaseUrl, getAuthHeaders } from '../services/apiClient';
 import { loadActivityTypeList } from '../services/activityTypeList';
 import { isAudiencePersonaId } from '../teachBack';
 import { quote } from '../utils/confirmLabels';
+import HelpTooltip from './ui/HelpTooltip';
+import { ActivityTypesHelp } from '../help/dashboard';
+import ActivityTypeTestChat from './ActivityTypeTestChat';
 
 /**
  * Admin > Activity Types (StudyChat Phase 2, minimal editor): list the types, clone one, edit the
@@ -56,6 +59,46 @@ const SECTIONS: { id: string; title: string; path: string[]; note?: string }[] =
   { id: 'prompt', title: 'Chat prompt (AI only)', path: ['prompt'], note: 'Never shown to students. Document wrapping is fixed; you edit headings, the role template, optional blocks and hint wording.' },
   { id: 'grading', title: 'Grading (AI only)', path: ['grading'], note: 'The grader\'s task list and JSON format are fixed; you edit the framing, default criteria and a few words.' },
 ];
+
+/** Every text value in a definition by its path, for comparing two versions. */
+function flatten(value: unknown, path = '', out: Record<string, string> = {}): Record<string, string> {
+  if (Array.isArray(value) && value.every((x) => typeof x === 'string')) out[path] = value.join('\n');
+  else if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) flatten(v, path ? `${path}.${k}` : k, out);
+  } else out[path] = String(value ?? '');
+  return out;
+}
+
+/** The fields that differ between two definitions, in a readable order. */
+function diffDefinitions(from: Definition, to: Definition): { path: string; from: string | null; to: string | null }[] {
+  const a = flatten(from);
+  const b = flatten(to);
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])]
+    .filter((p) => a[p] !== b[p])
+    .sort()
+    .map((p) => ({ path: p, from: a[p] ?? null, to: b[p] ?? null }));
+}
+
+const DiffView: React.FC<{ title: string; from: Definition; to: Definition; onClose: () => void }> = ({ title, from, to, onClose }) => {
+  const changes = useMemo(() => diffDefinitions(from, to), [from, to]);
+  return (
+    <div className="rounded border border-purple-200 bg-purple-50/40 p-3 text-xs">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-medium text-gray-900">{title}: {changes.length === 0 ? 'no differences' : `${changes.length} field${changes.length === 1 ? '' : 's'} changed`}</span>
+        <button type="button" onClick={onClose} className="text-purple-700 hover:underline">Close</button>
+      </div>
+      <div className="space-y-2">
+        {changes.map((c) => (
+          <div key={c.path} className="rounded border border-gray-200 bg-white p-2">
+            <div className="mb-1 font-mono text-gray-600">{c.path}</div>
+            {c.from !== null && <pre className="whitespace-pre-wrap rounded bg-red-50 p-1.5 font-mono text-red-900">{c.from || '(empty)'}</pre>}
+            {c.to !== null && <pre className="mt-1 whitespace-pre-wrap rounded bg-green-50 p-1.5 font-mono text-green-900">{c.to || '(empty)'}</pre>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 const isTextLike = (v: unknown) => typeof v === 'string' || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
 const asText = (v: unknown) => (Array.isArray(v) ? v.join('\n') : String(v ?? ''));
@@ -116,7 +159,8 @@ const ActivityTypeManager: React.FC = () => {
   const [working, setWorking] = useState<Definition | null>(null);
   const [notes, setNotes] = useState('');
   const [dirty, setDirty] = useState(false);
-  const [tab, setTab] = useState<'form' | 'json' | 'preview' | 'history'>('form');
+  const [tab, setTab] = useState<'form' | 'json' | 'preview' | 'test' | 'history'>('form');
+  const [compare, setCompare] = useState<{ title: string; from: Definition; to: Definition } | null>(null);
   const [section, setSection] = useState('copy');
   const [jsonText, setJsonText] = useState('');
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string; errors?: string[] } | null>(null);
@@ -217,7 +261,10 @@ const ActivityTypeManager: React.FC = () => {
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-4">
       <div>
-        <h2 className="text-lg font-semibold text-gray-900">Activity types</h2>
+        <h2 className="flex items-center gap-2 text-lg font-semibold text-gray-900">
+          Activity types
+          <HelpTooltip title="Activity types"><ActivityTypesHelp /></HelpTooltip>
+        </h2>
         <p className="text-sm text-gray-600">
           What students do in an activity: who the AI plays, what it is told, how the chat is graded and what the student reads.
           Built-in types are locked: clone one to make your own. Chats keep the version they started on.
@@ -297,9 +344,9 @@ const ActivityTypeManager: React.FC = () => {
           </div>
 
           <div className="flex gap-1 border-b border-gray-200 px-4 pt-2 text-xs">
-            {(['form', 'json', 'preview', 'history'] as const).map((t) => (
+            {(['form', 'json', 'preview', 'test', 'history'] as const).map((t) => (
               <button key={t} type="button" onClick={() => setTab(t)} className={`rounded-t px-3 py-1.5 ${tab === t ? 'bg-purple-100 text-purple-700 font-medium' : 'text-gray-600 hover:bg-gray-100'}`}>
-                {t === 'form' ? 'Edit' : t === 'json' ? 'JSON' : t === 'preview' ? 'Preview' : 'History'}
+                {t === 'form' ? 'Edit' : t === 'json' ? 'JSON' : t === 'preview' ? 'Preview' : t === 'test' ? 'Test chat' : 'History'}
               </button>
             ))}
           </div>
@@ -363,10 +410,16 @@ const ActivityTypeManager: React.FC = () => {
 
             {tab === 'preview' && <PreviewPanel typeKey={detail.key} definition={working} />}
 
+            {tab === 'test' && <ActivityTypeTestChat typeKey={detail.key} definition={working} />}
+
             {tab === 'history' && (
               <div className="space-y-2 text-sm">
                 {detail.versions.length === 0 && <p className="text-gray-500 text-xs">{detail.locked ? 'Built-in types are versioned by their text in code.' : 'No published versions yet.'}</p>}
-                {detail.versions.map((v) => (
+                {compare && <DiffView title={compare.title} from={compare.from} to={compare.to} onClose={() => setCompare(null)} />}
+                {detail.draft && detail.current && (
+                  <button type="button" onClick={() => setCompare({ title: 'Draft compared with the current version', from: detail.current!.definition, to: detail.draft!.definition })} className="text-xs text-purple-700 hover:underline">Compare the draft with the current version</button>
+                )}
+                {detail.versions.map((v, i) => (
                   <div key={v.version} className="flex items-center justify-between rounded border border-gray-200 px-3 py-2">
                     <div>
                       <span className="font-mono text-xs">v{v.version_no}</span>{' '}
@@ -374,9 +427,14 @@ const ActivityTypeManager: React.FC = () => {
                       <span className="ml-2 text-xs text-gray-500">{v.published_at ? new Date(v.published_at).toLocaleString() : ''}</span>
                       {v.notes && <div className="text-xs text-gray-500">{v.notes}</div>}
                     </div>
+                    <div className="flex gap-3">
+                    {detail.versions[i + 1] && (
+                      <button type="button" onClick={() => setCompare({ title: `v${v.version_no} compared with v${detail.versions[i + 1].version_no}`, from: detail.versions[i + 1].definition, to: v.definition })} className="text-xs text-purple-700 hover:underline">Compare with previous</button>
+                    )}
                     {!detail.locked && v.status !== 'published' && (
                       <button type="button" disabled={busy} onClick={() => simple('POST', `/activity-types/${detail.key}/restore`, { version_no: v.version_no }, `v${v.version_no} copied into the draft. Publish it to make it current.`)} className="text-xs text-purple-700 hover:underline">Restore into draft</button>
                     )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -414,7 +472,7 @@ const PreviewPanel: React.FC<{ typeKey: string; definition: Definition }> = ({ t
   const run = async () => {
     setError(null);
     const { data, error: e } = await call<Preview>('POST', `/activity-types/${typeKey}/preview`, {
-      definition, case_id: caseId, scenario_id: scenarioId ? Number(scenarioId) : null, persona_id: personaId || null,
+      definition, case_id: caseId || null, scenario_id: scenarioId ? Number(scenarioId) : null, persona_id: personaId || null,
     });
     if (e) { setError(e.errors?.length ? `${e.message} ${e.errors.join('; ')}` : e.message); setResult(null); return; }
     setResult(data);
@@ -422,11 +480,11 @@ const PreviewPanel: React.FC<{ typeKey: string; definition: Definition }> = ({ t
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-gray-500">Builds the prompts this definition (with your unsaved edits) would send, on a real case. No AI call is made.</p>
+      <p className="text-xs text-gray-500">Builds the prompts this definition (with your unsaved edits) would send, on sample text or a real case. No AI call is made.</p>
       <div className="flex flex-wrap items-end gap-2 text-xs">
         <label>Case<br />
           <select className="rounded border border-gray-300 px-2 py-1" value={caseId} onChange={(e) => setCaseId(e.target.value)}>
-            <option value="">Choose…</option>
+            <option value="">Sample text</option>
             {cases.map((c) => <option key={c.case_id} value={c.case_id}>{c.case_title}</option>)}
           </select>
         </label>
@@ -442,7 +500,7 @@ const PreviewPanel: React.FC<{ typeKey: string; definition: Definition }> = ({ t
             {personaChoices.map((p) => <option key={p.persona_id} value={p.persona_id}>{p.persona_name}</option>)}
           </select>
         </label>
-        <button type="button" disabled={!caseId} onClick={run} className="rounded bg-purple-600 px-3 py-1.5 font-medium text-white disabled:opacity-40">Preview</button>
+        <button type="button" onClick={run} className="rounded bg-purple-600 px-3 py-1.5 font-medium text-white disabled:opacity-40">Preview</button>
       </div>
       {error && <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{error}</div>}
       {result && (
