@@ -16,7 +16,7 @@ const TeachBackHelp: React.FC = () => (
         understand the reading, and the student has to make them understand it.</li>
     </ul>
     <p>
-      For when to reach for each type, and how to build one, see <code>docs/studychat-guide.md</code>.
+      For when to reach for each type, and how to build one, see <strong>Designing StudyChat activities</strong> on <strong>Home → Help</strong>.
     </p>
 
     <h4>Setting One Up</h4>

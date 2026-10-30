@@ -54,6 +54,6 @@ If a type is missing from the picker on **Content → Cases**, it has not been s
 - **Monitor** lets you follow chats live and see student progress.
 - **Results** lets you review completed chats, evaluations and analytics.
 
-Administrators will also see **Admin → Activity Types**, where new activity types are authored. A full guide to designing activities is in the project documentation at `docs/studychat-guide.md`.
+Administrators will also see **Admin → Activity Types**, where new activity types are authored. A full guide to designing activities, and the rest of the help, is on the **Help** sub-tab above.
 
 When you're ready to see what's happening right now, switch to the **Dashboard** sub-tab above.

@@ -278,6 +278,10 @@ Instructor-facing wizard that turns a teaching principle into a published case +
 - Served by `GET /api/content/welcome` (`server/routes/content.js`), rendered in `components/WelcomeScreen.tsx` with `MarkdownPreview` (`allowHtml="sanitized"`, `sanitizePreset="welcome"`).
 - Sanitize presets and `allowHtml` modes: `utils/markdownSanitizeSchemas.ts`, `components/caseWriter/MarkdownPreview.tsx`. Authoring guide: `docs/welcome-screen.md`.
 
+### Instructor Help screen
+
+**Home → Help** (`components/HelpScreen.tsx`) lists instructor/TA guides from `docs/` and every `help/dashboard/` tooltip. Guides are served by `GET /api/content/help[/:id]` (`server/routes/content.js`, instructors and admins): **only files in its `HELP_GUIDES` list are read** (the id is looked up, never joined into a path), so add a guide there. Links between listed guides are rewritten to `#help/<id>`; links to other docs become plain text. A new `help/dashboard/` component also goes in `HelpScreen.tsx#TOPICS`.
+
 ### Dashboard primary tabs: Setup vs Admin
 
 The dashboard has two distinct admin-area primary tabs in `components/Dashboard.tsx`:

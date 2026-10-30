@@ -39,9 +39,9 @@ const ActivityTypesHelp: React.FC = () => (
 
     <h4>Designing an activity</h4>
     <p>
-      Before cloning a type, it is worth reading <code>docs/studychat-guide.md</code>: it covers what
+      Before cloning a type, it is worth reading <strong>Designing StudyChat activities</strong> on <strong>Home → Help</strong>: it covers what
       each existing type is for, the five choices that define a type, and what to settle before you
-      start. The fuller reference is <code>docs/studychat-activity-design.md</code>.
+      start. The full reference is listed there too.
     </p>
 
     <div className="help-callout">
