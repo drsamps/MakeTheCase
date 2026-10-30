@@ -4,7 +4,9 @@ import InlineStatus from './ui/InlineStatus';
 import { CaseScenario } from '../types';
 import ScenarioStudentText, { ScenarioStudentSettings } from './ScenarioStudentText';
 import { activityTypeInfo, useActivityTypeList } from '../services/activityTypeList';
+import { DEFAULT_ACTIVITY_TYPE } from '../utils/activityTypes.js';
 import { readScenarioSettings } from '../utils/scenarioSettings.js';
+import { renderOnce } from '../utils/activityEngine/render.js';
 import {
   DndContext,
   closestCenter,
@@ -212,9 +214,11 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   onScenariosChanged
 }) => {
   useActivityTypeList();
-  // Teach-back-style fields (situation, saved openings, no character) for types whose AI is the
-  // audience the student picks.
-  const teachBack = activityTypeInfo(activityType).characterFrom === 'persona';
+  // Fields follow the type's traits, never its key. The AI's character comes from the persona the
+  // student picks, or from the scenario.
+  const typeInfo = activityTypeInfo(activityType);
+  const personaCharacter = typeInfo.characterFrom === 'persona';
+  const savedOpenings = typeInfo.savedOpenings;
   // Student-visible text in the scenario's settings document (utils/scenarioSettings.js).
   const emptyStudentText: ScenarioStudentSettings = { situation: '', personas: {} };
   const [studentText, setStudentText] = useState<ScenarioStudentSettings>(emptyStudentText);
@@ -349,15 +353,21 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   };
 
   const handleSave = async () => {
-    if (!formData.scenario_name || !formData.protagonist || !formData.protagonist_initials || !formData.chat_question) {
-      setFormError('Scenario name, protagonist, initials, and chat question are required');
+    // A persona-character type has no scenario character, but the columns are required: store a
+    // placeholder, which the prompt never uses (chatPrompt.js replaces it with the picked persona).
+    const protagonist = formData.protagonist || (personaCharacter ? typeInfo.label : '');
+    const protagonistInitials = formData.protagonist_initials || (personaCharacter ? 'AI' : '');
+    if (!formData.scenario_name || !protagonist || !protagonistInitials || !formData.chat_question) {
+      setFormError(personaCharacter
+        ? 'Scenario name and chat question are required'
+        : 'Scenario name, protagonist, initials, and chat question are required');
       return;
     }
 
     const payload = {
       scenario_name: formData.scenario_name,
-      protagonist: formData.protagonist,
-      protagonist_initials: formData.protagonist_initials,
+      protagonist,
+      protagonist_initials: protagonistInitials,
       protagonist_role: formData.protagonist_role,
       chat_topic: formData.chat_topic,
       chat_question: formData.chat_question,
@@ -365,8 +375,8 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       chat_time_limit: formData.chat_time_limit,
       chat_time_warning: formData.chat_time_warning,
       enabled: formData.enabled,
-      // Merged into chat_options_override on the server; sent only by the teach-back editor.
-      ...(teachBack && { student_settings: studentText }),
+      // Merged into chat_options_override on the server; sent only by the saved-openings editor.
+      ...(savedOpenings && { student_settings: studentText }),
     };
 
     setIsSaving(true);
@@ -571,9 +581,14 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   const previewRole = formData.protagonist_role.trim();
   const previewTopic = formData.chat_topic.trim();
   const previewRoleText = previewRole ? ` (${previewRole})` : '';
-  // Matches the student start screen (App.tsx), which names the topic for teach-back.
-  const studentFacingScenarioText = teachBack
-    ? `Explain: ${previewTopic || formData.chat_question.trim() || '{chat_topic}'}`
+  // Matches the student start screen (App.tsx): the type's own start_row wording.
+  const studentFacingScenarioText = typeInfo.startRow
+    ? renderOnce(typeInfo.startRow, {
+        ai_name: previewProtagonist || '{protagonist}',
+        ai_role_suffix: previewRoleText,
+        topic: previewTopic || '{chat_topic}',
+        topic_or_question: previewTopic || formData.chat_question.trim() || '{chat_topic}',
+      })
     : `Chat with ${previewProtagonist || '{protagonist}'}${previewRoleText} about ${previewTopic || '{chat_topic}'}`;
 
   return (
@@ -728,6 +743,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                 <p className="text-xs text-gray-500 mt-1">Full description shown to students</p>
               </div>
 
+              {typeInfo.aiSeesArguments && (<>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Arguments For This Position
@@ -755,6 +771,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   placeholder="Counter-arguments to probe and challenge..."
                 />
               </div>
+              </>)}
 
               <div>
                 <label className="flex items-center gap-2">
@@ -825,9 +842,10 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                 </div>
               </div>
 
+              {!personaCharacter && (
               <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Protagonist Name *</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{typeInfo.aiCharacter} Name *</label>
                   <input
                     type="text"
                     value={formData.protagonist}
@@ -858,6 +876,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   />
                 </div>
               </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Chat Topic</label>
@@ -876,7 +895,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Chat Question *</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{typeInfo.questionLabel} *</label>
                 <textarea
                   value={formData.chat_question}
                   onChange={(e) => handleInputChange('chat_question', e.target.value)}
@@ -885,22 +904,24 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   placeholder="The main question for students to discuss..."
                 />
                 <p className="text-xs text-gray-500 mt-1">
-                  {teachBack ? (
+                  {savedOpenings ? (
                     <>
                       This is <em>the topic the audience needs explained</em>, shown to students as
                       &quot;you&apos;ll teach … about: <strong>your topic</strong>&quot;. Write it as a
                       phrase, not a question, e.g. &quot;why safety stock rises with demand variability&quot;.
                     </>
-                  ) : (
+                  ) : typeInfo.id === DEFAULT_ACTIVITY_TYPE ? (
                     <>
                       On a <strong>teach-back</strong> case this is <em>what the audience needs
                       explained</em> (e.g. &quot;why safety stock rises with demand variability&quot;).
                     </>
+                  ) : (
+                    <>Shown to students and given to the AI as what this conversation is about.</>
                   )}
                 </p>
               </div>
 
-              {teachBack && (
+              {savedOpenings && (
                 <ScenarioStudentText
                   caseId={caseId}
                   scenarioName={formData.scenario_name}
@@ -966,8 +987,8 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                 </div>
               )}
 
-              {/* Defined Positions Section - only show for existing scenarios */}
-              {editingScenario && (
+              {/* Defined Positions Section - only show for existing scenarios, on types with positions */}
+              {editingScenario && typeInfo.usesPositions && (
                 <div className="border-t pt-4 mt-4">
                   {/* Hierarchy breadcrumb */}
                   <div className="text-xs text-gray-500 mb-2 flex items-center gap-1">
@@ -983,7 +1004,10 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                     </div>
                   )}
                   <div className="flex justify-between items-center mb-3">
-                    <h4 className="text-sm font-semibold text-gray-700">Defined Positions</h4>
+                    <h4 className="text-sm font-semibold text-gray-700">
+                      Defined Positions
+                      {typeInfo.twoSided && <span className="ml-2 font-normal text-xs text-gray-500">this type needs exactly two, one per side</span>}
+                    </h4>
                     <div className="flex gap-2 relative">
                       <div className="relative">
                         <button

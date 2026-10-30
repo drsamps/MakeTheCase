@@ -20,6 +20,8 @@ export interface StudentActivityView {
     positions: 'off' | 'optional' | 'required';
     opening_word_floor: boolean;
     evidence: boolean;
+    /** Students write about their own lives: a notice before the chat, names hidden by default. */
+    personal?: boolean;
   };
   labels: { document: string; ai_character: string; question: string; ai_fallback: string };
   copy: Record<string, unknown> & { summary_headings?: string[] };
@@ -59,6 +61,8 @@ export interface CopyVars {
   status_met: Record<string, never>;
   status_partial: Record<string, never>;
   status_not_met: Record<string, never>;
+  // Optional keys (validate.js#OPTIONAL_COPY_KEYS): '' for a type without them.
+  personal_notice: Record<string, never>;
 }
 export type CopyKey = keyof CopyVars;
 
@@ -96,9 +100,15 @@ export interface ActivityIntroFacts {
   /** Show Case Content is on; `readingWhere` is where the reading pane sits. */
   showReading: boolean;
   readingWhere: 'left' | 'above';
+  /** The activity's goal, from POST /case-chats; shown only if the type's intro has a goal line. */
+  goal?: string;
+  /** The side the server assigned (capture method 'assigned'). */
+  assignedPosition?: string;
 }
 
 export interface ActivityIntroText {
+  goal: string;
+  assignedSide: string;
   heading: string;
   teachLine: string;
   topic: string;

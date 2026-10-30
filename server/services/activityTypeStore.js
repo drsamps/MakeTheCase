@@ -395,6 +395,55 @@ export async function deleteType(key) {
   await loadActivityTypes();
 }
 
+/**
+ * Create or update a system type from server/scripts/seed-activity-types.js. Published at once and
+ * enabled. Never edits a version: changed content under `force` becomes a new published version
+ * (the old one is retired, and chats that ran on it keep it); without `force` it is left alone.
+ * @returns {Promise<'create'|'skip'|'update'>}
+ */
+export async function seedSystemType(definition, { force = false, dryRun = false } = {}) {
+  assertValid(definition);
+  const key = definition.key;
+  if (isCustomKey(key) || BUILTIN_DEFINITIONS[key]) throw new Error(`"${key}" is not a system type key`);
+  const sha = definitionSha256(definition);
+  const row = await typeRow(key);
+  if (row && row.tier !== 'system') throw new Error(`"${key}" already exists as a ${row.tier} type`);
+  const current = row ? getTypeEntry(key)?.current : null;
+  if (current && definitionSha256(current.definition) === sha) return 'skip';
+  if (row && current && !force) return 'skip';
+  if (current && !sameTraits(current.definition, definition)) {
+    throw new Error(`The traits of "${key}" changed, and traits are fixed for a published type.`);
+  }
+  if (dryRun) return row ? 'update' : 'create';
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    if (!row) {
+      await conn.execute(
+        "INSERT INTO activity_types (type_key, uid, tier, enabled, based_on, created_by_type) VALUES (?, ?, 'system', 1, NULL, 'admin')",
+        [key, crypto.randomUUID()]
+      );
+    }
+    const versionNo = await nextVersionNo(conn, key);
+    await conn.execute("UPDATE activity_type_versions SET status = 'retired' WHERE type_key = ? AND status = 'published'", [key]);
+    const [inserted] = await conn.execute(
+      `INSERT INTO activity_type_versions (type_key, version_no, status, definition, definition_sha256, notes, published_at)
+       VALUES (?, ?, 'published', ?, ?, 'Seeded by seed-activity-types', NOW())`,
+      [key, versionNo, JSON.stringify(definition), sha]
+    );
+    await conn.execute('UPDATE activity_types SET current_version_id = ?, enabled = 1 WHERE type_key = ?', [inserted.insertId, key]);
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback().catch(() => {});
+    throw error;
+  } finally {
+    conn.release();
+  }
+  await loadActivityTypes();
+  return row ? 'update' : 'create';
+}
+
 // ---------------------------------------------------------------------------------------------
 // Installing from a package (activityPack/import.js)
 // ---------------------------------------------------------------------------------------------

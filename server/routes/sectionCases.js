@@ -21,6 +21,8 @@ import {
 import { parseDateInput } from '../utils/dateInput.js';
 import { studentScenarioSettings } from '../../utils/scenarioSettings.js';
 import { studentActivityViewFor } from '../services/activityTypes.js';
+import { assertCaptureAllowed, assertSectionCaseCanAssign, PositionRuleError } from '../services/positionRules.js';
+import { isPersonalType, hiddenNameFor } from '../services/personalActivity.js';
 
 // SETTINGS WRITERS BELOW CARRY guardFollowedCaseSettings. A section_cases row that follows a
 // course case version (version_id set) has its settings written through from that version, so a
@@ -1135,7 +1137,7 @@ router.patch('/:sectionId/cases/:caseId/position-settings', verifyToken, manageS
     const { position_tracking_enabled, position_capture_method, track_position_change } = req.body;
 
     // Validate position_capture_method
-    const validMethods = ['explicit', 'ai_inferred', 'instructor_manual', 'none'];
+    const validMethods = ['explicit', 'ai_inferred', 'instructor_manual', 'none', 'assigned'];
     if (position_capture_method && !validMethods.includes(position_capture_method)) {
       return res.status(400).json({
         data: null,
@@ -1151,6 +1153,18 @@ router.patch('/:sectionId/cases/:caseId/position-settings', verifyToken, manageS
 
     if (existing.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    // The type decides which methods apply; 'assigned' also needs sides to assign (positionRules.js).
+    if (position_capture_method) {
+      const [typeRows] = await db.execute('SELECT activity_type FROM cases WHERE case_id = ?', [caseId]);
+      try {
+        assertCaptureAllowed(typeRows[0]?.activity_type, position_capture_method);
+        if (position_capture_method === 'assigned') await assertSectionCaseCanAssign(db, existing[0].id, typeRows[0]?.activity_type);
+      } catch (ruleError) {
+        if (ruleError instanceof PositionRuleError) return res.status(ruleError.status).json({ data: null, error: { code: ruleError.code, message: ruleError.message } });
+        throw ruleError;
+      }
     }
 
     // Build update query
@@ -1572,6 +1586,11 @@ router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireAdminOr
       }
     }
 
+    // A personal activity hides names by default (services/personalActivity.js).
+    const [liveTypeRows] = await pool.execute('SELECT activity_type FROM cases WHERE case_id = ?', [caseId]);
+    const personalActivity = isPersonalType(liveTypeRows[0]?.activity_type);
+    const hideNames = personalActivity && req.query.show_personal !== '1';
+
     // Build student list with status
     const studentData = students.map(student => {
       const chat = studentChatMap.get(student.student_id);
@@ -1604,8 +1623,10 @@ router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireAdminOr
 
       return {
         student_id: student.student_id,
-        student_name: student.full_name || `${student.first_name} ${student.last_name}`.trim(),
-        email: student.email,
+        student_name: hideNames ? hiddenNameFor(student.student_id) : (student.full_name || `${student.first_name} ${student.last_name}`.trim()),
+        email: hideNames ? null : student.email,
+        names_hidden: hideNames || undefined,
+        personal_activity: personalActivity || undefined,
         status: sessionStatus,
         chat_id: chat?.chat_id || null,
         start_time: chat?.start_time || null,

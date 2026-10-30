@@ -25,9 +25,10 @@
 import { pool } from '../db.js';
 import { canAccessResource } from './resourceAccess.js';
 import { withoutActivityMode } from './chatOptions.js';
+import { typeTraits } from './activityTypeStore.js';
 
 export const SELECTION_MODES = ['student_choice', 'all_required'];
-export const CAPTURE_METHODS = ['explicit', 'ai_inferred', 'instructor_manual', 'none'];
+export const CAPTURE_METHODS = ['explicit', 'ai_inferred', 'instructor_manual', 'none', 'assigned'];
 
 export class ActivityDefaultsError extends Error {
   constructor(status, message) {
@@ -188,7 +189,21 @@ export async function clearCaseDefaults(executor, caseId) {
  */
 export async function caseDefaultsForCaller(req, caseId, executor = pool) {
   const defaults = await readCaseDefaults(executor, caseId);
-  if (!defaults || defaults.rubric_id === null) return defaults;
+  if (!defaults) {
+    // A type that requires positions (DEBATE) cannot run without them, so a case with no defaults
+    // of its own starts with them on, using the type's first capture method. Copied once, like
+    // any default.
+    const [typeRows] = await executor.execute('SELECT activity_type FROM cases WHERE case_id = ?', [caseId]);
+    const traits = typeTraits(typeRows[0]?.activity_type);
+    if (traits?.positions !== 'required') return null;
+    return normalizeSettings({
+      use_scenarios: true,
+      position_tracking_enabled: true,
+      position_capture_method: traits.capture_methods[0],
+      track_position_change: false,
+    });
+  }
+  if (defaults.rubric_id === null) return defaults;
   const [rubrics] = await executor.execute('SELECT rubric_id FROM rubrics WHERE rubric_id = ? AND enabled = 1', [defaults.rubric_id]);
   const isAdmin = Boolean(req.user?.superuser || req.user?.role === 'admin');
   const usable = rubrics.length > 0

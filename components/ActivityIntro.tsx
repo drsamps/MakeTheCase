@@ -24,8 +24,10 @@ const ActivityIntro: React.FC<{ text: ActivityIntroText }> = ({ text }) => (
   >
     <div className="mx-auto max-w-3xl">
       <p className="text-base font-semibold">{text.heading}</p>
+      {text.goal && <p className="mt-2">{renderBold(text.goal)}</p>}
       <p className="mt-3">{text.teachLine}</p>
       <p className="mt-1 rounded-md border border-amber-300 bg-white px-3 py-2 font-semibold">{renderBold(text.topic)}</p>
+      {text.assignedSide && <p className="mt-2 font-semibold">{renderBold(text.assignedSide)}</p>}
       <p className="mt-2">{renderBold(text.about)}</p>
       <p className="mt-4 text-xs font-bold uppercase tracking-wide text-amber-800">{text.instructionsLabel}</p>
       <ul className="mt-1 list-disc space-y-1 pl-5">

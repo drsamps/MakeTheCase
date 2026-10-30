@@ -46,8 +46,10 @@ const MAX_FIELD = 20000;
 const MAX_TOTAL = 200000;
 
 const ROLE_SLOTS = ['student_name', 'ai_name', 'ai_role', 'case_title', 'question', 'topic', 'situation',
-  'scenario_instructions', 'persona_instructions', 'additional_instructions', 'hint_rule'];
-const WRAPPABLE = ['ai_role', 'scenario_instructions', 'persona_instructions', 'additional_instructions', 'situation'];
+  'scenario_instructions', 'persona_instructions', 'additional_instructions', 'hint_rule',
+  'goal', 'position', 'opposing_position'];
+const WRAPPABLE = ['ai_role', 'scenario_instructions', 'persona_instructions', 'additional_instructions', 'situation',
+  'goal', 'position', 'opposing_position'];
 
 /** Student copy keys and the variables each may use. Every definition has every key. */
 export const COPY_KEYS = {
@@ -85,6 +87,21 @@ export const COPY_KEYS = {
   status_not_met: [],
 };
 
+/**
+ * Copy keys only some types have. OPTIONAL, unlike COPY_KEYS, because a built-in's version tag is
+ * the hash of its definition: adding a key to case_chat.json would change every chat's recorded
+ * version. `personal_notice` is required for a type with traits.personal (checked below).
+ */
+export const OPTIONAL_COPY_KEYS = {
+  personal_notice: [],
+};
+
+/** Optional intro bar phrases: the goal line, and the side the server assigned. */
+export const OPTIONAL_INTRO_KEYS = {
+  goal: ['goal'],
+  assigned_side: ['position'],
+};
+
 /** The intro bar's phrases (copy.intro, or null for no intro bar) and their variables. */
 export const INTRO_KEYS = {
   heading: ['case_title'],
@@ -116,8 +133,8 @@ export const INTRO_KEYS = {
 };
 
 const LABEL_KEYS = ['document', 'ai_character', 'question', 'ai_fallback'];
-const CAPTURE_METHODS = ['explicit', 'ai_inferred', 'instructor_manual', 'none'];
-const EVAL_INPUTS = ['none', 'chosen_persona'];
+const CAPTURE_METHODS = ['explicit', 'ai_inferred', 'instructor_manual', 'none', 'assigned'];
+const EVAL_INPUTS = ['none', 'chosen_persona', 'type_criteria'];
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isText = (v) => typeof v === 'string' || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
@@ -168,7 +185,15 @@ export function validateDefinition(def) {
 
   // traits: fixed for the life of a type key
   const t = def.traits;
-  if (keysOnly(t, 'traits', ['character', 'persona_kind', 'positions', 'capture_methods', 'material', 'ai_sees', 'signals', 'grading_extras', 'opening_word_floor'])) {
+  // `personal` and `two_sided` are optional: absent from the built-ins, so their version tags hold.
+  if (keysOnly(t, 'traits', ['character', 'persona_kind', 'positions', 'capture_methods', 'material', 'ai_sees', 'signals', 'grading_extras', 'opening_word_floor', 'personal', 'two_sided'],
+    ['character', 'persona_kind', 'positions', 'capture_methods', 'material', 'ai_sees', 'signals', 'grading_extras', 'opening_word_floor'])) {
+    if ('personal' in t) bool(t.personal, 'traits.personal');
+    if ('two_sided' in t) {
+      bool(t.two_sided, 'traits.two_sided');
+      if (t.two_sided && t.positions === 'off') err('traits.two_sided', 'needs positions');
+    }
+    if (Array.isArray(t.capture_methods) && t.capture_methods.includes('assigned') && t.positions === 'off') err('traits.capture_methods', 'assigned needs positions');
     oneOf(t.character, 'traits.character', ['scenario', 'persona']);
     oneOf(t.persona_kind, 'traits.persona_kind', ['protagonist', 'audience']);
     oneOf(t.positions, 'traits.positions', ['off', 'optional', 'required']);
@@ -229,8 +254,9 @@ export function validateDefinition(def) {
       text(g.hello_anonymous, 'greeting.hello_anonymous', []);
       if (keysOnly(g.fallbacks, 'greeting.fallbacks', ['ai_intro'])) text(g.fallbacks.ai_intro, 'greeting.fallbacks.ai_intro', []);
     } else if (g.resolver === 'plain') {
-      keysOnly(g, 'greeting', ['resolver', 'saved_openings', 'template', 'fallbacks']);
+      keysOnly(g, 'greeting', ['resolver', 'saved_openings', 'template', 'template_assigned', 'fallbacks'], ['resolver', 'saved_openings', 'template', 'fallbacks']);
       text(g.template, 'greeting.template', ['student_name', 'ai_name', 'ai_role', 'case_title', 'question']);
+      text(g.template_assigned, 'greeting.template_assigned', ['student_name', 'ai_name', 'ai_role', 'case_title', 'question', 'position', 'opposing_position'], { optional: true });
       if (keysOnly(g.fallbacks, 'greeting.fallbacks', ['ai_role'])) text(g.fallbacks.ai_role, 'greeting.fallbacks.ai_role', []);
     }
     bool(g.saved_openings, 'greeting.saved_openings');
@@ -239,7 +265,7 @@ export function validateDefinition(def) {
   // grading (coach channel; headings are student-visible)
   const gr = def.grading;
   if (keysOnly(gr, 'grading', ['framing', 'fallbacks', 'default_criteria', 'criteria_block', 'read_line', 'ai_word', 'summary_headings', 'picked_position_note'])) {
-    text(gr.framing, 'grading.framing', ['ai_name', 'case_title'], { channel: 'coach' });
+    text(gr.framing, 'grading.framing', ['ai_name', 'case_title', 'question', 'goal', 'student_position', 'opposing_position'], { channel: 'coach' });
     if (keysOnly(gr.fallbacks, 'grading.fallbacks', ['ai_name', 'case_title'])) {
       text(gr.fallbacks.ai_name, 'grading.fallbacks.ai_name', [], { channel: 'coach' });
       text(gr.fallbacks.case_title, 'grading.fallbacks.case_title', [], { channel: 'coach' });
@@ -257,10 +283,13 @@ export function validateDefinition(def) {
   if (keysOnly(def.labels, 'labels', LABEL_KEYS)) for (const k of LABEL_KEYS) text(def.labels[k], `labels.${k}`, []);
 
   const c = def.copy;
-  if (keysOnly(c, 'copy', [...Object.keys(COPY_KEYS), 'intro'])) {
+  if (keysOnly(c, 'copy', [...Object.keys(COPY_KEYS), ...Object.keys(OPTIONAL_COPY_KEYS), 'intro'], [...Object.keys(COPY_KEYS), 'intro'])) {
     for (const [k, vars] of Object.entries(COPY_KEYS)) plural(c[k], `copy.${k}`, vars);
-    if (c.intro !== null && keysOnly(c.intro, 'copy.intro', Object.keys(INTRO_KEYS))) {
+    for (const [k, vars] of Object.entries(OPTIONAL_COPY_KEYS)) if (k in c) plural(c[k], `copy.${k}`, vars);
+    if (t?.personal && !c.personal_notice) err('copy.personal_notice', 'a personal type must tell students before the chat');
+    if (c.intro !== null && keysOnly(c.intro, 'copy.intro', [...Object.keys(INTRO_KEYS), ...Object.keys(OPTIONAL_INTRO_KEYS)], Object.keys(INTRO_KEYS))) {
       for (const [k, vars] of Object.entries(INTRO_KEYS)) plural(c.intro[k], `copy.intro.${k}`, vars);
+      for (const [k, vars] of Object.entries(OPTIONAL_INTRO_KEYS)) if (k in c.intro) plural(c.intro[k], `copy.intro.${k}`, vars);
     }
   }
 

@@ -75,7 +75,7 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { enabled, include_scenarios } = req.query;
     let query = `
-      SELECT c.case_id, c.case_title, c.case_version, c.activity_type, c.base_scenario_id,
+      SELECT c.case_id, c.case_title, c.case_version, c.activity_type, c.goal, c.base_scenario_id,
              c.created_at, c.enabled, c.is_shared, c.visibility, c.created_by, c.created_by_type,
              c.default_settings IS NOT NULL AS has_default_settings,
              JSON_UNQUOTE(JSON_EXTRACT(c.default_settings, '$.source')) AS default_settings_source,
@@ -136,7 +136,7 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
 router.get('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'), async (req, res) => {
   try {
     const [cases] = await pool.execute(
-      `SELECT case_id, case_title, case_version, activity_type, base_scenario_id,
+      `SELECT case_id, case_title, case_version, activity_type, goal, base_scenario_id,
               created_at, enabled, is_shared, created_by, created_by_type
        FROM cases WHERE case_id = ?`,
       [req.params.id]
@@ -168,7 +168,7 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('id'
 // POST /api/cases - Create new case (admin or instructor)
 router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
-    const { case_id, case_title, case_version, enabled } = req.body;
+    const { case_id, case_title, case_version, enabled, goal } = req.body;
     const activityType = req.body.activity_type ?? DEFAULT_ACTIVITY_TYPE;
 
     // Only case_id and case_title are required
@@ -200,13 +200,14 @@ router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
     const createdBy = effectiveId;
 
     await pool.execute(
-      `INSERT INTO cases (case_id, case_title, case_version, activity_type, enabled, created_by_type, created_by, is_shared)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+      `INSERT INTO cases (case_id, case_title, case_version, activity_type, goal, enabled, created_by_type, created_by, is_shared)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       [
         case_id,
         case_title,
         case_version || null,
         activityType,
+        typeof goal === 'string' && goal.trim() ? goal.trim() : null,
         enabled !== false ? 1 : 0,
         createdByType,
         createdBy
@@ -219,7 +220,7 @@ router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
 
     // Return created case
     const [rows] = await pool.execute(
-      `SELECT case_id, case_title, case_version, activity_type, base_scenario_id,
+      `SELECT case_id, case_title, case_version, activity_type, goal, base_scenario_id,
               created_at, enabled, is_shared, created_by, created_by_type
        FROM cases WHERE case_id = ?`,
       [case_id]
@@ -239,8 +240,9 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('i
     const updates = req.body;
 
     const allowedFields = [
-      'case_title', 'case_version', 'activity_type', 'base_scenario_id', 'enabled'
+      'case_title', 'case_version', 'activity_type', 'goal', 'base_scenario_id', 'enabled'
     ];
+    if (updates.goal !== undefined) updates.goal = typeof updates.goal === 'string' && updates.goal.trim() ? updates.goal.trim() : null;
     const setClauses = [];
     const params = [];
 
@@ -300,7 +302,7 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('i
     await pool.execute(`UPDATE cases SET ${setClauses.join(', ')} WHERE case_id = ?`, params);
 
     const [rows] = await pool.execute(
-      `SELECT case_id, case_title, case_version, activity_type, base_scenario_id,
+      `SELECT case_id, case_title, case_version, activity_type, goal, base_scenario_id,
               created_at, enabled
        FROM cases WHERE case_id = ?`,
       [id]

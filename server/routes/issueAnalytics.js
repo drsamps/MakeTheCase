@@ -125,6 +125,10 @@ router.post('/runs', async (req, res) => {
     if (!truthy(req.body.confirmed)) {
       throw new HttpError(400, 'Confirm the estimate before starting a run');
     }
+    // A personal activity (traits.personal): off unless the instructor turns it on for this run.
+    if (s.personal_activity && !truthy(req.body.allow_personal)) {
+      throw new HttpError(400, 'These chats are about students\' personal lives. Turn on "Include personal content" to analyze them.');
+    }
     if (!hasCapacity()) {
       throw new HttpError(429, 'The server is busy with other analyses; try again in a few minutes');
     }

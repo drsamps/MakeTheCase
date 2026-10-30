@@ -68,6 +68,9 @@ export function activityIntroText(view, f) {
   instructions.push(renderOnce(f.allowFinish ? t.finish_button : t.finish_phrase, {}));
 
   return {
+    // Only for a type whose copy has these lines, so existing bars are unchanged.
+    goal: t.goal && f.goal?.trim() ? renderOnce(t.goal, { goal: f.goal.trim() }) : '',
+    assignedSide: t.assigned_side && f.assignedPosition ? renderOnce(t.assigned_side, { position: f.assignedPosition }) : '',
     heading: renderOnce(f.scenarioName ? t.heading_scenario : t.heading, { case_title: f.caseTitle, scenario_name: f.scenarioName || '' }),
     teachLine: renderOnce(t.teach_line, { ai_intro: audience }),
     topic: f.topic,

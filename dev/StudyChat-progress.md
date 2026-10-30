@@ -10,7 +10,45 @@ Last updated: 2026-10-30 (Phase 2), on the desktop with MySQL (MSB-SSAMPSON20).
 - **Phase 0 (fixes): committed and verified on the dev database** (see "Phase 0 verification" below).
 - **Phase 1 (the engine): committed and verified on the dev database** (see "Phase 1" below). Migration 090 is applied on the dev `ceochat`, not on production.
 - **Phase 2 (types as data, admin screen, packages): committed and verified on the dev database** (see "Phase 2" below). Migration 091 is applied on the dev `ceochat`, not on production.
-- Phases 3–6: not started.
+- **Phase 3 (DEBATE, APPLY, LIKEN2ME): committed and verified on the dev database** (see "Phase 3" below). Migration 092 is applied on the dev `ceochat`, not on production. Run `npm run seed-activity-types` after migrating, then restart the server.
+
+### Phase 3: what changed
+
+| Part | Files |
+|---|---|
+| Migration 092: `'assigned'` on three ENUMs (`'none'` also on `case_chats.position_method`), `cases.goal` | `server/migrations/092_assigned_positions_and_goal.sql` |
+| The server picks the side at chat start, in a transaction holding the assignment's row lock: same side on retry, else fewest students, ties by `sha256(position:student:section_case)`. Any position in the request is ignored; a student cannot PATCH an assigned side | `server/services/sideAssignment.js`, `routes/caseChats.js` |
+| Rules by trait: capture method must be one the type lists (so `assigned` can't reach a built-in), `assigned` needs sides on every scenario, a two-sided type refuses a third enabled position. Checked on save and again at chat start | `server/services/positionRules.js`, `sectionCases.js`, `courseCases.js`, `scenarioPositions.js` |
+| A type with `positions: required` starts with tracking on and its first capture method when the case has no defaults of its own (copied once) | `activityDefaults.js#caseDefaultsForCaller` |
+| Engine: slots `{goal} {position} {opposing_position}`, grading slots `{question} {goal} {student_position} {opposing_position}`, `greeting.template_assigned`, optional traits `personal` and `two_sided`, optional copy `personal_notice`, optional intro lines `goal` and `assigned_side`, eval input `type_criteria` (the type's own criteria unless the assignment names a rubric). **All optional and absent from the built-ins, so their version tags and goldens are unchanged** | `utils/activityEngine/*`, `teachBack.js#typeCriteriaInputs` |
+| `personal` trait: notice before the chat; names hidden by default in Results, Positions, Monitor and transcripts, with a "Show names" checkbox; an Issue Analytics run must be turned on per run (`allow_personal`) | `server/services/personalActivity.js`, `analytics.js`, `sectionCases.js`, `transcripts.js`, `issueAnalytics.js`, `Analytics.tsx`, `LiveSessionMonitor.tsx`, `IssueAnalytics.tsx`, `App.tsx` |
+| Goal: case form field, for the AI and grader; students see it only through the intro bar of a type with a `goal` line (returned by `POST /case-chats`, stripped from `/llm/case-data`). Packages carry it behind `activity:goal` | `cases.js`, `Dashboard.tsx`, `llm.js`, `activityPack/*` |
+| Package tokens per feature: `positions:assigned`, `positions:two_sided`, `trait:personal`, `grading:type_criteria` | `activityPack/capabilities.js` |
+| Scenario editor fields by trait (character fields, saved openings, positions, arguments, the type's own start row and labels). Capture method pickers list only the type's methods | `ScenarioManager.tsx`, `CaseVersionEditor.tsx`, `Dashboard.tsx`, `services/activityTypeList.ts` |
+| Fixed: AI-inferred, instructor-recorded and "none" assignments no longer ask the student for a final position (Phase 0's finding 2) | `App.tsx` |
+| System types: `debate`, `apply`, `liken_to_me` (the key can't hold a digit, so not `liken2me`), an `audience-mentor` persona, three public starter rubrics. `npm run seed-activity-types`; never overwrites; `--force` publishes a new version | `server/scripts/seed-activity-types.js`, `seeds/systemActivityTypes.js`, `activityTypeStore.js#seedSystemType` |
+
+### Phase 3 verification (2026-10-30, dev `ceochat`)
+
+| Check | Result |
+|---|---|
+| `typecheck` | 0 errors |
+| `check-activity-engine.js --db` | 919/919; built-in versions unchanged |
+| `check-activity-definitions.js` | 27/27 (10 new) |
+| `check-activity-pack.js --db` | 50/50 |
+| API, against the running server (46 steps, real gpt-5-mini turns and grading) | case chat refuses `assigned`; four students starting at once split 2/2; a cancelled chat's retry keeps the side and ignores a position sent by the client; PATCH refused; third position refused; student rows and `/llm/case-data` carry no templates, arguments or goal; each type answered and graded on 3 of its own criteria; evaluation records `debate@v1`; names hidden and revealed in Results, transcripts and Monitor; Issue Analytics refuses a run until turned on; package carries goal, definition and tokens |
+| Browser | Student: Liken to Me notice and mentor picker, Debate intro bar with goal and assigned side, greeting. Instructor: Liken to Me scenario editor shows its own labels and no character or position fields |
+
+**Found while testing, fixed:** the intro bar named the picked persona ("You'll debate Moderate") on scenario-character types; a missing full stop in the Debate greeting.
+
+### Phase 3: decisions for your review
+
+1. **Name hiding is a default, not an access rule.** It covers Results (with its CSV), Positions, Monitor, the transcript modal and Issue Analytics. Not covered: admin-only chat lists in `caseChats.js` (`GET /`, `/:id`, position distribution) and the prompt logs. In transcripts it replaces the student's full and first names; a nickname or a relative's name stays.
+2. **Sorting and searching Results by name still use the real name**, so a sort order could hint at identity. Left as is.
+3. **`assigned` never asks for a final position.** The side isn't the student's opinion, so "has your position changed?" doesn't fit. A later option could ask for their own view.
+4. **Starter rubrics are optional.** With no rubric on the assignment, the type's own built-in criteria grade the chat (`type_criteria`), never the case-chat system default.
+5. **LIKEN2ME gets a distress line in its prompt** (encourage them to talk to someone they trust or a campus counselor). You didn't ask for this; please check the wording suits BYU.
+6. **Scenario editor change for Teach-back too:** the protagonist fields are now hidden for persona-character types (a placeholder is stored, as the columns are required). Existing values are kept.
 
 ### Phase 2: what changed
 
@@ -165,13 +203,11 @@ Results are in "Phase 1" above. Before production: run migration 090 (`npm run m
 
 Results are in "Phase 2" above. Before production: run migrations 090 and 091.
 
-### D. Phase 3 next: DEBATE, APPLY, LIKEN2ME
+### D. Phase 3: DEBATE, APPLY, LIKEN2ME — DONE 2026-10-30
 
-Follow the plan's Phase 3 section. Notes from Phase 2:
-- System types are seeded data rows (`tier = 'system'`). The seed script must write them through the store (or call `loadActivityTypes()` / restart the server afterwards): the registry is in memory.
-- `validate.js` still refuses `signals`, `touchpoints`, `chat_options.extra` and any `material` but `activity` ("not supported by this server yet"). Lift each with its phase, and give it a package capability token (`capabilities.js`, next to `ACTIVITY_DEFINITION_TOKEN`).
-- New slots (`{position}`, `{opposing_position}`, `{goal}`) go in `validate.js` (`ROLE_SLOTS` and the coach list) and in `prompt.js#roleValues`; the built-in goldens must stay unchanged.
-- `ScenarioManager.tsx` still decides its Teach-back fields by `characterFrom === 'persona'`; Phase 3 replaces that with fields by trait.
+Results are in "Phase 3" above. Notes for later phases:
+- `validate.js` still refuses `signals`, `touchpoints`, `chat_options.extra` and any `material` but `activity` ("not supported by this server yet"). Lift each with its phase, and give it a token in `capabilities.js#FEATURE_TOKENS`.
+- A new optional definition key must stay absent from the built-ins: their version tag is the hash of the JSON.
 - Delete the hand builders (`legacyActivityBuilders.js`, `chatPromptTemplates.js`, `teachBackCoachPrompt.js`, the builder in `promptBuilder.js`) in the release after Phase 1 ships, and drop the "hand" comparisons from the check.
 
 ### E. Later phases

@@ -1,5 +1,6 @@
 import express from 'express';
 import { pool } from '../db.js';
+import { isPersonalType, hiddenNameFor } from '../services/personalActivity.js';
 import { verifyToken } from '../middleware/auth.js';
 import {
   requireAdminOrInstructor,
@@ -604,6 +605,7 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
         sec.section_title,
         c.case_id,
         c.case_title,
+        c.activity_type,
         COALESCE(cc.status, 'not_started') as status,
         cc.initial_position,
         cc.final_position,
@@ -638,12 +640,17 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
     // as some MySQL versions have issues with prepared statements and LIMIT.
     const [studentRows] = await pool.query(studentsQuery, [...params, parsedLimit, parsedOffset]);
 
+    // A personal activity hides names by default (services/personalActivity.js).
+    const showPersonal = req.query.show_personal === '1';
+    const hides = (row) => !showPersonal && isPersonalType(row.activity_type);
     const students = studentRows.map(row => ({
       student_id: row.student_id,
-      student_name: row.student_name,
+      student_name: hides(row) ? hiddenNameFor(row.student_id) : row.student_name,
+      names_hidden: hides(row) || undefined,
+      personal_activity: isPersonalType(row.activity_type) || undefined,
       // Login identity: CAS students carry their net id inside `student_id`
       // (`cas:{netid}`); self-registered students have an email instead.
-      email: row.email || null,
+      email: hides(row) ? null : (row.email || null),
       section_id: row.section_id,
       section_title: row.section_title,
       case_id: row.case_id,
@@ -1078,9 +1085,11 @@ router.get('/positions', verifyToken, requireAdminOrInstructor, async (req, res)
         cc.initial_position_id,
         cc.final_position_id,
         e.score as evaluation_score,
-        cc.end_time as completion_time
+        cc.end_time as completion_time,
+        name_case.activity_type AS name_activity_type
        FROM case_chats cc
        JOIN students s ON cc.student_id = s.id
+       LEFT JOIN cases name_case ON name_case.case_id = cc.case_id
        LEFT JOIN evaluations e ON e.case_chat_id = cc.id
        LEFT JOIN scenario_positions sp_init ON cc.initial_position_id = sp_init.position_id
        LEFT JOIN scenario_positions sp_final ON cc.final_position_id = sp_final.position_id
@@ -1094,7 +1103,7 @@ router.get('/positions', verifyToken, requireAdminOrInstructor, async (req, res)
 
     const byStudent = studentRows.map(row => ({
       student_id: row.student_id,
-      student_name: row.student_name,
+      student_name: isPersonalType(row.name_activity_type) && req.query.show_personal !== '1' ? hiddenNameFor(row.student_id) : row.student_name,
       initial_position: row.initial_position,
       final_position: row.final_position,
       changed: row.initial_position !== row.final_position &&

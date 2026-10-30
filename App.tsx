@@ -250,6 +250,10 @@ const App: React.FC = () => {
   const selectedCaseRow = availableCases.find((c) => c.case_id === selectedCaseId);
   const selectedActivityType = selectedCaseRow?.activity_type;
   const [chatActivity, setChatActivity] = useState<StudentActivityView | null>(null);
+  // From the POST /case-chats response: the goal (only for a type that shows it) and the side the
+  // server assigned (capture method 'assigned').
+  const [chatGoal, setChatGoal] = useState<string | null>(null);
+  const [assignedPosition, setAssignedPosition] = useState<string | null>(null);
   const activity: StudentActivityView | null = chatActivity ?? selectedCaseRow?.activity ?? null;
   const copy = <K extends CopyKey>(key: K, ...vars: CopyVars[K] extends Record<string, never> ? [] : [CopyVars[K]]) =>
     copyFor(activity, key, ...vars);
@@ -1395,6 +1399,8 @@ const App: React.FC = () => {
       setCurrentCaseChatId(caseChatResult.data.id);
       // The activity's copy as of this chat's start (pinned with its type version).
       setChatActivity(caseChatResult.data.activity ?? null);
+      setChatGoal(caseChatResult.data.goal ?? null);
+      setAssignedPosition(caseChatResult.data.assigned_position ?? null);
       return { id: caseChatResult.data.id, greeting: caseChatResult.data.greeting };
     } catch (err) {
       console.error('Failed to create case_chat record:', err);
@@ -1500,6 +1506,8 @@ const App: React.FC = () => {
     setAvailablePersonas([]);
     setCurrentCaseChatId(null);
     setChatActivity(null);
+    setChatGoal(null);
+    setAssignedPosition(null);
     setSelectedInitialPositionId(null);
     setSelectedFinalPositionId(null);
     setAwaitingPositionSelection(false);
@@ -1632,6 +1640,8 @@ const App: React.FC = () => {
     setConversationPhase(ConversationPhase.PRE_CHAT);
     setCurrentCaseChatId(null);
     setChatActivity(null);
+    setChatGoal(null);
+    setAssignedPosition(null);
     setHintsUsed(0);
     setExchangesUsed(0);
     setLimitChoicePending(false);
@@ -2159,6 +2169,11 @@ const App: React.FC = () => {
 
             {/* Position selection for 'explicit' method now happens IN the chat after protagonist greeting */}
 
+            {/* A type about the student's own life says so before the chat starts. */}
+            {selectedCaseId && activity?.traits.personal && (
+              <p className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{renderBold(copy('personal_notice'))}</p>
+            )}
+
             <p className="text-xs text-gray-500 italic px-2">Disclosure: In order to facilitate assessment and provide feedback in this case chat activity, your conversation with the chatbot will be recorded in a secure database. In addition to providing you with feedback at the end of the activity, the conversation transcript will be made available to the instructor for review.</p>
             
             {error && (
@@ -2208,7 +2223,8 @@ const App: React.FC = () => {
     const text = activityIntroText(activity, {
           caseTitle: activeCaseData?.case_title || '',
           scenarioName: scenario?.scenario_name || undefined,
-          audienceName: persona?.persona_name || activeCaseData?.protagonist || '',
+          // Who the student talks to: the picked persona only on a persona-character type.
+          audienceName: (personaCharacter ? persona?.persona_name : null) || activeCaseData?.protagonist || '',
           intro: selectedPersonaId ? studentText.personas[selectedPersonaId]?.intro : undefined,
           topic: activeCaseData?.chat_question || '',
           maxMessages: maxExchanges,
@@ -2220,6 +2236,8 @@ const App: React.FC = () => {
           positionFirst,
           showReading: showCaseContent,
           readingWhere: isLargeScreen ? 'left' : 'above',
+          goal: chatGoal || undefined,
+          assignedPosition: assignedPosition || undefined,
     });
     return text ? <ActivityIntro text={text} /> : undefined;
   })();
@@ -2285,7 +2303,10 @@ const App: React.FC = () => {
               ? availableScenarios.find((s: any) => s.scenario_id === selectedScenarioId)
               : null;
             const finalPositions = selectedScenario?.positions || [];
-            const shouldShowFinalPosition = isPosTrackingEnabled && trackPosChange && finalPositions.length > 0;
+            // Only when the student stated a position at the start: an AI-inferred, instructor-recorded
+            // or assigned position is not one the student was asked to choose.
+            const capturedExplicitly = (activeCaseInfo?.position_capture_method || 'explicit') === 'explicit';
+            const shouldShowFinalPosition = isPosTrackingEnabled && trackPosChange && capturedExplicitly && finalPositions.length > 0;
             const canProceed = !shouldShowFinalPosition || selectedFinalPositionId !== null;
 
             return (

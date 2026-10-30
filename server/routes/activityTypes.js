@@ -66,9 +66,13 @@ function summaryOf(entry) {
       persona_kind: def.traits.persona_kind,
       positions: def.traits.positions,
       capture_methods: def.traits.capture_methods,
+      personal: Boolean(def.traits.personal),
+      two_sided: Boolean(def.traits.two_sided),
+      ai_sees_arguments: Boolean(def.traits.ai_sees.arguments),
     },
     saved_openings: Boolean(def.greeting.saved_openings),
     labels: def.labels,
+    start_row: def.copy.start_row,
   };
 }
 

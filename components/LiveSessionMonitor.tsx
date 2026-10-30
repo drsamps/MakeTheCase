@@ -18,6 +18,9 @@ interface LiveStudent {
   student_id: string;
   student_name: string;
   email: string | null;
+  /** A personal activity's row with the student's identity hidden (services/personalActivity.js). */
+  names_hidden?: boolean;
+  personal_activity?: boolean;
   status: 'not_started' | 'in_progress' | 'completed' | 'abandoned';
   chat_id: string | null;
   start_time: string | null;
@@ -172,6 +175,9 @@ const LiveSessionMonitor: React.FC<LiveSessionMonitorProps> = ({ sections, initi
   // section set must not overwrite the current one.
   const requestSeq = useRef(0);
 
+  // Personal activities hide names until the instructor asks. Deliberately not remembered.
+  const [showPersonalNames, setShowPersonalNames] = useState(false);
+
   const fetchLive = useCallback(async () => {
     if (!caseId || !caseSectionKey) return;
     const ids = caseSectionKey.split(',');
@@ -180,7 +186,7 @@ const LiveSessionMonitor: React.FC<LiveSessionMonitorProps> = ({ sections, initi
     try {
       const results = await Promise.all(ids.map(id =>
         api.get<{ students: any[]; summary: LiveSummary }>(
-          `/sections/${encodeURIComponent(id)}/cases/${encodeURIComponent(caseId)}/live-session`
+          `/sections/${encodeURIComponent(id)}/cases/${encodeURIComponent(caseId)}/live-session${showPersonalNames ? '?show_personal=1' : ''}`
         ).catch((err: any) => ({ data: null, error: { message: err?.message || 'Request failed' } }))
       ));
       if (seq !== requestSeq.current) return;
@@ -208,7 +214,7 @@ const LiveSessionMonitor: React.FC<LiveSessionMonitorProps> = ({ sections, initi
     } finally {
       if (seq === requestSeq.current) setIsLoading(false);
     }
-  }, [caseId, caseSectionKey]);
+  }, [caseId, caseSectionKey, showPersonalNames]);
 
   // Clear stale rows when the case/sections change, then fetch.
   useEffect(() => {
@@ -303,6 +309,12 @@ const LiveSessionMonitor: React.FC<LiveSessionMonitorProps> = ({ sections, initi
             />
             Auto-refresh (30s)
           </label>
+          {students.some(s => s.personal_activity) && (
+            <label className="flex items-center gap-1.5 text-sm text-amber-900">
+              <input type="checkbox" className="rounded border-gray-300" checked={showPersonalNames} onChange={(e) => setShowPersonalNames(e.target.checked)} />
+              Show names (personal activity)
+            </label>
+          )}
           <button
             onClick={fetchLive}
             disabled={isLoading || !caseReady}

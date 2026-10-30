@@ -459,10 +459,10 @@ async function installActivity(conn, req, pack, activity, plan, { personaIdMap, 
   const fresh = plan.new_uids;
 
   await conn.execute(
-    `INSERT INTO cases (case_id, case_title, case_version, activity_type, enabled, created_by_type, created_by,
+    `INSERT INTO cases (case_id, case_title, case_version, activity_type, goal, enabled, created_by_type, created_by,
                         is_shared, visibility, activity_uid, origin)
-     VALUES (?, ?, ?, ?, 1, ?, ?, 0, 'private', ?, ?)`,
-    [caseId, plan.title, activity.version_label ?? null, plan.activity_type, owner.type, owner.id,
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?, 0, 'private', ?, ?)`,
+    [caseId, plan.title, activity.version_label ?? null, plan.activity_type, activity.goal ?? null, owner.type, owner.id,
      fresh ? crypto.randomUUID() : activity.uid, JSON.stringify(origin)]
   );
 

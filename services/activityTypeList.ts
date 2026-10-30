@@ -21,6 +21,19 @@ export interface ActivityTypeInfo {
   usesPositions: boolean;
   /** The greeting uses openings saved per audience in the scenario editor (Teach-back). */
   savedOpenings: boolean;
+  /** Which position capture methods the type offers. */
+  captureMethods: string[];
+  /** Exactly two positions per scenario (DEBATE). */
+  twoSided: boolean;
+  /** The AI sees the argument framework, so position arguments are worth writing. */
+  aiSeesArguments: boolean;
+  /** Students write about their own lives (LIKEN2ME). */
+  personal: boolean;
+  /** Student wording for a scenario on the start screen, with slots; null until the list loads. */
+  startRow: string | null;
+  /** The type's word for the AI's character and for its question. */
+  aiCharacter: string;
+  questionLabel: string;
   /** Published and enabled: cases can be set to it and chats can start. */
   enabled: boolean;
   tier: 'builtin' | 'system' | 'custom';
@@ -36,6 +49,13 @@ const fromBuiltin = (t: (typeof ACTIVITY_TYPES)[keyof typeof ACTIVITY_TYPES]): A
   characterFrom: t.characterFrom as ActivityTypeInfo['characterFrom'],
   usesPositions: t.usesPositions,
   savedOpenings: t.personaKind === 'audience',
+  captureMethods: ['explicit', 'ai_inferred', 'instructor_manual', 'none'],
+  twoSided: false,
+  aiSeesArguments: t.personaKind !== 'audience',
+  personal: false,
+  startRow: null,
+  aiCharacter: t.personaKind === 'audience' ? 'Audience' : 'Protagonist',
+  questionLabel: t.personaKind === 'audience' ? 'Topic' : 'Chat Question',
   enabled: true,
   tier: 'builtin',
   known: true,
@@ -48,8 +68,10 @@ const listeners = new Set<(rev: number) => void>();
 
 interface ServerType {
   key: string; label: string; summary: string; tier: ActivityTypeInfo['tier']; enabled: boolean;
-  traits: { character: ActivityTypeInfo['characterFrom']; persona_kind: ActivityTypeInfo['personaKind']; positions: string };
+  traits: { character: ActivityTypeInfo['characterFrom']; persona_kind: ActivityTypeInfo['personaKind']; positions: string; capture_methods: string[]; two_sided?: boolean; ai_sees_arguments?: boolean; personal?: boolean };
   saved_openings: boolean;
+  start_row?: string;
+  labels?: { ai_character?: string; question?: string };
 }
 
 /** Fetch the published types (once; `force` to refresh after an admin change). */
@@ -67,6 +89,13 @@ export function loadActivityTypeList(force = false): Promise<void> {
         characterFrom: t.traits.character,
         usesPositions: t.traits.positions !== 'off',
         savedOpenings: Boolean(t.saved_openings),
+        captureMethods: t.traits.capture_methods,
+        twoSided: Boolean(t.traits.two_sided),
+        aiSeesArguments: Boolean(t.traits.ai_sees_arguments),
+        personal: Boolean(t.traits.personal),
+        startRow: t.start_row ?? null,
+        aiCharacter: t.labels?.ai_character || 'Protagonist',
+        questionLabel: t.labels?.question || 'Chat Question',
         enabled: Boolean(t.enabled),
         tier: t.tier,
         known: true,
@@ -84,7 +113,8 @@ export function activityTypeInfo(key?: string | null): ActivityTypeInfo {
   const id = key || DEFAULT_ACTIVITY_TYPE;
   return types.get(id) ?? {
     id, label: 'Unknown type', summary: 'This server has no published activity type with this key', personaKind: 'protagonist',
-    characterFrom: 'scenario', usesPositions: true, savedOpenings: false, enabled: false, tier: 'custom', known: false,
+    characterFrom: 'scenario', usesPositions: true, savedOpenings: false,
+    captureMethods: ['explicit', 'ai_inferred', 'instructor_manual', 'none'], twoSided: false, aiSeesArguments: true, personal: false, startRow: null, aiCharacter: 'Protagonist', questionLabel: 'Chat Question', enabled: false, tier: 'custom', known: false,
   };
 }
 

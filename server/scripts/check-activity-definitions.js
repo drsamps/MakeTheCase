@@ -7,7 +7,8 @@
 // whose traits change under chats that already ran on them.
 import assert from 'node:assert/strict';
 import { BUILTIN_DEFINITIONS } from '../../utils/activityEngine/builtins/index.js';
-import { validateDefinition, sameTraits, customKeyFor, isTypeKey, isCustomKey, COPY_KEYS } from '../../utils/activityEngine/index.js';
+import { validateDefinition, sameTraits, customKeyFor, isTypeKey, isCustomKey, COPY_KEYS, buildSystemPrompt, buildGreeting, buildCoachPrompt, studentActivityView } from '../../utils/activityEngine/index.js';
+import { SYSTEM_TYPES } from './seeds/systemActivityTypes.js';
 
 let failed = 0;
 let passed = 0;
@@ -110,6 +111,64 @@ check('custom keys from labels fit the column and the pattern', () => {
 });
 check('every copy key is in both built-ins', () => {
   for (const def of Object.values(BUILTIN_DEFINITIONS)) for (const k of Object.keys(COPY_KEYS)) assert.ok(k in def.copy, `${def.key}.copy.${k}`);
+});
+
+// Phase 3 features
+const systemType = (key) => structuredClone(SYSTEM_TYPES.find((d) => d.key === key));
+check('every system type validates', () => {
+  for (const def of SYSTEM_TYPES) {
+    const { ok, errors } = validateDefinition(def);
+    assert.equal(ok, true, `${def.key}: ${errors.join(' | ')}`);
+  }
+});
+check('a personal type must tell students', () => {
+  const d = systemType('liken_to_me');
+  delete d.copy.personal_notice;
+  refused(d, /copy\.personal_notice/);
+});
+check('assigned positions on a type with positions off', () => {
+  const d = systemType('apply');
+  d.traits.capture_methods = ['assigned'];
+  refused(d, /assigned needs positions/);
+});
+check('two sides on a type with positions off', () => {
+  const d = systemType('apply');
+  d.traits.two_sided = true;
+  refused(d, /traits\.two_sided/);
+});
+check('the goal and positions are not student slots in copy', () => {
+  const d = systemType('debate');
+  d.copy.farewell = 'Bye {first_name}. {goal}';
+  refused(d, /copy\.farewell: slot \{goal\}/);
+});
+check('an AI-only slot in an assigned greeting', () => {
+  const d = systemType('debate');
+  d.greeting.template_assigned = 'Hello {student_name}. {scenario_instructions}';
+  refused(d, /greeting\.template_assigned: slot/);
+});
+check('built-ins do not carry the optional traits or copy (their version tags depend on it)', () => {
+  for (const def of Object.values(BUILTIN_DEFINITIONS)) {
+    assert.ok(!('personal' in def.traits) && !('two_sided' in def.traits) && !('personal_notice' in def.copy), def.key);
+  }
+});
+const sample = { case_title: 'T', case_content: 'C', protagonist: 'Pat', chat_question: 'Q?', goal: 'G', position: 'Side A', opposing_position: 'Side B', position_assigned: true };
+check('system types render with no unfilled slot', () => {
+  for (const def of SYSTEM_TYPES) {
+    for (const text of [buildSystemPrompt(def, 'Zed', 'p', sample, {}), buildGreeting(def, sample, 'Zed', 'p')]) {
+      assert.equal((text.match(/\{[a-z_]+\}/g) || []).length, 0, `${def.key}: ${text.match(/\{[a-z_]+\}/g)}`);
+    }
+  }
+});
+check('a side stated only when assigned; a greeting never empty', () => {
+  const d = systemType('debate');
+  assert.match(buildGreeting(d, sample, 'Zed', null), /Side A/);
+  assert.doesNotMatch(buildGreeting(d, { ...sample, position_assigned: false }, 'Zed', null), /Side A/);
+});
+check('the student view of a system type has no templates', () => {
+  for (const def of SYSTEM_TYPES) {
+    const view = JSON.stringify(studentActivityView(def, 'x@v1'));
+    assert.ok(!view.includes('ROLE & INSTRUCTIONS') && !view.includes('Evaluation Criteria'), def.key);
+  }
 });
 
 console.log(failed ? `\n${failed} FAILED, ${passed} passed` : `\nall ${passed} passed`);

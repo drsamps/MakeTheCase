@@ -194,6 +194,7 @@ interface Case {
   case_title: string;
   case_version?: string | null;
   activity_type?: string;
+  goal?: string | null;
   // The case's own default settings (server/services/activityDefaults.js)
   has_default_settings?: boolean | number;
   default_settings_source?: string | null;
@@ -594,6 +595,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     case_title: '',
     case_version: '',
     activity_type: DEFAULT_ACTIVITY_TYPE as string,
+    goal: '',
     protagonist: '',
     protagonist_initials: '',
     chat_topic: '',
@@ -2213,6 +2215,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         case_title: caseItem.case_title,
         case_version: caseItem.case_version || '',
         activity_type: caseItem.activity_type || DEFAULT_ACTIVITY_TYPE,
+        goal: caseItem.goal || '',
         protagonist: caseItem.protagonist || '',
         protagonist_initials: caseItem.protagonist_initials || '',
         chat_topic: caseItem.chat_topic || '',
@@ -2228,6 +2231,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         case_title: '',
         case_version: '',
         activity_type: DEFAULT_ACTIVITY_TYPE,
+        goal: '',
         protagonist: '',
         protagonist_initials: '',
         chat_topic: '',
@@ -2255,6 +2259,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           case_title: caseForm.case_title,
           case_version: caseForm.case_version || null,
           activity_type: caseForm.activity_type,
+          goal: caseForm.goal.trim() || null,
           protagonist: caseForm.protagonist || null,
           protagonist_initials: caseForm.protagonist_initials || null,
           chat_topic: caseForm.chat_topic || null,
@@ -2268,6 +2273,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           case_title: caseForm.case_title,
           case_version: caseForm.case_version || null,
           activity_type: caseForm.activity_type,
+          goal: caseForm.goal.trim() || null,
           protagonist: caseForm.protagonist || null,
           protagonist_initials: caseForm.protagonist_initials || null,
           chat_topic: caseForm.chat_topic || null,
@@ -5223,10 +5229,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                           onChange={(e) => setPositionSettings({...positionSettings, position_capture_method: e.target.value})}
                                           className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
                                         >
-                                          <option value="explicit">Student selects position</option>
-                                          <option value="ai_inferred">AI infers from conversation</option>
-                                          <option value="instructor_manual">Instructor assigns after review</option>
-                                          <option value="none">No position capture</option>
+                                          {[
+                                            ['explicit', 'Student selects position'],
+                                            ['ai_inferred', 'AI infers from conversation'],
+                                            ['instructor_manual', 'Instructor assigns after review'],
+                                            ['none', 'No position capture'],
+                                            ['assigned', 'Server assigns a side (balanced)'],
+                                          ].filter(([value]) => activityTypeInfo(sc.activity_type).captureMethods.includes(value)).map(([value, label]) => (
+                                            <option key={value} value={value}>{label}</option>
+                                          ))}
                                         </select>
                                       </div>
 
@@ -10147,6 +10158,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     ? 'Can be changed only while the case has no assignments, course listings or chats. Changing it clears the default settings.'
                     : 'What students do with this case. It is fixed once the case is assigned.'}
                 </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Goal</label>
+                <textarea
+                  value={caseForm.goal}
+                  onChange={(e) => setCaseForm({ ...caseForm, goal: e.target.value })}
+                  rows={2}
+                  placeholder="e.g., Students can apply safety stock to a new situation"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">Optional. The learning objective, for the AI and the grader where the activity type uses it. Some types also show it to students.</p>
               </div>
               {editingCase && (
                 <div>

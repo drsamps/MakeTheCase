@@ -76,13 +76,27 @@ export async function loadChatContext(chat, { definition = null } = {}) {
     if (scenario) {
       let argumentsFor = scenario.arguments_for || undefined;
       let argumentsAgainst = scenario.arguments_against || undefined;
+      // The student's side and the other side(s), for types whose templates use {position} and
+      // {opposing_position}. A built-in's templates never name them, so its prompt is unchanged.
+      let position;
+      let opposingPosition;
       if (chat.initial_position_id) {
         const [positions] = await pool.execute(
-          'SELECT arguments_for, arguments_against FROM scenario_positions WHERE position_id = ? AND scenario_id = ?',
+          'SELECT position, arguments_for, arguments_against FROM scenario_positions WHERE position_id = ? AND scenario_id = ?',
           [chat.initial_position_id, chat.scenario_id]
         );
         if (positions[0]?.arguments_for) argumentsFor = positions[0].arguments_for;
         if (positions[0]?.arguments_against) argumentsAgainst = positions[0].arguments_against;
+        position = positions[0]?.position || undefined;
+        const [others] = await pool.execute(
+          `SELECT sp.position FROM scenario_positions sp
+             LEFT JOIN section_cases sc ON sc.section_id = ? AND sc.case_id = ?
+             LEFT JOIN section_case_positions scp ON scp.section_case_id = sc.id AND scp.position_id = sp.position_id
+            WHERE sp.scenario_id = ? AND sp.position_id <> ? AND sp.position_enabled = 1 AND COALESCE(scp.enabled, 1) = 1
+            ORDER BY sp.position_order, sp.position_id`,
+          [chat.section_id ?? null, chat.case_id, chat.scenario_id, chat.initial_position_id]
+        );
+        opposingPosition = others.map((o) => o.position).join(' / ') || undefined;
       }
       caseData = {
         ...caseData,
@@ -94,6 +108,9 @@ export async function loadChatContext(chat, { definition = null } = {}) {
         prompt_instructions: scenario.prompt_instructions || undefined,
         arguments_for: argumentsFor,
         arguments_against: argumentsAgainst,
+        position,
+        opposing_position: opposingPosition,
+        position_assigned: chat.position_method === 'assigned',
         // Student-visible scenario text (utils/scenarioSettings.js): the audience's situation and
         // each audience's saved opening. Read by the teach-back greeting and system prompt.
         scenario_student: readScenarioSettings(scenario.chat_options_override).student,

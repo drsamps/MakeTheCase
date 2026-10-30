@@ -55,6 +55,7 @@ const CAPTURE_METHODS = [
   { value: 'ai_inferred', label: 'AI infers position' },
   { value: 'instructor_manual', label: 'Instructor records position' },
   { value: 'none', label: 'Do not capture' },
+  { value: 'assigned', label: 'Server assigns a side' },
 ];
 
 const Section: React.FC<{ title: React.ReactNode; children: React.ReactNode; sectionRef?: React.Ref<HTMLDivElement> }> = ({ title, children, sectionRef }) => (
@@ -506,7 +507,7 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
             )}
           </Section>
 
-          <Section title="Position tracking" sectionRef={partRefs.positions}>
+          {activityType.usesPositions && <Section title="Position tracking" sectionRef={partRefs.positions}>
             <div className="flex flex-wrap items-center gap-3 text-sm">
               <label className="flex items-center gap-1">
                 <input type="checkbox" className="rounded" disabled={disabled} checked={positionSettings.position_tracking_enabled}
@@ -516,7 +517,7 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
               <select value={positionSettings.position_capture_method} disabled={disabled}
                 onChange={(e) => setPositionSettings({ ...positionSettings, position_capture_method: e.target.value })}
                 className="px-2 py-1 border border-gray-300 rounded bg-white">
-                {CAPTURE_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                {CAPTURE_METHODS.filter((m) => activityType.captureMethods.includes(m.value)).map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
               </select>
               <label className="flex items-center gap-1">
                 <input type="checkbox" className="rounded" disabled={disabled} checked={positionSettings.track_position_change}
@@ -549,7 +550,7 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
                 })}
               </div>
             )}
-          </Section>
+          </Section>}
         </div>
 
         <div className="flex justify-end p-4 border-t bg-gray-50 rounded-b-xl">

@@ -3,6 +3,7 @@ import { pool } from '../db.js';
 import { verifyToken } from '../middleware/auth.js';
 import { requireAdminOrInstructor, requireCaseAccess, requireCaseReadAccess } from '../middleware/instructorAccess.js';
 import { canAccessResource } from '../services/resourceAccess.js';
+import { assertRoomForPosition, PositionRuleError } from '../services/positionRules.js';
 
 const router = express.Router({ mergeParams: true });
 
@@ -116,6 +117,8 @@ router.post('/', ...canEditCase, async (req, res) => {
       });
     }
 
+    if (position_enabled !== false) await assertRoomForPosition(pool, req.params.caseId, scenarioId);
+
     // Get max position_order if not specified
     let finalOrder = position_order;
     if (finalOrder === undefined || finalOrder === null) {
@@ -152,6 +155,7 @@ router.post('/', ...canEditCase, async (req, res) => {
 
     res.status(201).json({ data: rows[0], error: null });
   } catch (error) {
+    if (error instanceof PositionRuleError) return res.status(error.status).json({ data: null, error: { code: error.code, message: error.message } });
     console.error('Error creating position:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
@@ -253,6 +257,8 @@ router.patch('/:positionId', ...canEditCase, async (req, res) => {
       }
     }
 
+    if (updates.position_enabled) await assertRoomForPosition(pool, req.params.caseId, scenarioId, positionId);
+
     const allowedFields = [
       'position_name', 'position', 'position_order',
       'arguments_for', 'arguments_against', 'position_enabled'
@@ -293,6 +299,7 @@ router.patch('/:positionId', ...canEditCase, async (req, res) => {
 
     res.json({ data: rows[0], error: null });
   } catch (error) {
+    if (error instanceof PositionRuleError) return res.status(error.status).json({ data: null, error: { code: error.code, message: error.message } });
     console.error('Error updating position:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
@@ -358,6 +365,7 @@ router.patch('/:positionId/toggle', ...canEditCase, async (req, res) => {
     }
 
     const newEnabled = !existing[0].position_enabled;
+    if (newEnabled) await assertRoomForPosition(pool, req.params.caseId, scenarioId, positionId);
 
     await pool.execute(
       'UPDATE scenario_positions SET position_enabled = ? WHERE position_id = ?',
@@ -375,6 +383,7 @@ router.patch('/:positionId/toggle', ...canEditCase, async (req, res) => {
 
     res.json({ data: rows[0], error: null });
   } catch (error) {
+    if (error instanceof PositionRuleError) return res.status(error.status).json({ data: null, error: { code: error.code, message: error.message } });
     console.error('Error toggling position:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
@@ -432,6 +441,7 @@ router.post('/copy', ...canEditCase, async (req, res) => {
         skippedCount++;
         continue;
       }
+      if (pos.position_enabled) await assertRoomForPosition(pool, req.params.caseId, scenarioId);
 
       await pool.execute(
         `INSERT INTO scenario_positions
@@ -467,6 +477,7 @@ router.post('/copy', ...canEditCase, async (req, res) => {
       message: `Copied ${copiedCount} position(s)${skippedCount > 0 ? `, skipped ${skippedCount} duplicate(s)` : ''}`
     });
   } catch (error) {
+    if (error instanceof PositionRuleError) return res.status(error.status).json({ data: null, error: { code: error.code, message: error.message } });
     console.error('Error copying positions:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }

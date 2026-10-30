@@ -385,6 +385,7 @@ function checkActivity(activity, pack, personaKeys, rubricKeys, typeDefs = new M
   if (typeof activity.suggested_id !== 'string' || !CASE_ID_RE.test(activity.suggested_id)) throw invalid(`${what} has an invalid id`);
   str(activity.title, `${what} title`, { max: 100, required: true });
   str(activity.version_label, `${what} version`, { max: 10 });
+  str(activity.goal, `${what} goal`, { max: 5000 });
   if (!isKnownActivityType(activity.activity_type) && !typeDefs.has(activity.activity_type)) {
     throw new PackError(422, 'UNKNOWN_ACTIVITY_TYPE',
       `${what} is a "${activity.activity_type}" activity, which this MakeTheCase server does not have. Update this server, then install the package again.`,

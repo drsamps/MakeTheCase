@@ -6,6 +6,7 @@
 import { pool } from '../../db.js';
 import { getAccessibleSectionIds } from '../../middleware/instructorAccess.js';
 import { getSetting } from '../promptService.js';
+import { typeTraits } from '../activityTypeStore.js';
 import { getWeeklyUsage } from '../usageGuard.js';
 import { extractCacheTag, loadPrompt, loadRunContext, nameHints, prepareTranscript, sha256 } from './common.js';
 import { aiSpeakerNameSql, aiSpeakerJoinsSql, activityCacheVersion } from '../activityTypes.js';
@@ -437,6 +438,7 @@ export async function planRun(req, input) {
       pool: usable.length,
     },
     summary: {
+      personal_activity: Boolean(typeTraits(context.caseRow?.activity_type)?.personal),
       case_id: scope.caseId,
       scenario_id: scope.scenarioId,
       section_ids: scope.sectionIds,

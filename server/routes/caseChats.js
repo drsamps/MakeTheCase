@@ -10,6 +10,8 @@ import { resolveSectionModel } from '../services/modelChoice.js';
 import { loadChatContext, buildGreeting, sanitizeStudentName } from '../services/chatPrompt.js';
 import { appendTurns } from '../services/chatTurns.js';
 import { isTypeUsable } from '../services/activityTypes.js';
+import { typeTraits } from '../services/activityTypeStore.js';
+import { assignSide } from '../services/sideAssignment.js';
 import { chatAttemptStatus } from '../services/chatAttempts.js';
 
 const router = express.Router();
@@ -23,6 +25,7 @@ const VALID_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'kill
 // returns it as data.greeting for the browser to show. student_name is the first name the
 // greeting uses (cleaned like every name that reaches the prompt).
 router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
+  let txn = null;
   try {
     const { case_id, section_id, scenario_id, persona, initial_position, initial_position_id, position_method, student_name } = req.body;
     const student_id = req.user.id;
@@ -80,11 +83,36 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
     const id = uuidv4();
     const chat_model = await resolveSectionModel(section_id, 'chat_model');
 
+    // Capture method 'assigned': the server picks the side (services/sideAssignment.js) and any
+    // position in the request is ignored. The row lock is held until the chat is inserted, so
+    // students starting at the same moment are balanced one after the other.
+    let assigned = null;
+    if (section_id && scenario_id) {
+      const traits = typeTraits(typeRows[0]?.activity_type);
+      if (traits?.capture_methods?.includes('assigned')) {
+        const [assignRows] = await pool.execute(
+          'SELECT id, position_tracking_enabled, position_capture_method FROM section_cases WHERE section_id = ? AND case_id = ?',
+          [section_id, case_id]
+        );
+        if (assignRows[0]?.position_capture_method === 'assigned' && assignRows[0].position_tracking_enabled) {
+          txn = await pool.getConnection();
+          await txn.beginTransaction();
+          await txn.execute('SELECT id FROM section_cases WHERE id = ? FOR UPDATE', [assignRows[0].id]);
+          assigned = await assignSide(txn, {
+            sectionCaseId: assignRows[0].id, sectionId: section_id, caseId: case_id, scenarioId: scenario_id,
+            studentId: student_id, twoSided: Boolean(traits.two_sided),
+          });
+        }
+      }
+    }
+    const startPositionId = assigned ? assigned.position_id : (initial_position_id || null);
+    const startPositionMethod = assigned ? 'assigned' : (position_method || null);
+
     // Built before the insert so a case that cannot load refuses the chat instead of leaving a
     // record with no greeting.
     const context = await loadChatContext({
       id, case_id, section_id: section_id || null, scenario_id: scenario_id || null,
-      persona: persona || null, initial_position_id: initial_position_id || null,
+      persona: persona || null, initial_position_id: startPositionId, position_method: startPositionMethod,
     });
     const greeting = buildGreeting(context, sanitizeStudentName(student_name));
     // The type version this chat runs on (migration 090), and the student copy from it, so the
@@ -104,8 +132,8 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
     }
 
     // Get position_name from scenario_positions if initial_position_id is provided
-    let positionName = initial_position || null;
-    if (initial_position_id) {
+    let positionName = assigned ? assigned.position_name : (initial_position || null);
+    if (!assigned && initial_position_id) {
       const [posRows] = await pool.execute(
         'SELECT position_name FROM scenario_positions WHERE position_id = ?',
         [initial_position_id]
@@ -115,28 +143,48 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
       }
     }
 
-    await pool.execute(
+    const db = txn || pool;
+    await db.execute(
       `INSERT INTO case_chats (id, student_id, case_id, section_id, scenario_id, persona, activity_type_version, chat_model, status, time_limit_minutes, initial_position, initial_position_id, position_method)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?)`,
-      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, activity.version, chat_model || null, timeLimitMinutes, positionName, initial_position_id || null, position_method || null]
+      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, activity.version, chat_model || null, timeLimitMinutes, positionName, startPositionId, startPositionMethod]
     );
 
     // Log initial position if provided (using position_id or position string)
-    if ((initial_position_id || initial_position) && position_method) {
-      await pool.execute(
+    if ((startPositionId || initial_position) && startPositionMethod) {
+      await db.execute(
         `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
          VALUES (?, 'initial', ?, ?, NULL)`,
-        [id, positionName, position_method === 'explicit' ? 'student' : 'instructor']
+        [id, positionName, startPositionMethod === 'explicit' ? 'student' : 'instructor']
       );
+    }
+    if (txn) {
+      await txn.commit();
+      txn.release();
+      txn = null;
     }
 
     await appendTurns(id, [{ role: 'protagonist', content: greeting }]);
 
     const [rows] = await pool.execute('SELECT * FROM case_chats WHERE id = ?', [id]);
 
-    res.status(201).json({ data: { ...rows[0], greeting, activity: activity.studentView }, error: null });
+    res.status(201).json({
+      data: {
+        ...rows[0],
+        greeting,
+        activity: activity.studentView,
+        // For the intro bar. The goal only for a type whose student copy shows it.
+        goal: activity.studentView.copy?.intro?.goal ? (context.caseData.goal || null) : null,
+        assigned_position: assigned ? assigned.position : null,
+      },
+      error: null,
+    });
   } catch (error) {
-    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE') {
+    if (txn) {
+      await txn.rollback().catch(() => {});
+      txn.release();
+    }
+    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE' || error?.code === 'POSITIONS_NOT_READY') {
       return res.status(409).json({ data: null, error: { code: error.code, message: error.message } });
     }
     if (error?.status === 404) {
@@ -1143,10 +1191,14 @@ router.patch('/:id/initial-position', requireChatOwner('id'), async (req, res) =
       });
     }
 
-    const [existing] = await pool.execute('SELECT id FROM case_chats WHERE id = ?', [id]);
+    const [existing] = await pool.execute('SELECT id, position_method FROM case_chats WHERE id = ?', [id]);
 
     if (existing.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
+    // A side the server assigned is not the student's to change.
+    if (existing[0].position_method === 'assigned') {
+      return res.status(409).json({ data: null, error: { code: 'POSITION_ASSIGNED', message: 'Your side was assigned for this activity.' } });
     }
 
     // Get position_name from scenario_positions

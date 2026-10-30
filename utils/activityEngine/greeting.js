@@ -41,11 +41,15 @@ function audienceOpening(g, caseData, studentName, personaId) {
 export function buildGreeting(def, caseData, studentName, personaId) {
   const g = def.greeting;
   if (g.resolver === 'audience_opening') return audienceOpening(g, caseData, studentName, personaId);
-  return renderOnce(g.template, {
+  // A side the server assigned is known before the first turn, so the greeting can state it.
+  const assigned = Boolean(g.template_assigned && caseData.position_assigned && caseData.position);
+  return renderOnce(assigned ? g.template_assigned : g.template, {
     student_name: `${studentName}`,
     ai_name: `${caseData.protagonist}`,
     ai_role: caseData.protagonist_role || g.fallbacks?.ai_role || '',
     case_title: `${caseData.case_title}`,
     question: `${caseData.chat_question}`,
+    position: `${caseData.position ?? ''}`,
+    opposing_position: `${caseData.opposing_position ?? ''}`,
   });
 }

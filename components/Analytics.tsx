@@ -74,6 +74,9 @@ type BackupFilter = 'all' | 'used' | 'none';
 interface StudentResult {
   student_id: string;
   student_name: string;
+  /** A personal activity's row with the student's identity hidden (services/personalActivity.js). */
+  names_hidden?: boolean;
+  personal_activity?: boolean;
   /** NULL for a CAS student who never set one; their login id is the net id in `student_id`. */
   email: string | null;
   section_id: string;
@@ -286,6 +289,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
   const [evalEditMode, setEvalEditMode] = useState(false);
   const [evalSaving, setEvalSaving] = useState(false);
   const [isAnonymizing, setIsAnonymizing] = useState(false);
+  // Personal activities (LIKEN2ME) hide names until the instructor asks. Deliberately not remembered.
+  const [showPersonalNames, setShowPersonalNames] = useState(false);
   const [autoAnonymize, setAutoAnonymize] = useState(false); // Setting for auto-anonymize
 
   // Re-evaluation modal state
@@ -426,8 +431,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     params.set('offset', offset.toString());
     params.set('sort_by', sortKey);
     params.set('sort_dir', sortDirection);
+    if (showPersonalNames) params.set('show_personal', '1');
     return params;
-  }, [selectedSections, selectedCases, selectedStatuses, studentSearch, selectedChatModels, backupFilter, sortKey, sortDirection, semesterId]);
+  }, [showPersonalNames, selectedSections, selectedCases, selectedStatuses, studentSearch, selectedChatModels, backupFilter, sortKey, sortDirection, semesterId]);
 
   const fetchResults = useCallback(async () => {
     setIsLoading(true);
@@ -540,7 +546,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     try {
       // Fetch transcript from transcripts table via case_chat_id
       if (student.case_chat_id) {
-        const response = await api.get(`/transcripts/chat/${student.case_chat_id}`);
+        const response = await api.get(`/transcripts/chat/${student.case_chat_id}${showPersonalNames ? '?show_personal=1' : ''}`);
         if (response.data?.transcript) {
           const transcript = response.data;
           setTranscriptData(transcript);
@@ -682,7 +688,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     // Check if transcript exists
     if (student.case_chat_id) {
       try {
-        const response = await api.get(`/transcripts/chat/${student.case_chat_id}`);
+        const response = await api.get(`/transcripts/chat/${student.case_chat_id}${showPersonalNames ? '?show_personal=1' : ''}`);
         setTranscriptExists(!!response.data?.transcript);
       } catch {
         setTranscriptExists(false);
@@ -850,9 +856,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
     // Student is always on, like the table's first column.
     cols.push({ key: 'student_name', header: 'Student', value: s => s.student_name });
     // Net ID is the bare net id: the `cas:` prefix must not reach the file.
-    col('net_id', 'Net ID', s => netIdFromStudentId(s.student_id));
+    col('net_id', 'Net ID', s => (s.names_hidden ? '' : netIdFromStudentId(s.student_id)));
     col('email', 'Email', s => s.email || '');
-    col('student_id', 'Student ID', s => s.student_id);
+    col('student_id', 'Student ID', s => (s.names_hidden ? '' : s.student_id));
     col('section_id', 'Section ID', s => s.section_id);
     col('section_title', 'Section', s => s.section_title);
     col('case_id', 'Case ID', s => s.case_id);
@@ -1435,6 +1441,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
             />
           )}
 
+          {students.some(s => s.personal_activity) && (
+            <label className="flex items-center gap-2 px-4 py-2 text-sm text-amber-900 bg-amber-50 border-b border-amber-200">
+              <input type="checkbox" className="rounded" checked={showPersonalNames} onChange={(e) => setShowPersonalNames(e.target.checked)} />
+              Show names on personal activities (students wrote about their own lives; names are hidden by default)
+            </label>
+          )}
+
           {/* Table. The height cap gives `sticky top-0` a scroll container --
               needed now that "All" can render thousands of rows. */}
           <div className="overflow-auto max-h-[70vh]">
@@ -1638,13 +1651,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
                       <div className="text-sm font-medium text-gray-900">{student.student_name}</div>
                     </td>
                     {visibleColumns.has('net_id') && (
-                      <td className="p-3 whitespace-nowrap text-sm text-gray-600 font-mono">{netIdFromStudentId(student.student_id)}</td>
+                      <td className="p-3 whitespace-nowrap text-sm text-gray-600 font-mono">{student.names_hidden ? '' : netIdFromStudentId(student.student_id)}</td>
                     )}
                     {visibleColumns.has('email') && (
                       <td className="p-3 whitespace-nowrap text-sm text-gray-600">{student.email || ''}</td>
                     )}
                     {visibleColumns.has('student_id') && (
-                      <td className="p-3 whitespace-nowrap text-sm text-gray-600 font-mono">{student.student_id}</td>
+                      <td className="p-3 whitespace-nowrap text-sm text-gray-600 font-mono">{student.names_hidden ? '' : student.student_id}</td>
                     )}
                     {visibleColumns.has('section_id') && (
                       <td className="p-3 whitespace-nowrap text-sm text-gray-600 font-mono">{student.section_id}</td>

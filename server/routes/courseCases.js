@@ -37,6 +37,7 @@ import { writeAudit } from '../services/auditLog.js';
 import { canAccessResource } from '../services/resourceAccess.js';
 import { withoutActivityMode } from '../services/chatOptions.js';
 import { caseDefaultsForCaller } from '../services/activityDefaults.js';
+import { assertCaptureAllowed, assertVersionCanAssign, PositionRuleError } from '../services/positionRules.js';
 import { addMinutes, parseDateInput } from '../utils/dateInput.js';
 import { executeRollover, planRollover } from '../services/courseRollover.js';
 import { ProvisioningError } from '../services/sectionProvisioning.js';
@@ -613,9 +614,20 @@ router.patch('/case-versions/:versionId/selection-mode', ...WRITE, versionWrite(
 // PATCH /api/case-versions/:versionId/position-settings
 router.patch('/case-versions/:versionId/position-settings', ...WRITE, versionWrite(async (conn, v, req) => {
   const { position_tracking_enabled, position_capture_method, track_position_change } = req.body || {};
-  const validMethods = ['explicit', 'ai_inferred', 'instructor_manual', 'none'];
+  const validMethods = ['explicit', 'ai_inferred', 'instructor_manual', 'none', 'assigned'];
   if (position_capture_method && !validMethods.includes(position_capture_method)) {
     throw new CaseVersionError(400, `position_capture_method must be one of: ${validMethods.join(', ')}`);
+  }
+  // The type decides which methods apply; 'assigned' also needs sides to assign (positionRules.js).
+  if (position_capture_method) {
+    const [typeRows] = await conn.execute('SELECT activity_type FROM cases WHERE case_id = ?', [v.case_id]);
+    try {
+      assertCaptureAllowed(typeRows[0]?.activity_type, position_capture_method);
+      if (position_capture_method === 'assigned') await assertVersionCanAssign(conn, v.version_id, typeRows[0]?.activity_type);
+    } catch (ruleError) {
+      if (ruleError instanceof PositionRuleError) throw new CaseVersionError(ruleError.status, ruleError.message);
+      throw ruleError;
+    }
   }
   const sets = [];
   const params = [];

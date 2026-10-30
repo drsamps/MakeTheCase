@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { writeAudit } from '../services/auditLog.js';
+import { isPersonalType, hiddenNameFor, hideNameInTranscript } from '../services/personalActivity.js';
 import { getChatViewableSectionIds, isSectionInScope } from '../middleware/instructorAccess.js';
 
 const router = express.Router();
@@ -207,7 +208,7 @@ router.get('/chat/:caseChatId', verifyToken, requireRole(['admin', 'instructor']
               cc.student_id, cc.case_id, cc.section_id,
               COALESCE(cc.section_id, s.section_id) AS scope_section_id,
               s.full_name as student_name,
-              c.case_title
+              c.case_title, c.activity_type
        FROM transcripts t
        JOIN case_chats cc ON t.case_chat_id = cc.id
        LEFT JOIN students s ON cc.student_id = s.id
@@ -225,6 +226,12 @@ router.get('/chat/:caseChatId', verifyToken, requireRole(['admin', 'instructor']
     }
 
     const { scope_section_id, ...data } = rows[0];
+    // A personal activity hides the student's name by default (services/personalActivity.js).
+    if (isPersonalType(data.activity_type) && req.query.show_personal !== '1') {
+      data.transcript = hideNameInTranscript(data.transcript, data.student_name, data.student_id);
+      data.student_name = hiddenNameFor(data.student_id);
+      data.names_hidden = true;
+    }
     res.json({ data, error: null });
   } catch (error) {
     console.error('Error fetching transcript by case_chat_id:', error);

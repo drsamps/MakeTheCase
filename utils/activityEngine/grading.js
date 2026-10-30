@@ -47,6 +47,10 @@ export function buildCoachPrompt(def, chatHistory, studentName, caseData = {}, f
       criteria: criteriaPrompt,
       additional_evaluation: rubric?.additional_prompt || '',
       position: caseData.picked_position || '',
+      question: caseData.chat_question || '',
+      goal: caseData.goal || '',
+      student_position: caseData.position || '',
+      opposing_position: caseData.opposing_position || '',
     },
     {
       additional_evaluation: '\n**Additional Evaluation Instructions:**\n{additional_evaluation}\n',

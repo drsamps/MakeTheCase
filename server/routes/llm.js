@@ -91,7 +91,7 @@ async function loadFileContent(caseId, filename, fileType, convertedText, fileId
 // which must stay byte-for-byte stable (server/scripts/check-chat-prompt.js).
 async function loadCaseData(caseId, { readingParts = false } = {}) {
   const [cases] = await pool.execute(
-    `SELECT case_id, case_title, activity_type
+    `SELECT case_id, case_title, activity_type, goal
      FROM cases WHERE case_id = ?`,
     [caseId]
   );
@@ -339,9 +339,11 @@ router.get('/case-data/:caseId', verifyToken, async (req, res) => {
     // goes once, as reading_parts; the joined case_content is the prompt's copy and stays here.
     // Instructor notes are AI-only like the teaching note (utils/documentRoles.js), so students
     // get the supplementary text without them.
-    const { teaching_note, case_content, student_supplementary_content, ...rest } = caseData;
+    // The goal is written for the AI and the grader; a student sees it only through the intro bar
+    // of a type that shows it (POST /case-chats).
+    const { teaching_note, case_content, student_supplementary_content, goal, ...rest } = caseData;
     const studentView = { ...rest, supplementary_content: student_supplementary_content };
-    res.json({ data: req.user.role === 'student' ? studentView : { ...rest, teaching_note }, error: null });
+    res.json({ data: req.user.role === 'student' ? studentView : { ...rest, goal, teaching_note }, error: null });
   } catch (error) {
     console.error(`[case-data] Error loading case data for ${caseId}:`, error);
     console.error(`[case-data] CASE_FILES_DIR: ${CASE_FILES_DIR}`);

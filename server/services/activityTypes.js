@@ -31,7 +31,7 @@
 import {
   buildSystemPrompt, buildGreeting, buildCoachPrompt, studentActivityView, validateDefinition, templateText,
 } from '../../utils/activityEngine/index.js';
-import { teachBackEvalInputs, verifyEvidence } from './teachBack.js';
+import { teachBackEvalInputs, typeCriteriaInputs, verifyEvidence } from './teachBack.js';
 import {
   ActivityTypeError, getTypeEntry, getVersion, isTypeUsable, listTypeEntries,
 } from './activityTypeStore.js';
@@ -45,6 +45,9 @@ const EVAL_INPUTS = {
   // The listener's name is the persona the student picked; the type's own criteria apply unless
   // the assignment names a rubric; a clicked position is never credited (teachBack.js).
   chosen_persona: teachBackEvalInputs,
+  // The type's own criteria unless the assignment names a rubric: the system default rubric is
+  // written for case chat. A position's wording is the instructor's, never credited.
+  type_criteria: typeCriteriaInputs,
 };
 
 function makeBehaviour(def, version) {

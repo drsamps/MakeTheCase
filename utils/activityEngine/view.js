@@ -20,6 +20,7 @@ export function studentActivityView(def, version) {
       positions: t.positions,
       opening_word_floor: t.opening_word_floor,
       evidence: Boolean(t.grading_extras?.evidence),
+      ...(t.personal ? { personal: true } : {}),
     },
     labels: { ...def.labels },
     // Copy plus the grading summary headings, which the evaluation screen recognises.

@@ -81,6 +81,28 @@ export async function teachBackEvalInputs({ caseChatId, sectionId, caseId, caseD
 }
 
 /**
+ * Grading inputs for a type with its own criteria and no chosen listener (eval_inputs
+ * `type_criteria`): the rubric the assignment names, else null so the type's criteria apply.
+ * `rubricChosen` as above. caseData.position is the wording of the student's side.
+ */
+export async function typeCriteriaInputs({ sectionId, caseId, caseData, rubric, rubricChosen = false }) {
+  let evalRubric = rubric;
+  if (!rubricChosen) {
+    const [scRows] = await pool.execute(
+      'SELECT rubric_id FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [sectionId, caseId]
+    );
+    const assignedId = scRows[0]?.rubric_id ?? null;
+    if (!assignedId) evalRubric = null;
+    else if (rubric?.rubric_id !== assignedId) evalRubric = await getRubricById(assignedId);
+  }
+  return {
+    caseData: caseData?.position ? { ...caseData, picked_position: caseData.position } : caseData,
+    rubric: evalRubric,
+  };
+}
+
+/**
  * Drop any `evidence` that is not verbatim from one of the student's own turns. The
  * evaluation screen shows it in quotation marks as the student's words, so a paraphrase, a
  * fabricated quote, a line lifted from the listener or the wording of a clicked position

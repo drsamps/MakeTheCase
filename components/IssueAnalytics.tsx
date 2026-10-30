@@ -106,6 +106,7 @@ const IssueAnalytics: React.FC = () => {
   const [compareView, setCompareView] = useState<RunView | null>(null);
 
   const [showNames, setShowNames] = useState(() => readFlag(LS_NAMES));
+  const [allowPersonal, setAllowPersonal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -311,6 +312,7 @@ const IssueAnalytics: React.FC = () => {
       theme_target_max: themeMax,
       model_id: modelId || undefined,
       confirmed: true,
+      ...(allowPersonal ? { allow_personal: true } : {}),
     };
     // Start exactly what was estimated: the same size request and the same draw. Keyed on
     // sample_size, not sample_requested — a request that resolved to a full run (N >= the pool)
@@ -529,8 +531,14 @@ const IssueAnalytics: React.FC = () => {
         {!e.model_priced && <p className="text-amber-800">This model has no price set, so the cost cannot be estimated.</p>}
         {e.exceeds_cap && <p className="text-red-700 font-medium">The estimate is more than is left of this week’s budget. Pick fewer sections, a smaller sample, or a cheaper model.</p>}
         {nothing && <p className="text-red-700">No completed chat here has a usable transcript.</p>}
+        {e.personal_activity && (
+          <label className="flex items-start gap-2 text-sm text-amber-900">
+            <input type="checkbox" className="mt-1 w-4 h-4" checked={allowPersonal} onChange={(ev) => setAllowPersonal(ev.target.checked)} />
+            <span>Include personal content: students wrote about their own lives in these chats. Analyzing them sends the transcripts to the AI model and shows quotes here. Off unless you turn it on.</span>
+          </label>
+        )}
         <div className="flex gap-2 pt-1">
-          <button type="button" onClick={startRun} disabled={starting || e.exceeds_cap || nothing}
+          <button type="button" onClick={startRun} disabled={starting || e.exceeds_cap || nothing || (Boolean(e.personal_activity) && !allowPersonal)}
             className="px-4 py-2 rounded-md bg-green-600 text-white font-medium disabled:opacity-50">
             {starting ? 'Starting…' : `Start analysis (${money(e.est_cost_usd)})`}
           </button>

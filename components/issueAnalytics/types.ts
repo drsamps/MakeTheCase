@@ -41,6 +41,8 @@ export interface RunSummary {
 }
 
 export interface Estimate {
+  /** The type's traits.personal: a run needs the instructor to turn it on. */
+  personal_activity?: boolean;
   case_id: string;
   scenario_id: number | null;
   section_ids: string[];

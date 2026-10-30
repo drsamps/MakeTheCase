@@ -356,7 +356,7 @@ async function collectActivity(req, item, opts, shared) {
   if (typeof caseId !== 'string' || !(await canView(req, 'case', caseId))) throw notFound();
   await ensureUids(caseId);
   const [caseRows] = await pool.execute(
-    'SELECT case_id, case_title, case_version, activity_type, base_scenario_id, activity_uid FROM cases WHERE case_id = ?',
+    'SELECT case_id, case_title, case_version, activity_type, goal, base_scenario_id, activity_uid FROM cases WHERE case_id = ?',
     [caseId]
   );
   const caseRow = caseRows[0];
@@ -508,6 +508,8 @@ async function collectActivity(req, item, opts, shared) {
     title: caseRow.case_title,
     version_label: orNull(caseRow.case_version),
     activity_type: type.id,
+    // Only when set, with its token (capabilities.js), so other packages stay as they were.
+    ...(caseRow.goal ? { goal: caseRow.goal } : {}),
     documents,
     scenarios,
     settings,
@@ -578,10 +580,10 @@ export async function collectPack(req, { items, includeOriginals = false, includ
  * after changing an activity in a package held in memory (Duplicate does).
  */
 export function sealPack(pack) {
-  pack.manifest.requires = requirementsFor(pack.activities);
   // Only the definitions an activity still uses (Duplicate may have changed a type).
   const used = new Set(pack.activities.map((a) => a.activity_type));
   pack.activityTypes = (pack.activityTypes || []).filter((d) => used.has(d.key));
+  pack.manifest.requires = requirementsFor(pack.activities, pack.activityTypes);
   if (pack.activityTypes.length) {
     pack.manifest.activity_types = pack.activityTypes.map((d) => ({ key: d.key, label: d.label, sha256: sha256(canonicalJson(d)) }));
   } else {

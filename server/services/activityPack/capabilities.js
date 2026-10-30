@@ -52,12 +52,27 @@ export const DOCUMENT_TEXT_FORMAT_TOKEN = 'document:text_format';
 // own token here, written only when a carried definition uses it.
 export const ACTIVITY_DEFINITION_TOKEN = `activity_definition:${DEFINITION_SCHEMA}`;
 
+// A case with a learning goal (cases.goal, StudyChat Phase 3). An older installer would drop it.
+export const ACTIVITY_GOAL_TOKEN = 'activity:goal';
+
+/**
+ * One token per engine feature a carried definition uses, written only when one does: the installer
+ * would otherwise refuse the definition with a validation error instead of saying "update this
+ * server". Each is listed in FEATURE_TOKENS so this server accepts it.
+ */
+const FEATURE_TOKENS = {
+  'positions:assigned': { words: 'assigned positions', uses: (d) => d.traits.capture_methods.includes('assigned') },
+  'positions:two_sided': { words: 'two-sided activities', uses: (d) => Boolean(d.traits.two_sided) },
+  'trait:personal': { words: 'activities about personal content', uses: (d) => Boolean(d.traits.personal) },
+  'grading:type_criteria': { words: "grading on a type's own criteria", uses: (d) => d.traits.grading_extras.eval_inputs === 'type_criteria' },
+};
+
 /** Built-in types travel as a token; any other type travels as a definition. */
 export const isBuiltinActivityType = (activityType) => isKnownActivityType(activityType);
 
 /** Every `requires` token this server understands. */
 export function serverCapabilities() {
-  return [...listActivityTypes().map((type) => activityTypeToken(type.id)), ACTIVITY_DEFINITION_TOKEN, SCENARIO_STUDENT_TEXT_TOKEN, DOCUMENT_TEXT_FORMAT_TOKEN];
+  return [...listActivityTypes().map((type) => activityTypeToken(type.id)), ACTIVITY_DEFINITION_TOKEN, SCENARIO_STUDENT_TEXT_TOKEN, DOCUMENT_TEXT_FORMAT_TOKEN, ACTIVITY_GOAL_TOKEN, ...Object.keys(FEATURE_TOKENS)];
 }
 
 const usesScenarioStudentText = (activity) =>
@@ -70,10 +85,14 @@ const usesStatedTextFormat = (activity) =>
  * The tokens a package with these activities needs: one per distinct built-in type, the definition
  * token when any activity uses a type defined as data, plus one per feature used.
  */
-export function requirementsFor(activities) {
+export function requirementsFor(activities, definitions = []) {
   const tokens = activities.map((a) => (isBuiltinActivityType(a.activity_type) ? activityTypeToken(a.activity_type) : ACTIVITY_DEFINITION_TOKEN));
   if (activities.some(usesScenarioStudentText)) tokens.push(SCENARIO_STUDENT_TEXT_TOKEN);
   if (activities.some(usesStatedTextFormat)) tokens.push(DOCUMENT_TEXT_FORMAT_TOKEN);
+  if (activities.some((a) => a.goal)) tokens.push(ACTIVITY_GOAL_TOKEN);
+  for (const [token, feature] of Object.entries(FEATURE_TOKENS)) {
+    if (definitions.some(feature.uses)) tokens.push(token);
+  }
   return [...new Set(tokens)].sort();
 }
 
@@ -82,6 +101,8 @@ function describeToken(token) {
   const [kind, value] = String(token).split(':');
   if (token === SCENARIO_STUDENT_TEXT_TOKEN) return 'saved openings and intro text on scenarios';
   if (token === DOCUMENT_TEXT_FORMAT_TOKEN) return 'documents formatted in the Case Files editor';
+  if (token === ACTIVITY_GOAL_TOKEN) return 'learning goals on activities';
+  if (FEATURE_TOKENS[token]) return FEATURE_TOKENS[token].words;
   if (kind === 'activity_definition') return `custom activity types (definition schema ${value})`;
   if (kind === 'activity_type') {
     return isKnownActivityType(value) ? `${getActivityType(value).label} activities` : `"${value}" activities`;

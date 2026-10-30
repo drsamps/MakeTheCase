@@ -96,6 +96,9 @@ function roleValues(def, studentName, personaId, caseData, options) {
     additional_instructions: additional,
     situation,
     hint_rule: renderOnce(hints[hintForm(freeHints)], { free_hints: `${freeHints}` }),
+    goal: `${caseData.goal ?? ''}`,
+    position: `${caseData.position ?? ''}`,
+    opposing_position: `${caseData.opposing_position ?? ''}`,
   };
   // Presence rules, exactly as before: scenario instructions and role are tested as written
   // (whitespace-only counts), the personality and situation after trimming.
@@ -105,6 +108,9 @@ function roleValues(def, studentName, personaId, caseData, options) {
     persona_instructions: Boolean(persona),
     additional_instructions: Boolean(additional),
     situation: Boolean(situation),
+    goal: Boolean(caseData.goal?.trim()),
+    position: Boolean(caseData.position),
+    opposing_position: Boolean(caseData.opposing_position),
   };
   return withWrappers(values, def.prompt.optional, present);
 }
