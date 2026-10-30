@@ -57,6 +57,22 @@ const needsPositionPick = (
   && (scenario?.positions?.length || 0) > 0;
 
 
+/**
+ * A case or scenario on the start screen: whether it has a graded chat, and whether another chat
+ * may start (server/services/chatAttempts.js: chat_repeats, allow_repeat, re-chat). `chatsLeft`
+ * is null when there is no limit.
+ */
+interface CompletionStatus { completed: boolean; allowRechat: boolean; canStart: boolean; chatsLeft: number | null; rechatGranted: boolean }
+
+const toCompletionStatus = (d: any): CompletionStatus => ({
+  completed: Boolean(d?.completed),
+  allowRechat: Boolean(d?.allow_rechat),
+  // An older server without the field: the old page rule (no graded chat, or re-chat on).
+  canStart: typeof d?.can_start_new === 'boolean' ? d.can_start_new : !d?.completed || Boolean(d?.allow_rechat),
+  chatsLeft: typeof d?.chats_left === 'number' ? d.chats_left : null,
+  rechatGranted: Boolean(d?.rechat_granted),
+});
+
 /** **bold** spans in activity copy, as the chat bubbles render them (ChatWindow#renderMessageContent). */
 const renderBold = (text: string) =>
   text.split(/(\*\*.*?\*\*)/g).map((part, i) =>
@@ -258,8 +274,8 @@ const App: React.FC = () => {
   const [useScenarios, setUseScenarios] = useState(false);
   
   // Case and scenario completion tracking
-  const [caseCompletionStatus, setCaseCompletionStatus] = useState<Record<string, { completed: boolean; allowRechat: boolean }>>({});
-  const [scenarioCompletionStatus, setScenarioCompletionStatus] = useState<Record<number, { completed: boolean; allowRechat: boolean }>>({});
+  const [caseCompletionStatus, setCaseCompletionStatus] = useState<Record<string, CompletionStatus>>({});
+  const [scenarioCompletionStatus, setScenarioCompletionStatus] = useState<Record<number, CompletionStatus>>({});
 
   const isLargeScreen = useMediaQuery('(min-width: 1024px)');
   const direction = isLargeScreen ? 'vertical' : 'horizontal';
@@ -584,19 +600,16 @@ const App: React.FC = () => {
 
         // Check completion status for each case and scenario
         if (sessionUser?.id && activeCases.length > 0) {
-          const caseCompletionStatuses: Record<string, { completed: boolean; allowRechat: boolean }> = {};
-          const scenarioCompletionStatuses: Record<number, { completed: boolean; allowRechat: boolean }> = {};
+          const caseCompletionStatuses: Record<string, CompletionStatus> = {};
+          const scenarioCompletionStatuses: Record<number, CompletionStatus> = {};
 
           for (const caseItem of activeCases) {
             try {
               // Check case-level completion
-              const response = await fetch(`${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}`, { headers: getAuthHeaders() });
+              const response = await fetch(`${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}?section_id=${encodeURIComponent(sectionId)}`, { headers: getAuthHeaders() });
               const result = await response.json();
               if (result.data) {
-                caseCompletionStatuses[caseItem.case_id] = {
-                  completed: result.data.completed,
-                  allowRechat: result.data.allow_rechat
-                };
+                caseCompletionStatuses[caseItem.case_id] = toCompletionStatus(result.data);
               }
 
               // Check scenario-level completion for each scenario
@@ -604,15 +617,12 @@ const App: React.FC = () => {
                 for (const scenario of caseItem.scenarios) {
                   try {
                     const scenarioResponse = await fetch(
-                      `${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}?scenario_id=${scenario.scenario_id}`,
+                      `${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}?scenario_id=${scenario.scenario_id}&section_id=${encodeURIComponent(sectionId)}`,
                       { headers: getAuthHeaders() }
                     );
                     const scenarioResult = await scenarioResponse.json();
                     if (scenarioResult.data) {
-                      scenarioCompletionStatuses[scenario.scenario_id] = {
-                        completed: scenarioResult.data.completed,
-                        allowRechat: scenarioResult.data.allow_rechat
-                      };
+                      scenarioCompletionStatuses[scenario.scenario_id] = toCompletionStatus(scenarioResult.data);
                     }
                   } catch (e) {
                     console.error('Error checking scenario completion:', e);
@@ -1753,13 +1763,15 @@ const App: React.FC = () => {
   if (conversationPhase === ConversationPhase.PRE_CHAT) {
     const isSectionValid = selectedSection !== '' && selectedSection !== 'other';
     const selectedCaseStatus = selectedCaseId ? caseCompletionStatus[selectedCaseId] : null;
-    // Check if case is completed and repeating is NOT allowed
-    // Allow repeat if: allow_repeat is true OR allow_rechat is true
-    const allowRepeat = chatOptions?.allow_repeat ?? false;
-    const isCaseCompleted = selectedCaseStatus?.completed && !selectedCaseStatus?.allowRechat && !allowRepeat;
+    // No chats left on this case (server rule: chat_repeats, allow_repeat, re-chat). With scenarios
+    // the limit is per scenario, so the case as a whole never blocks.
+    const isCaseCompleted = !useScenarios && Boolean(selectedCaseStatus?.completed) && selectedCaseStatus?.canStart === false;
     // Check if scenario selection is required and valid
     const scenarioRequirementMet = !useScenarios || selectedScenarioId !== null;
-    const allScenariosCompleted = useScenarios && availableScenarios.length > 0 && availableScenarios.every((s: any) => s.completed);
+    const allScenariosCompleted = useScenarios && availableScenarios.length > 0
+      && availableScenarios.every((s: any) => scenarioCompletionStatus[s.scenario_id]?.canStart === false);
+    const selectedScenarioUsedUp = useScenarios && selectedScenarioId !== null
+      && scenarioCompletionStatus[selectedScenarioId]?.canStart === false;
 
     // Get selected scenario (if scenarios enabled)
     const selectedScenario = selectedScenarioId
@@ -1782,7 +1794,7 @@ const App: React.FC = () => {
     // Teach-back has no built-in fallback character: with no audience the case protagonist
     // would be cast as the confused listener, so the chat must not start at all.
     const audienceRequirementMet = !personaCharacter || availablePersonas.some((p) => p.persona_id === selectedPersonaId);
-    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted && positionRequirementMet && audienceRequirementMet;
+    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted && !selectedScenarioUsedUp && positionRequirementMet && audienceRequirementMet;
     const sectionName = sections.find(s => s.section_id === selectedSection)?.section_title || selectedSection;
 
     return (
@@ -1996,8 +2008,10 @@ const App: React.FC = () => {
                       {availableChats.map(({ caseItem, scenario, key }) => {
                         // Check scenario-level completion
                         const scenarioStatus = scenarioCompletionStatus[scenario.scenario_id];
-                        const isCompleted = scenarioStatus?.completed && !scenarioStatus?.allowRechat;
-                        const canRechat = scenarioStatus?.completed && scenarioStatus?.allowRechat;
+                        // No chats left, or done with more allowed (server/services/chatAttempts.js).
+                        const isCompleted = Boolean(scenarioStatus?.completed) && scenarioStatus?.canStart === false;
+                        const canRechat = Boolean(scenarioStatus?.completed) && scenarioStatus?.canStart !== false;
+                        const chatsLeft = scenarioStatus?.rechatGranted ? null : scenarioStatus?.chatsLeft ?? null;
 
                         // Check case-level scheduling availability
                         const checkAvailability = () => {
@@ -2066,7 +2080,7 @@ const App: React.FC = () => {
                                   )}
                                   {canRechat && (
                                     <span className="text-xs font-medium text-orange-700 bg-orange-100 px-2 py-0.5 rounded">
-                                      Re-chat Available
+                                      {chatsLeft === null ? 'Re-chat Available' : `${chatsLeft} chat${chatsLeft === 1 ? '' : 's'} left`}
                                     </span>
                                   )}
                                   {!availability.available && !isCompleted && (
@@ -2162,7 +2176,7 @@ const App: React.FC = () => {
               disabled={isLoading || !canStartChat}
               className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : !positionRequirementMet ? 'Select Your Position' : !audienceRequirementMet ? copy('start_no_persona') : 'Start Chat'}
+              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : selectedScenarioUsedUp ? 'No Chats Left' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : !positionRequirementMet ? 'Select Your Position' : !audienceRequirementMet ? copy('start_no_persona') : 'Start Chat'}
             </button>
           </form>
         </div>

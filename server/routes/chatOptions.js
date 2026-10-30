@@ -123,7 +123,7 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     default: 0,
     min: 0,
     max: 10,
-    description: 'Number of additional chats allowed (0 = one chat only, 1 = can repeat once, etc.)',
+    description: "Extra graded chats each student may have, per scenario (0 = one chat only, 1 = can repeat once). Abandoned or cancelled chats do not count; a student's re-chat switch always allows one more. Ignored when Allow Repeat is on. Enforced when a chat starts.",
     category: 'flow'
   },
   {
@@ -140,7 +140,7 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     label: 'Allow Repeat',
     type: 'boolean',
     default: false,
-    description: 'Allow students to repeat the chat multiple times',
+    description: 'Allow students to repeat the chat as often as they like (overrides Allowed Repeats)',
     category: 'chat_control'
   },
   {

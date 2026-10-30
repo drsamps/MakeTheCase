@@ -6505,12 +6505,38 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           disabled={!isEditingDefault && useDefaultOptions}
                           className="rounded border-gray-300"
                         />
-                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Allow students to repeat the chat multiple times</span>
+                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Allow students to repeat the chat as often as they like</span>
                       </label>
                       {!useDefaultOptions && isOptionModified('allow_repeat', editingChatOptions.allow_repeat, applicableDefault) && (
                         <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, allow_repeat: applicableDefault?.allow_repeat ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
                       )}
                     </div>
+                    {/* Allowed Repeats (chat_repeats), enforced by the server at chat start: server/services/chatAttempts.js */}
+                    {!(editingChatOptions.allow_repeat ?? false) && (
+                      <div className={`${!useDefaultOptions && isOptionModified('chat_repeats', editingChatOptions.chat_repeats, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-2 text-sm">
+                            <span className={useDefaultOptions ? 'text-gray-500' : ''}>Allowed repeats</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="10"
+                              value={editingChatOptions.chat_repeats ?? 0}
+                              onChange={(e) => setEditingChatOptions({ ...editingChatOptions, chat_repeats: Math.max(0, parseInt(e.target.value) || 0) })}
+                              disabled={!isEditingDefault && useDefaultOptions}
+                              className={`w-16 px-2 py-1 border border-gray-300 rounded text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
+                            />
+                          </label>
+                          {!useDefaultOptions && isOptionModified('chat_repeats', editingChatOptions.chat_repeats, applicableDefault) && (
+                            <button type="button" onClick={() => setEditingChatOptions({ ...editingChatOptions, chat_repeats: applicableDefault?.chat_repeats ?? 0 })} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-0.5 ml-1">
+                          Extra graded chats each student may have, per scenario (0 = one chat). Abandoned or cancelled
+                          chats do not count. A student&apos;s re-chat switch in Results always allows one more.
+                        </p>
+                      </div>
+                    )}
                     <div>
                       <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('timeout_chat', editingChatOptions.timeout_chat, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
                         <label className="flex items-center gap-2 text-sm">

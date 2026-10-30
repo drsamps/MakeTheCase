@@ -32,10 +32,10 @@ export const DEFAULT_CHAT_OPTIONS = {
   // Chatbot personality customization
   chatbot_personality: '',
   // Multi-chat options
-  chat_repeats: 0,           // 0 = one chat only, 1+ = can repeat N times
+  chat_repeats: 0,           // extra graded chats per student, per scenario (0 = one chat); services/chatAttempts.js
   save_dead_transcripts: false,  // Save transcripts for abandoned/canceled/killed chats
   // Chat control options
-  allow_repeat: false,
+  allow_repeat: false,          // no limit on graded chats (overrides chat_repeats)
   timeout_chat: false,
   allow_finish_button: false,
   restart_chat: false,

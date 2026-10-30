@@ -38,14 +38,15 @@ Last updated: 2026-10-30, on the desktop with MySQL (MSB-SSAMPSON20).
 | Case chat in the browser | start rows, picker, avatar tooltip and minimum-exchanges reply word for word as before; graded via API; chat and evaluation record `case_chat@e79517f4eda9` |
 | Teach-back in the browser, end to end | intro bar, counter, position prompt, opening-floor reply, limit bar, every feedback-phase message (this closes Phase 0's unverified item), final-position block, evaluation headings and coverage strip; chat and evaluation record `teach_back@cc1b4bef6145`; `GET /evaluations/:id` carries the view |
 
-### Phase 1: decisions made on the way (review these)
+### Phase 1: decisions (settled with you 2026-10-30)
 
-1. **Issue Analytics cache key.** The plan said to include the type version in the pass-1 prompt hash. Doing that for the built-ins would have thrown away every cached (paid-for) result on deploy, while the built-in definitions never reach those prompts. So `extractCacheTag` adds a hash of the type version **only for types defined as data** (Phase 2); for built-ins the key is unchanged.
+1. **Saved Issue Analytics notes stay valid for the built-ins.** The plan said to include the type version in the pass-1 cache key. Built-in wording never reaches the Issue Analytics prompts, so doing that would only discard paid-for results. `extractCacheTag` adds a hash of the type version **only for types defined as data** (Phase 2). *Approved.*
 2. **`utils/activityTypes.js` keeps its small static table** instead of deriving from the definitions: deriving would bundle the prompt templates into the student page. The engine check asserts the table agrees with the definitions.
 3. **The recorded version is not yet used to pick the definition.** Each built-in has one version, so every turn and grade already runs on it. Resolving by the recorded version belongs with the store in Phase 2.
-4. **Deliberate wording change:** the Teach-back avatar tooltip read "Sam, a curious beginner, Sam, a curious beginner protagonist of …"; it now reads "Sam, a curious beginner, the listener you chose for … (AI model: …)". Case chat's is unchanged.
+4. **Teach-back avatar tooltip** now reads "Sam, a curious beginner, the listener you chose for … (AI model: …)" instead of repeating the name. Case chat's is unchanged. *Approved.*
 5. Case chat gained three copy strings it never shows (`opening_too_short`, `persona_picker_empty`, `start_no_persona`), because every definition must have every key.
-6. **Packages:** an assignment saved after this change can carry `min_opening_words`; an older server refuses such a package (fail closed, as designed). Packages from older servers (with `teach_back_min_words`) still install here.
+6. **Packages write the floor under its old name**, `teach_back_min_words` (`export.js#chatOptionsForPackage`), so older servers and StudyChat-LTI accept them; this server reads either name. Switch to `min_opening_words` in packages only behind a capability token. *Decided; done.*
+7. **`chat_repeats` is enforced** (the Phase 0 question). One server rule, `server/services/chatAttempts.js`: a student gets 1 + `chat_repeats` graded chats, per scenario when the assignment uses scenarios (else per case); abandoned or cancelled chats do not count; Allow Repeat = no limit; the instructor's per-student re-chat always grants one more. `POST /api/case-chats` refuses with 409 `CHAT_LIMIT_REACHED`; the start screen reads `can_start_new` / `chats_left` from `GET /evaluations/check-completion?section_id=` and shows "N chats left", "✓ Completed" or "No Chats Left". This also fixes Allow Repeat not applying to scenarios, and a case with scenarios being blocked as a whole after one graded chat. The unused `GET /case-chats/check-repeats` endpoint is removed. The By-section options editor gained the "Allowed repeats" field (shown when Allow Repeat is off); option descriptions and the Chat Options help say the rule. Verified live: 9 rule steps against the server (limit, cancelled chats, repeats, re-chat, Allow Repeat, defaults) and the start-screen labels. *Decided; done.*
 
 Found, not fixed: a hint request sent as the first Teach-back message gets the opening-floor reply, not the hint reply (the floor is checked first; unchanged from before).
 
@@ -90,7 +91,7 @@ Not checked on screen: the Teach-back wording in the feedback phases (`ask_for_f
 - On a server `OPENING_TOO_SHORT`, the page quoted its own word count. The error now carries the server's `min_words` (`services/llmService.ts`), and the page uses it.
 
 **Found, not fixed (decide later):**
-1. **`chat_repeats` does nothing for students.** Only `GET /api/case-chats/check-repeats` reads it, and no client calls that endpoint; `POST /case-chats` does not enforce it. Whether a student can chat again is decided by `evaluations.allow_rechat` (and `allow_repeat`). So Phase 0's fix to that endpoint has no visible effect. Either enforce it (server at chat start + the case list) or drop the option. **Question for you.**
+1. ~~**`chat_repeats` does nothing for students.**~~ Resolved 2026-10-30: enforced; see "Phase 1: decisions", item 7.
 2. **AI-inferred assignments still ask the student for a final position.** `App.tsx` `shouldShowFinalPosition` checks tracking and change tracking but not the capture method. Fix with the positions work in Phase 3 (assigned positions touch the same code).
 3. `inferPositionsFromChat` joins `transcripts` without pinning the newest row (Issue Analytics pins it). Harmless unless a chat has duplicate transcript rows; fix when that file is next touched.
 
@@ -144,7 +145,7 @@ Follow the plan's Phase 2 section. Notes from Phase 1:
 
 ### D. Later phases
 
-3: DEBATE, APPLY, LIKEN2ME. 4: PITCH, ROLEPLAY (signals, touchpoints). 5: full admin editor. 6: DEFEND (minimal). Each phase gets its own migration (next free number: **091**). Open questions for the user are at the end of the plan (LIKEN2ME privacy, multi-sided debates, showing the goal, simulated students), plus the `chat_repeats` question in "Phase 0 verification".
+3: DEBATE, APPLY, LIKEN2ME. 4: PITCH, ROLEPLAY (signals, touchpoints). 5: full admin editor. 6: DEFEND (minimal). Each phase gets its own migration (next free number: **091**). Open questions for the user are at the end of the plan (LIKEN2ME privacy, multi-sided debates, showing the goal, simulated students).
 
 ## Practical notes (learned the hard way)
 

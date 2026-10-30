@@ -43,6 +43,7 @@ import { slugifyTitle } from '../caseIds.js';
 import { getAppVersion, getSchemaLevel } from '../appVersion.js';
 import { getActivityType } from '../../../utils/activityTypes.js';
 import { MARKDOWN, readingFormatOf } from '../../../utils/readingFormat.js';
+import { minOpeningWords } from '../../../utils/openingWords.js';
 import { requirementsFor } from './capabilities.js';
 import {
   AUDIENCE_ID_PREFIX,
@@ -84,6 +85,29 @@ const CASE_ID_RE = /^[a-z0-9][a-z0-9-]{0,29}$/;
 const personaKind = (personaId) => (String(personaId).startsWith(AUDIENCE_ID_PREFIX) ? 'audience' : 'protagonist');
 
 /** A key that is free in `used`: `wanted` if it fits the key pattern, else `${prefix}${n}`. */
+/**
+ * An assignment's effective chat options as a package carries them: known keys only, and nothing
+ * an older installer would refuse when it means the same as the older behaviour.
+ * - Maximum Responses switched off: both keys left out (an older server has no such option).
+ * - The opening word floor travels under its OLD name, `teach_back_min_words`, which every server
+ *   and StudyChat-LTI knows; this server reads either name (utils/openingWords.js). Write
+ *   `min_opening_words` only once a capability token says the installer understands it.
+ */
+export function chatOptionsForPackage(effective) {
+  if (!effective || typeof effective !== 'object') return null;
+  const chatOptions = Object.fromEntries(Object.entries(effective).filter(([k]) => KNOWN_CHAT_OPTION_KEYS.has(k)));
+  if (!(Number(chatOptions.max_exchanges) > 0)) {
+    delete chatOptions.max_exchanges;
+    delete chatOptions.max_exchanges_action;
+  }
+  if ('min_opening_words' in chatOptions || 'teach_back_min_words' in chatOptions) {
+    const floor = minOpeningWords(chatOptions);
+    delete chatOptions.min_opening_words;
+    chatOptions.teach_back_min_words = floor;
+  }
+  return chatOptions;
+}
+
 function uniqueKey(wanted, used, prefix) {
   let key = typeof wanted === 'string' && KEY_RE.test(wanted) && !used.has(wanted) ? wanted : null;
   for (let n = 1; key === null; n++) {
@@ -406,15 +430,7 @@ async function collectActivity(req, item, opts, shared) {
     const { bundle, sectionId } = chosen;
     // NULL means "follow this server's defaults", which another server does not have.
     const effective = parseJson(bundle.chat_options ?? (await resolveChatOptions(sectionId, null, caseRow.activity_type)));
-    if (effective && typeof effective === 'object') {
-      chatOptions = Object.fromEntries(Object.entries(effective).filter(([k]) => KNOWN_CHAT_OPTION_KEYS.has(k)));
-      // Maximum Responses switched off means the same as an older server without the option, so
-      // leave both keys out: an older installer refuses any key it does not know.
-      if (!(Number(chatOptions.max_exchanges) > 0)) {
-        delete chatOptions.max_exchanges;
-        delete chatOptions.max_exchanges_action;
-      }
-    }
+    chatOptions = chatOptionsForPackage(effective);
     let rubricKey = null;
     if (bundle.rubric_id !== null) {
       const rubric = await bundleRubric(req, bundle.rubric_id, shared);

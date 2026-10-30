@@ -9,6 +9,7 @@ import { listTurns, historyForGrading, writeTranscript } from '../services/chatT
 import { resolveSectionModel } from '../services/modelChoice.js';
 import { inferPositionsFromChat, shouldInferPositions } from '../services/positionInference.js';
 import { activityBehaviour, studentActivityViewFor } from '../services/activityTypes.js';
+import { chatAttemptStatus } from '../services/chatAttempts.js';
 import { stripTurnTiming } from '../../utils/transcriptFormat.js';
 import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
@@ -116,8 +117,9 @@ router.get('/', verifyToken, requireRole(['admin', 'instructor']), async (req, r
 });
 
 // GET /api/evaluations/check-completion/:studentId/:caseId - Check if student has completed a case or scenario
-// Query params: scenario_id (optional) - filter by specific scenario
-// Returns { completed: boolean, allow_rechat: boolean, evaluation_id: string | null }
+// Query params: scenario_id (optional) - filter by specific scenario; section_id - the assignment
+// Returns { completed, allow_rechat, evaluation_id, can_start_new, chats_used, chats_allowed,
+//           chats_left, rechat_granted, scope } (the last six from services/chatAttempts.js)
 router.get('/check-completion/:studentId/:caseId', requireSelfStudent('studentId'), async (req, res) => {
   try {
     const { studentId, caseId } = req.params;
@@ -141,10 +143,15 @@ router.get('/check-completion/:studentId/:caseId', requireSelfStudent('studentId
     }
 
     const [rows] = await pool.execute(query, params);
+    // Whether another chat may start, by the same rule POST /api/case-chats enforces
+    // (services/chatAttempts.js: chat_repeats, allow_repeat, re-chat). Needs ?section_id=.
+    const attempts = await chatAttemptStatus({
+      studentId, sectionId: req.query.section_id || null, caseId, scenarioId: scenario_id || null,
+    });
 
     if (rows.length === 0) {
       return res.json({
-        data: { completed: false, allow_rechat: false, evaluation_id: null },
+        data: { completed: false, allow_rechat: false, evaluation_id: null, ...attempts },
         error: null
       });
     }
@@ -154,7 +161,8 @@ router.get('/check-completion/:studentId/:caseId', requireSelfStudent('studentId
       data: {
         completed: true,
         allow_rechat: !!evaluation.allow_rechat,
-        evaluation_id: evaluation.id
+        evaluation_id: evaluation.id,
+        ...attempts,
       },
       error: null
     });

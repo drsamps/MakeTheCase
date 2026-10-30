@@ -9,8 +9,8 @@ import { requireChatOwner, requireSelfStudent } from '../middleware/chatOwner.js
 import { resolveSectionModel } from '../services/modelChoice.js';
 import { loadChatContext, buildGreeting, sanitizeStudentName } from '../services/chatPrompt.js';
 import { appendTurns } from '../services/chatTurns.js';
-import { getSectionCaseChatOptions } from '../services/chatOptions.js';
 import { activityBehaviour } from '../services/activityTypes.js';
+import { chatAttemptStatus } from '../services/chatAttempts.js';
 
 const router = express.Router();
 
@@ -46,6 +46,25 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
           }
         });
       }
+    }
+
+    // Chats allowed on this assignment (chat_repeats, allow_repeat, re-chat): services/chatAttempts.js.
+    // Checked here as well as on the start screen, so a stale page cannot start one more.
+    const attempts = await chatAttemptStatus({
+      studentId: student_id, sectionId: section_id || null, caseId: case_id, scenarioId: scenario_id || null,
+    });
+    if (!attempts.can_start_new) {
+      return res.status(409).json({
+        data: null,
+        error: {
+          code: 'CHAT_LIMIT_REACHED',
+          message: attempts.scope === 'scenario'
+            ? 'You have used all your chats for this scenario.'
+            : 'You have used all your chats for this activity.',
+          chats_used: attempts.chats_used,
+          chats_allowed: attempts.chats_allowed,
+        },
+      });
     }
 
     const id = uuidv4();
@@ -423,56 +442,6 @@ router.get('/student/:studentId', verifyToken, requireRole(['admin', 'instructor
     res.json({ data: rows, error: null });
   } catch (error) {
     console.error('Error fetching student chats:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
-  }
-});
-
-// GET /api/case-chats/check-repeats/:studentId/:caseId - Check if student can start another chat
-router.get('/check-repeats/:studentId/:caseId', requireSelfStudent('studentId'), async (req, res) => {
-  try {
-    const { studentId, caseId } = req.params;
-    const { section_id } = req.query;
-
-    // The chat_repeats setting: the assignment's own options, else the section or global
-    // default (an assignment that follows the defaults stores NULL). 0 = a single chat only.
-    let chatRepeats = 0;
-    if (section_id) {
-      const options = await getSectionCaseChatOptions(section_id, caseId);
-      chatRepeats = Number(options?.chat_repeats ?? 0) || 0;
-    }
-
-    // Count completed chats for this student/case
-    const [completedChats] = await pool.execute(
-      `SELECT COUNT(*) as count FROM case_chats
-       WHERE student_id = ? AND case_id = ? AND status = 'completed'`,
-      [studentId, caseId]
-    );
-
-    // Check for any active (non-terminal) chats
-    const [activeChats] = await pool.execute(
-      `SELECT id, status FROM case_chats
-       WHERE student_id = ? AND case_id = ? AND status IN ('started', 'in_progress')`,
-      [studentId, caseId]
-    );
-
-    const completedCount = completedChats[0].count;
-    const hasActiveChat = activeChats.length > 0;
-    const maxChats = chatRepeats + 1; // chatRepeats = 0 means 1 chat allowed
-    const canStartNew = !hasActiveChat && completedCount < maxChats;
-
-    res.json({
-      data: {
-        can_start_new: canStartNew,
-        completed_count: completedCount,
-        max_chats: maxChats,
-        has_active_chat: hasActiveChat,
-        active_chat_id: hasActiveChat ? activeChats[0].id : null,
-        chat_repeats: chatRepeats
-      },
-      error: null
-    });
-  } catch (error) {
-    console.error('Error checking chat repeats:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });

@@ -22,7 +22,7 @@ import { pool } from '../db.js';
 import { LIMITS, PackError, activityContentHash, assertValidPack, canonicalJson, sha256 } from '../services/activityPack/format.js';
 import { requirementsFor, serverCapabilities, SCENARIO_STUDENT_TEXT_TOKEN, DOCUMENT_TEXT_FORMAT_TOKEN } from '../services/activityPack/capabilities.js';
 import { openPack, zipPack } from '../services/activityPack/zip.js';
-import { buildPackFile, sealPack } from '../services/activityPack/export.js';
+import { buildPackFile, sealPack, chatOptionsForPackage } from '../services/activityPack/export.js';
 import { inspectPackFile, installPackFile } from '../services/activityPack/index.js';
 import { readCaseDefaults } from '../services/activityDefaults.js';
 
@@ -298,6 +298,16 @@ await check('an unknown chat option', async () => {
   const buffer = await zipped((pack) => { pack.activities[0].settings.chat_options.rebuttal_rounds = 3; });
   const e = await refuses('UNKNOWN_CHAT_OPTION', () => openAndValidate(buffer));
   assert.equal(e.details.chat_option, 'rebuttal_rounds');
+});
+
+await check('the opening word floor travels under its old name, which older servers know', async () => {
+  assert.deepEqual(chatOptionsForPackage({ min_opening_words: 20, hints_allowed: 2 }), { teach_back_min_words: 20, hints_allowed: 2 });
+  assert.deepEqual(chatOptionsForPackage({ teach_back_min_words: 30, min_opening_words: 25 }), { teach_back_min_words: 25 });
+  assert.deepEqual(chatOptionsForPackage({ teach_back_min_words: 12 }), { teach_back_min_words: 12 });
+  assert.deepEqual(chatOptionsForPackage({ hints_allowed: 1 }), { hints_allowed: 1 });
+  // A package from an older server, with the old name, still validates here.
+  const buffer = await zipped((pack) => { pack.activities[0].settings.chat_options.teach_back_min_words = 18; });
+  await openAndValidate(buffer);
 });
 
 await check('the retired activity_mode chat option', async () => {
