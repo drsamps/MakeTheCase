@@ -22,6 +22,8 @@ export interface StudentActivityView {
     evidence: boolean;
     /** Students write about their own lives: a notice before the chat, names hidden by default. */
     personal?: boolean;
+    /** Absent means the activity's own documents. */
+    material?: 'student_submission';
   };
   labels: { document: string; ai_character: string; question: string; ai_fallback: string };
   copy: Record<string, unknown> & { summary_headings?: string[] };
@@ -66,6 +68,9 @@ export interface CopyVars {
   goal_reached_bar: Record<string, never>;
   goal_finish_button: Record<string, never>;
   goal_keep_button: Record<string, never>;
+  submission_title: Record<string, never>;
+  submission_help: Record<string, never>;
+  start_no_submission: Record<string, never>;
 }
 export type CopyKey = keyof CopyVars;
 

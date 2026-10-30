@@ -11,7 +11,8 @@ import { loadChatContext, buildGreeting, sanitizeStudentName } from '../services
 import { appendTurns } from '../services/chatTurns.js';
 import { isTypeUsable } from '../services/activityTypes.js';
 import { typeTraits } from '../services/activityTypeStore.js';
-import { assignSide } from '../services/sideAssignment.js';
+import { assignSide, offeredPositions } from '../services/sideAssignment.js';
+import { latestSubmission } from '../services/studentSubmissions.js';
 import { assertCanComplete, recordCompletionReason, CompletionError } from '../services/chatCompletion.js';
 import { chatAttemptStatus } from '../services/chatAttempts.js';
 
@@ -88,8 +89,35 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
     // position in the request is ignored. The row lock is held until the chat is inserted, so
     // students starting at the same moment are balanced one after the other.
     let assigned = null;
+    const startTraits = typeTraits(typeRows[0]?.activity_type);
+    // A type that requires positions cannot run without them. Refused here, in words, rather than
+    // run a debate with no sides.
+    if (section_id && startTraits?.positions === 'required') {
+      const [requiredRows] = await pool.execute(
+        'SELECT id, position_tracking_enabled, position_capture_method FROM section_cases WHERE section_id = ? AND case_id = ?',
+        [section_id, case_id]
+      );
+      const row = requiredRows[0];
+      const usable = row && row.position_tracking_enabled && ['assigned', 'explicit'].includes(row.position_capture_method);
+      const count = usable && scenario_id ? (await offeredPositions(pool, row.id, scenario_id)).length : 0;
+      if (count < 2 || (startTraits.two_sided && count !== 2)) {
+        return res.status(409).json({
+          data: null,
+          error: { code: 'POSITIONS_NOT_READY', message: 'This activity is not ready: its positions are not set up. Please tell your instructor.' },
+        });
+      }
+    }
+    // The student's own work, for a type that takes it. The chat pins this one.
+    let submissionId = null;
+    if (startTraits?.material === 'student_submission') {
+      const submission = section_id ? await latestSubmission(section_id, case_id, student_id) : null;
+      if (!submission) {
+        return res.status(409).json({ data: null, error: { code: 'SUBMISSION_REQUIRED', message: 'Add your work before you start this chat.' } });
+      }
+      submissionId = submission.id;
+    }
     if (section_id && scenario_id) {
-      const traits = typeTraits(typeRows[0]?.activity_type);
+      const traits = startTraits;
       if (traits?.capture_methods?.includes('assigned')) {
         const [assignRows] = await pool.execute(
           'SELECT id, position_tracking_enabled, position_capture_method FROM section_cases WHERE section_id = ? AND case_id = ?',
@@ -113,7 +141,7 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
     // record with no greeting.
     const context = await loadChatContext({
       id, case_id, section_id: section_id || null, scenario_id: scenario_id || null,
-      persona: persona || null, initial_position_id: startPositionId, position_method: startPositionMethod,
+      persona: persona || null, initial_position_id: startPositionId, position_method: startPositionMethod, submission_id: submissionId,
     });
     const greeting = buildGreeting(context, sanitizeStudentName(student_name));
     // The type version this chat runs on (migration 090), and the student copy from it, so the
@@ -146,9 +174,9 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
 
     const db = txn || pool;
     await db.execute(
-      `INSERT INTO case_chats (id, student_id, case_id, section_id, scenario_id, persona, activity_type_version, chat_model, status, time_limit_minutes, initial_position, initial_position_id, position_method)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?)`,
-      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, activity.version, chat_model || null, timeLimitMinutes, positionName, startPositionId, startPositionMethod]
+      `INSERT INTO case_chats (id, student_id, case_id, section_id, scenario_id, persona, activity_type_version, chat_model, status, time_limit_minutes, initial_position, initial_position_id, position_method, submission_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?, ?)`,
+      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, activity.version, chat_model || null, timeLimitMinutes, positionName, startPositionId, startPositionMethod, submissionId]
     );
 
     // Log initial position if provided (using position_id or position string)

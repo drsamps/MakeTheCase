@@ -52,6 +52,7 @@ import usageRoutes from './routes/usage.js';
 import backupsRoutes from './routes/backups.js';
 import activityPacksRoutes, { versionRoute } from './routes/activityPacks.js';
 import activityTypesRoutes from './routes/activityTypes.js';
+import submissionsRoutes from './routes/submissions.js';
 import { loadActivityTypes } from './services/activityTypeStore.js';
 import { startTruncateOldRawUsageJob } from './jobs/truncateOldRawUsage.js';
 import { startPruneModelFailuresJob } from './jobs/pruneModelFailures.js';
@@ -122,6 +123,7 @@ app.use('/api/feedback', feedbackRoutes); // In-app user feedback system
 app.use('/api/content', contentRoutes); // Static markdown content (e.g. instructor welcome screen)
 app.use('/api/usage', usageRoutes); // AI cost-first usage reporting (model_usage table)
 app.use('/api/activity-packs', activityPacksRoutes); // Download cases as a package, install one from another server
+app.use('/api/submissions', submissionsRoutes); // The student's own work as material (StudyChat Phase 6)
 app.use('/api/activity-types', activityTypesRoutes); // Activity types: list, clone, draft, preview, publish (StudyChat Phase 2)
 console.log('✓ Rubrics routes mounted');
 console.log('✓ Case Writer routes mounted at /api/case-writer');

@@ -77,6 +77,8 @@ interface StudentResult {
   /** A personal activity's row with the student's identity hidden (services/personalActivity.js). */
   names_hidden?: boolean;
   personal_activity?: boolean;
+  /** The student's own work this chat ran on (types with traits.material student_submission). */
+  submission_id?: number | null;
   /** NULL for a CAS student who never set one; their login id is the net id in `student_id`. */
   email: string | null;
   section_id: string;
@@ -232,6 +234,26 @@ function storeSetting(key: string, value: string) {
     // ignore
   }
 }
+
+/** The submission a chat ran on, beside its transcript. Loaded when opened: it can be long. */
+const ChatSubmission: React.FC<{ caseChatId: string }> = ({ caseChatId }) => {
+  const [text, setText] = useState<string | null>(null);
+  const [label, setLabel] = useState('');
+  return (
+    <details
+      className="mb-3 rounded-lg border border-teal-200 bg-teal-50 p-3 text-sm"
+      onToggle={async (e) => {
+        if (!(e.target as HTMLDetailsElement).open || text !== null) return;
+        const response = await api.get(`/submissions/chat/${caseChatId}`);
+        setText(response.data?.text ?? 'The submission could not be found.');
+        setLabel(response.data?.filename ? ` (${response.data.filename})` : '');
+      }}
+    >
+      <summary className="cursor-pointer font-medium text-teal-900">The student's submission{label}</summary>
+      {text !== null && <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap text-xs text-gray-800">{text}</pre>}
+    </details>
+  );
+};
 
 const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, initialCaseId }) => {
   // Header Semester selector: limits the section picker, and "ALL Sections" means that semester's.
@@ -1924,6 +1946,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
+              {selectedStudent.submission_id && <ChatSubmission caseChatId={selectedStudent.case_chat_id} />}
               <pre className="whitespace-pre-wrap text-sm text-gray-700 font-mono bg-gray-50 p-4 rounded-lg">
                 {transcriptContent}
               </pre>

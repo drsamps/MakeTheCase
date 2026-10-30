@@ -13,6 +13,7 @@
 
 import { renderOnce, withWrappers, templateText } from './render.js';
 import { numCriteria, numberWord } from './resolvers.js';
+import { submissionBlock } from './signals.js';
 
 function summaryInstruction(headings) {
   if (!headings?.length) return "5.  Write a concise overall summary of the student's performance.";
@@ -123,7 +124,7 @@ IMPORTANT: "score" and "totalScore" MUST be integers (not strings, not "4/5", no
 
   const dynamicContent = `
 **Student Being Evaluated:** ${studentName}
-${values.position}
+${values.position}${def.traits.material === 'student_submission' ? submissionBlock(caseData.submission_text) : ''}
 **Conversation Transcript:**
 ---
 ${chatHistory}

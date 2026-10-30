@@ -606,6 +606,7 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
         c.case_id,
         c.case_title,
         c.activity_type,
+        cc.submission_id,
         COALESCE(cc.status, 'not_started') as status,
         cc.initial_position,
         cc.final_position,
@@ -676,6 +677,7 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
       student_name: hides(row) ? hiddenNameFor(row.student_id) : row.student_name,
       names_hidden: hides(row) || undefined,
       personal_activity: isPersonalType(row.activity_type) || undefined,
+      submission_id: row.submission_id || undefined,
       // Login identity: CAS students carry their net id inside `student_id`
       // (`cas:{netid}`); self-registered students have an email instead.
       email: hides(row) ? null : (row.email || null),

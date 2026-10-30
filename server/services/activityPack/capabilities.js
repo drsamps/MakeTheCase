@@ -71,6 +71,7 @@ const FEATURE_TOKENS = {
   'signals:complete': { words: 'activities whose AI can signal the goal was reached', uses: (d) => Boolean(d.traits.signals.complete) },
   'signals:touchpoints': { words: 'live touchpoint tracking', uses: (d) => Boolean(d.traits.signals.touchpoints) },
   'touchpoints:ai_sees': { words: 'touchpoints shown to the AI', uses: (d) => Boolean(d.traits.ai_sees.touchpoints) },
+  'material:student_submission': { words: 'activities on the student\'s own work', uses: (d) => d.traits.material === 'student_submission' },
   'grading:type_criteria': { words: "grading on a type's own criteria", uses: (d) => d.traits.grading_extras.eval_inputs === 'type_criteria' },
 };
 

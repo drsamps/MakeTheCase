@@ -6,6 +6,7 @@ import { createChatSession, getEvaluation, type LLMChatReply } from './services/
 import { initialsOf } from './teachBack';
 import { getActivityType } from './utils/activityTypes.js';
 import { countWords, minOpeningWords, DEFAULT_MIN_OPENING_WORDS } from './utils/openingWords.js';
+import SubmissionForm from './components/SubmissionForm';
 import { copyFor, activityIntroText, type StudentActivityView, type CopyKey, type CopyVars } from './services/activityCopy';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
@@ -258,6 +259,8 @@ const App: React.FC = () => {
   // From the POST /case-chats response: the goal (only for a type that shows it) and the side the
   // server assigned (capture method 'assigned').
   const [chatGoal, setChatGoal] = useState<string | null>(null);
+  // A type on the student's own work: whether a submission is saved for the picked assignment.
+  const [hasSubmission, setHasSubmission] = useState(false);
   const [assignedPosition, setAssignedPosition] = useState<string | null>(null);
   const activity: StudentActivityView | null = chatActivity ?? selectedCaseRow?.activity ?? null;
   const copy = <K extends CopyKey>(key: K, ...vars: CopyVars[K] extends Record<string, never> ? [] : [CopyVars[K]]) =>
@@ -1840,7 +1843,8 @@ const App: React.FC = () => {
     // Teach-back has no built-in fallback character: with no audience the case protagonist
     // would be cast as the confused listener, so the chat must not start at all.
     const audienceRequirementMet = !personaCharacter || availablePersonas.some((p) => p.persona_id === selectedPersonaId);
-    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted && !selectedScenarioUsedUp && positionRequirementMet && audienceRequirementMet;
+    const submissionRequirementMet = activity?.traits.material !== 'student_submission' || hasSubmission;
+    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted && !selectedScenarioUsedUp && positionRequirementMet && audienceRequirementMet && submissionRequirementMet;
     const sectionName = sections.find(s => s.section_id === selectedSection)?.section_title || selectedSection;
 
     return (
@@ -2201,6 +2205,17 @@ const App: React.FC = () => {
 
             {/* Position selection for 'explicit' method now happens IN the chat after protagonist greeting */}
 
+            {/* A type on the student's own work: they add it before the chat starts. */}
+            {selectedCaseId && isSectionValid && activity?.traits.material === 'student_submission' && (
+              <SubmissionForm
+                sectionId={selectedSection}
+                caseId={selectedCaseId}
+                title={copy('submission_title')}
+                help={copy('submission_help')}
+                onChange={(saved) => setHasSubmission(Boolean(saved))}
+              />
+            )}
+
             {/* A type about the student's own life says so before the chat starts. */}
             {selectedCaseId && activity?.traits.personal && (
               <p className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{renderBold(copy('personal_notice'))}</p>
@@ -2227,7 +2242,7 @@ const App: React.FC = () => {
               disabled={isLoading || !canStartChat}
               className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : selectedScenarioUsedUp ? 'No Chats Left' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : !positionRequirementMet ? 'Select Your Position' : !audienceRequirementMet ? copy('start_no_persona') : 'Start Chat'}
+              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : selectedScenarioUsedUp ? 'No Chats Left' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : !positionRequirementMet ? 'Select Your Position' : !audienceRequirementMet ? copy('start_no_persona') : !submissionRequirementMet ? copy('start_no_submission') : 'Start Chat'}
             </button>
           </form>
         </div>

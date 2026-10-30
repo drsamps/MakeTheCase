@@ -30,6 +30,7 @@ import { getSectionCaseChatOptions } from './chatOptions.js';
 import { resolveAvailablePersonas } from './personaService.js';
 import { behaviourForChat, previewBehaviour } from './activityTypes.js';
 import { readScenarioSettings } from '../../utils/scenarioSettings.js';
+import { submissionTextForChat } from './studentSubmissions.js';
 
 const MAX_NAME_LENGTH = 40;
 
@@ -128,6 +129,11 @@ export async function loadChatContext(chat, { definition = null } = {}) {
   const behaviour = definition ? previewBehaviour(definition) : behaviourForChat(chat, loaded.activity_type);
   const traits = behaviour.definition.traits;
   const mode = behaviour.definition.key;
+  // The student's own work: the submission this chat pinned. Read by the chat id, so the many
+  // SELECTs that feed this function need no new column.
+  if (traits.material === 'student_submission') {
+    caseData = { ...caseData, submission_text: (await submissionTextForChat(chat)) || undefined };
+  }
   const personas = await resolveAvailablePersonas(chatOptions.allowed_personas, traits);
   const personaRow = personas.find((p) => p.persona_id === chat.persona);
 

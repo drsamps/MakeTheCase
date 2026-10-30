@@ -97,6 +97,9 @@ export const OPTIONAL_COPY_KEYS = {
   goal_reached_bar: [],
   goal_finish_button: [],
   goal_keep_button: [],
+  submission_title: [],
+  submission_help: [],
+  start_no_submission: [],
 };
 
 /** Optional intro bar phrases: the goal line, and the side the server assigned. */
@@ -201,7 +204,7 @@ export function validateDefinition(def) {
     oneOf(t.persona_kind, 'traits.persona_kind', ['protagonist', 'audience']);
     oneOf(t.positions, 'traits.positions', ['off', 'optional', 'required']);
     if (!Array.isArray(t.capture_methods) || !t.capture_methods.length || t.capture_methods.some((m) => !CAPTURE_METHODS.includes(m))) err('traits.capture_methods', `must list some of ${CAPTURE_METHODS.join(', ')}`);
-    oneOf(t.material, 'traits.material', ['activity']);
+    oneOf(t.material, 'traits.material', ['activity', 'student_submission']);
     if (keysOnly(t.ai_sees, 'traits.ai_sees', ['case', 'supplementary', 'teaching_note', 'arguments', 'touchpoints'])) {
       for (const [k, v] of Object.entries(t.ai_sees)) bool(v, `traits.ai_sees.${k}`);
       if (t.ai_sees.case !== true) err('traits.ai_sees.case', 'must be true');
@@ -289,6 +292,7 @@ export function validateDefinition(def) {
     for (const [k, vars] of Object.entries(COPY_KEYS)) plural(c[k], `copy.${k}`, vars);
     for (const [k, vars] of Object.entries(OPTIONAL_COPY_KEYS)) if (k in c) plural(c[k], `copy.${k}`, vars);
     if (t?.personal && !c.personal_notice) err('copy.personal_notice', 'a personal type must tell students before the chat');
+    if (t?.material === 'student_submission' && !(c.submission_title && c.submission_help && c.start_no_submission)) err('copy.submission_title', 'a type that takes a submission must word its upload step (submission_title, submission_help, start_no_submission)');
     if (t?.signals?.complete && !c.goal_reached_bar) err('copy.goal_reached_bar', 'a type that can signal its goal must word the Finish offer');
     if (c.intro !== null && keysOnly(c.intro, 'copy.intro', [...Object.keys(INTRO_KEYS), ...Object.keys(OPTIONAL_INTRO_KEYS)], Object.keys(INTRO_KEYS))) {
       for (const [k, vars] of Object.entries(INTRO_KEYS)) plural(c.intro[k], `copy.intro.${k}`, vars);

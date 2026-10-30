@@ -16,7 +16,7 @@ rollover, deleting sections or courses, running a migration.
 It is **not disaster recovery**. The files sit on the same disk and machine as the database, and the UI
 says so. Keep off-server backups too (`dev/DEPLOYMENT-UBUNTU.md` § 9.4).
 
-A backup covers every table in the database (students, transcripts, evaluations, settings, audit log)
+A backup covers every table in the database (students, transcripts, student submissions, evaluations, settings, audit log)
 plus routines and triggers. It does **not** include `case_files/` or `logs/`.
 
 ## Four load-bearing rules

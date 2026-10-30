@@ -77,6 +77,7 @@ function summaryOf(entry) {
       positions: def.traits.positions,
       capture_methods: def.traits.capture_methods,
       personal: Boolean(def.traits.personal),
+      material: def.traits.material,
       two_sided: Boolean(def.traits.two_sided),
       signals_complete: Boolean(def.traits.signals.complete),
       ai_sees_arguments: Boolean(def.traits.ai_sees.arguments),
