@@ -6,6 +6,9 @@ import {
   canViewSection,
   requireAdminOrInstructor,
 } from '../middleware/instructorAccess.js';
+import { DEFAULT_CHAT_OPTIONS, withoutActivityMode } from '../services/chatOptions.js';
+import { activityHiddenOptions } from '../services/activityTypes.js';
+import { getTypeEntry } from '../services/activityTypeStore.js';
 
 const router = express.Router();
 
@@ -14,43 +17,21 @@ const router = express.Router();
 const isAdminUser = (req) => Boolean(req.user?.superuser || req.user?.role === 'admin');
 const forbid = (res, message) => res.status(403).json({ data: null, error: { message } });
 
-// Default chat options - used when section_cases.chat_options is NULL
-const DEFAULT_CHAT_OPTIONS = {
-  // Hints configuration
-  hints_allowed: 3,
-  free_hints: 1,
-  // Feedback options
-  ask_for_feedback: false,
-  ask_save_transcript: false,
-  auto_save_transcript: true,    // Auto-save transcript after each chat exchange
-  // Persona options
-  allowed_personas: 'moderate,strict,liberal,leading,sycophantic',
-  default_persona: 'moderate',
-  // Display and flow options
-  show_case: true,
-  show_timer: true,              // Show countdown timer during chat
-  do_evaluation: true,
-  show_evaluation_details: true, // Show full evaluation criteria vs just score
-  // Chatbot personality customization
-  chatbot_personality: '',
-  // Multi-chat options
-  chat_repeats: 0,           // 0 = one chat only, 1+ = can repeat N times
-  save_dead_transcripts: false,  // Save transcripts for abandoned/canceled/killed chats
-  // Chat control options
-  allow_repeat: false,
-  timeout_chat: false,
-  allow_finish_button: false,
-  restart_chat: false,
-  allow_exit: false,
-  require_minimum_exchanges: 0,  // 0 = no minimum, N = require N exchanges before "time is up"
-  max_message_length: 0,         // 0 = unlimited, N = max N characters per message
-  // Position tracking override (position config is now per-scenario)
-  disable_position_tracking: false  // Override to disable scenario-level position tracking
-};
-
 // Base schema describing available options (for UI generation)
-// Note: persona options are loaded dynamically from database
+// Note: persona options are loaded dynamically from database.
+// Which fields a case's editor shows is its activity type's: GET /schema?activity_type= leaves out
+// the keys the type's definition hides (chat_options.hidden).
 const BASE_CHAT_OPTIONS_SCHEMA = [
+  {
+    key: 'min_opening_words',
+    label: 'Minimum Words (opening message)',
+    type: 'number',
+    default: 15,
+    min: 0,
+    max: 200,
+    description: 'Activity types with an opening floor (Teach-back). The FIRST student message must reach this many words (0 = no minimum). Short openings are refused before any AI call, so nothing is charged and no turn is used.',
+    category: 'activity'
+  },
   {
     key: 'hints_allowed',
     label: 'Hints Allowed',
@@ -142,7 +123,7 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     default: 0,
     min: 0,
     max: 10,
-    description: 'Number of additional chats allowed (0 = one chat only, 1 = can repeat once, etc.)',
+    description: "Extra graded chats each student may have, per scenario (0 = one chat only, 1 = can repeat once). Abandoned or cancelled chats do not count; a student's re-chat switch always allows one more. Ignored when Allow Repeat is on. Enforced when a chat starts.",
     category: 'flow'
   },
   {
@@ -159,7 +140,7 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     label: 'Allow Repeat',
     type: 'boolean',
     default: false,
-    description: 'Allow students to repeat the chat multiple times',
+    description: 'Allow students to repeat the chat as often as they like (overrides Allowed Repeats)',
     category: 'chat_control'
   },
   {
@@ -168,6 +149,14 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     type: 'boolean',
     default: false,
     description: 'Automatically end chat when the scenario time limit expires. Minutes are set on each case scenario, not here. Requires Show Timer to be on.',
+    category: 'chat_control'
+  },
+  {
+    key: 'end_on_goal',
+    label: 'End When the Goal Is Reached',
+    type: 'boolean',
+    default: false,
+    description: 'When the AI signals that the goal was reached, wrap up at once instead of offering Finish / Keep talking. Minimum exchanges still apply.',
     category: 'chat_control'
   },
   {
@@ -201,7 +190,29 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     default: 0,
     min: 0,
     max: 20,
-    description: 'Require N exchanges before allowing "time is up" (0 = no minimum)',
+    description: 'Student messages the AI must answer before the student can finish (0 = no minimum)',
+    category: 'chat_control'
+  },
+  {
+    key: 'max_exchanges',
+    label: 'Maximum Responses',
+    type: 'number',
+    default: 0,
+    min: 0,
+    max: 50,
+    description: 'The chat wraps up after the AI answers this many student messages (0 = no limit)',
+    category: 'chat_control'
+  },
+  {
+    key: 'max_exchanges_action',
+    label: 'At the Response Limit',
+    type: 'select',
+    default: 'end',
+    options: [
+      { value: 'end', label: 'End the chat' },
+      { value: 'ask', label: 'Let the student finish or keep talking' }
+    ],
+    description: 'What happens when the student reaches Maximum Responses',
     category: 'chat_control'
   },
   {
@@ -271,11 +282,20 @@ async function buildSchemaWithPersonas() {
   ];
 }
 
-// GET /api/chat-options/schema - Returns schema for UI generation (with dynamic personas)
+// GET /api/chat-options/schema - Returns schema for UI generation (with dynamic personas).
+// ?activity_type= leaves out the options that type hides; without it, every option (defaults
+// editors are shared by cases of every type).
 router.get('/schema', async (req, res) => {
   try {
     const schema = await buildSchemaWithPersonas();
-    res.json({ data: schema, error: null });
+    const type = req.query.activity_type;
+    if (type !== undefined && !getTypeEntry(type)?.current) {
+      return res.status(400).json({ data: null, error: { code: 'UNKNOWN_ACTIVITY_TYPE', message: 'Unknown activity type' } });
+    }
+    const hidden = new Set(type ? activityHiddenOptions(type) : []);
+    // Only a type whose AI can signal its goal has this option to set.
+    if (!type || !getTypeEntry(type)?.current?.definition.traits.signals.complete) hidden.add('end_on_goal');
+    res.json({ data: schema.filter((f) => !hidden.has(f.key)), error: null });
   } catch (error) {
     console.error('Error building chat options schema:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
@@ -332,7 +352,7 @@ router.post('/defaults', verifyToken, requireAdminOrInstructor, async (req, res)
       return forbid(res, 'You do not have permission to manage cases on this section');
     }
 
-    const chatOptionsJson = JSON.stringify(chat_options);
+    const chatOptionsJson = JSON.stringify(withoutActivityMode(chat_options));
 
     // First, try to update existing record (LIMIT 1 to prevent multiple updates)
     const updateQuery = section_id
@@ -405,6 +425,8 @@ router.delete('/defaults', verifyToken, requireAdminOrInstructor, async (req, re
 // Body: { source_section_id, source_case_id, target: 'section'|'all', target_section_id? }
 // Rows that follow a course case version are skipped: their chat_options are written through
 // from the version (services/caseVersionSync.js) and a copy here would be overwritten.
+// So are cases of another activity type: options name that type's personas (a teach-back
+// audience list copied onto a case chat would leave its students no persona to pick).
 router.post('/bulk-copy', verifyToken, requireAdminOrInstructor, async (req, res) => {
   const { source_section_id, source_case_id, target, target_section_id } = req.body;
 
@@ -444,7 +466,9 @@ router.post('/bulk-copy', verifyToken, requireAdminOrInstructor, async (req, res
 
     // Get source chat options
     const [sourceRows] = await pool.execute(
-      'SELECT chat_options FROM section_cases WHERE section_id = ? AND case_id = ?',
+      `SELECT sc.chat_options, c.activity_type
+       FROM section_cases sc JOIN cases c ON c.case_id = sc.case_id
+       WHERE sc.section_id = ? AND sc.case_id = ?`,
       [source_section_id, source_case_id]
     );
 
@@ -456,30 +480,35 @@ router.post('/bulk-copy', verifyToken, requireAdminOrInstructor, async (req, res
     }
 
     const sourceOptions = sourceRows[0].chat_options || DEFAULT_CHAT_OPTIONS;
-    const chatOptionsJson = JSON.stringify(sourceOptions);
+    const chatOptionsJson = JSON.stringify(withoutActivityMode(sourceOptions));
+    const activityType = sourceRows[0].activity_type;
 
-    const scopeSql = target === 'section' ? 'section_id = ? AND ' : '';
+    const scopeSql = target === 'section' ? 'sc.section_id = ? AND ' : '';
     const scopeParams = target === 'section' ? [target_section_id] : [];
-    const notSourceSql = 'NOT (section_id = ? AND case_id = ?)';
+    const notSourceSql = 'NOT (sc.section_id = ? AND sc.case_id = ?)';
 
     // section_cases has no updated_at column; the previous version referenced one and failed.
     const [result] = await pool.execute(
-      `UPDATE section_cases
-       SET chat_options = ?
-       WHERE ${scopeSql}${notSourceSql} AND version_id IS NULL`,
-      [chatOptionsJson, ...scopeParams, source_section_id, source_case_id]
+      `UPDATE section_cases sc JOIN cases c ON c.case_id = sc.case_id
+       SET sc.chat_options = ?
+       WHERE ${scopeSql}${notSourceSql} AND sc.version_id IS NULL AND c.activity_type = ?`,
+      [chatOptionsJson, ...scopeParams, source_section_id, source_case_id, activityType]
     );
-    const [[{ skipped }]] = await pool.execute(
-      `SELECT COUNT(*) AS skipped FROM section_cases
-       WHERE ${scopeSql}${notSourceSql} AND version_id IS NOT NULL`,
-      [...scopeParams, source_section_id, source_case_id]
+    const [[{ skipped, skipped_other_type }]] = await pool.execute(
+      `SELECT COALESCE(SUM(sc.version_id IS NOT NULL), 0) AS skipped,
+              COALESCE(SUM(sc.version_id IS NULL AND c.activity_type <> ?), 0) AS skipped_other_type
+       FROM section_cases sc JOIN cases c ON c.case_id = sc.case_id
+       WHERE ${scopeSql}${notSourceSql}`,
+      [activityType, ...scopeParams, source_section_id, source_case_id]
     );
 
-    const skippedNote = skipped > 0
+    const skippedNote = (skipped > 0
       ? `; skipped ${skipped} that follow course settings (edit those on the Courses screen)`
-      : '';
+      : '') + (skipped_other_type > 0
+      ? `; skipped ${skipped_other_type} of another activity type`
+      : '');
     res.json({
-      data: { updated: result.affectedRows, skipped_following_version: skipped },
+      data: { updated: result.affectedRows, skipped_following_version: Number(skipped), skipped_other_type: Number(skipped_other_type) },
       message: `Chat options copied to ${result.affectedRows} section-case assignment(s)${skippedNote}`,
       error: null
     });

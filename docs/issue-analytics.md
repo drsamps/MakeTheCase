@@ -46,8 +46,8 @@ student counts once per theme: the lean shown is their first mention that has on
   just repeats a position's wording, because picking a position posts that text as the
   student's message.
 - **Staleness is keyed on content, never on `transcripts.is_anonymized`.** Bulk-anonymize
-  sets the flag without touching the text, and a real rewrite can arrive through the plain
-  `PUT /transcripts/chat/:id` upsert with no flag. `checkStaleness()` re-hashes the analyzed
+  sets the flag without touching the text, and a real rewrite can arrive with no flag (the
+  server rewrites a chat's transcript after each turn, and admins can `PUT /transcripts/chat/:id`). `checkStaleness()` re-hashes the analyzed
   transcripts on read and sets `stale_reason` (`transcript_changed` / `chat_removed`).
 - **Single-pass prompt rendering.** `renderOnce()` resolves `{placeholders}` against the
   template only. `promptService.renderPrompt()` substitutes variables one after another, so a
@@ -57,9 +57,9 @@ student counts once per theme: the lean shown is their first mention that has on
   student typing those tag names has them escaped (`defangTags`). Tested with an
   "Ignore all previous instructions" transcript: the model reported it as a friction item.
 - **Every writer of transcripts uses `formatTranscript()`.** It neutralises `[STUDENT` /
-  `[PROTAGONIST` inside message text so a student cannot forge a turn. Both builders in
-  `App.tsx` (per-turn auto-save and the final save, which overwrites it) share
-  `buildTranscript()`.
+  `[PROTAGONIST` inside message text so a student cannot forge a turn. Since 2026-10-10 the
+  only writer of student chat transcripts is the server (`services/chatTurns.js#writeTranscript`,
+  from the `chat_turns` copy of the conversation); the browser no longer sends transcripts.
 - **Turn timing (2026-09-19).** Chats started after this date carry a turn number and the
   minutes since the prior turn inside each marker: `[STUDENT Sadie Smith | 12 after 3.52m]`
   (`| 1` alone on the opening turn). `parseTranscript()` returns a clean `speaker` plus
@@ -235,8 +235,5 @@ instead of all of them. `drawSample()` in `scope.js` does the draw, called from 
 
 ## Not done / open
 
-- `PUT /api/transcripts/chat/:caseChatId` has no auth middleware (it predates this feature).
-  Anyone who can reach the API can rewrite a transcript. Issue Analytics detects that as
-  staleness, but the route itself should be hardened.
 - The quality check (hand-coding one section and comparing it with the AI themes) is a
   human task.

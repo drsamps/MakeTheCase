@@ -20,15 +20,17 @@
  */
 
 import crypto from 'node:crypto';
+import { readScenarioSettings } from '../../../utils/scenarioSettings.js';
 import { pool } from '../../db.js';
 import { generateOutlineWithLLM } from '../llmRouter.js';
 import { getWeeklyUsage, UsageCostCapExceededError, UnpricedModelBlockedError } from '../usageGuard.js';
 import { MissingInstructorKeyError } from '../keyResolver.js';
 import {
-  extractJsonObject, isRateLimit, loadPrompt, loadRunContext, nameHints,
+  extractJsonObject, extractCacheTag, isRateLimit, loadPrompt, loadRunContext, nameHints,
   prepareTranscript, renderOnce, sha256, THEME_TYPES, verifyQuote,
 } from './common.js';
 import { parseJsonArray } from './scope.js';
+import { aiSpeakerNameSql, aiSpeakerJoinsSql, activityCacheVersion } from '../activityTypes.js';
 
 const CONCURRENCY = 2;
 const HEARTBEAT_MS = 60_000;
@@ -234,18 +236,20 @@ async function executeRun(runId, job) {
 
     const ctx = await loadRunContext(run);
     const extract = await loadPrompt('issue_analytics.extract_facts');
+    const cacheTag = extractCacheTag(extract, activityCacheVersion(ctx.caseRow?.activity_type));
     const vendor = await modelVendor(run.model_id);
     // The prompt may have been edited since launch; the cache key follows the text used.
     await pool.execute('UPDATE issue_analysis_runs SET prompt_version = ?, heartbeat_at = NOW() WHERE id = ?',
-      [extract.versionTag, runId]);
+      [cacheTag, runId]);
 
     const [pending] = await pool.execute(
       `SELECT rc.case_chat_id, rc.section_id, st.full_name, st.first_name, st.last_name,
-              cs.protagonist AS scenario_protagonist, t.transcript
+              ${aiSpeakerNameSql()} AS ai_speaker, t.transcript
          FROM issue_analysis_run_chats rc
          JOIN case_chats cc ON cc.id = rc.case_chat_id
          JOIN students st ON st.id = rc.student_id
          LEFT JOIN case_scenarios cs ON cs.id = cc.scenario_id
+         ${aiSpeakerJoinsSql()}
          -- Newest transcript only; a duplicate row would analyse (and bill) one chat twice.
          LEFT JOIN transcripts t ON t.id = (SELECT t2.id FROM transcripts t2
                                              WHERE t2.case_chat_id = rc.case_chat_id
@@ -280,7 +284,7 @@ async function executeRun(runId, job) {
       const [[hit]] = await pool.execute(
         `SELECT id FROM issue_analysis_chat_facts
           WHERE case_chat_id = ? AND transcript_hash = ? AND model_id = ? AND prompt_version = ?`,
-        [chat.case_chat_id, hash, run.model_id, extract.versionTag]
+        [chat.case_chat_id, hash, run.model_id, cacheTag]
       );
       if (hit) {
         await setState('done', { hash, factsId: hit.id });
@@ -296,7 +300,7 @@ async function executeRun(runId, job) {
           `INSERT INTO issue_analysis_chat_facts (case_chat_id, transcript_hash, model_id, prompt_version, facts)
            VALUES (?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), facts = VALUES(facts)`,
-          [chat.case_chat_id, hash, run.model_id, extract.versionTag, JSON.stringify(facts)]
+          [chat.case_chat_id, hash, run.model_id, cacheTag, JSON.stringify(facts)]
         );
         await setState('done', { hash, factsId: ins.insertId });
         consecutiveFailures = 0;
@@ -398,6 +402,22 @@ async function cluster(run, ctx, vendor, job) {
     );
     await insertMentions(run.id, ins.insertId, keys.map(k => items.get(k)));
   }
+  // The scenario's touchpoints become instructor themes the first time a run finishes. They have
+  // no students until the instructor presses Re-scan (billed then, never here).
+  if (run.scenario_id) {
+    const [scenarioRows] = await pool.execute('SELECT chat_options_override FROM case_scenarios WHERE id = ?', [run.scenario_id]);
+    const { touchpoints } = readScenarioSettings(scenarioRows[0]?.chat_options_override).ai;
+    const [existing] = await pool.execute("SELECT label FROM issue_analysis_themes WHERE run_id = ? AND origin = 'instructor'", [run.id]);
+    const taken = new Set(existing.map((t) => t.label));
+    for (const t of touchpoints) {
+      if (taken.has(t.label)) continue;
+      await pool.execute(
+        `INSERT INTO issue_analysis_themes (run_id, label, description, theme_type, origin, selected, sort_order)
+         VALUES (?, ?, ?, 'topic', 'instructor', 0, ?)`,
+        [run.id, clip(t.label, 200), clip(t.description, 2000) || null, order + 1000]
+      );
+    }
+  }
   if (order < run.theme_target_min) {
     const shortfall = `Found ${order} distinct theme${order === 1 ? '' : 's'}, fewer than the ${run.theme_target_min} requested: the transcripts did not support more without near-duplicates.`;
     note = note ? `${shortfall} ${note}` : shortfall;
@@ -453,11 +473,12 @@ async function executeRescan(themeId, job) {
     const vendor = await modelVendor(run.model_id);
     const [chats] = await pool.execute(
       `SELECT rc.case_chat_id, rc.student_id, rc.section_id, st.full_name, st.first_name,
-              cs.protagonist AS scenario_protagonist, t.transcript
+              ${aiSpeakerNameSql()} AS ai_speaker, t.transcript
          FROM issue_analysis_run_chats rc
          JOIN case_chats cc ON cc.id = rc.case_chat_id
          JOIN students st ON st.id = rc.student_id
          LEFT JOIN case_scenarios cs ON cs.id = cc.scenario_id
+         ${aiSpeakerJoinsSql()}
          -- Newest transcript only; duplicates would re-scan one chat twice (see loadScopeChats).
          LEFT JOIN transcripts t ON t.id = (SELECT t2.id FROM transcripts t2
                                              WHERE t2.case_chat_id = rc.case_chat_id

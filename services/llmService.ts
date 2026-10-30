@@ -1,6 +1,5 @@
-import { getSystemPrompt, buildSystemPrompt, CaseData, DEFAULT_CASE_DATA, SystemPromptOptions } from "../constants";
-import { Message, EvaluationResult, CEOPersona } from "../types";
-import { getApiBaseUrl } from "./apiClient";
+import { EvaluationResult } from "../types";
+import { getApiBaseUrl, getAuthHeaders } from "./apiClient";
 
 const parseOrThrow = async (response: Response) => {
   const text = await response.text();
@@ -16,6 +15,11 @@ export interface LLMChatReply {
   /** Model that actually answered (a ranked backup when `backup` is true). */
   modelId: string;
   backup: boolean;
+  /** Student messages the AI has answered in this chat, this one included (server count). */
+  exchangesUsed?: number;
+  /** Types whose AI can signal its goal: this reply signalled it, and whether it ever has. */
+  goalSignalled?: boolean;
+  goalReached?: boolean;
 }
 
 export interface LLMChatSession {
@@ -29,82 +33,67 @@ export const detectProvider = (modelId: string) => {
   return 'google';
 };
 
+/**
+ * A student chat session. The server builds the system prompt and keeps the conversation
+ * (server/services/chatPrompt.js, chatTurns.js), so the browser sends only the chat id, the
+ * student's first name and the new message; the model comes from the chat record too.
+ * `modelId` is only the label used when a reply does not name the model that answered.
+ */
 export const createChatSession = (
   studentName: string,
-  persona: CEOPersona | string,
   modelId: string,
-  history: Message[] = [],
-  caseData?: CaseData,
-  promptOptions?: SystemPromptOptions,
-  studentId?: string,
-  caseChatId?: string | null
-): LLMChatSession => {
-  // Build prompt with case data at the TOP for LLM caching
-  const systemPrompt = caseData
-    ? buildSystemPrompt(studentName, persona, caseData, promptOptions)
-    : getSystemPrompt(studentName, persona);
-  let currentHistory = [...history];
+  caseChatId: string
+): LLMChatSession => ({
+  async sendMessage({ message }: { message: string }) {
+    const response = await fetch(`${getApiBaseUrl()}/llm/chat`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ caseChatId, studentName, message }),
+    });
 
-  return {
-    async sendMessage({ message }: { message: string }) {
-      // `at` / `messageAt` (client clock) only label turns in the prompt log; the server
-      // passes {role, content} alone to the model.
-      const messageAt = Date.now();
-      const response = await fetch(`${getApiBaseUrl()}/llm/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          modelId,
-          systemPrompt,
-          history: currentHistory,
-          message,
-          messageAt,
-          caseId: caseData?.case_id,  // Pass caseId for metrics tracking
-          studentId,  // Pass studentId for logging
-          caseChatId: caseChatId || undefined,  // Records replies served by a backup model
-        }),
+    const result = await parseOrThrow(response);
+    if (!response.ok || result.error) {
+      const msg = result?.error?.message || `Server returned ${response.status}`;
+      // The code lets the page tell a limit (EXCHANGE_LIMIT_REACHED, MESSAGE_TOO_LONG) from a failure;
+      // min_words is the server's floor for OPENING_TOO_SHORT.
+      throw Object.assign(new Error(msg), {
+        code: result?.error?.code as string | undefined,
+        minWords: typeof result?.error?.min_words === 'number' ? result.error.min_words : undefined,
       });
+    }
 
-      const result = await parseOrThrow(response);
-      if (!response.ok || result.error) {
-        const msg = result?.error?.message || `Server returned ${response.status}`;
-        throw new Error(msg);
-      }
+    return {
+      text: result.data?.text || '',
+      modelId: result.data?.meta?.model_id || modelId,
+      backup: Boolean(result.data?.meta?.backup),
+      exchangesUsed: typeof result.data?.meta?.exchanges_used === 'number' ? result.data.meta.exchanges_used : undefined,
+      goalSignalled: Boolean(result.data?.meta?.goal_signalled),
+      goalReached: Boolean(result.data?.meta?.goal_reached),
+    };
+  },
+});
 
-      const text = result.data?.text || '';
-      currentHistory = [
-        ...currentHistory,
-        { role: 'user', content: message, at: messageAt },
-        { role: 'model', content: text, at: Date.now() },
-      ];
-      return {
-        text,
-        modelId: result.data?.meta?.model_id || modelId,
-        backup: Boolean(result.data?.meta?.backup),
-      };
-    },
-  };
-};
+export interface EvaluationFeedback {
+  helpful: number | null;
+  liked: string | null;
+  improve: string | null;
+}
 
 /**
- * Run an evaluation via the backend endpoint.
- * Prompt building, LLM call, normalization, validation, and retry all happen server-side.
+ * Grade the chat and save the evaluation. The server grades its own copy of the conversation
+ * with the section's supervisor model and the assignment's rubric, and saves the evaluation
+ * row itself; the browser sends only the student's feedback answers and whether they agreed
+ * to share the transcript. The result carries `evaluation_id`.
  */
 export const getEvaluation = async (
-  messages: Message[],
   caseChatId: string,
-  modelId: string,
-  protagonistLabel: string = 'CEO',
-  rubricId?: number,
+  feedback: EvaluationFeedback,
+  shareTranscript: boolean,
 ): Promise<EvaluationResult> => {
-  const chatHistory = messages
-    .map((msg) => `${msg.role === "user" ? "Student" : protagonistLabel}: ${msg.content}`)
-    .join("\n\n");
-
   const response = await fetch(`${getApiBaseUrl()}/evaluations/run`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ case_chat_id: caseChatId, chatHistory, modelId, rubricId }),
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ case_chat_id: caseChatId, feedback, share_transcript: shareTranscript }),
   });
 
   const result = await parseOrThrow(response);
@@ -118,4 +107,3 @@ export const getEvaluation = async (
 
   return result.data as EvaluationResult;
 };
-

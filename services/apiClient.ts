@@ -20,10 +20,11 @@ let adminAuthToken: string | null = localStorage.getItem('admin_auth_token');
 let studentAuthToken: string | null = localStorage.getItem('student_auth_token');
 
 // Determine current context based on URL hash
-// Case Writer is instructor/admin-authenticated, so it shares the admin token.
+// Case Writer is instructor/admin-authenticated, so it shares the admin token. So does the
+// #evaluation/:id tab, which only the dashboard opens (Monitor → Chats → view evaluation).
 function isAdminContext(): boolean {
   const h = window.location.hash;
-  return h === '#/admin' || h.startsWith('#/admin') || h.startsWith('#/case-writer');
+  return h === '#/admin' || h.startsWith('#/admin') || h.startsWith('#/case-writer') || h.startsWith('#evaluation/');
 }
 
 // Get the appropriate token for the current context
@@ -78,7 +79,7 @@ export function setImpersonationId(id: string | null) {
   }
 }
 
-function getAuthHeaders(): HeadersInit {
+export function getAuthHeaders(): HeadersInit {
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
   };
@@ -142,11 +143,12 @@ export async function refreshAuthToken(): Promise<boolean> {
   return refreshInFlight;
 }
 
+// Never empty, so callers can show `error.message` as it is.
 function normalizeApiError(err: unknown, fallback: string): string {
-  if (typeof err === 'string') return err;
+  if (typeof err === 'string' && err) return err;
   if (err && typeof err === 'object' && 'message' in err) {
     const message = (err as { message: unknown }).message;
-    if (typeof message === 'string') return message;
+    if (typeof message === 'string' && message) return message;
   }
   return fallback;
 }
@@ -176,7 +178,7 @@ async function apiFetch<T>(
 
     return result;
   } catch (error) {
-    return { data: null, error: { message: (error as Error).message } };
+    return { data: null, error: { message: (error as Error).message || 'Request failed' } };
   }
 }
 

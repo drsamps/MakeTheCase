@@ -1,6 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/apiClient';
+import InlineStatus from './ui/InlineStatus';
 import { CaseScenario } from '../types';
+import ScenarioStudentText, { ScenarioStudentSettings } from './ScenarioStudentText';
+import { activityTypeInfo, useActivityTypeList } from '../services/activityTypeList';
+import { DEFAULT_ACTIVITY_TYPE } from '../utils/activityTypes.js';
+import { readScenarioSettings } from '../utils/scenarioSettings.js';
+import { renderOnce } from '../utils/activityEngine/render.js';
 import {
   DndContext,
   closestCenter,
@@ -22,6 +28,8 @@ import { CSS } from '@dnd-kit/utilities';
 interface ScenarioManagerProps {
   caseId: string;
   caseTitle: string;
+  /** The case's activity type; teach-back scenarios get the student-text editor. */
+  activityType?: string | null;
   onClose: () => void;
   onScenariosChanged?: () => void;
 }
@@ -177,19 +185,68 @@ const SortablePositionItem: React.FC<SortablePositionProps> = ({
   );
 };
 
+// Turn the server's case-access codes into something an instructor can act on.
+function scenarioErrorMessage(message: string): string {
+  if (message.startsWith('not_owner')) {
+    const owner = message.split('owned by ')[1];
+    return `You can't make this change on this case${owner ? ` (owned by ${owner})` : ''}. To edit its scenarios, ask the owner to share it with edit access, or ask an admin. Deleting a scenario or position needs the owner or an admin.`;
+  }
+  if (message === 'not_visible' || message === 'no_identity' || message === 'Forbidden'
+    || message === 'Admin or instructor access required') {
+    return "You don't have permission to change scenarios on this case.";
+  }
+  return message;
+}
+
+// The api client returns { data, error } and never throws, so a refused or
+// failed write would otherwise vanish. Throw instead, for the handlers' catch blocks.
+async function orThrow<T>(request: Promise<{ data: T | null; error: { message: string } | null }>): Promise<T | null> {
+  const { data, error } = await request;
+  if (error) throw new Error(scenarioErrorMessage(error.message));
+  return data;
+}
+
 export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   caseId,
   caseTitle,
+  activityType,
   onClose,
   onScenariosChanged
 }) => {
+  useActivityTypeList();
+  // Fields follow the type's traits, never its key. The AI's character comes from the persona the
+  // student picks, or from the scenario.
+  const typeInfo = activityTypeInfo(activityType);
+  const personaCharacter = typeInfo.characterFrom === 'persona';
+  const savedOpenings = typeInfo.savedOpenings;
+  // Student-visible text in the scenario's settings document (utils/scenarioSettings.js).
+  const emptyStudentText: ScenarioStudentSettings = { situation: '', personas: {} };
+  const [studentText, setStudentText] = useState<ScenarioStudentSettings>(emptyStudentText);
+  // What the instructor is tracking (scenario settings, `ai` subtree): never sent to students.
+  const [touchpoints, setTouchpoints] = useState<{ key: string; label: string; description: string }[]>([]);
   const [scenarios, setScenarios] = useState<CaseScenario[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingScenario, setEditingScenario] = useState<CaseScenario | null>(null);
   const [formData, setFormData] = useState<FormData>(defaultFormData);
   const [isSaving, setIsSaving] = useState(false);
+  // List-level errors (load, toggle, delete, reorder, template) use the banner at
+  // the top; scenario/position form saves report beside their Save button instead,
+  // because those buttons sit at the bottom of a long form.
   const [error, setError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [savedFlash, setSavedFlash] = useState<{ where: 'list' | 'positions'; text: string } | null>(null);
+
+  useEffect(() => {
+    if (!savedFlash) return;
+    const timer = setTimeout(() => setSavedFlash(null), 3000);
+    return () => clearTimeout(timer);
+  }, [savedFlash]);
+
+  const closeForm = () => {
+    setFormError(null);
+    setShowForm(false);
+  };
 
   // Positions state
   const [positions, setPositions] = useState<Position[]>([]);
@@ -226,9 +283,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     setIsLoading(true);
     setError(null);
     try {
-      const response = await api.get(`/cases/${caseId}/scenarios`);
-      if (response.data) {
-        setScenarios(response.data);
+      const data = await orThrow(api.get<CaseScenario[]>(`/cases/${caseId}/scenarios`));
+      if (data) {
+        setScenarios(data);
       }
     } catch (err: any) {
       setError(err.message || 'Failed to fetch scenarios');
@@ -240,9 +297,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   const fetchTemplates = async () => {
     setIsLoadingTemplates(true);
     try {
-      const response = await api.get('/position-templates');
-      if (response.data) {
-        setTemplates(response.data);
+      const data = await orThrow(api.get<PositionTemplate[]>('/position-templates'));
+      if (data) {
+        setTemplates(data);
       }
     } catch (err: any) {
       console.error('Failed to fetch templates:', err);
@@ -254,26 +311,31 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   const fetchPositions = async (scenarioId: number) => {
     setIsLoadingPositions(true);
     try {
-      const response = await api.get(`/cases/${caseId}/scenarios/${scenarioId}/positions`);
-      if (response.data) {
-        setPositions(response.data);
-      }
+      const data = await orThrow(api.get<Position[]>(`/cases/${caseId}/scenarios/${scenarioId}/positions`));
+      setPositions(data || []);
     } catch (err: any) {
       console.error('Failed to fetch positions:', err);
       setPositions([]);
+      setError(err.message || 'Failed to load positions');
     } finally {
       setIsLoadingPositions(false);
     }
   };
 
   const handleCreate = () => {
+    setFormError(null);
+    setSavedFlash(null);
     setEditingScenario(null);
     setFormData(defaultFormData);
+    setStudentText(emptyStudentText);
+    setTouchpoints([]);
     setPositions([]);
     setShowForm(true);
   };
 
   const handleEdit = (scenario: CaseScenario) => {
+    setFormError(null);
+    setSavedFlash(null);
     setEditingScenario(scenario);
     setFormData({
       scenario_name: scenario.scenario_name,
@@ -287,57 +349,79 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       chat_time_warning: scenario.chat_time_warning || 5,
       enabled: scenario.enabled
     });
+    setStudentText(readScenarioSettings(scenario.chat_options_override).student);
+    setTouchpoints(readScenarioSettings(scenario.chat_options_override).ai.touchpoints);
+    setPositions([]);
     fetchPositions(scenario.id);
     setShowForm(true);
   };
 
   const handleSave = async () => {
-    if (!formData.scenario_name || !formData.protagonist || !formData.protagonist_initials || !formData.chat_question) {
-      setError('Scenario name, protagonist, initials, and chat question are required');
+    // A persona-character type has no scenario character, but the columns are required: store a
+    // placeholder, which the prompt never uses (chatPrompt.js replaces it with the picked persona).
+    const protagonist = formData.protagonist || (personaCharacter ? typeInfo.label : '');
+    const protagonistInitials = formData.protagonist_initials || (personaCharacter ? 'AI' : '');
+    if (!formData.scenario_name || !protagonist || !protagonistInitials || !formData.chat_question) {
+      setFormError(personaCharacter
+        ? 'Scenario name and chat question are required'
+        : 'Scenario name, protagonist, initials, and chat question are required');
       return;
     }
 
     const payload = {
       scenario_name: formData.scenario_name,
-      protagonist: formData.protagonist,
-      protagonist_initials: formData.protagonist_initials,
+      protagonist,
+      protagonist_initials: protagonistInitials,
       protagonist_role: formData.protagonist_role,
       chat_topic: formData.chat_topic,
       chat_question: formData.chat_question,
       prompt_instructions: formData.prompt_instructions,
       chat_time_limit: formData.chat_time_limit,
       chat_time_warning: formData.chat_time_warning,
-      enabled: formData.enabled
+      enabled: formData.enabled,
+      // Merged into chat_options_override on the server; sent only by the saved-openings editor.
+      ...(savedOpenings && { student_settings: studentText }),
+      ai_settings: {
+        // A key is made once from the label and then kept, so results survive a reworded label.
+        touchpoints: touchpoints.filter((t) => t.label.trim()).map((t, i) => ({
+          key: t.key || `${t.label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30) || 'point'}_${i + 1}`,
+          label: t.label.trim(),
+          description: t.description.trim(),
+        })),
+      },
     };
 
     setIsSaving(true);
-    setError(null);
+    setFormError(null);
     try {
       if (editingScenario) {
-        await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}`, payload);
+        await orThrow(api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}`, payload));
       } else {
-        const response = await api.post(`/cases/${caseId}/scenarios`, payload);
+        const created = await orThrow(api.post<CaseScenario>(`/cases/${caseId}/scenarios`, payload));
         // Set editingScenario to the newly created scenario so positions can be added
-        if (response.data) {
-          setEditingScenario(response.data);
+        if (created) {
+          setEditingScenario(created);
+          setSavedFlash({ where: 'positions', text: 'Scenario saved. Add its positions below.' });
         }
       }
       await fetchScenarios();
       onScenariosChanged?.();
       // Don't close form - stay to add positions if this was a new scenario
       if (editingScenario) {
-        setShowForm(false);
+        closeForm();
+        setSavedFlash({ where: 'list', text: `Scenario "${formData.scenario_name}" updated` });
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to save scenario');
+      setFormError(err.message || 'Failed to save scenario');
     } finally {
       setIsSaving(false);
     }
   };
 
   const handleToggleEnabled = async (scenario: CaseScenario) => {
+    setError(null);
     try {
-      await api.patch(`/cases/${caseId}/scenarios/${scenario.id}/toggle`);
+      await orThrow(api.patch(`/cases/${caseId}/scenarios/${scenario.id}/toggle`));
       await fetchScenarios();
       onScenariosChanged?.();
     } catch (err: any) {
@@ -350,8 +434,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       return;
     }
 
+    setError(null);
     try {
-      await api.delete(`/cases/${caseId}/scenarios/${scenario.id}`);
+      await orThrow(api.delete(`/cases/${caseId}/scenarios/${scenario.id}`));
       await fetchScenarios();
       onScenariosChanged?.();
     } catch (err: any) {
@@ -365,12 +450,14 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
   // Position handlers
   const handleCreatePosition = () => {
+    setFormError(null);
     setEditingPosition(null);
     setPositionFormData(defaultPositionFormData);
     setShowPositionForm(true);
   };
 
   const handleEditPosition = (position: Position) => {
+    setFormError(null);
     setEditingPosition(position);
     setPositionFormData({
       position_name: position.position_name,
@@ -384,17 +471,17 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
   const handleSavePosition = async () => {
     if (!editingScenario) {
-      setError('Please save the scenario first before adding positions');
+      setFormError('Please save the scenario first before adding positions');
       return;
     }
 
     if (!positionFormData.position_name || !positionFormData.position) {
-      setError('Position name and description are required');
+      setFormError('Position name and description are required');
       return;
     }
 
     setIsSavingPosition(true);
-    setError(null);
+    setFormError(null);
     try {
       const payload = {
         position_name: positionFormData.position_name,
@@ -405,14 +492,15 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       };
 
       if (editingPosition) {
-        await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${editingPosition.position_id}`, payload);
+        await orThrow(api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${editingPosition.position_id}`, payload));
       } else {
-        await api.post(`/cases/${caseId}/scenarios/${editingScenario.id}/positions`, payload);
+        await orThrow(api.post(`/cases/${caseId}/scenarios/${editingScenario.id}/positions`, payload));
       }
       await fetchPositions(editingScenario.id);
       setShowPositionForm(false);
+      setSavedFlash({ where: 'positions', text: `Position "${positionFormData.position_name}" saved` });
     } catch (err: any) {
-      setError(err.message || 'Failed to save position');
+      setFormError(err.message || 'Failed to save position');
     } finally {
       setIsSavingPosition(false);
     }
@@ -422,8 +510,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     if (!editingScenario) return;
     if (!confirm(`Delete position "${position.position_name}"?`)) return;
 
+    setError(null);
     try {
-      await api.delete(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${position.position_id}`);
+      await orThrow(api.delete(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${position.position_id}`));
       await fetchPositions(editingScenario.id);
     } catch (err: any) {
       setError(err.message || 'Failed to delete position');
@@ -432,8 +521,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
   const handleTogglePositionEnabled = async (position: Position) => {
     if (!editingScenario) return;
+    setError(null);
     try {
-      await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${position.position_id}/toggle`);
+      await orThrow(api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/${position.position_id}/toggle`));
       await fetchPositions(editingScenario.id);
     } catch (err: any) {
       setError(err.message || 'Failed to toggle position');
@@ -455,9 +545,9 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     setIsApplyingTemplate(true);
     setError(null);
     try {
-      await api.post(`/position-templates/${template.template_id}/apply/${editingScenario.id}`, {
+      await orThrow(api.post(`/position-templates/${template.template_id}/apply/${editingScenario.id}`, {
         clear_existing: false
-      });
+      }));
       await fetchPositions(editingScenario.id);
       setShowTemplateDropdown(false);
     } catch (err: any) {
@@ -484,9 +574,10 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     setPositions(reorderedPositions);
 
     // Send reorder to server
+    setError(null);
     try {
       const order = reorderedPositions.map(p => p.position_id);
-      await api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/reorder`, { order });
+      await orThrow(api.patch(`/cases/${caseId}/scenarios/${editingScenario.id}/positions/reorder`, { order }));
     } catch (err: any) {
       // Revert on error
       setError(err.message || 'Failed to reorder positions');
@@ -502,7 +593,15 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   const previewRole = formData.protagonist_role.trim();
   const previewTopic = formData.chat_topic.trim();
   const previewRoleText = previewRole ? ` (${previewRole})` : '';
-  const studentFacingScenarioText = `Chat with ${previewProtagonist || '{protagonist}'}${previewRoleText} about ${previewTopic || '{chat_topic}'}`;
+  // Matches the student start screen (App.tsx): the type's own start_row wording.
+  const studentFacingScenarioText = typeInfo.startRow
+    ? renderOnce(typeInfo.startRow, {
+        ai_name: previewProtagonist || '{protagonist}',
+        ai_role_suffix: previewRoleText,
+        topic: previewTopic || '{chat_topic}',
+        topic_or_question: previewTopic || formData.chat_question.trim() || '{chat_topic}',
+      })
+    : `Chat with ${previewProtagonist || '{protagonist}'}${previewRoleText} about ${previewTopic || '{chat_topic}'}`;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -533,8 +632,11 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
           {!showForm ? (
             <>
               {/* Scenario List */}
-              <div className="mb-4 flex justify-between items-center">
+              <div className="mb-4 flex flex-wrap justify-between items-center gap-x-3 gap-y-1">
                 <span className="text-gray-600">{scenarios.length} scenario(s)</span>
+                {savedFlash?.where === 'list' && (
+                  <span className="flex-1"><InlineStatus kind="saved" text={savedFlash.text} /></span>
+                )}
                 <button
                   onClick={handleCreate}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -616,7 +718,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   {editingPosition ? 'Edit Position' : 'Define Position'}
                 </h3>
                 <button
-                  onClick={() => setShowPositionForm(false)}
+                  onClick={() => { setFormError(null); setShowPositionForm(false); }}
                   className="text-gray-500 hover:text-gray-700"
                 >
                   &larr; Back to scenario
@@ -653,6 +755,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                 <p className="text-xs text-gray-500 mt-1">Full description shown to students</p>
               </div>
 
+              {typeInfo.aiSeesArguments && (<>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Arguments For This Position
@@ -680,6 +783,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   placeholder="Counter-arguments to probe and challenge..."
                 />
               </div>
+              </>)}
 
               <div>
                 <label className="flex items-center gap-2">
@@ -693,9 +797,10 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                 </label>
               </div>
 
-              <div className="flex justify-end gap-3 pt-4 border-t">
+              <div className="flex flex-wrap justify-end items-center gap-x-3 gap-y-2 pt-4 border-t">
+                {formError && <InlineStatus kind="error" text={formError} />}
                 <button
-                  onClick={() => setShowPositionForm(false)}
+                  onClick={() => { setFormError(null); setShowPositionForm(false); }}
                   className="px-4 py-2 border rounded-lg hover:bg-gray-100"
                   disabled={isSavingPosition}
                 >
@@ -718,7 +823,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   {editingScenario ? 'Edit Scenario' : 'New Scenario'}
                 </h3>
                 <button
-                  onClick={() => setShowForm(false)}
+                  onClick={closeForm}
                   className="text-gray-500 hover:text-gray-700"
                 >
                   &larr; Back to list
@@ -749,9 +854,10 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                 </div>
               </div>
 
+              {!personaCharacter && (
               <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Protagonist Name *</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{typeInfo.aiCharacter} Name *</label>
                   <input
                     type="text"
                     value={formData.protagonist}
@@ -782,6 +888,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   />
                 </div>
               </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Chat Topic</label>
@@ -800,7 +907,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Chat Question *</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{typeInfo.questionLabel} *</label>
                 <textarea
                   value={formData.chat_question}
                   onChange={(e) => handleInputChange('chat_question', e.target.value)}
@@ -808,7 +915,33 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   rows={3}
                   placeholder="The main question for students to discuss..."
                 />
+                <p className="text-xs text-gray-500 mt-1">
+                  {savedOpenings ? (
+                    <>
+                      This is <em>the topic the audience needs explained</em>, shown to students as
+                      &quot;you&apos;ll teach … about: <strong>your topic</strong>&quot;. Write it as a
+                      phrase, not a question, e.g. &quot;why safety stock rises with demand variability&quot;.
+                    </>
+                  ) : typeInfo.id === DEFAULT_ACTIVITY_TYPE ? (
+                    <>
+                      On a <strong>teach-back</strong> case this is <em>what the audience needs
+                      explained</em> (e.g. &quot;why safety stock rises with demand variability&quot;).
+                    </>
+                  ) : (
+                    <>Shown to students and given to the AI as what this conversation is about.</>
+                  )}
+                </p>
               </div>
+
+              {savedOpenings && (
+                <ScenarioStudentText
+                  caseId={caseId}
+                  scenarioName={formData.scenario_name}
+                  topic={formData.chat_question}
+                  value={studentText}
+                  onChange={setStudentText}
+                />
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -822,6 +955,32 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   rows={3}
                   placeholder="Optional instructions included in the AI prompt for this scenario..."
                 />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Touchpoints
+                    <span className="text-gray-400 font-normal ml-1">(not shown to student; optional)</span>
+                  </label>
+                  <button type="button" onClick={() => setTouchpoints([...touchpoints, { key: '', label: '', description: '' }])}
+                    disabled={touchpoints.length >= 20}
+                    className="px-2 py-1 text-xs border rounded hover:bg-gray-50 disabled:opacity-50">+ Add touchpoint</button>
+                </div>
+                <p className="text-xs text-gray-500 mb-2">Points you want to know whether students touched on. Grading reports them in Results.</p>
+                {touchpoints.map((t, i) => (
+                  <div key={t.key || i} className="flex gap-2 mb-2">
+                    <input type="text" value={t.label} maxLength={120} placeholder="e.g., Carrying cost"
+                      onChange={(e) => setTouchpoints(touchpoints.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))}
+                      className="w-1/3 border rounded-lg px-3 py-1.5 text-sm" />
+                    <input type="text" value={t.description} maxLength={500} placeholder="What counts (optional)"
+                      onChange={(e) => setTouchpoints(touchpoints.map((x, j) => (j === i ? { ...x, description: e.target.value } : x)))}
+                      className="flex-1 border rounded-lg px-3 py-1.5 text-sm" />
+                    <button type="button" aria-label={`Remove touchpoint ${t.label}`}
+                      onClick={() => setTouchpoints(touchpoints.filter((_, j) => j !== i))}
+                      className="px-2 text-sm text-red-600 hover:text-red-800">&times;</button>
+                  </div>
+                ))}
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -854,7 +1013,8 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
               {/* Save Scenario Button (for new scenarios) */}
               {!editingScenario && (
-                <div className="flex justify-end pt-2">
+                <div className="flex flex-wrap justify-end items-center gap-x-3 gap-y-2 pt-2">
+                  {formError && <InlineStatus kind="error" text={formError} />}
                   <button
                     onClick={handleSave}
                     disabled={isSaving}
@@ -865,8 +1025,8 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                 </div>
               )}
 
-              {/* Defined Positions Section - only show for existing scenarios */}
-              {editingScenario && (
+              {/* Defined Positions Section - only show for existing scenarios, on types with positions */}
+              {editingScenario && typeInfo.usesPositions && (
                 <div className="border-t pt-4 mt-4">
                   {/* Hierarchy breadcrumb */}
                   <div className="text-xs text-gray-500 mb-2 flex items-center gap-1">
@@ -876,8 +1036,16 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                     <span>→</span>
                     <span>Positions</span>
                   </div>
+                  {savedFlash?.where === 'positions' && (
+                    <div className="mb-2">
+                      <InlineStatus kind="saved" text={savedFlash.text} />
+                    </div>
+                  )}
                   <div className="flex justify-between items-center mb-3">
-                    <h4 className="text-sm font-semibold text-gray-700">Defined Positions</h4>
+                    <h4 className="text-sm font-semibold text-gray-700">
+                      Defined Positions
+                      {typeInfo.twoSided && <span className="ml-2 font-normal text-xs text-gray-500">this type needs exactly two, one per side</span>}
+                    </h4>
                     <div className="flex gap-2 relative">
                       <div className="relative">
                         <button
@@ -979,9 +1147,10 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
 
         {/* Footer */}
         {showForm && !showPositionForm && editingScenario && (
-          <div className="px-6 py-4 border-t bg-gray-50 flex justify-end gap-3">
+          <div className="px-6 py-4 border-t bg-gray-50 flex flex-wrap justify-end items-center gap-x-3 gap-y-2">
+            {formError && <InlineStatus kind="error" text={formError} />}
             <button
-              onClick={() => setShowForm(false)}
+              onClick={closeForm}
               className="px-4 py-2 border rounded-lg hover:bg-gray-100"
               disabled={isSaving}
             >

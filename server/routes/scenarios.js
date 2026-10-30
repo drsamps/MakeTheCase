@@ -1,16 +1,33 @@
 import express from 'express';
 import { pool } from '../db.js';
-import { verifyToken, requireRole } from '../middleware/auth.js';
+import { verifyToken } from '../middleware/auth.js';
+import { requireAdminOrInstructor, requireCaseAccess, requireCaseReadAccess } from '../middleware/instructorAccess.js';
 import scenarioPositionsRoutes from './scenarioPositions.js';
+import { parseScenarioOverride, validateStudentSettings, validateAiSettings } from '../../utils/scenarioSettings.js';
+import { writeScenarioSettings } from '../services/scenarioSettings.js';
+import { draftStudentText } from '../services/scenarioDrafts.js';
+import { resolveAvailablePersonas } from '../services/personaService.js';
+import { buildVisibilityScope, getEffectiveInstructorId } from '../services/resourceAccess.js';
+import { activityBehaviour, activityTraits } from '../services/activityTypes.js';
 
 const router = express.Router();
+
+// Scenario writes follow the case: anyone who can edit the case (owner, team
+// editor, admin) can manage its scenarios — the same rule as PATCH /api/cases/:id.
+const canEditCase = [verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'edit')];
+// Deleting a scenario needs the case's 'delete' right (owner or admin), as DELETE /api/cases/:id.
+const canDeleteCase = [verifyToken, requireAdminOrInstructor, requireCaseAccess('caseId', 'delete')];
+// Scenarios hold AI-only content (prompt instructions, arguments), so reads need an
+// instructor or admin who can see or teaches the case. Students get them through
+// their section's case list (GET /api/sections/:id/cases), never these routes.
+const canReadCase = [verifyToken, requireCaseReadAccess('caseId')];
 
 // Mount scenario positions routes
 // Routes: /api/cases/:caseId/scenarios/:scenarioId/positions/*
 router.use('/:caseId/scenarios/:scenarioId/positions', scenarioPositionsRoutes);
 
 // GET /api/cases/:caseId/scenarios - List all scenarios for a case
-router.get('/:caseId/scenarios', async (req, res) => {
+router.get('/:caseId/scenarios', ...canReadCase, async (req, res) => {
   try {
     const { caseId } = req.params;
     const { enabled } = req.query;
@@ -41,7 +58,7 @@ router.get('/:caseId/scenarios', async (req, res) => {
 });
 
 // GET /api/cases/:caseId/scenarios/:id - Get single scenario
-router.get('/:caseId/scenarios/:id', async (req, res) => {
+router.get('/:caseId/scenarios/:id', ...canReadCase, async (req, res) => {
   try {
     const { caseId, id } = req.params;
 
@@ -66,16 +83,27 @@ router.get('/:caseId/scenarios/:id', async (req, res) => {
   }
 });
 
-// POST /api/cases/:caseId/scenarios - Create new scenario (admin only)
-router.post('/:caseId/scenarios', verifyToken, requireRole(['admin']), async (req, res) => {
+// POST /api/cases/:caseId/scenarios - Create new scenario (case editors)
+router.post('/:caseId/scenarios', ...canEditCase, async (req, res) => {
   try {
     const { caseId } = req.params;
     const {
       scenario_name, protagonist, protagonist_initials, protagonist_role,
       chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
       arguments_for, arguments_against, chat_options_override,
-      sort_order, enabled
+      sort_order, enabled, student_settings, ai_settings
     } = req.body;
+
+    // Student-visible text (situation, per-audience intro and opening) is a subtree of
+    // chat_options_override, validated by the shared registry (utils/scenarioSettings.js).
+    const studentSettings = validateStudentSettings(student_settings);
+    if (studentSettings.error) {
+      return res.status(400).json({ data: null, error: { message: studentSettings.error } });
+    }
+    const aiSettings = validateAiSettings(ai_settings);
+    if (aiSettings.error) {
+      return res.status(400).json({ data: null, error: { message: aiSettings.error } });
+    }
 
     // Validate required fields
     if (!scenario_name || !protagonist || !protagonist_initials || !chat_question) {
@@ -83,12 +111,6 @@ router.post('/:caseId/scenarios', verifyToken, requireRole(['admin']), async (re
         data: null,
         error: { message: 'scenario_name, protagonist, protagonist_initials, and chat_question are required' }
       });
-    }
-
-    // Check if case exists
-    const [caseRows] = await pool.execute('SELECT case_id FROM cases WHERE case_id = ?', [caseId]);
-    if (caseRows.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Case not found' } });
     }
 
     // Get max sort_order if not specified
@@ -101,30 +123,54 @@ router.post('/:caseId/scenarios', verifyToken, requireRole(['admin']), async (re
       finalSortOrder = maxOrder[0].next_order;
     }
 
-    const [result] = await pool.execute(
-      `INSERT INTO case_scenarios
-       (case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
-        chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
-        arguments_for, arguments_against, chat_options_override, sort_order, enabled)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        caseId,
-        scenario_name,
-        protagonist,
-        protagonist_initials,
-        protagonist_role || null,
-        chat_topic || null,
-        chat_question,
-        prompt_instructions || null,
-        chat_time_limit || 0,
-        chat_time_warning || 5,
-        arguments_for || null,
-        arguments_against || null,
-        chat_options_override ? JSON.stringify(chat_options_override) : null,
-        finalSortOrder,
-        enabled !== false ? 1 : 0
-      ]
-    );
+    // The row and its student text are saved together, so a failed settings write cannot leave
+    // a scenario behind that a second Save would duplicate.
+    const conn = await pool.getConnection();
+    let insertId;
+    try {
+      await conn.beginTransaction();
+      const [result] = await conn.execute(
+        `INSERT INTO case_scenarios
+         (case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
+          chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
+          arguments_for, arguments_against, chat_options_override, sort_order, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          caseId,
+          scenario_name,
+          protagonist,
+          protagonist_initials,
+          protagonist_role || null,
+          chat_topic || null,
+          chat_question,
+          prompt_instructions || null,
+          chat_time_limit || 0,
+          chat_time_warning || 5,
+          arguments_for || null,
+          arguments_against || null,
+          // `student` arrives only as student_settings (validated), never inside this.
+          (() => {
+            const { student, ai, ...rest } = chat_options_override && typeof chat_options_override === 'object' ? chat_options_override : {};
+            return Object.keys(rest).length > 0 ? JSON.stringify(rest) : null;
+          })(),
+          finalSortOrder,
+          enabled !== false ? 1 : 0
+        ]
+      );
+      insertId = result.insertId;
+      if (student_settings !== undefined) {
+        await writeScenarioSettings(insertId, 'student', studentSettings.value, conn);
+      }
+      if (ai_settings !== undefined) {
+        await writeScenarioSettings(insertId, 'ai', aiSettings.value, conn);
+      }
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
 
     // Return created scenario
     const [rows] = await pool.execute(
@@ -133,7 +179,7 @@ router.post('/:caseId/scenarios', verifyToken, requireRole(['admin']), async (re
               arguments_for, arguments_against, chat_options_override,
               sort_order, enabled, created_at, updated_at
        FROM case_scenarios WHERE id = ?`,
-      [result.insertId]
+      [insertId]
     );
 
     res.status(201).json({ data: rows[0], error: null });
@@ -143,11 +189,149 @@ router.post('/:caseId/scenarios', verifyToken, requireRole(['admin']), async (re
   }
 });
 
-// PATCH /api/cases/:caseId/scenarios/:id - Update scenario (admin only)
-router.patch('/:caseId/scenarios/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+// POST /api/cases/:caseId/scenario-drafts - "Draft with AI" in the scenario editor (case
+// editors; activity types whose greeting uses saved openings, i.e. teach-back). Drafts an intro
+// line and an opening for each audience from the fields being edited (the scenario need not be
+// saved yet). Saves nothing: the instructor edits the drafts and saves them as student_settings.
+// Billed to the caller's weekly AI cap. Only audiences the caller can see (GET /api/personas) are
+// drafted: persona instructions go into the prompt, so a private one must not be reachable here.
+// Body: { scenario_name, chat_question, situation?, persona_ids? } (default: every visible audience)
+router.post('/:caseId/scenario-drafts', ...canEditCase, async (req, res) => {
+  try {
+    const { caseId } = req.params;
+    const { scenario_name, chat_question, situation, persona_ids } = req.body || {};
+    const topic = typeof chat_question === 'string' ? chat_question.trim() : '';
+    if (!topic) {
+      return res.status(400).json({ data: null, error: { message: 'Enter the Chat Question (the topic) first.' } });
+    }
+    const checked = validateStudentSettings({ situation: typeof situation === 'string' ? situation : '' });
+    if (checked.error) return res.status(400).json({ data: null, error: { message: checked.error } });
+
+    const [cases] = await pool.execute('SELECT case_title, activity_type FROM cases WHERE case_id = ?', [caseId]);
+    if (cases.length === 0) return res.status(404).json({ data: null, error: { message: 'Case not found' } });
+    const activityType = cases[0].activity_type;
+    const traitsOk = Boolean(activityTraits(activityType));
+    if (!traitsOk || !activityBehaviour(activityType).savedOpenings) {
+      return res.status(409).json({ data: null, error: { message: 'This activity type has no saved openings to draft.' } });
+    }
+
+    const scope = buildVisibilityScope(req, 'persona', 'p');
+    const [visibleRows] = await pool.execute(`SELECT p.persona_id FROM personas p WHERE ${scope.whereSql}`, scope.params);
+    const visible = new Set(visibleRows.map((r) => r.persona_id));
+    let audiences = (await resolveAvailablePersonas(null, activityType)).filter((a) => visible.has(a.persona_id));
+    if (Array.isArray(persona_ids) && persona_ids.length > 0) {
+      const wanted = new Set(persona_ids);
+      audiences = audiences.filter((a) => wanted.has(a.persona_id));
+    }
+    if (audiences.length === 0) {
+      return res.status(409).json({ data: null, error: { message: 'There are no enabled audiences to draft for. Create them in Setup → Personas.' } });
+    }
+
+    const drafts = await draftStudentText({
+      caseId,
+      caseTitle: cases[0].case_title,
+      scenarioName: typeof scenario_name === 'string' ? scenario_name.trim() : '',
+      topic,
+      situation: checked.value?.situation || '',
+      audiences,
+      instructorId: getEffectiveInstructorId(req),
+    });
+    res.json({ data: drafts, error: null });
+  } catch (error) {
+    if (error?.code === 'INSTRUCTOR_COST_CAP_EXCEEDED') {
+      return res.status(429).json({ data: null, error: { code: error.code, message: 'You have reached your weekly AI usage cap, so drafts are unavailable until Monday. You can still type the openings yourself.' } });
+    }
+    console.error('Error drafting scenario text:', error);
+    res.status(error?.status || 500).json({ data: null, error: { message: `Could not draft openings: ${error.message}` } });
+  }
+});
+
+// Registered before PATCH /:caseId/scenarios/:id, which would otherwise capture
+// "reorder" as an :id.
+// PATCH /api/cases/:caseId/scenarios/reorder - Reorder scenarios (case editors)
+router.patch('/:caseId/scenarios/reorder', ...canEditCase, async (req, res) => {
+  try {
+    const { caseId } = req.params;
+    const { order } = req.body; // Array of scenario IDs in desired order
+
+    if (!Array.isArray(order) || order.length === 0) {
+      return res.status(400).json({
+        data: null,
+        error: { message: 'order must be a non-empty array of scenario IDs' }
+      });
+    }
+
+    // Verify all scenarios belong to this case
+    const [scenarios] = await pool.execute(
+      'SELECT id FROM case_scenarios WHERE case_id = ?',
+      [caseId]
+    );
+    const scenarioIds = new Set(scenarios.map(s => s.id));
+
+    for (const id of order) {
+      if (!scenarioIds.has(id)) {
+        return res.status(400).json({
+          data: null,
+          error: { message: `Scenario ID ${id} does not belong to this case` }
+        });
+      }
+    }
+
+    // Update sort_order for each scenario, all or nothing
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      for (let i = 0; i < order.length; i++) {
+        await conn.execute(
+          'UPDATE case_scenarios SET sort_order = ? WHERE id = ?',
+          [i, order[i]]
+        );
+      }
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+
+    // Return updated scenarios
+    const [rows] = await pool.execute(
+      `SELECT id, case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
+              chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
+              arguments_for, arguments_against, chat_options_override,
+              sort_order, enabled, created_at, updated_at
+       FROM case_scenarios
+       WHERE case_id = ?
+       ORDER BY sort_order ASC`,
+      [caseId]
+    );
+
+    res.json({ data: rows, error: null });
+  } catch (error) {
+    console.error('Error reordering scenarios:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
+// PATCH /api/cases/:caseId/scenarios/:id - Update scenario (case editors)
+router.patch('/:caseId/scenarios/:id', ...canEditCase, async (req, res) => {
   try {
     const { caseId, id } = req.params;
-    const updates = req.body;
+    const { student_settings, ai_settings, ...updates } = req.body;
+
+    // Written separately, as a merge into chat_options_override (services/scenarioSettings.js),
+    // so it can never replace the rest of that document.
+    const hasStudentSettings = student_settings !== undefined;
+    const studentSettings = validateStudentSettings(student_settings);
+    if (studentSettings.error) {
+      return res.status(400).json({ data: null, error: { message: studentSettings.error } });
+    }
+    const hasAiSettings = ai_settings !== undefined;
+    const aiSettings = validateAiSettings(ai_settings);
+    if (aiSettings.error) {
+      return res.status(400).json({ data: null, error: { message: aiSettings.error } });
+    }
 
     // Check if scenario exists
     const [existing] = await pool.execute(
@@ -174,7 +358,10 @@ router.patch('/:caseId/scenarios/:id', verifyToken, requireRole(['admin']), asyn
         if (key === 'enabled') {
           params.push(value ? 1 : 0);
         } else if (key === 'chat_options_override') {
-          params.push(value ? JSON.stringify(value) : null);
+          // The `student` and `ai` subtrees are never written this way; they are kept from the
+          // stored value below (or replaced by student_settings / ai_settings).
+          const { student, ai, ...rest } = value && typeof value === 'object' ? value : {};
+          params.push(value && Object.keys(rest).length > 0 ? JSON.stringify(rest) : null);
         } else if (key === 'chat_time_limit' || key === 'chat_time_warning' || key === 'sort_order') {
           params.push(value ?? 0);
         } else {
@@ -183,13 +370,43 @@ router.patch('/:caseId/scenarios/:id', verifyToken, requireRole(['admin']), asyn
       }
     }
 
-    if (setClauses.length === 0) {
+    if (setClauses.length === 0 && !hasStudentSettings && !hasAiSettings) {
       return res.status(400).json({ data: null, error: { message: 'No valid fields to update' } });
     }
 
     params.push(id);
 
-    await pool.execute(`UPDATE case_scenarios SET ${setClauses.join(', ')} WHERE id = ?`, params);
+    // A whole chat_options_override sent without student_settings keeps the stored student text,
+    // and the same for ai_settings.
+    const wholeColumn = 'chat_options_override' in updates;
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      let storedStudent = null;
+      let storedAi = null;
+      if (wholeColumn) {
+        const [current] = await conn.execute('SELECT chat_options_override FROM case_scenarios WHERE id = ? FOR UPDATE', [id]);
+        const stored = parseScenarioOverride(current[0]?.chat_options_override);
+        if (!hasStudentSettings) storedStudent = validateStudentSettings(stored?.student).value;
+        if (!hasAiSettings) storedAi = validateAiSettings(stored?.ai).value;
+      }
+      if (setClauses.length > 0) {
+        await conn.execute(`UPDATE case_scenarios SET ${setClauses.join(', ')} WHERE id = ?`, params);
+      }
+      if (hasStudentSettings || storedStudent) {
+        await writeScenarioSettings(id, 'student', hasStudentSettings ? studentSettings.value : storedStudent, conn);
+      }
+      if (hasAiSettings || storedAi) {
+        await writeScenarioSettings(id, 'ai', hasAiSettings ? aiSettings.value : storedAi, conn);
+      }
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
 
     // Return updated scenario
     const [rows] = await pool.execute(
@@ -208,8 +425,8 @@ router.patch('/:caseId/scenarios/:id', verifyToken, requireRole(['admin']), asyn
   }
 });
 
-// DELETE /api/cases/:caseId/scenarios/:id - Delete scenario (admin only)
-router.delete('/:caseId/scenarios/:id', verifyToken, requireRole(['admin']), async (req, res) => {
+// DELETE /api/cases/:caseId/scenarios/:id - Delete scenario (case owner or admin)
+router.delete('/:caseId/scenarios/:id', ...canDeleteCase, async (req, res) => {
   try {
     const { caseId, id } = req.params;
 
@@ -255,64 +472,8 @@ router.delete('/:caseId/scenarios/:id', verifyToken, requireRole(['admin']), asy
   }
 });
 
-// PATCH /api/cases/:caseId/scenarios/reorder - Reorder scenarios (admin only)
-router.patch('/:caseId/scenarios/reorder', verifyToken, requireRole(['admin']), async (req, res) => {
-  try {
-    const { caseId } = req.params;
-    const { order } = req.body; // Array of scenario IDs in desired order
-
-    if (!Array.isArray(order) || order.length === 0) {
-      return res.status(400).json({
-        data: null,
-        error: { message: 'order must be a non-empty array of scenario IDs' }
-      });
-    }
-
-    // Verify all scenarios belong to this case
-    const [scenarios] = await pool.execute(
-      'SELECT id FROM case_scenarios WHERE case_id = ?',
-      [caseId]
-    );
-    const scenarioIds = new Set(scenarios.map(s => s.id));
-
-    for (const id of order) {
-      if (!scenarioIds.has(id)) {
-        return res.status(400).json({
-          data: null,
-          error: { message: `Scenario ID ${id} does not belong to this case` }
-        });
-      }
-    }
-
-    // Update sort_order for each scenario
-    for (let i = 0; i < order.length; i++) {
-      await pool.execute(
-        'UPDATE case_scenarios SET sort_order = ? WHERE id = ?',
-        [i, order[i]]
-      );
-    }
-
-    // Return updated scenarios
-    const [rows] = await pool.execute(
-      `SELECT id, case_id, scenario_name, protagonist, protagonist_initials, protagonist_role,
-              chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
-              arguments_for, arguments_against, chat_options_override,
-              sort_order, enabled, created_at, updated_at
-       FROM case_scenarios
-       WHERE case_id = ?
-       ORDER BY sort_order ASC`,
-      [caseId]
-    );
-
-    res.json({ data: rows, error: null });
-  } catch (error) {
-    console.error('Error reordering scenarios:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
-  }
-});
-
-// PATCH /api/cases/:caseId/scenarios/:id/toggle - Toggle enabled status (admin only)
-router.patch('/:caseId/scenarios/:id/toggle', verifyToken, requireRole(['admin']), async (req, res) => {
+// PATCH /api/cases/:caseId/scenarios/:id/toggle - Toggle enabled status (case editors)
+router.patch('/:caseId/scenarios/:id/toggle', ...canEditCase, async (req, res) => {
   try {
     const { caseId, id } = req.params;
 

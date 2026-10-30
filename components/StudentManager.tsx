@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../services/apiClient';
 import { personLabel } from '../utils/confirmLabels';
 import { SemesterScopeNote, useSemesterFilter } from './courses/semesterFilter';
+import StudentSubmissionModal from './StudentSubmissionModal';
 
 interface Student {
   id: string;
@@ -48,6 +49,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [resetPasswordStudent, setResetPasswordStudent] = useState<Student | null>(null);
+  const [submissionStudent, setSubmissionStudent] = useState<Student | null>(null);
   const [newPassword, setNewPassword] = useState('');
   const [formData, setFormData] = useState({
     id: '',
@@ -311,7 +313,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
         }
         const response = await api.patch(`/students/${editingStudent.id}`, updateData);
         if (response.error) {
-          setError(response.error.message || response.error);
+          setError(response.error.message);
           return;
         }
 
@@ -345,7 +347,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
         };
         const response = await api.post('/students', createData);
         if (response.error) {
-          setError(response.error.message || response.error);
+          setError(response.error.message);
           return;
         }
 
@@ -376,7 +378,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
     try {
       const response = await api.delete(`/students/${student.id}`);
       if (response.error) {
-        setError(response.error.message || response.error);
+        setError(response.error.message);
       } else {
         fetchStudents();
       }
@@ -400,7 +402,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
         password: newPassword,
       });
       if (response.error) {
-        setError(response.error.message || response.error);
+        setError(response.error.message);
       } else {
         setShowPasswordModal(false);
         setResetPasswordStudent(null);
@@ -660,6 +662,12 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
                       Edit
                     </button>
                     <button
+                      onClick={() => setSubmissionStudent(student)}
+                      className="text-teal-600 hover:text-teal-900 mr-4"
+                    >
+                      Submission
+                    </button>
+                    <button
                       onClick={() => handleResetPassword(student)}
                       className="text-indigo-600 hover:text-indigo-900 mr-4"
                     >
@@ -832,6 +840,8 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
           </div>
         </div>
       )}
+
+      {submissionStudent && <StudentSubmissionModal student={submissionStudent} onClose={() => setSubmissionStudent(null)} />}
 
       {/* Password Reset Modal */}
       {showPasswordModal && resetPasswordStudent && (

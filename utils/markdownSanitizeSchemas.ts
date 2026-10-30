@@ -8,7 +8,7 @@ export type SanitizePreset = 'welcome' | 'minimal';
 
 const mergeAttributes = (
   base: Schema['attributes'],
-  extra: Record<string, Array<string | [string, ...unknown[]]>>
+  extra: NonNullable<Schema['attributes']>
 ): Schema['attributes'] => ({
   ...base,
   ...Object.fromEntries(

@@ -1,4 +1,6 @@
 import { pool } from '../db.js';
+import { isAudiencePersonaId } from './teachBack.js';
+import { typeTraits } from './activityTypeStore.js';
 
 /**
  * True when allowed_personas is unset / blank (all enabled personas allowed).
@@ -24,12 +26,32 @@ export function parseAllowedPersonaIds(allowedPersonasCsv) {
 }
 
 /**
+ * True when this activity type offers audience personas rather than protagonist personalities.
+ * Takes a type key or a definition's traits object (the admin preview of an unpublished draft).
+ * An unknown type offers protagonists, as case chat does.
+ */
+const wantsAudience = (activityType) =>
+  (activityType && typeof activityType === 'object' ? activityType : typeTraits(activityType))?.persona_kind === 'audience';
+
+/**
+ * Keep only the personas that belong to this activity, using the `audience-` id prefix
+ * (see services/teachBack.js — audiences are distinguished by convention rather than by
+ * a column). The filter runs in BOTH directions on purpose: a teach-back student is never
+ * offered "Sycophantic", and a case-chat student is never offered "Your grandmother".
+ */
+function filterPersonasForMode(rows, activityType) {
+  const wantAudience = wantsAudience(activityType);
+  return rows.filter((p) => isAudiencePersonaId(p.persona_id) === wantAudience);
+}
+
+/**
  * Resolve personas available for student case chats.
- * Blank/unrestricted allowed_personas → all enabled personas.
+ * Blank/unrestricted allowed_personas → all enabled personas for the activity.
  * @param {string|null|undefined} allowedPersonasCsv
+ * @param {string} [activityMode] - the case's activity type (case chat when omitted)
  * @returns {Promise<Array<{persona_id, persona_name, description, instructions, sort_order}>>}
  */
-export async function resolveAvailablePersonas(allowedPersonasCsv) {
+export async function resolveAvailablePersonas(allowedPersonasCsv, activityMode) {
   const allowedIds = parseAllowedPersonaIds(allowedPersonasCsv);
 
   if (allowedIds === null) {
@@ -38,10 +60,13 @@ export async function resolveAvailablePersonas(allowedPersonasCsv) {
        FROM personas WHERE enabled = 1
        ORDER BY is_system_default DESC, sort_order ASC, persona_id ASC`
     );
-    return rows;
+    return filterPersonasForMode(rows, activityMode);
   }
 
   if (allowedIds.length === 0) {
+    // An explicitly empty list means none. Do NOT widen it: "restricting to nothing
+    // unrestricts" is a real bug, and the Dashboard blocks saving an empty teach-back
+    // audience list so students never reach this state.
     return [];
   }
 
@@ -53,7 +78,20 @@ export async function resolveAvailablePersonas(allowedPersonasCsv) {
      ORDER BY sort_order ASC, persona_id ASC`,
     allowedIds
   );
-  return rows;
+
+  const forMode = filterPersonasForMode(rows, activityMode);
+  if (forMode.length > 0 || !wantsAudience(activityMode)) return forMode;
+
+  // Teach-back assignment whose allowed list names only case-chat personas — most likely
+  // its audiences were never picked. Widen to every audience rather than to every persona:
+  // still inside the only set this activity can use, and it keeps a student from meeting an
+  // empty picker.
+  const [audienceRows] = await pool.execute(
+    `SELECT persona_id, persona_name, description, instructions, sort_order
+     FROM personas WHERE enabled = 1 AND persona_id LIKE 'audience-%'
+     ORDER BY sort_order ASC, persona_id ASC`
+  );
+  return audienceRows;
 }
 
 /**

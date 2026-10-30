@@ -23,8 +23,10 @@ dist-ssr
 *.sln
 *.sw?
 
-# Claude Code local settings
-.claude/
+# Claude Code local settings (machine-specific: settings.local.json has dev creds, PLATFORM.md)
+# Ignore everything under .claude/ EXCEPT shareable skills, which ship with the repo.
+.claude/*
+!.claude/skills/
 
 # Case files
 case_files/

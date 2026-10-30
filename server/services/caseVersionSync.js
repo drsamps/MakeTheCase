@@ -17,6 +17,7 @@
  */
 
 import { pool } from '../db.js';
+import { applySettingsToVersion } from './activityDefaults.js';
 
 /** section_cases columns that a version owns. Scheduling columns are deliberately absent. */
 export const VERSION_SETTINGS_COLUMNS = [
@@ -44,7 +45,7 @@ export class CaseVersionError extends Error {
  */
 export async function loadVersion(executor, versionId) {
   const [rows] = await executor.execute(
-    `SELECT v.*, cc.course_id, cc.case_id, c.case_title,
+    `SELECT v.*, cc.course_id, cc.case_id, c.case_title, c.activity_type,
             sem.semester_code, sem.semester_name
        FROM course_case_versions v
        JOIN course_cases cc ON cc.id = v.course_case_id
@@ -139,10 +140,12 @@ export async function copyVersion(conn, fromVersionId, { semesterId, label, crea
 
 /**
  * Create a course case with its Main version. Main starts from a section's current settings
- * when `fromSectionCaseId` is given, otherwise from defaults (chat_options NULL = use defaults).
+ * when `fromSectionCaseId` is given; otherwise from `defaults`, the case's own default settings
+ * (a bundle from services/activityDefaults.js), when the case has any; otherwise from the
+ * server's defaults (chat_options NULL = use defaults).
  * @returns {Promise<{courseCaseId: number, mainVersionId: number}>}
  */
-export async function createCourseCase(conn, { courseId, caseId, fromSectionCaseId = null, createdBy = null }) {
+export async function createCourseCase(conn, { courseId, caseId, fromSectionCaseId = null, defaults = null, createdBy = null }) {
   const [[{ nextOrder }]] = await conn.execute(
     'SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextOrder FROM course_cases WHERE course_id = ?',
     [courseId]
@@ -184,6 +187,7 @@ export async function createCourseCase(conn, { courseId, caseId, fromSectionCase
       [courseCaseId, createdBy]
     );
     mainVersionId = v.insertId;
+    if (defaults) await applySettingsToVersion(conn, mainVersionId, caseId, defaults);
   }
   return { courseCaseId, mainVersionId };
 }

@@ -2,14 +2,21 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
-import { requireAdminOrInstructor } from '../middleware/instructorAccess.js';
-import { inferPositionFromTranscript } from '../services/positionInference.js';
-import { buildCoachPrompt } from '../services/promptBuilder.js';
+import { requireAdminOrInstructor, getChatViewableSectionIds, isSectionInScope } from '../middleware/instructorAccess.js';
+import { requireSelfStudent } from '../middleware/chatOwner.js';
+import { loadChatContext, protagonistLabel } from '../services/chatPrompt.js';
+import { listTurns, historyForGrading, writeTranscript } from '../services/chatTurns.js';
+import { resolveSectionModel } from '../services/modelChoice.js';
+import { inferPositionsFromChat, shouldInferPositions } from '../services/positionInference.js';
+import { activityBehaviour, studentActivityViewFor } from '../services/activityTypes.js';
+import { chatAttemptStatus } from '../services/chatAttempts.js';
+import { assertGradable, CompletionError } from '../services/chatCompletion.js';
+import { settleTouchpoints } from '../services/teachBack.js';
 import { stripTurnTiming } from '../../utils/transcriptFormat.js';
 import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
-import { resolveInstructorForSection, resolveInstructorForCaseChat, resolveSectionForCaseChat } from '../services/keyResolver.js';
+import { resolveInstructorForSection, resolveInstructorForCaseChat } from '../services/keyResolver.js';
 import {
   parseEvaluationResponse,
   validateEvaluationResult,
@@ -17,35 +24,82 @@ import {
   trimEvaluationResult,
 } from '../services/evaluationNormalizer.js';
 
+// Each activity type is judged by its own prompt (services/activityTypes.js): a teach-back
+// student was teaching, not arguing, and the judge must ignore everything the listener said.
+// The builders share one signature and one output contract, so the validation cascade below
+// is the same for every type. The type is the case's, returned by loadCaseData().
+
 const router = express.Router();
+
+/** Chat ids being graded by POST /run right now (this process). */
+const gradingInFlight = new Set();
+
+/**
+ * The case data a chat is graded against: the case plus that chat's scenario (protagonist,
+ * question) and, for persona-character types, the persona as the AI's name, exactly as the
+ * chat prompt saw it (services/chatPrompt.js#loadChatContext). Plain loadCaseData() has no
+ * scenario, so the coach prompt used to name "the case protagonist" instead of the person
+ * the transcript shows. Null when the case no longer exists.
+ * Also returns the behaviour the chat is graded on: the type version it ran on.
+ * @param {{ id, case_id, section_id, scenario_id, persona, initial_position_id, activity_type_version }} chat
+ * @returns {Promise<{ caseData, behaviour }|null>}
+ */
+async function gradingContext(chat) {
+  try {
+    const ctx = await loadChatContext(chat);
+    return { caseData: ctx.caseData, behaviour: ctx.behaviour };
+  } catch (error) {
+    if (error.status === 404) return null;
+    throw error;
+  }
+}
 
 // Field list for SELECT queries (keeps things DRY)
 // NOTE: transcript, persona, hints, chat_model removed - now in case_chats and transcripts tables
 const EVAL_FIELDS = `id, created_at, student_id, case_id, case_chat_id, score, summary, criteria,
                      helpful, liked, improve, super_model, allow_rechat, rubric_id`;
+// The same fields on alias `e`, for queries that join case_chats/students (which share column names)
+const EVAL_FIELDS_E = EVAL_FIELDS.split(',').map(f => `e.${f.trim()}`).join(', ');
 
-// GET /api/evaluations - Get all evaluations (optionally filter by student_id and/or case_id)
-router.get('/', async (req, res) => {
+// An evaluation's section: its chat's section, else the student's enrolled section
+// (evaluations with no case chat, and chats from before case_chats.section_id was filled in).
+const EVAL_SCOPE_JOINS = `LEFT JOIN case_chats cc ON cc.id = e.case_chat_id
+     LEFT JOIN students st ON st.id = e.student_id`;
+const EVAL_SECTION_SQL = 'COALESCE(cc.section_id, st.section_id)';
+
+// GET /api/evaluations - Get evaluations in the caller's chat scope (optionally filter by student_id and/or case_id)
+router.get('/', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { student_id, student_ids, case_id } = req.query;
-    
-    let query = `SELECT ${EVAL_FIELDS} FROM evaluations`;
+
+    const scopedSectionIds = await getChatViewableSectionIds(req);
+    if (scopedSectionIds && scopedSectionIds.length === 0) {
+      return res.json({ data: [], error: null });
+    }
+
+    let query = `SELECT ${EVAL_FIELDS_E} FROM evaluations e`;
     const params = [];
     const conditions = [];
+
+    if (scopedSectionIds) {
+      query += ` ${EVAL_SCOPE_JOINS}`;
+      conditions.push(`${EVAL_SECTION_SQL} IN (${scopedSectionIds.map(() => '?').join(',')})`);
+      params.push(...scopedSectionIds);
+    }
     
     if (student_id) {
-      conditions.push('student_id = ?');
+      conditions.push('e.student_id = ?');
       params.push(student_id);
     } else if (student_ids) {
       // Support comma-separated list of student IDs
       const ids = student_ids.split(',');
       const placeholders = ids.map(() => '?').join(',');
-      conditions.push(`student_id IN (${placeholders})`);
+      conditions.push(`e.student_id IN (${placeholders})`);
       params.push(...ids);
     }
     
     if (case_id) {
-      conditions.push('case_id = ?');
+      conditions.push('e.case_id = ?');
       params.push(case_id);
     }
     
@@ -53,7 +107,7 @@ router.get('/', async (req, res) => {
       query += ' WHERE ' + conditions.join(' AND ');
     }
     
-    query += ' ORDER BY created_at DESC';
+    query += ' ORDER BY e.created_at DESC';
     
     const [rows] = await pool.execute(query, params);
     
@@ -71,9 +125,10 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/evaluations/check-completion/:studentId/:caseId - Check if student has completed a case or scenario
-// Query params: scenario_id (optional) - filter by specific scenario
-// Returns { completed: boolean, allow_rechat: boolean, evaluation_id: string | null }
-router.get('/check-completion/:studentId/:caseId', async (req, res) => {
+// Query params: scenario_id (optional) - filter by specific scenario; section_id - the assignment
+// Returns { completed, allow_rechat, evaluation_id, can_start_new, chats_used, chats_allowed,
+//           chats_left, rechat_granted, scope } (the last six from services/chatAttempts.js)
+router.get('/check-completion/:studentId/:caseId', requireSelfStudent('studentId'), async (req, res) => {
   try {
     const { studentId, caseId } = req.params;
     const { scenario_id } = req.query;
@@ -96,10 +151,15 @@ router.get('/check-completion/:studentId/:caseId', async (req, res) => {
     }
 
     const [rows] = await pool.execute(query, params);
+    // Whether another chat may start, by the same rule POST /api/case-chats enforces
+    // (services/chatAttempts.js: chat_repeats, allow_repeat, re-chat). Needs ?section_id=.
+    const attempts = await chatAttemptStatus({
+      studentId, sectionId: req.query.section_id || null, caseId, scenarioId: scenario_id || null,
+    });
 
     if (rows.length === 0) {
       return res.json({
-        data: { completed: false, allow_rechat: false, evaluation_id: null },
+        data: { completed: false, allow_rechat: false, evaluation_id: null, ...attempts },
         error: null
       });
     }
@@ -109,7 +169,8 @@ router.get('/check-completion/:studentId/:caseId', async (req, res) => {
       data: {
         completed: true,
         allow_rechat: !!evaluation.allow_rechat,
-        evaluation_id: evaluation.id
+        evaluation_id: evaluation.id,
+        ...attempts,
       },
       error: null
     });
@@ -119,56 +180,141 @@ router.get('/check-completion/:studentId/:caseId', async (req, res) => {
   }
 });
 
-// POST /api/evaluations/run - Run a student evaluation (prompt built server-side)
-// MUST be placed before /:id routes
-router.post('/run', async (req, res) => {
-  const { case_chat_id, chatHistory, modelId, rubricId } = req.body;
+/** helpful: 1-5 or null; liked/improve: trimmed text up to 2000 characters or null. */
+function cleanFeedback(feedback = {}) {
+  const helpful = Number.parseInt(feedback?.helpful, 10);
+  const text = (v) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 2000) : null);
+  return {
+    helpful: helpful >= 1 && helpful <= 5 ? helpful : null,
+    liked: text(feedback?.liked),
+    improve: text(feedback?.improve),
+  };
+}
 
-  if (!case_chat_id || !chatHistory || !modelId) {
-    return res.status(400).json({ data: null, error: { message: 'case_chat_id, chatHistory, and modelId are required' } });
+// POST /api/evaluations/run - Grade a student's chat and save the evaluation.
+// Body: { case_chat_id, feedback?: { helpful, liked, improve }, share_transcript? }.
+// Students only, on their own chat (404 otherwise, so chat IDs can't be probed). The server
+// grades ITS copy of the conversation (services/chatTurns.js) with the section's supervisor
+// model and the assignment's rubric, saves the evaluation row itself and marks the chat
+// completed; the browser supplies only the student's own feedback answers and transcript
+// consent. A request carrying chatHistory is an outdated page (409 CLIENT_OUTDATED).
+// MUST be placed before /:id routes
+router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
+  const { case_chat_id, chatHistory: clientHistory, feedback, share_transcript } = req.body || {};
+
+  if (clientHistory !== undefined) {
+    return res.status(409).json({ data: null, error: { code: 'CLIENT_OUTDATED', message: 'This page was updated. Please refresh it to continue.' } });
+  }
+  if (!case_chat_id) {
+    return res.status(400).json({ data: null, error: { message: 'case_chat_id is required' } });
   }
 
+  let claimedGrading = null;
   try {
     // 1. Look up case_chat details
     const [chatRows] = await pool.execute(
-      `SELECT cc.case_id, cc.student_id, cc.section_id, s.full_name
+      `SELECT cc.id, cc.case_id, cc.student_id, cc.section_id, cc.scenario_id, cc.persona, cc.initial_position_id, cc.activity_type_version, cc.completion_reason, s.full_name
        FROM case_chats cc
        JOIN students s ON cc.student_id = s.id
        WHERE cc.id = ?`,
       [case_chat_id]
     );
-    if (!chatRows.length) {
+    if (!chatRows.length || chatRows[0].student_id !== req.user.id) {
       return res.status(404).json({ data: null, error: { message: 'Case chat not found' } });
     }
     const { case_id, student_id, section_id, full_name } = chatRows[0];
 
-    // 2. Look up chat_options from section_cases for free_hints
-    let freeHints = 1;
-    if (section_id && case_id) {
-      const [scRows] = await pool.execute(
-        'SELECT chat_options FROM section_cases WHERE section_id = ? AND case_id = ?',
-        [section_id, case_id]
-      );
-      if (scRows.length && scRows[0].chat_options) {
-        try {
-          const opts = typeof scRows[0].chat_options === 'string'
-            ? JSON.parse(scRows[0].chat_options)
-            : scRows[0].chat_options;
-          freeHints = opts.free_hints ?? 1;
-        } catch { /* keep default */ }
+    // One grading at a time per chat (one server process), so a double click or a retry cannot
+    // grade, bill and save twice while the first call is still waiting on the model.
+    if (gradingInFlight.has(case_chat_id)) {
+      return res.status(409).json({ data: null, error: { code: 'EVALUATION_IN_PROGRESS', message: 'This chat is already being evaluated.' } });
+    }
+    gradingInFlight.add(case_chat_id);
+    claimedGrading = case_chat_id;
+
+    const [existingEval] = await pool.execute('SELECT id FROM evaluations WHERE case_chat_id = ? LIMIT 1', [case_chat_id]);
+    if (existingEval.length) {
+      return res.status(409).json({ data: null, error: { code: 'ALREADY_EVALUATED', message: 'This chat has already been evaluated.' } });
+    }
+    // The chat limit counts graded chats, so it is checked again here: chats started side by side
+    // (before any was graded) cannot all be graded (services/chatAttempts.js).
+    const attempts = await chatAttemptStatus({
+      studentId: student_id, sectionId: section_id || null, caseId: case_id, scenarioId: chatRows[0].scenario_id ?? null,
+    });
+    if (!attempts.can_start_new) {
+      return res.status(409).json({
+        data: null,
+        error: { code: 'CHAT_LIMIT_REACHED', message: 'You have already been graded on all the chats this activity allows.', chats_used: attempts.chats_used, chats_allowed: attempts.chats_allowed },
+      });
+    }
+
+    // 2. The conversation to grade: the server's copy, never the browser's
+    const context = await loadChatContext(chatRows[0]);
+    const turns = await listTurns(case_chat_id);
+    if (!turns.some((t) => t.role === 'student')) {
+      return res.status(400).json({ data: null, error: { message: 'There is no conversation to evaluate yet.' } });
+    }
+    // The minimum, on the server: a stale page or a direct request cannot be graded early.
+    try {
+      assertGradable(chatRows[0], context.chatOptions, turns.filter((t) => t.role === 'student').length);
+    } catch (gateError) {
+      if (gateError instanceof CompletionError) {
+        return res.status(gateError.status).json({ data: null, error: { code: gateError.code, message: gateError.message, ...gateError.details } });
       }
+      throw gateError;
     }
+    const chatHistory = historyForGrading(turns, protagonistLabel(context));
+    const freeHints = context.chatOptions.free_hints ?? 1;
+    const modelId = await resolveSectionModel(section_id, 'super_model');
 
-    // 3. Get rubric
-    const rubric = rubricId ? await getRubricById(rubricId) : await getDefaultRubric();
+    // 3. Get rubric: the assignment's, else the default (what the student app used to send)
+    const [rubricRows] = await pool.execute(
+      'SELECT rubric_id FROM section_cases WHERE section_id = ? AND case_id = ?',
+      [section_id, case_id]
+    );
+    const assignedRubricId = rubricRows[0]?.rubric_id;
+    let rubric = (assignedRubricId && await getRubricById(assignedRubricId)) || await getDefaultRubric();
+
+    // 4. Case data as the chat saw it: the case plus this chat's scenario (protagonist, question)
+    const { getModelConfig } = await import('./llm.js');
+    let caseData = context.caseData;
+
+    // Teach-back is judged against the audience the student chose, and against its own
+    // criteria unless the assignment names a rubric (a rubric is always passed in here).
+    // The type version the chat ran on (case_chats.activity_type_version).
+    const activity = context.behaviour;
+    ({ caseData, rubric } = await activity.prepareEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric }));
     const expectedCriteria = rubric?.criteria?.length || (rubric?.criteria_prompt?.match(/Q\d+\./g) || []).length || 3;
-
-    // 4. Load case data
-    const { loadCaseData, getModelConfig } = await import('./llm.js');
-    const caseData = await loadCaseData(case_id);
-    if (!caseData) {
-      return res.status(404).json({ data: null, error: { message: 'Case not found' } });
-    }
+    // Every successful exit goes through here so unverified "student quotes" never ship, and
+    // so the saved evaluation is exactly what the student is shown.
+    const sendResult = async (data) => {
+      // Touchpoints are for the instructor (AI-only): saved with their labels, never sent back.
+      const { touchpoints: rawTouchpoints, ...graded } = data;
+      const touchpoints = settleTouchpoints(rawTouchpoints, caseData.touchpoints, chatHistory, caseData);
+      const result = activity.finishEvaluation(graded, chatHistory, caseData);
+      const { helpful, liked, improve } = cleanFeedback(feedback);
+      const evaluationId = uuidv4();
+      await pool.execute(
+        `INSERT INTO evaluations (id, student_id, case_id, case_chat_id, score, summary, criteria, helpful, liked, improve, super_model, allow_rechat, rubric_id, activity_type_version, touchpoints)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?, ?)`,
+        [evaluationId, student_id, case_id, case_chat_id, result.totalScore ?? 0, result.summary || null,
+         result.criteria ? JSON.stringify(result.criteria) : null, helpful, liked, improve, modelId, result.rubric_id || null, activity.version,
+         touchpoints ? JSON.stringify(touchpoints) : null]
+      );
+      await pool.execute(
+        `UPDATE case_chats SET status = 'completed', end_time = CURRENT_TIMESTAMP, completion_reason = COALESCE(completion_reason, 'student') WHERE id = ?`,
+        [case_chat_id]
+      );
+      // Same rule the browser used: save when auto-save is on (the default), the assignment
+      // always saves, or the student agreed to share it.
+      const opts = context.chatOptions;
+      if (opts.auto_save_transcript !== false || opts.always_save_transcript || share_transcript) {
+        await writeTranscript(case_chat_id, { protagonistName: protagonistLabel(context), savedWithPermission: Boolean(share_transcript) });
+      }
+      inferPositionAfterEvaluation(case_chat_id)
+        .catch((e) => console.error('[AI Position Inference] Error during position inference:', e));
+      return res.json({ data: { ...result, evaluation_id: evaluationId }, error: null });
+    };
 
     // 5. Look up model config (for temperature/reasoning_effort)
     const modelConfig = await getModelConfig(modelId);
@@ -177,7 +323,7 @@ router.post('/run', async (req, res) => {
     }
 
     // 6. Build evaluation prompt
-    const prompt = buildCoachPrompt(chatHistory, full_name, caseData, freeHints, rubric);
+    const prompt = activity.buildCoachPrompt(chatHistory, full_name, caseData, freeHints, rubric);
 
     // 7. Call LLM
     const instructorId = await resolveInstructorForSection(section_id);
@@ -236,7 +382,7 @@ router.post('/run', async (req, res) => {
 
         if (retryIssues.length === 0) {
           console.log('[Eval run] Retry succeeded — validation passed');
-          return res.json({ data: retryResult, error: null });
+          return await sendResult(retryResult);
         }
 
         // Retry didn't fully fix it; use retry result for Step 2 if it's better
@@ -261,26 +407,26 @@ router.post('/run', async (req, res) => {
       const criticalIssues = trimIssues.filter(i => i.code !== 'ZERO_SCORE_WITH_SUMMARY');
       if (criticalIssues.length === 0) {
         console.log('[Eval run] Trim succeeded — returning fixed result');
-        return res.json({ data: trimmed, error: null });
+        return await sendResult(trimmed);
       }
 
       // Use trimmed result even if not perfect, as long as we have criteria
       if (trimmed.criteria.length === expectedCriteria) {
         console.log('[Eval run] Trim partially succeeded — returning trimmed result with remaining issues');
-        return res.json({ data: trimmed, error: null });
+        return await sendResult(trimmed);
       }
     }
 
     // If only ZERO_SCORE_WITH_SUMMARY remains, still return the result
     const criticalIssues = issues.filter(i => i.code !== 'ZERO_SCORE_WITH_SUMMARY');
     if (criticalIssues.length === 0) {
-      return res.json({ data: result, error: null });
+      return await sendResult(result);
     }
 
     // Step 3: Give up gracefully
     if (issues.length > 0 && result.criteria.length > 0 && result.summary && result.summary !== 'No summary provided.') {
       console.warn('[Eval run] Returning imperfect result (has criteria + summary)');
-      return res.json({ data: result, error: null });
+      return await sendResult(result);
     }
 
     console.error('[Eval run] Evaluation failed after all recovery attempts:', issues.map(i => i.code));
@@ -290,9 +436,14 @@ router.post('/run', async (req, res) => {
     });
 
   } catch (error) {
+    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: error.message } });
+    }
     console.error('[Eval run] Error:', error.message);
     console.error('[Eval run] Stack:', error.stack);
     res.status(500).json({ data: null, error: { message: error.message || 'Evaluation failed' } });
+  } finally {
+    if (claimedGrading) gradingInFlight.delete(claimedGrading);
   }
 });
 
@@ -322,7 +473,8 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
 
     // 2. Get case_chat details
     const [chatRows] = await pool.execute(
-      `SELECT cc.case_id, cc.student_id, cc.section_id, s.full_name, c.case_title
+      `SELECT cc.id, cc.case_id, cc.student_id, cc.section_id, cc.scenario_id, cc.persona, cc.initial_position_id,
+              cc.activity_type_version, s.full_name, c.case_title
        FROM case_chats cc
        JOIN students s ON cc.student_id = s.id
        JOIN cases c ON cc.case_id = c.case_id
@@ -332,29 +484,31 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
     if (!chatRows.length) {
       return res.status(404).json({ data: null, error: { message: 'Case chat not found' } });
     }
-    const { case_id, student_id, full_name } = chatRows[0];
+    const { case_id, student_id, section_id, full_name } = chatRows[0];
     console.log('[Re-evaluate] Step 2: Got case_id:', case_id, 'full_name:', full_name);
 
     // 3. Get rubric
     console.log('[Re-evaluate] Step 3: Getting rubric...');
-    const rubric = rubric_id
+    let rubric = rubric_id
       ? await getRubricById(rubric_id)
       : await getDefaultRubric();
     console.log('[Re-evaluate] Step 3: Got rubric:', rubric?.rubric_id);
 
     // 4. Load case data
     console.log('[Re-evaluate] Step 4: Loading case data...');
-    const { loadCaseData } = await import('./llm.js');
-    const caseData = await loadCaseData(case_id);
-    if (!caseData) {
+    const graded = await gradingContext(chatRows[0]);
+    if (!graded) {
       return res.status(404).json({ data: null, error: { message: 'Case not found' } });
     }
+    let { caseData } = graded;
     console.log('[Re-evaluate] Step 4: Got case data');
+    const reEvalActivity = graded.behaviour;
+    ({ caseData, rubric } = await reEvalActivity.prepareEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric, rubricChosen: !!rubric_id }));
 
     // 5. Build evaluation prompt
     console.log('[Re-evaluate] Step 5: Building prompt...');
     // Turn timing ("| 12 after 3.52m") is for instructors; the evaluator must not see it.
-    const prompt = buildCoachPrompt(stripTurnTiming(transcript), full_name, caseData, 0, rubric);
+    const prompt = reEvalActivity.buildCoachPrompt(stripTurnTiming(transcript), full_name, caseData, 0, rubric);
     console.log('[Re-evaluate] Step 5: Built prompt, length:', prompt.length);
 
     // 6. Call LLM for evaluation
@@ -362,9 +516,8 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
     const { getModelConfig: getReEvalModelConfig } = await import('./llm.js');
     const reEvalModelConfig = await getReEvalModelConfig(model_id);
     const reEvalInstructorId = await resolveInstructorForCaseChat(case_chat_id);
-    const reEvalSectionId = await resolveSectionForCaseChat(case_chat_id);
     const reEvalStartTime = Date.now();
-    const { text: evalResult, meta: evalMeta } = await evaluateWithLLM({ modelId: model_id, vendor: reEvalModelConfig?.vendor || null, prompt, config: { ...(reEvalModelConfig || {}), instructorId: reEvalInstructorId, caseId: case_id, sectionId: reEvalSectionId, purpose: 'evaluation' } });
+    const { text: evalResult, meta: evalMeta } = await evaluateWithLLM({ modelId: model_id, vendor: reEvalModelConfig?.vendor || null, prompt, config: { ...(reEvalModelConfig || {}), instructorId: reEvalInstructorId, caseId: case_id, sectionId: section_id, purpose: 'evaluation' } });
     const reEvalDurationMs = Date.now() - reEvalStartTime;
     console.log('[Re-evaluate] Step 6: Got LLM result');
 
@@ -414,6 +567,9 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
     });
 
   } catch (error) {
+    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: error.message } });
+    }
     console.error('Re-evaluation error:', error.message);
     console.error('Re-evaluation stack:', error.stack);
     res.status(500).json({ data: null, error: { message: error.message || 'Re-evaluation failed' } });
@@ -445,7 +601,7 @@ router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, r
     // Get case_chat details
     console.log('[Preview-prompt] Step 2: Getting case_chat details...');
     const [chatRows] = await pool.execute(
-      `SELECT cc.case_id, s.full_name
+      `SELECT cc.id, cc.case_id, cc.section_id, cc.scenario_id, cc.persona, cc.initial_position_id, cc.activity_type_version, s.full_name
        FROM case_chats cc
        JOIN students s ON cc.student_id = s.id
        WHERE cc.id = ?`,
@@ -454,21 +610,23 @@ router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, r
     if (!chatRows.length) {
       return res.status(404).json({ data: null, error: { message: 'Case chat not found' } });
     }
-    const { case_id, full_name } = chatRows[0];
+    const { case_id, section_id, full_name } = chatRows[0];
     console.log('[Preview-prompt] Step 2: Got case_id:', case_id, 'full_name:', full_name);
 
     // Get rubric and case data, build prompt
     console.log('[Preview-prompt] Step 3: Getting rubric...');
-    const rubric = rubric_id ? await getRubricById(rubric_id) : await getDefaultRubric();
+    let rubric = rubric_id ? await getRubricById(rubric_id) : await getDefaultRubric();
     console.log('[Preview-prompt] Step 3: Got rubric:', rubric?.rubric_id);
 
     console.log('[Preview-prompt] Step 4: Loading case data...');
-    const { loadCaseData } = await import('./llm.js');
-    const caseData = await loadCaseData(case_id);
+    const graded = await gradingContext(chatRows[0]);
+    let caseData = graded?.caseData ?? null;
     console.log('[Preview-prompt] Step 4: Got case data:', !!caseData);
+    const previewActivity = graded?.behaviour ?? activityBehaviour(null);
+    ({ caseData, rubric } = await previewActivity.prepareEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric, rubricChosen: !!rubric_id }));
 
     console.log('[Preview-prompt] Step 5: Building prompt...');
-    const prompt = buildCoachPrompt(
+    const prompt = previewActivity.buildCoachPrompt(
       stripTurnTiming(transcriptRows[0].transcript),
       full_name,
       caseData || {},  // Handle null case data
@@ -479,6 +637,9 @@ router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, r
 
     res.json({ data: { prompt }, error: null });
   } catch (error) {
+    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: error.message } });
+    }
     console.error('Preview prompt error:', error.message);
     console.error('Preview prompt stack:', error.stack);
     res.status(500).json({ data: null, error: { message: error.message || 'Failed to generate prompt preview' } });
@@ -523,22 +684,29 @@ router.patch('/:id/allow-rechat', verifyToken, requireRole(['admin']), async (re
   }
 });
 
-// GET /api/evaluations/:id - Get single evaluation
-router.get('/:id', async (req, res) => {
+// GET /api/evaluations/:id - Get single evaluation (staff; 404 outside the caller's chat scope)
+router.get('/:id', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT ${EVAL_FIELDS} FROM evaluations WHERE id = ?`,
+      `SELECT ${EVAL_FIELDS_E}, ${EVAL_SECTION_SQL} AS scope_section_id, ec.activity_type
+       FROM evaluations e
+       ${EVAL_SCOPE_JOINS}
+       LEFT JOIN cases ec ON ec.case_id = e.case_id
+       WHERE e.id = ?`,
       [req.params.id]
     );
-    
-    if (rows.length === 0) {
+
+    const scopedSectionIds = await getChatViewableSectionIds(req);
+    if (rows.length === 0 || !isSectionInScope(scopedSectionIds, rows[0].scope_section_id)) {
       return res.status(404).json({ data: null, error: { message: 'Evaluation not found' } });
     }
-    
-    const row = rows[0];
+
+    const { scope_section_id, activity_type, ...row } = rows[0];
     const data = {
       ...row,
-      criteria: row.criteria ? (typeof row.criteria === 'string' ? JSON.parse(row.criteria) : row.criteria) : null
+      criteria: row.criteria ? (typeof row.criteria === 'string' ? JSON.parse(row.criteria) : row.criteria) : null,
+      // The case type's labels and copy, for the evaluation screen's headings (view.js).
+      activity: studentActivityViewFor(activity_type),
     };
     
     res.json({ data, error: null });
@@ -601,142 +769,17 @@ router.patch('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   }
 });
 
-// POST /api/evaluations - Create new evaluation
-router.post('/', async (req, res) => {
-  try {
-    const {
-      student_id, case_id, case_chat_id, score, summary, criteria,
-      helpful, liked, improve, super_model, transcript, rubric_id
-    } = req.body;
-
-    if (!student_id || score === undefined) {
-      return res.status(400).json({ data: null, error: { message: 'Student ID and score are required' } });
-    }
-
-    if (!case_chat_id) {
-      return res.status(400).json({ data: null, error: { message: 'case_chat_id is required' } });
-    }
-
-    const id = uuidv4();
-    const criteriaJson = criteria ? JSON.stringify(criteria) : null;
-
-    await pool.execute(
-      `INSERT INTO evaluations (id, student_id, case_id, case_chat_id, score, summary, criteria, helpful, liked, improve, super_model, allow_rechat, rubric_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?)`,
-      [id, student_id, case_id || null, case_chat_id, score, summary || null, criteriaJson,
-       helpful || null, liked || null, improve || null, super_model || null, rubric_id || null]
-    );
-
-    // Update the case_chat status to completed
-    await pool.execute(
-      `UPDATE case_chats SET status = 'completed', end_time = CURRENT_TIMESTAMP WHERE id = ?`,
-      [case_chat_id]
-    );
-
-    // AI Position Inference: If position tracking is enabled with ai_inferred method and no position set yet
-    try {
-      const [chatRows] = await pool.execute(
-        `SELECT cc.*, cs.chat_options_override, c.case_title, t.transcript
-         FROM case_chats cc
-         LEFT JOIN case_scenarios cs ON cc.scenario_id = cs.id
-         LEFT JOIN cases c ON cc.case_id = c.case_id
-         LEFT JOIN transcripts t ON t.case_chat_id = cc.id
-         WHERE cc.id = ?`,
-        [case_chat_id]
-      );
-
-      if (chatRows.length > 0) {
-        const chat = chatRows[0];
-        const scenarioSettings = chat.chat_options_override ? JSON.parse(chat.chat_options_override) : {};
-        const transcriptText = chat.transcript || transcript; // Use transcript from DB or passed in
-
-        // Check if AI inference is needed
-        const needsInference =
-          scenarioSettings.position_tracking_enabled === true &&
-          scenarioSettings.position_capture_method === 'ai_inferred' &&
-          (!chat.initial_position || !chat.final_position) &&
-          transcriptText; // Make sure we have a transcript to analyze
-
-        if (needsInference) {
-          const positionOptions = scenarioSettings.position_options || ['for', 'against'];
-
-          // Get case data for the prompt
-          const [caseRows] = await pool.execute(
-            `SELECT case_title, arguments_for, arguments_against
-             FROM cases WHERE case_id = ?`,
-            [chat.case_id]
-          );
-
-          const caseData = caseRows.length > 0 ? caseRows[0] : {};
-          if (chat.case_title) caseData.case_title = chat.case_title;
-
-          // Get chat question from scenario
-          if (chat.scenario_id) {
-            const [scenarioRows] = await pool.execute(
-              `SELECT chat_question FROM case_scenarios WHERE id = ?`,
-              [chat.scenario_id]
-            );
-            if (scenarioRows.length > 0) {
-              caseData.chat_question = scenarioRows[0].chat_question;
-            }
-          }
-
-          // Infer position using AI
-          const modelId = chat.chat_model || 'gemini-1.5-flash'; // Use chat model or default
-          const inferenceInstructorId = await resolveInstructorForSection(chat.section_id);
-          const inferenceResult = await inferPositionFromTranscript(
-            transcriptText,
-            caseData,
-            positionOptions,
-            modelId,
-            inferenceInstructorId
-          );
-
-          if (inferenceResult && inferenceResult.position) {
-            // Update case_chat with inferred position
-            await pool.execute(
-              `UPDATE case_chats
-               SET initial_position = ?, final_position = ?, position_method = 'ai_inferred'
-               WHERE id = ?`,
-              [inferenceResult.position, inferenceResult.position, case_chat_id]
-            );
-
-            // Log the inferred position
-            await pool.execute(
-              `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
-               VALUES (?, 'initial', ?, 'ai', ?)`,
-              [case_chat_id, inferenceResult.position, `AI inference (confidence: ${inferenceResult.confidence.toFixed(2)}): ${inferenceResult.reasoning}`]
-            );
-
-            console.log(`[AI Position Inference] Chat ${case_chat_id}: ${inferenceResult.position} (confidence: ${inferenceResult.confidence.toFixed(2)})`);
-          } else {
-            console.warn(`[AI Position Inference] Failed to infer position for chat ${case_chat_id}`);
-          }
-        }
-      }
-    } catch (inferenceError) {
-      // Log error but don't fail the evaluation creation
-      console.error('[AI Position Inference] Error during position inference:', inferenceError);
-    }
-
-    // Return the created evaluation
-    const [rows] = await pool.execute(
-      `SELECT ${EVAL_FIELDS} FROM evaluations WHERE id = ?`,
-      [id]
-    );
-
-    const row = rows[0];
-    const data = {
-      ...row,
-      criteria: row.criteria ? (typeof row.criteria === 'string' ? JSON.parse(row.criteria) : row.criteria) : null
-    };
-
-    res.status(201).json({ data, error: null });
-  } catch (error) {
-    console.error('Error creating evaluation:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
-  }
-});
+// AI position inference after a chat is graded: when the assignment asks for an ai_inferred
+// position and the chat has not been inferred yet, infer it from the saved transcript. Moved
+// from the old POST /api/evaluations (removed: the browser no longer saves evaluations; /run
+// does). Runs after the response is sent; failures are logged, never shown to the student.
+async function inferPositionAfterEvaluation(case_chat_id) {
+  // The assignment's settings decide (section_cases.position_capture_method = 'ai_inferred'), and
+  // the section's supervisor model infers (services/positionInference.js).
+  if (!(await shouldInferPositions(case_chat_id))) return;
+  const result = await inferPositionsFromChat(case_chat_id);
+  console.log(`[AI Position Inference] Chat ${case_chat_id}: ${result.initial_position_name ?? '-'} -> ${result.final_position_name ?? '-'} (confidence: ${result.overall_confidence.toFixed(2)})`);
+}
 
 // DELETE /api/evaluations/:id - Delete evaluation (admin only - for testing/cleanup)
 router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {

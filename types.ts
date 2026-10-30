@@ -8,6 +8,8 @@ export interface Message {
   content: string;
   /** Epoch ms when the message entered the chat; drives transcript turn timing. */
   at?: number;
+  /** A position the student clicked (in the instructor's wording), not text they typed. */
+  positionPick?: boolean;
 }
 
 export enum ConversationPhase {
@@ -21,14 +23,6 @@ export enum ConversationPhase {
   FEEDBACK_COMPLETE,
   EVALUATION_LOADING,
   EVALUATING,
-}
-
-export enum CEOPersona {
-  STRICT = 'strict',
-  MODERATE = 'moderate',
-  LIBERAL = 'liberal',
-  LEADING = 'leading',
-  SYCOPHANTIC = 'sycophantic',
 }
 
 export enum ChatStatus {
@@ -140,10 +134,15 @@ export interface SectionCase {
   created_at?: string;
   // Joined fields
   case_title?: string;
+  activity_type?: string;        // The case's Study-Chat activity type (utils/activityTypes.js)
   scenarios?: SectionCaseScenario[];
 }
 
+// The activity type (case chat, teach-back) is not a chat option: it is the case's
+// `activity_type`. See utils/activityTypes.js.
 export interface ChatOptions {
+  min_opening_words: number;      // Types with an opening floor (Teach-back): words in the first message (0 = off)
+  teach_back_min_words?: number;  // old name of min_opening_words, still read (utils/openingWords.js)
   hints_allowed: number;
   free_hints: number;
   ask_for_feedback: boolean;
@@ -168,6 +167,8 @@ export interface ChatOptions {
   // Chat flow control
   require_minimum_exchanges: number; // Minimum exchanges before allowing "time is up" (default: 0)
   max_message_length: number;     // Maximum character count per message (0 = unlimited)
+  max_exchanges?: number;         // Wrap up after the AI answers this many student messages (0 = no limit)
+  max_exchanges_action?: 'end' | 'ask'; // At the limit: end the chat, or let the student finish or keep talking
   // Position tracking override (position config is now per-scenario in chat_options_override)
   disable_position_tracking: boolean; // Override to disable scenario-level position tracking
 }
@@ -178,6 +179,10 @@ export interface EvaluationCriterion {
   score: number;
   max_score?: number;            // Variable max points (optional for backward compat)
   feedback: string;
+  // Teach-back only (components/CriteriaCoverage.tsx). Case-chat evaluations never set
+  // these, so they are optional and additive — the shared validator accepts both modes.
+  status?: 'met' | 'partial' | 'not_met';
+  evidence?: string;             // Verbatim quote from one of the student's own messages
 }
 
 export interface EvaluationResult {

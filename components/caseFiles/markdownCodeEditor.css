@@ -1,0 +1,49 @@
+/* EasyMDE in the Case Files reading editor (MarkdownCodeEditor.tsx). Loaded with the editor's
+   lazy chunk, so it never reaches the student pages. */
+
+.mtc-md-editor .editor-toolbar {
+  padding: 4px 6px;
+  border-color: #d1d5db;
+  border-radius: 0.25rem 0.25rem 0 0;
+  opacity: 1;
+}
+
+.mtc-md-editor .editor-toolbar button {
+  width: 30px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #374151;
+}
+
+.mtc-md-editor .editor-toolbar button:hover,
+.mtc-md-editor .editor-toolbar button.active {
+  background: #f3f4f6;
+  border-color: #d1d5db;
+}
+
+.mtc-md-editor .editor-toolbar i.separator {
+  border-left-color: #d1d5db;
+  border-right: none;
+}
+
+.mtc-md-editor .CodeMirror {
+  border-color: #d1d5db;
+  border-radius: 0 0 0.25rem 0.25rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.mtc-md-editor--no-toolbar .editor-toolbar {
+  display: none;
+}
+
+.mtc-md-editor--no-toolbar .CodeMirror {
+  border-radius: 0.25rem;
+}
+
+.mtc-md-editor .CodeMirror-focused {
+  border-color: #c084fc;
+  box-shadow: 0 0 0 2px #e9d5ff;
+}

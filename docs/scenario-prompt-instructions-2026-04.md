@@ -23,9 +23,9 @@ Run on a database (dev example from project docs):
 ### Application wiring (summary)
 
 - **API:** `server/routes/scenarios.js` — create/read/update return `prompt_instructions`; PATCH allows updating it (empty string stored as `NULL`).
-- **Assignments / student payloads:** `server/routes/sectionCases.js` — scenario rows in section-case and active-case responses include `prompt_instructions`.
-- **Student app:** `App.tsx` merges selected scenario fields into `CaseData`, including `prompt_instructions`.
-- **System prompt:** `constants.ts` — `buildSystemPrompt()` reads `caseData.prompt_instructions` and appends the scenario block when present.
+- **Assignments / student payloads:** `server/routes/sectionCases.js` — scenario rows in section-case and active-case responses include `prompt_instructions` for staff only; `forStudent()` removes it for students (since 2026-10-09).
+- **Student app:** `App.tsx` merges only the scenario's display fields (protagonist, role, question) into `CaseData`.
+- **System prompt:** built on the server. `server/services/chatPrompt.js` loads the chat's scenario (including `prompt_instructions` and its arguments), and `server/services/chatPromptTemplates.js#buildSystemPrompt()` appends the scenario block when present.
 - **Types:** `types.ts` — `CaseScenario.prompt_instructions`
 - **Admin UI:** `components/ScenarioManager.tsx` — textarea below Chat Question
 

@@ -10,17 +10,18 @@ interface PositionOption {
 interface ChatWindowProps {
   messages: Message[];
   isLoading: boolean;
-  personaDisplayName?: string;
-  chatModelName: string | null;
   chatFontSize: string;
-  // Optional props for dynamic protagonist
-  protagonistName?: string;
+  /** The AI's avatar: its initials, and the hover text (the activity's copy, avatar_tooltip). */
   protagonistInitials?: string;
-  caseTitle?: string;
+  avatarTitle?: string;
   // Position selection props (for in-chat position selection)
   awaitingPositionSelection?: boolean;
   positionOptions?: PositionOption[];
   onPositionSelect?: (position: PositionOption) => void;
+  /** The question above the position buttons (the activity's copy, position_prompt; may contain **bold**). */
+  positionPrompt: string;
+  /** An instruction bar shown above the first message, full width, scrolling with the chat (ActivityIntro). */
+  intro?: React.ReactNode;
 }
 
 const renderMessageContent = (content: string) => {
@@ -36,23 +37,34 @@ const renderMessageContent = (content: string) => {
 const ChatWindow: React.FC<ChatWindowProps> = ({
   messages,
   isLoading,
-  personaDisplayName,
-  chatModelName,
   chatFontSize,
-  protagonistName = 'Kent Beck',
-  protagonistInitials = 'KB',
-  caseTitle = "Malawi's Pizza",
+  protagonistInitials = '?',
+  avatarTitle,
   awaitingPositionSelection = false,
   positionOptions = [],
-  onPositionSelect
+  onPositionSelect,
+  positionPrompt,
+  intro
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  // The opening message the view was last scrolled to the top for (see below).
+  const introShownFor = useRef<Message | undefined | null>(null);
+
   useEffect(() => {
+    // With an intro bar, start at the top so it is read before the first message: once per
+    // chat. If the student's first message is later taken back (rejected as too long), the chat
+    // is back to one message but the error and position buttons are at the bottom.
+    if (intro && messages.length <= 1 && !isLoading && introShownFor.current !== messages[0]) {
+      introShownFor.current = messages[0];
+      containerRef.current?.scrollTo({ top: 0 });
+      return;
+    }
     scrollToBottom();
   }, [messages, isLoading]);
 
@@ -61,15 +73,18 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     alert('Sorry, cut-and-paste are disabled while using this simulation.');
   };
 
-  const personaName = personaDisplayName || 'Protagonist';
-  const protagonistTitle = `${protagonistName}, ${personaName} protagonist of ${caseTitle} (AI model: ${chatModelName || '...'})`;
 
+  // The intro sits outside the padded wrapper so it spans the chat edge to edge. first:rounded-t-xl
+  // clips it to the chat panel's rounded corners when nothing (error, timer, counter) is above.
   return (
-    <div 
-      className="flex-1 p-6 space-y-6 overflow-y-auto"
+    <div
+      ref={containerRef}
+      className="flex-1 overflow-y-auto first:rounded-t-xl"
       onCopy={handleCopyPaste}
       onCut={handleCopyPaste}
     >
+      {intro}
+      <div className="p-6 space-y-6">
       {messages.map((msg, index) => (
         <React.Fragment key={index}>
           <div
@@ -80,7 +95,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
             {msg.role === MessageRole.MODEL && (
               <div
                 className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
-                title={protagonistTitle}
+                title={avatarTitle}
               >
                 {protagonistInitials}
               </div>
@@ -99,7 +114,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           {index === 0 && msg.role === MessageRole.MODEL && awaitingPositionSelection && positionOptions.length > 0 && (
             <div className="flex justify-start pl-[52px]">
               <div className="max-w-md lg:max-w-lg">
-                <p className="text-sm text-gray-600 mb-2"><strong>What is your position on this issue?</strong> (choose the one you most agree with, even though your opinion may be divided)</p>
+                <p className="text-sm text-gray-600 mb-2">{renderMessageContent(positionPrompt)}</p>
                 <div className="flex flex-col gap-2">
                   {positionOptions.map((pos) => (
                     <button
@@ -121,7 +136,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         <div className="flex items-end gap-3 justify-start">
           <div 
             className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
-            title={protagonistTitle}
+            title={avatarTitle}
           >
             {protagonistInitials}
           </div>
@@ -136,6 +151,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         </div>
       )}
       <div ref={messagesEndRef} />
+      </div>
     </div>
   );
 };

@@ -1,21 +1,26 @@
 
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Message, MessageRole, ConversationPhase, EvaluationResult, Section, CaseChat, ChatStatus, RubricForPrompt } from './types';
+import { Message, MessageRole, ConversationPhase, EvaluationResult, Section, CaseChat, ChatStatus } from './types';
 import { createChatSession, getEvaluation, type LLMChatReply } from './services/llmService';
+import { initialsOf } from './teachBack';
+import { getActivityType } from './utils/activityTypes.js';
+import { countWords, minOpeningWords, DEFAULT_MIN_OPENING_WORDS } from './utils/openingWords.js';
+import SubmissionForm from './components/SubmissionForm';
+import { copyFor, activityIntroText, type StudentActivityView, type CopyKey, type CopyVars } from './services/activityCopy';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
-import { api, getApiBaseUrl, refreshAuthToken } from './services/apiClient';
-import { formatTranscript } from './utils/transcriptFormat.js';
+import { api, getApiBaseUrl, getAuthHeaders, refreshAuthToken } from './services/apiClient';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
+import ActivityIntro from './components/ActivityIntro';
+import { readScenarioSettings } from './utils/scenarioSettings.js';
 import MessageInput from './components/MessageInput';
 import Evaluation from './components/Evaluation';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import CaseWriterShell from './components/caseWriter/CaseWriterShell';
 import ResizablePanes from './components/ResizablePanes';
-import ScenarioSelector from './components/ScenarioSelector';
 import ChatTimer from './components/ChatTimer';
 import FeedbackWidget from './components/feedback/FeedbackWidget';
 
@@ -38,15 +43,42 @@ const isDisabledFlag = (value: unknown): boolean =>
   value === false || value === 0 || value === '0' || value === 'false';
 
 /**
- * The stored transcript blob, with [STUDENT]/[PROTAGONIST] turn markers (see utils/transcriptFormat.js).
- * Every Message literal in this file carries `at: Date.now()`, which adds "| n after m.mmm" turn timing.
+ * Whether the chat opens by asking the student to pick a position (position tracking on,
+ * capture method 'explicit', and the scenario has positions). startConversation acts on it and
+ * the teach-back intro bar describes it, so both read this one rule.
  */
-function buildTranscript(msgs: Message[], studentName: string, protagonistName?: string): string {
-  return formatTranscript(
-    msgs.map(m => ({ role: m.role === MessageRole.USER ? 'student' : 'protagonist', content: m.content, at: m.at })),
-    { studentName, protagonistName: protagonistName || 'CEO' }
+const needsPositionPick = (
+  usesPositions: boolean,
+  caseInfo: { position_tracking_enabled?: unknown; position_capture_method?: string | null } | null | undefined,
+  scenario: { positions?: unknown[] | null } | null | undefined
+): boolean =>
+  usesPositions
+  && isEnabledFlag(caseInfo?.position_tracking_enabled)
+  && (caseInfo?.position_capture_method || 'explicit') === 'explicit'
+  && (scenario?.positions?.length || 0) > 0;
+
+
+/**
+ * A case or scenario on the start screen: whether it has a graded chat, and whether another chat
+ * may start (server/services/chatAttempts.js: chat_repeats, allow_repeat, re-chat). `chatsLeft`
+ * is null when there is no limit.
+ */
+interface CompletionStatus { completed: boolean; allowRechat: boolean; canStart: boolean; chatsLeft: number | null; rechatGranted: boolean }
+
+const toCompletionStatus = (d: any): CompletionStatus => ({
+  completed: Boolean(d?.completed),
+  allowRechat: Boolean(d?.allow_rechat),
+  // An older server without the field: the old page rule (no graded chat, or re-chat on).
+  canStart: typeof d?.can_start_new === 'boolean' ? d.can_start_new : !d?.completed || Boolean(d?.allow_rechat),
+  chatsLeft: typeof d?.chats_left === 'number' ? d.chats_left : null,
+  rechatGranted: Boolean(d?.rechat_granted),
+});
+
+/** **bold** spans in activity copy, as the chat bubbles render them (ChatWindow#renderMessageContent). */
+const renderBold = (text: string) =>
+  text.split(/(\*\*.*?\*\*)/g).map((part, i) =>
+    part.startsWith('**') && part.endsWith('**') ? <strong key={i}>{part.slice(2, -2)}</strong> : part
   );
-}
 
 /** Yes/no for feedback/transcript permission replies. Avoids substring false positives (e.g. includes('y') matches "today"). */
 function isAffirmativeConsentReply(message: string): boolean {
@@ -126,6 +158,7 @@ const App: React.FC = () => {
   const [sessionUser, setSessionUser] = useState<any>(null);
   const [viewingEvaluationId, setViewingEvaluationId] = useState<string | null>(null);
   const [viewingEvaluationData, setViewingEvaluationData] = useState<EvaluationResult | null>(null);
+  const [viewingEvaluationActivity, setViewingEvaluationActivity] = useState<StudentActivityView | null>(null);
   const [isLoadingEvaluation, setIsLoadingEvaluation] = useState(false);
   
   // Student-specific state
@@ -146,6 +179,10 @@ const App: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatSession, setChatSession] = useState<LLMChatSession | null>(null);
   const [conversationPhase, setConversationPhase] = useState<ConversationPhase>(ConversationPhase.PRE_CHAT);
+  // The current phase for callbacks that finish after a re-render (a reply in flight when the
+  // timer wraps the chat up), whose own `conversationPhase` is stale.
+  const conversationPhaseRef = useRef(conversationPhase);
+  conversationPhaseRef.current = conversationPhase;
   const [evaluationResult, setEvaluationResult] = useState<EvaluationResult | null>(null);
   const [helpfulScore, setHelpfulScore] = useState<number | null>(null);
   const [likedFeedback, setLikedFeedback] = useState<string | null>(null);
@@ -154,6 +191,18 @@ const App: React.FC = () => {
   const [chatFontSize, setChatFontSize] = useState<string>('text-sm');
   const [caseFontSize, setCaseFontSize] = useState<string>('text-sm');
   const [hintsUsed, setHintsUsed] = useState<number>(0);
+  // Student messages the AI has answered in this chat, as counted by the server (meta.exchanges_used).
+  // Refused hints, refused openings and the wrap-up message are never sent, so they never count.
+  const [exchangesUsed, setExchangesUsed] = useState<number>(0);
+  // Maximum Responses with "ask": the student has reached the limit and must choose.
+  const [limitChoicePending, setLimitChoicePending] = useState(false);
+  // The AI signalled the goal was reached (types with signals): offer Finish / Keep talking.
+  const [goalOffered, setGoalOffered] = useState(false);
+  const goalDeclinedRef = useRef(false);
+  // POST /case-chats/:id/complete, awaited before grading (the server's gate reads its reason).
+  const completionRef = useRef<Promise<unknown> | null>(null);
+  // ...and chose "Keep talking": no further limit for this chat.
+  const [continuedPastLimit, setContinuedPastLimit] = useState(false);
   const [currentCaseChatId, setCurrentCaseChatId] = useState<string | null>(null);
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -171,7 +220,6 @@ const App: React.FC = () => {
   const [chatOptions, setChatOptions] = useState<any>(null);
 
   // Active rubric for evaluation
-  const [activeRubric, setActiveRubric] = useState<RubricForPrompt | null>(null);
 
   // Position tracking state (using position IDs from scenario_positions table)
   const [selectedInitialPositionId, setSelectedInitialPositionId] = useState<number | null>(null);
@@ -180,6 +228,7 @@ const App: React.FC = () => {
   
   // Default chat options
   const defaultChatOptions = {
+    min_opening_words: DEFAULT_MIN_OPENING_WORDS,
     hints_allowed: 3,
     free_hints: 1,
     ask_for_feedback: false,
@@ -192,12 +241,38 @@ const App: React.FC = () => {
     timeout_chat: false,
     allow_finish_button: false,
     restart_chat: false,
-    allow_exit: false
+    allow_exit: false,
+    max_exchanges: 0,
+    max_exchanges_action: 'end'
   };
 
   // Available cases for selected section
   const [availableCases, setAvailableCases] = useState<any[]>([]);
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  // The activity type is the case's (`activity_type` on each assigned case); a missing type is
+  // the case chat. What differs by type comes from its student view: traits, labels and copy
+  // (services/activityCopy.ts). Once a chat starts, the view pinned in the POST /case-chats
+  // response is used, so the wording cannot change mid-chat. Never test a type key here.
+  const selectedCaseRow = availableCases.find((c) => c.case_id === selectedCaseId);
+  const selectedActivityType = selectedCaseRow?.activity_type;
+  const [chatActivity, setChatActivity] = useState<StudentActivityView | null>(null);
+  // From the POST /case-chats response: the goal (only for a type that shows it) and the side the
+  // server assigned (capture method 'assigned').
+  const [chatGoal, setChatGoal] = useState<string | null>(null);
+  // A type on the student's own work: whether a submission is saved for the picked assignment.
+  const [hasSubmission, setHasSubmission] = useState(false);
+  const [assignedPosition, setAssignedPosition] = useState<string | null>(null);
+  const activity: StudentActivityView | null = chatActivity ?? selectedCaseRow?.activity ?? null;
+  const copy = <K extends CopyKey>(key: K, ...vars: CopyVars[K] extends Record<string, never> ? [] : [CopyVars[K]]) =>
+    copyFor(activity, key, ...vars);
+  // Traits come from the activity's student view (any type, built-in or defined as data); the
+  // static built-in table is only a fallback for a row without one.
+  const fallbackType = getActivityType(selectedActivityType);
+  // The AI is the persona the student picks (Teach-back's audience), not the scenario's protagonist.
+  const personaCharacter = activity ? activity.traits.character === 'persona' : fallbackType.characterFrom === 'persona';
+  const personaKind = activity ? activity.traits.persona_kind : fallbackType.personaKind;
+  // Whether this activity type tracks a student position at all (utils/activityTypes.js).
+  const activityUsesPositions = activity ? activity.traits.positions !== 'off' : fallbackType.usesPositions;
   const [isLoadingAvailableCases, setIsLoadingAvailableCases] = useState(false);
   const [studentSavedSectionId, setStudentSavedSectionId] = useState<string | null>(null);
   const [enrolledSectionIds, setEnrolledSectionIds] = useState<string[]>([]);
@@ -215,8 +290,8 @@ const App: React.FC = () => {
   const [useScenarios, setUseScenarios] = useState(false);
   
   // Case and scenario completion tracking
-  const [caseCompletionStatus, setCaseCompletionStatus] = useState<Record<string, { completed: boolean; allowRechat: boolean }>>({});
-  const [scenarioCompletionStatus, setScenarioCompletionStatus] = useState<Record<number, { completed: boolean; allowRechat: boolean }>>({});
+  const [caseCompletionStatus, setCaseCompletionStatus] = useState<Record<string, CompletionStatus>>({});
+  const [scenarioCompletionStatus, setScenarioCompletionStatus] = useState<Record<number, CompletionStatus>>({});
 
   const isLargeScreen = useMediaQuery('(min-width: 1024px)');
   const direction = isLargeScreen ? 'vertical' : 'horizontal';
@@ -270,10 +345,9 @@ const App: React.FC = () => {
             setViewingEvaluationId(evaluationId);
             setIsLoadingEvaluation(true);
 
-            // Fetch the evaluation data
+            // Fetch the evaluation data (api sends the instructor's token: #evaluation/ is admin context)
             try {
-                const response = await fetch(`${getApiBaseUrl()}/evaluations/${evaluationId}`);
-                const result = await response.json();
+                const result = await api.get(`/evaluations/${evaluationId}`);
 
                 if (result.data) {
                     // Convert the API response to EvaluationResult format
@@ -284,6 +358,7 @@ const App: React.FC = () => {
                         hints: result.data.hints || 0
                     };
                     setViewingEvaluationData(evalData);
+                    setViewingEvaluationActivity(result.data.activity ?? null);
                 } else {
                     console.error('Evaluation not found:', result.error);
                     setViewingEvaluationData(null);
@@ -432,6 +507,7 @@ const App: React.FC = () => {
               if (!existing.has(sec.section_id)) {
                 merged.push({
                   section_id: sec.section_id,
+                  course_id: sec.course_id ?? null,
                   section_title: sec.section_title,
                   year_term: sec.year_term,
                   chat_model: sec.chat_model,
@@ -540,19 +616,16 @@ const App: React.FC = () => {
 
         // Check completion status for each case and scenario
         if (sessionUser?.id && activeCases.length > 0) {
-          const caseCompletionStatuses: Record<string, { completed: boolean; allowRechat: boolean }> = {};
-          const scenarioCompletionStatuses: Record<number, { completed: boolean; allowRechat: boolean }> = {};
+          const caseCompletionStatuses: Record<string, CompletionStatus> = {};
+          const scenarioCompletionStatuses: Record<number, CompletionStatus> = {};
 
           for (const caseItem of activeCases) {
             try {
               // Check case-level completion
-              const response = await fetch(`${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}`);
+              const response = await fetch(`${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}?section_id=${encodeURIComponent(sectionId)}`, { headers: getAuthHeaders() });
               const result = await response.json();
               if (result.data) {
-                caseCompletionStatuses[caseItem.case_id] = {
-                  completed: result.data.completed,
-                  allowRechat: result.data.allow_rechat
-                };
+                caseCompletionStatuses[caseItem.case_id] = toCompletionStatus(result.data);
               }
 
               // Check scenario-level completion for each scenario
@@ -560,14 +633,12 @@ const App: React.FC = () => {
                 for (const scenario of caseItem.scenarios) {
                   try {
                     const scenarioResponse = await fetch(
-                      `${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}?scenario_id=${scenario.scenario_id}`
+                      `${getApiBaseUrl()}/evaluations/check-completion/${sessionUser.id}/${caseItem.case_id}?scenario_id=${scenario.scenario_id}&section_id=${encodeURIComponent(sectionId)}`,
+                      { headers: getAuthHeaders() }
                     );
                     const scenarioResult = await scenarioResponse.json();
                     if (scenarioResult.data) {
-                      scenarioCompletionStatuses[scenario.scenario_id] = {
-                        completed: scenarioResult.data.completed,
-                        allowRechat: scenarioResult.data.allow_rechat
-                      };
+                      scenarioCompletionStatuses[scenario.scenario_id] = toCompletionStatus(scenarioResult.data);
                     }
                   } catch (e) {
                     console.error('Error checking scenario completion:', e);
@@ -626,7 +697,6 @@ const App: React.FC = () => {
       if (!selectedCaseId) {
         setActiveCaseData(null);
         setChatOptions(defaultChatOptions);
-        setActiveRubric(null);
         setAvailableScenarios([]);
         setSelectedScenarioId(null);
         setUseScenarios(false);
@@ -640,30 +710,7 @@ const App: React.FC = () => {
         const options = selectedCase.chat_options || defaultChatOptions;
         setChatOptions(options);
 
-        // Fetch rubric for evaluation (use assigned rubric_id or default)
-        try {
-          const rubricUrl = selectedCase.rubric_id
-            ? `${getApiBaseUrl()}/rubrics/${selectedCase.rubric_id}`
-            : `${getApiBaseUrl()}/rubrics/default`;
-          const rubricResponse = await fetch(rubricUrl);
-          if (rubricResponse.ok) {
-            const rubricResult = await rubricResponse.json();
-            if (rubricResult.data) {
-              setActiveRubric({
-                criteria_prompt: rubricResult.data.criteria_prompt,
-                additional_prompt: rubricResult.data.additional_prompt,
-                total_points: rubricResult.data.total_points,
-                rubric_id: rubricResult.data.rubric_id
-              });
-            }
-          } else {
-            console.warn('Could not fetch rubric, using default evaluation criteria');
-            setActiveRubric(null);
-          }
-        } catch (rubricErr) {
-          console.warn('Error fetching rubric:', rubricErr);
-          setActiveRubric(null);
-        }
+        // The rubric is chosen on the server when the chat is graded (/api/evaluations/run).
 
         // Personas available for this assignment (from server)
         const personas = Array.isArray(selectedCase.available_personas)
@@ -708,7 +755,10 @@ const App: React.FC = () => {
       setError(null); // Clear any previous errors
       try {
         // Fetch case content from the API
-        const caseResponse = await fetch(`${getApiBaseUrl()}/llm/case-data/${selectedCaseId}`);
+        const studentToken = localStorage.getItem('student_auth_token');
+        const caseResponse = await fetch(`${getApiBaseUrl()}/llm/case-data/${selectedCaseId}`, {
+          headers: studentToken ? { 'Authorization': `Bearer ${studentToken}` } : {}
+        });
         
         // Check if response is ok (status 200-299)
         if (!caseResponse.ok) {
@@ -767,7 +817,7 @@ const App: React.FC = () => {
         try {
           await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/activity`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getAuthHeaders(),
           });
         } catch (err) {
           console.error('Heartbeat failed:', err);
@@ -783,41 +833,25 @@ const App: React.FC = () => {
     }
   }, [currentCaseChatId, conversationPhase]);
 
-  // caseChatId is passed explicitly: the caller has just created the case_chat, so
-  // currentCaseChatId state is not visible inside this closure yet.
-  const startConversation = useCallback(async (name: string, personaId: string, modelId: string, studentId?: string, caseChatId?: string | null) => {
+  // caseChatId and greeting are passed explicitly: the caller has just created the case_chat
+  // (createCaseChat), so currentCaseChatId state is not visible inside this closure yet.
+  const startConversation = useCallback(async (name: string, personaId: string, modelId: string, studentId?: string, caseChatId?: string | null, greeting?: string) => {
     setIsLoading(true);
     setError(null);
     setHintsUsed(0);  // Reset hint counter at start of conversation
+    setExchangesUsed(0);
+    setLimitChoicePending(false);
+    setContinuedPastLimit(false);
     setLastReply(null);
     try {
       // Use active case data or default
       let caseData = activeCaseData || DEFAULT_CASE_DATA;
 
-      // If a scenario is selected, override case data with scenario-specific values
+      // If a scenario is selected, show its protagonist and question. Only display fields: the
+      // server builds the chat prompt (scenario instructions, arguments) from the chat record.
       if (selectedScenarioId && availableScenarios.length > 0) {
         const selectedScenario = availableScenarios.find(s => s.scenario_id === selectedScenarioId);
         if (selectedScenario) {
-          // Start with scenario's arguments
-          let argumentsFor = selectedScenario.arguments_for || undefined;
-          let argumentsAgainst = selectedScenario.arguments_against || undefined;
-
-          // If a position is selected and has position-specific arguments, use those instead
-          if (selectedInitialPositionId && selectedScenario.positions?.length > 0) {
-            const selectedPosition = selectedScenario.positions.find(
-              (p: any) => p.position_id === selectedInitialPositionId
-            );
-            if (selectedPosition) {
-              // Position-specific arguments override scenario arguments
-              if (selectedPosition.arguments_for) {
-                argumentsFor = selectedPosition.arguments_for;
-              }
-              if (selectedPosition.arguments_against) {
-                argumentsAgainst = selectedPosition.arguments_against;
-              }
-            }
-          }
-
           caseData = {
             ...caseData,
             protagonist: selectedScenario.protagonist,
@@ -825,131 +859,195 @@ const App: React.FC = () => {
             protagonist_role: selectedScenario.protagonist_role || undefined,
             chat_topic: selectedScenario.chat_topic || undefined,
             chat_question: selectedScenario.chat_question,
-            prompt_instructions: selectedScenario.prompt_instructions || undefined,
-            arguments_for: argumentsFor,
-            arguments_against: argumentsAgainst,
           };
           // Update activeCaseData so scenario values are available later (e.g., in final position UI)
           setActiveCaseData(caseData as CaseData);
         }
       }
 
-      // Build first message using case protagonist and question
-      const roleDescription = caseData.protagonist_role || 'the protagonist';
-      const firstMessageContent = `Hello ${name}, I am ${caseData.protagonist}, ${roleDescription} of the "${caseData.case_title}" case. Thank you for meeting with me today. Our time is limited so let's get straight to my question: **${caseData.chat_question}**`;
-      const initialHistory: Message[] = [{ role: MessageRole.MODEL, at: Date.now(), content: firstMessageContent }];
-
-      // Create chat session with case data for cache-optimized prompts
-      const freeHints = chatOptions?.free_hints ?? 1;
-      const chatbotPersonality = chatOptions?.chatbot_personality || undefined;
       const personaRow = availablePersonas.find((p) => p.persona_id === personaId);
-      const personaData = personaRow
-        ? {
-            persona_id: personaRow.persona_id,
-            persona_name: personaRow.persona_name,
-            description: personaRow.description ?? null,
-            instructions: personaRow.instructions || '',
-            enabled: true,
-            sort_order: 0,
-          }
-        : undefined;
-      const session = createChatSession(
-        name,
-        personaId,
-        modelId,
-        initialHistory,
-        caseData,
-        { freeHints, chatbotPersonality, personaData },
-        studentId || studentDBId || undefined,
-        caseChatId
-      );
+
+      // For persona-character types (Teach-back) the character comes from the PERSONA, not the
+      // scenario: the student chooses who they are talking to. Overriding caseData here means
+      // the ChatWindow avatar and the end-of-chat labels follow the persona with no further
+      // edits downstream.
+      if (personaCharacter && personaRow?.persona_name) {
+        caseData = {
+          ...caseData,
+          protagonist: personaRow.persona_name,
+          protagonist_initials: initialsOf(personaRow.persona_name),
+          // Cleared, not inherited: the scenario's role belongs to the case protagonist
+          // ("CEO of ..."), and the persona's description is an instructor-facing blurb.
+          // The audience's own background comes from its instructions ("Who You Are").
+          protagonist_role: undefined,
+        };
+        setActiveCaseData(caseData as CaseData);
+      }
+
+      // The server builds each turn's prompt and keeps the conversation, starting with the
+      // greeting it wrote as turn 0 when the chat record was created.
+      if (!caseChatId || !greeting) {
+        setError('Could not start the chat. Please try again.');
+        return;
+      }
+      const initialHistory: Message[] = [{ role: MessageRole.MODEL, at: Date.now(), content: greeting }];
+      const session = createChatSession(name, modelId, caseChatId);
       setChatSession(session);
       setMessages(initialHistory);
       setConversationPhase(ConversationPhase.CHATTING);
 
       // Check if we need position selection in chat (for 'explicit' capture method)
       const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-      const isPosTrackingEnabled = isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
-      const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
       const selectedScenario = selectedScenarioId
         ? availableScenarios.find(s => s.scenario_id === selectedScenarioId)
         : null;
-      const positionsAvailable = selectedScenario?.positions?.length > 0;
-
-      if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && positionsAvailable) {
-        setAwaitingPositionSelection(true);
-      } else {
-        setAwaitingPositionSelection(false);
-      }
+      setAwaitingPositionSelection(needsPositionPick(activityUsesPositions, activeCaseInfo, selectedScenario));
     } catch (e) {
       console.error("Failed to start conversation:", e);
       setError("Failed to initialize the chat session. Please check your API key and refresh the page.");
     } finally {
       setIsLoading(false);
     }
-  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId, chatOptions, availablePersonas, studentDBId]);
+  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId, chatOptions, personaCharacter, activityUsesPositions, availablePersonas, studentDBId]);
   
+  // Ends the chat: the farewell, then the optional feedback and transcript questions, then
+  // evaluation. Every way a chat ends comes here: the "time is up" phrase and the Finish
+  // button (after the minimum check), the timer (a hard end) and Maximum Responses (no
+  // student message to add: the AI has just answered the last one).
+  const wrapUpChat = (finalUserMessage: Message | null, reason: 'student' | 'goal' | 'max_exchanges' | 'time') => {
+    const finalTurn = finalUserMessage ? [finalUserMessage] : [];
+    setLimitChoicePending(false);
+    setGoalOffered(false);
+    if (currentCaseChatId) {
+      completionRef.current = fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/complete`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ reason }),
+      }).catch((err) => console.error('Failed to record how the chat ended:', err));
+    }
+
+    // Check chat options to determine next phase
+    const askForFeedback = chatOptions?.ask_for_feedback ?? false;
+    const askSaveTranscript = chatOptions?.ask_save_transcript ?? false;
+    
+    if (askForFeedback) {
+        // Ask for feedback (existing behavior)
+        const ceoPermissionRequest: Message = {
+            role: MessageRole.MODEL, at: Date.now(),
+            content: copy('feedback_permission', { first_name: studentFirstName })
+        };
+        setMessages(prev => [...prev, ...finalTurn, ceoPermissionRequest]);
+        setConversationPhase(ConversationPhase.AWAITING_HELPFUL_PERMISSION);
+    } else if (askSaveTranscript) {
+        // Skip feedback, ask for transcript permission
+        const ceoTranscriptRequest: Message = {
+            role: MessageRole.MODEL, at: Date.now(),
+            content: copy('transcript_permission', { first_name: studentFirstName })
+        };
+        setMessages(prev => [...prev, ...finalTurn, ceoTranscriptRequest]);
+        setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
+    } else {
+        // Skip both feedback and transcript permission
+        const ceoFarewell: Message = {
+            role: MessageRole.MODEL, at: Date.now(),
+            content: copy('farewell', { first_name: studentFirstName })
+        };
+        setMessages(prev => [...prev, ...finalTurn, ceoFarewell]);
+        setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
+    }
+  };
+  // After each answered message: count it, and at Maximum Responses either wrap up ('end') or
+  // let the student choose ('ask'). After "Keep talking" there is no further limit.
+  const maxExchanges = chatOptions?.max_exchanges ?? 0;
+  // A minimum above the maximum could never be met once the student keeps talking; cap it.
+  const minExchangesSetting = chatOptions?.require_minimum_exchanges ?? 0;
+  const effectiveMinExchanges = maxExchanges > 0 ? Math.min(minExchangesSetting, maxExchanges) : minExchangesSetting;
+  const afterAnsweredExchange = (serverCount?: number, reply?: LLMChatReply) => {
+    // A reply that lands after the chat has already wrapped up (the timer ran out while it was
+    // in flight) must not wrap it up a second time.
+    if (conversationPhaseRef.current !== ConversationPhase.CHATTING) return;
+    const used = serverCount ?? exchangesUsed + 1;
+    setExchangesUsed(used);
+    if (maxExchanges > 0 && used >= maxExchanges && !continuedPastLimit) {
+      if (chatOptions?.max_exchanges_action === 'ask') setLimitChoicePending(true);
+      else { wrapUpChat(null, 'max_exchanges'); return; }
+    }
+    // The AI's signal only offers Finish, and never below the minimum. A new signal re-offers
+    // after "Keep talking"; a goal reached earlier is offered once the minimum is met.
+    if (reply?.goalSignalled) goalDeclinedRef.current = false;
+    if (reply?.goalReached && !goalDeclinedRef.current && used >= effectiveMinExchanges) {
+      if (chatOptions?.end_on_goal) wrapUpChat(null, 'goal');
+      else setGoalOffered(true);
+    }
+  };
+
+  const handleKeepTalking = () => {
+    setLimitChoicePending(false);
+    setContinuedPastLimit(true);
+  };
+
+  const handleKeepTalkingPastGoal = () => {
+    goalDeclinedRef.current = true;
+    setGoalOffered(false);
+  };
+
+  // The chat timer starts with the student's first message, typed or a clicked position. The
+  // server ignores a second start.
+  const startChatTimer = async () => {
+    if (!currentCaseChatId) return;
+    try {
+      await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/start-timer`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+    } catch (err) {
+      console.error('Failed to start timer:', err);
+    }
+  };
+
   const handleSendMessage = async (userMessage: string) => {
     if (conversationPhase === ConversationPhase.CHATTING) {
         // Start timer on first user message (only if there are exactly 1 message - the initial CEO greeting)
-        if (currentCaseChatId && messages.length === 1) {
-          try {
-            await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/start-timer`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-            });
-          } catch (err) {
-            console.error('Failed to start timer:', err);
-          }
-        }
+        if (messages.length === 1) await startChatTimer();
 
         const lowerCaseMessage = userMessage.toLowerCase();
         if (lowerCaseMessage.includes("time is up") || lowerCaseMessage.includes("time's up") || lowerCaseMessage.includes("i would like to finish this chat conversation")) {
             // Check minimum exchanges requirement
-            const minExchanges = chatOptions?.require_minimum_exchanges ?? 0;
-            const userMessageCount = messages.filter(m => m.role === MessageRole.USER).length;
-            if (minExchanges > 0 && userMessageCount < minExchanges) {
+            const minExchanges = effectiveMinExchanges;
+            if (minExchanges > 0 && exchangesUsed < minExchanges) {
               const ceoWarning: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: `I appreciate your time management, but we haven't had enough of a discussion yet. Let's continue our conversation a bit longer - I'd like to hear more of your analysis before we wrap up.`
+                content: copy('min_exchanges_warning')
               };
               setMessages(prev => [...prev, { role: MessageRole.USER, at: Date.now(), content: userMessage }, ceoWarning]);
               return;
             }
-            const finalUserMessage: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
-
-            // Check chat options to determine next phase
-            const askForFeedback = chatOptions?.ask_for_feedback ?? false;
-            const askSaveTranscript = chatOptions?.ask_save_transcript ?? false;
-            
-            if (askForFeedback) {
-                // Ask for feedback (existing behavior)
-                const ceoPermissionRequest: Message = {
-                    role: MessageRole.MODEL, at: Date.now(),
-                    content: `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. **Would you be willing to provide feedback by answering a few questions about our interaction?**`
-                };
-                setMessages(prev => [...prev, finalUserMessage, ceoPermissionRequest]);
-                setConversationPhase(ConversationPhase.AWAITING_HELPFUL_PERMISSION);
-            } else if (askSaveTranscript) {
-                // Skip feedback, ask for transcript permission
-                const ceoTranscriptRequest: Message = {
-                    role: MessageRole.MODEL, at: Date.now(),
-                    content: `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?**`
-                };
-                setMessages(prev => [...prev, finalUserMessage, ceoTranscriptRequest]);
-                setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
-            } else {
-                // Skip both feedback and transcript permission
-                const ceoFarewell: Message = {
-                    role: MessageRole.MODEL, at: Date.now(),
-                    content: `${studentFirstName}, thank you for meeting with me today. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. Click the button below to proceed to the evaluation.`
-                };
-                setMessages(prev => [...prev, finalUserMessage, ceoFarewell]);
-                setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
-            }
+            wrapUpChat({ role: MessageRole.USER, at: Date.now(), content: userMessage }, 'student');
             return;
         }
         
+        // Types with an opening floor (Teach-back): the OPENING message must reach the chat
+        // option's word count. The opening is the whole point of such an activity, and MTC
+        // otherwise has no minimum at all - a student can type "idk" and burn their one chat.
+        // Refused before any AI call, so nothing is charged; the server refuses too
+        // (OPENING_TOO_SHORT). Replies stay unfloored: "exactly, that's the trap" is a
+        // legitimate turn. (Quizzer floors its graded opening the same way.)
+        if (activity?.traits.opening_word_floor) {
+            const minWords = minOpeningWords(chatOptions);
+            // The refused attempt stays on screen (like a refused hint), so "no opening
+            // yet" cannot be "no student message yet": it is "no student message has
+            // reached the floor yet". Otherwise the retry would go through unfloored.
+            // A clicked position is the instructor's wording, so it is never the opening.
+            const openingAccepted = messages.some(m => m.role === MessageRole.USER && !m.positionPick && countWords(m.content) >= minWords);
+            if (minWords > 0 && !openingAccepted && countWords(userMessage) < minWords) {
+                setMessages((prev) => [...prev,
+                    { role: MessageRole.USER, at: Date.now(), content: userMessage },
+                    { role: MessageRole.MODEL, at: Date.now(), content: copy('opening_too_short', { min_words: minWords }) }
+                ]);
+                return;
+            }
+        }
+
         // Check for hint request and enforce limit
         const isHintRequest = /\bhint\b/i.test(userMessage);
         const hintsAllowed = chatOptions?.hints_allowed ?? 3;
@@ -959,9 +1057,9 @@ const App: React.FC = () => {
             const newUserMessage: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
             const refusalMessage: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: hintsAllowed === 0 
-                    ? "I'm sorry, but hints have been disabled for this conversation. Please try to work through this on your own using the case materials."
-                    : `I'm sorry, but you've already used all ${hintsAllowed} of your allowed hints. You'll need to work through this on your own now.`
+                content: hintsAllowed === 0
+                    ? copy('hints_disabled')
+                    : copy('hints_exhausted', { n: hintsAllowed })
             };
             setMessages((prev) => [...prev, newUserMessage, refusalMessage]);
             return;
@@ -989,20 +1087,29 @@ const App: React.FC = () => {
             setLastReply(response);
             const modelMessage: Message = { role: MessageRole.MODEL, at: Date.now(), content: response.text };
             setMessages((prev) => [...prev, modelMessage]);
-
-            // Auto-save transcript after each successful exchange
-            if ((chatOptions?.auto_save_transcript ?? true) && currentCaseChatId) {
-              const fullName = sessionUser?.full_name || studentFirstName || 'Student';
-              const allMessages = [...messages, newUserMessage, modelMessage];
-              const transcript = buildTranscript(allMessages, fullName, activeCaseData?.protagonist);
-              fetch(`${getApiBaseUrl()}/transcripts/chat/${currentCaseChatId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ transcript }),
-              }).catch(err => console.error('Auto-save transcript failed:', err));
-            }
+            afterAnsweredExchange(response.exchangesUsed, response);
+            // No transcript save here: the server records the exchange and writes the transcript.
         } catch (e) {
             console.error("Failed to send message:", e);
+            // Limits the server enforces: no retry. Over the response limit, the chat wraps up.
+            const code = (e as { code?: string })?.code;
+            if (code === 'EXCHANGE_LIMIT_REACHED') {
+                setMessages((prev) => prev.slice(0, -1));
+                wrapUpChat(null, 'max_exchanges');
+                return;
+            }
+            if (code === 'MESSAGE_TOO_LONG') {
+                setMessages((prev) => prev.slice(0, -1));
+                setError((e as Error).message);
+                return;
+            }
+            // The server's copy of the opening floor (the page normally refuses first).
+            if (code === 'OPENING_TOO_SHORT') {
+                // The server's number wins: this page's options may be older than the server's.
+                const minWords = (e as { minWords?: number })?.minWords ?? minOpeningWords(chatOptions);
+                setMessages((prev) => [...prev, { role: MessageRole.MODEL, at: Date.now(), content: copy('opening_too_short', { min_words: minWords }) }]);
+                return;
+            }
             playErrorSound();
             setError("Sorry, there is a delay in AI model response. Please wait 30 seconds.");
             const errorMessage: Message = {
@@ -1027,6 +1134,9 @@ const App: React.FC = () => {
                         ];
                     });
                     setError(null);
+                    // After the messages, as on the normal path: a wrap-up adds its question
+                    // after the reply instead of being sliced off as the "interrupted" message.
+                    afterAnsweredExchange(retryResponse.exchangesUsed, retryResponse);
                 } catch (retryError) {
                     console.error("Retry failed:", retryError);
                     // Update the error message to indicate continued failure
@@ -1045,7 +1155,7 @@ const App: React.FC = () => {
         if (affirmative) {
             const ceoScoreRequest: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: "Great! On a scale of 1 to 5, how helpful was our conversation in your thinking through this case situation? (1=not helpful, 5=extremely helpful)"
+                content: copy('helpful_score_question')
             };
             setMessages(prev => [...prev, ceoScoreRequest]);
             setConversationPhase(ConversationPhase.AWAITING_HELPFUL_SCORE);
@@ -1056,7 +1166,7 @@ const App: React.FC = () => {
             if (askSaveTranscript) {
                 const ceoTranscriptRequest: Message = {
                     role: MessageRole.MODEL, at: Date.now(),
-                    content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** This would be **a big help** in developing this AI chat case teaching tool 😊."
+                    content: copy('transcript_permission_after_feedback')
                 };
                 setMessages(prev => [...prev, ceoTranscriptRequest]);
                 setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
@@ -1064,7 +1174,7 @@ const App: React.FC = () => {
                 // Skip transcript permission
                 const ceoFarewell: Message = {
                     role: MessageRole.MODEL, at: Date.now(),
-                    content: "It has been a delight talking with you today. Click the button below to proceed to the evaluation."
+                    content: copy('farewell_after_decline')
                 };
                 setMessages(prev => [...prev, ceoFarewell]);
                 setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
@@ -1085,7 +1195,7 @@ const App: React.FC = () => {
 
         const ceoLikedRequest: Message = {
             role: MessageRole.MODEL, at: Date.now(),
-            content: "Thank you. What did you **like most** about this simulated conversation?",
+            content: copy('liked_question'),
         };
         setMessages(prev => [...prev, userScoreReply, ceoLikedRequest]);
         setConversationPhase(ConversationPhase.AWAITING_LIKED_FEEDBACK);
@@ -1095,7 +1205,7 @@ const App: React.FC = () => {
 
         const ceoImproveRequest: Message = {
             role: MessageRole.MODEL, at: Date.now(),
-            content: "That's helpful. What way do you think this simulated conversation **might be improved**?",
+            content: copy('improve_question'),
         };
         setMessages(prev => [...prev, userLikedReply, ceoImproveRequest]);
         setConversationPhase(ConversationPhase.AWAITING_IMPROVE_FEEDBACK);
@@ -1109,7 +1219,7 @@ const App: React.FC = () => {
         if (askSaveTranscript) {
             const ceoTranscriptRequest: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** This would be **a big help** in developing this AI chat case teaching tool 😊.",
+                content: copy('transcript_permission_after_feedback'),
             };
             setMessages(prev => [...prev, userImproveReply, ceoTranscriptRequest]);
             setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
@@ -1117,7 +1227,7 @@ const App: React.FC = () => {
             // Skip transcript permission
             const ceoFarewell: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: "Thank you for your valuable feedback! Click the button below to proceed to the evaluation.",
+                content: copy('farewell_after_feedback'),
             };
             setMessages(prev => [...prev, userImproveReply, ceoFarewell]);
             setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
@@ -1132,7 +1242,7 @@ const App: React.FC = () => {
 
         const ceoGoodbyeMessage: Message = {
             role: MessageRole.MODEL, at: Date.now(),
-            content: `Thank you for your time, ${studentFirstName}. Goodbye and have a nice day. I am going to turn this over to the AI Supervisor to give you feedback.`,
+            content: copy('goodbye', { first_name: studentFirstName }),
         };
         setMessages(prev => [...prev, userTranscriptReply, ceoGoodbyeMessage]);
         setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
@@ -1153,7 +1263,7 @@ const App: React.FC = () => {
       try {
         await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/final-position`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
           body: JSON.stringify({ final_position_id: positionId })
         });
       } catch (err) {
@@ -1172,7 +1282,7 @@ const App: React.FC = () => {
       try {
         await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/initial-position`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
           body: JSON.stringify({ initial_position_id: position.position_id })
         });
       } catch (err) {
@@ -1180,10 +1290,14 @@ const App: React.FC = () => {
       }
     }
 
+    // The click is the student's first message, so the timer starts now.
+    await startChatTimer();
+
     // Add position as user message and trigger AI response
     const userPositionMessage: Message = {
       role: MessageRole.USER, at: Date.now(),
-      content: position.position
+      content: position.position,
+      positionPick: true,
     };
     setMessages(prev => [...prev, userPositionMessage]);
 
@@ -1198,11 +1312,26 @@ const App: React.FC = () => {
           content: response.text,
         };
         setMessages(prev => [...prev, modelMessage]);
+        // The server counts the position as an answered response, so the page does too.
+        afterAnsweredExchange(response.exchangesUsed, response);
       } catch (err) {
         console.error('Failed to get AI response:', err);
+        // Limits the server enforces, handled as in handleSendMessage. Nothing was recorded.
+        const code = (err as { code?: string })?.code;
+        if (code === 'EXCHANGE_LIMIT_REACHED') {
+          setMessages(prev => prev.slice(0, -1));
+          wrapUpChat(null, 'max_exchanges');
+          return;
+        }
+        if (code === 'MESSAGE_TOO_LONG') {
+          setMessages(prev => prev.slice(0, -1));
+          setError((err as Error).message);
+          setAwaitingPositionSelection(true);
+          return;
+        }
         const errorMessage: Message = {
           role: MessageRole.MODEL, at: Date.now(),
-          content: "Okay, can you explain why you recommend that action?"
+          content: copy('position_reply_fallback')
         };
         setMessages(prev => [...prev, errorMessage]);
       } finally {
@@ -1216,78 +1345,25 @@ const App: React.FC = () => {
     setConversationPhase(ConversationPhase.EVALUATION_LOADING);
     setError(null);
     try {
-    const fullName = sessionUser?.full_name || `${studentFirstName}`;
-    const protagonistLabel = activeCaseData?.protagonist || 'CEO';
-    const result = await getEvaluation(messages, currentCaseChatId!, selectedSuperModel, protagonistLabel, activeRubric?.rubric_id);
+      await completionRef.current;
+      // The server grades its own copy of the conversation and saves the evaluation and the
+      // transcript; the browser sends only the student's feedback answers and their consent to
+      // share the transcript with the developers (instructors see transcripts regardless).
+      const result = await getEvaluation(
+        currentCaseChatId!,
+        { helpful: helpfulScore, liked: sanitizeFeedback(likedFeedback), improve: sanitizeFeedback(improveFeedback) },
+        shareTranscript,
+      );
       setEvaluationResult(result);
-      
+
       if (studentDBId) {
-        const sanitizedLiked = sanitizeFeedback(likedFeedback);
-        const sanitizedImprove = sanitizeFeedback(improveFeedback);
-
-        // Check if transcript should be saved (either by user permission or always_save_transcript setting)
-        const alwaysSave = chatOptions?.always_save_transcript ?? false;
-        const shouldSaveTranscript = shareTranscript || alwaysSave;
-
-        let transcriptToSave: string | null = null;
-        if (shouldSaveTranscript) {
-          // Save the ORIGINAL transcript (NOT anonymized)
-          // Anonymization happens at display time, not save time
-          // Same builder as the per-turn auto-save: this PUT overwrites that copy, so a
-          // different format here would erase the turn markers at the end of every chat.
-          transcriptToSave = buildTranscript(messages, fullName, protagonistLabel);
-        }
-
-        const finishedTimestamp = new Date();
-        const mysqlTimestamp = finishedTimestamp.toISOString().slice(0, 19).replace('T', ' ');
-
-        const { error: evaluationError } = await api
-          .from('evaluations')
-          .insert({
-            student_id: studentDBId,
-            case_id: selectedCaseId,
-            case_chat_id: currentCaseChatId,
-            score: result.totalScore,
-            summary: result.summary,
-            criteria: result.criteria,
-            helpful: helpfulScore,
-            liked: sanitizedLiked,
-            improve: sanitizedImprove,
-            super_model: selectedSuperModel,
-            rubric_id: result.rubric_id || null,
-          });
-
-        if (evaluationError) {
-          console.error("Error saving evaluation:", evaluationError);
-        } else {
-          // Save transcript separately to transcripts table (upsert — may already exist from auto-save)
-          if (transcriptToSave && currentCaseChatId) {
-            try {
-              const transcriptResponse = await fetch(`${getApiBaseUrl()}/transcripts/chat/${currentCaseChatId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  transcript: transcriptToSave,
-                  // Consent to share this transcript with the developers. Instructors can see and
-                  // analyse transcripts regardless (see the disclosure under the chat).
-                  saved_with_permission: shouldSaveTranscript && shareTranscript
-                })
-              });
-              if (!transcriptResponse.ok) {
-                console.error("Error saving transcript:", await transcriptResponse.text());
-              }
-            } catch (transcriptError) {
-              console.error("Error saving transcript:", transcriptError);
-            }
-          }
-
-          // If evaluation is saved, try to update the student's finished_at timestamp
-          const { error: studentUpdateError } = await api
-            .from('students')
-            .update({ finished_at: mysqlTimestamp })
-            .eq('id', studentDBId);
-          if (studentUpdateError) console.error("Error updating student finished_at timestamp:", studentUpdateError);
-        }
+        const mysqlTimestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        // Try to update the student's finished_at timestamp
+        const { error: studentUpdateError } = await api
+          .from('students')
+          .update({ finished_at: mysqlTimestamp })
+          .eq('id', studentDBId);
+        if (studentUpdateError) console.error("Error updating student finished_at timestamp:", studentUpdateError);
       }
       setConversationPhase(ConversationPhase.EVALUATING);
     } catch (e: any) {
@@ -1298,7 +1374,7 @@ const App: React.FC = () => {
         try {
           await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/status`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getAuthHeaders(),
             body: JSON.stringify({ status: 'evaluation_failed' }),
           });
         } catch (statusErr) {
@@ -1309,6 +1385,56 @@ const App: React.FC = () => {
         setError("Sorry, there was an error generating your performance review. Please try again.");
       }
       setConversationPhase(ConversationPhase.CHATTING);
+    }
+  };
+
+  // Create the case_chats row a chat runs on. The server builds every chat turn's prompt from
+  // it, chooses the model, and writes the AI's greeting (returned here), so a chat cannot start
+  // without one. Returns the new id and greeting, or null after showing an error.
+  const createCaseChat = async (sectionId: string, studentName: string): Promise<{ id: string; greeting: string } | null> => {
+    try {
+      const caseChatPayload: Record<string, any> = {
+        student_name: studentName,
+        case_id: selectedCaseId,
+        section_id: sectionId,
+        persona: selectedPersonaId,
+        scenario_id: selectedScenarioId || undefined,
+      };
+
+      // Include position_id if explicit capture method is enabled (from assignment-level settings)
+      const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
+      const isPosTrackingEnabled = activityUsesPositions && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+      const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
+
+      if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && selectedInitialPositionId) {
+        caseChatPayload.initial_position_id = selectedInitialPositionId;
+        caseChatPayload.position_method = 'explicit';
+      }
+
+      const caseChatResponse = await fetch(`${getApiBaseUrl()}/case-chats`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(caseChatPayload),
+      });
+      const caseChatResult = await caseChatResponse.json();
+      if (caseChatResponse.status === 409 && caseChatResult?.error?.code === 'INSTRUCTOR_SETUP_INCOMPLETE') {
+        setError(caseChatResult.error.message || "This section isn't ready yet — your instructor still needs to finish setup.");
+        return null;
+      }
+      if (!caseChatResponse.ok || !caseChatResult.data?.id || !caseChatResult.data?.greeting) {
+        setError(caseChatResult?.error?.message || 'Could not start the chat. Please try again.');
+        return null;
+      }
+      setCurrentCaseChatId(caseChatResult.data.id);
+      // The activity's copy as of this chat's start (pinned with its type version).
+      setChatActivity(caseChatResult.data.activity ?? null);
+      setChatGoal(caseChatResult.data.goal ?? null);
+      setAssignedPosition(caseChatResult.data.assigned_position ?? null);
+      return { id: caseChatResult.data.id, greeting: caseChatResult.data.greeting };
+    } catch (err) {
+      console.error('Failed to create case_chat record:', err);
+      setError('Could not start the chat. Please check your connection and try again.');
+      return null;
     }
   };
 
@@ -1375,49 +1501,10 @@ const App: React.FC = () => {
       setStudentDBId(studentId);
       setStudentFirstName(trimmedFirstName);
 
-      // Create case_chat record to track this chat session
-      let newCaseChatId: string | null = null;
-      try {
-        const caseChatPayload: Record<string, any> = {
-          student_id: studentId,
-          case_id: selectedCaseId,
-          section_id: sectionToSave,
-          persona: selectedPersonaId,
-          chat_model: selectedChatModel,
-          scenario_id: selectedScenarioId || undefined,
-        };
+      const created = await createCaseChat(sectionToSave, trimmedFirstName);
+      if (!created) return;
 
-        // Include position_id if explicit capture method is enabled (from assignment-level settings)
-        // Check assignment's position tracking settings (from active-case endpoint)
-        const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-        const isPosTrackingEnabled = isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
-        const posCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
-
-        if (isPosTrackingEnabled && posCaptureMethod === 'explicit' && selectedInitialPositionId) {
-          caseChatPayload.initial_position_id = selectedInitialPositionId;
-          caseChatPayload.position_method = 'explicit';
-        }
-
-        const caseChatResponse = await fetch(`${getApiBaseUrl()}/case-chats`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(caseChatPayload),
-        });
-        const caseChatResult = await caseChatResponse.json();
-        if (caseChatResponse.status === 409 && caseChatResult?.error?.code === 'INSTRUCTOR_SETUP_INCOMPLETE') {
-          setError(caseChatResult.error.message || "This section isn't ready yet — your instructor still needs to finish setup.");
-          return;
-        }
-        if (caseChatResult.data?.id) {
-          newCaseChatId = caseChatResult.data.id;
-          setCurrentCaseChatId(caseChatResult.data.id);
-        }
-      } catch (err) {
-        console.error('Failed to create case_chat record:', err);
-        // Continue anyway - chat tracking is optional
-      }
-
-      await startConversation(trimmedFirstName, selectedPersonaId, selectedChatModel, studentId, newCaseChatId);
+      await startConversation(trimmedFirstName, selectedPersonaId, selectedChatModel, studentId, created.id, created.greeting);
     } finally {
       setIsLoading(false);
     }
@@ -1447,6 +1534,12 @@ const App: React.FC = () => {
     setSelectedPersonaId('moderate');
     setAvailablePersonas([]);
     setCurrentCaseChatId(null);
+    setChatActivity(null);
+    setGoalOffered(false);
+    goalDeclinedRef.current = false;
+    completionRef.current = null;
+    setChatGoal(null);
+    setAssignedPosition(null);
     setSelectedInitialPositionId(null);
     setSelectedFinalPositionId(null);
     setAwaitingPositionSelection(false);
@@ -1537,7 +1630,7 @@ const App: React.FC = () => {
       try {
         await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/status`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
           body: JSON.stringify({ status: 'canceled' })
         });
       } catch (err) {
@@ -1557,7 +1650,7 @@ const App: React.FC = () => {
       try {
         await fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/status`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
           body: JSON.stringify({ status: 'canceled' })
         });
       } catch (err) {
@@ -1578,11 +1671,22 @@ const App: React.FC = () => {
     setError(null);
     setConversationPhase(ConversationPhase.PRE_CHAT);
     setCurrentCaseChatId(null);
+    setChatActivity(null);
+    setGoalOffered(false);
+    goalDeclinedRef.current = false;
+    completionRef.current = null;
+    setChatGoal(null);
+    setAssignedPosition(null);
     setHintsUsed(0);
+    setExchangesUsed(0);
+    setLimitChoicePending(false);
+    setContinuedPastLimit(false);
 
-    // Immediately start a new conversation with the same settings
+    // Immediately start a new conversation with the same settings, on a new chat record
     if (studentFirstName && selectedChatModel) {
-      await startConversation(studentFirstName, selectedPersonaId, selectedChatModel, studentDBId || undefined);
+      const created = await createCaseChat(selectedSection, studentFirstName);
+      if (!created) return;
+      await startConversation(studentFirstName, selectedPersonaId, selectedChatModel, studentDBId || undefined, created.id, created.greeting);
     }
   };
 
@@ -1625,6 +1729,7 @@ const App: React.FC = () => {
         superModelName={null}
         onLogout={() => window.close()}
         onTitleContextNav={() => window.close()}
+        activity={viewingEvaluationActivity}
       />
     );
   }
@@ -1707,13 +1812,15 @@ const App: React.FC = () => {
   if (conversationPhase === ConversationPhase.PRE_CHAT) {
     const isSectionValid = selectedSection !== '' && selectedSection !== 'other';
     const selectedCaseStatus = selectedCaseId ? caseCompletionStatus[selectedCaseId] : null;
-    // Check if case is completed and repeating is NOT allowed
-    // Allow repeat if: allow_repeat is true OR allow_rechat is true
-    const allowRepeat = chatOptions?.allow_repeat ?? false;
-    const isCaseCompleted = selectedCaseStatus?.completed && !selectedCaseStatus?.allowRechat && !allowRepeat;
+    // No chats left on this case (server rule: chat_repeats, allow_repeat, re-chat). With scenarios
+    // the limit is per scenario, so the case as a whole never blocks.
+    const isCaseCompleted = !useScenarios && Boolean(selectedCaseStatus?.completed) && selectedCaseStatus?.canStart === false;
     // Check if scenario selection is required and valid
     const scenarioRequirementMet = !useScenarios || selectedScenarioId !== null;
-    const allScenariosCompleted = useScenarios && availableScenarios.length > 0 && availableScenarios.every((s: any) => s.completed);
+    const allScenariosCompleted = useScenarios && availableScenarios.length > 0
+      && availableScenarios.every((s: any) => scenarioCompletionStatus[s.scenario_id]?.canStart === false);
+    const selectedScenarioUsedUp = useScenarios && selectedScenarioId !== null
+      && scenarioCompletionStatus[selectedScenarioId]?.canStart === false;
 
     // Get selected scenario (if scenarios enabled)
     const selectedScenario = selectedScenarioId
@@ -1723,7 +1830,7 @@ const App: React.FC = () => {
     // Position tracking settings from assignment level (section_cases table)
     // These come from the active-case endpoint response
     const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-    const isPositionTrackingEnabled = isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+    const isPositionTrackingEnabled = activityUsesPositions && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
     const positionCaptureMethod = activeCaseInfo?.position_capture_method || 'explicit';
     const trackPositionChange = !isDisabledFlag(activeCaseInfo?.track_position_change);
 
@@ -1733,7 +1840,11 @@ const App: React.FC = () => {
     // Position selection happens IN CHAT for 'explicit' method, so no pre-chat requirement
     // For 'explicit' method: positions are selected after protagonist greeting in the chat
     const positionRequirementMet = true;
-    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted && positionRequirementMet;
+    // Teach-back has no built-in fallback character: with no audience the case protagonist
+    // would be cast as the confused listener, so the chat must not start at all.
+    const audienceRequirementMet = !personaCharacter || availablePersonas.some((p) => p.persona_id === selectedPersonaId);
+    const submissionRequirementMet = activity?.traits.material !== 'student_submission' || hasSubmission;
+    const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted && !selectedScenarioUsedUp && positionRequirementMet && audienceRequirementMet && submissionRequirementMet;
     const sectionName = sections.find(s => s.section_id === selectedSection)?.section_title || selectedSection;
 
     return (
@@ -1947,8 +2058,10 @@ const App: React.FC = () => {
                       {availableChats.map(({ caseItem, scenario, key }) => {
                         // Check scenario-level completion
                         const scenarioStatus = scenarioCompletionStatus[scenario.scenario_id];
-                        const isCompleted = scenarioStatus?.completed && !scenarioStatus?.allowRechat;
-                        const canRechat = scenarioStatus?.completed && scenarioStatus?.allowRechat;
+                        // No chats left, or done with more allowed (server/services/chatAttempts.js).
+                        const isCompleted = Boolean(scenarioStatus?.completed) && scenarioStatus?.canStart === false;
+                        const canRechat = Boolean(scenarioStatus?.completed) && scenarioStatus?.canStart !== false;
+                        const chatsLeft = scenarioStatus?.rechatGranted ? null : scenarioStatus?.chatsLeft ?? null;
 
                         // Check case-level scheduling availability
                         const checkAvailability = () => {
@@ -2017,7 +2130,7 @@ const App: React.FC = () => {
                                   )}
                                   {canRechat && (
                                     <span className="text-xs font-medium text-orange-700 bg-orange-100 px-2 py-0.5 rounded">
-                                      Re-chat Available
+                                      {chatsLeft === null ? 'Re-chat Available' : `${chatsLeft} chat${chatsLeft === 1 ? '' : 's'} left`}
                                     </span>
                                   )}
                                   {!availability.available && !isCompleted && (
@@ -2027,7 +2140,14 @@ const App: React.FC = () => {
                                   )}
                                 </div>
                                 <span className="block text-sm text-gray-600 mt-0.5">
-                                  Chat with {scenario.protagonist}{protagonistRole} about {scenario.chat_topic}.
+                                  {/* The type's wording: Teach-back names the topic (its audience is
+                                      chosen below, so the scenario's protagonist is a placeholder). */}
+                                  {copyFor(caseItem.activity, 'start_row', {
+                                    ai_name: scenario.protagonist ?? '',
+                                    ai_role_suffix: protagonistRole,
+                                    topic: scenario.chat_topic ?? '',
+                                    topic_or_question: scenario.chat_topic || scenario.chat_question || '',
+                                  })}
                                 </span>
                                 {!availability.available && availability.message && (
                                   <span className="block text-xs text-amber-600 mt-1">
@@ -2049,11 +2169,15 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {/* Protagonist Personality */}
+            {/* Protagonist Personality / teach-back audience */}
             {selectedCaseId && activeCaseData && (
               <div>
-                <label htmlFor="ceoPersona" className="block text-sm font-medium text-gray-700">Protagonist Personality</label>
-                <p className="mt-1 text-xs text-gray-500">Determines how strictly the protagonist requires you to cite case facts.</p>
+                <label htmlFor="ceoPersona" className="block text-sm font-medium text-gray-700">
+                  {copy('persona_picker_title')}
+                </label>
+                <p className="mt-1 text-xs text-gray-500">
+                  {copy('persona_picker_help')}
+                </p>
                 <select
                   id="ceoPersona"
                   value={selectedPersonaId}
@@ -2064,6 +2188,8 @@ const App: React.FC = () => {
                     availablePersonas.map((p) => (
                       <option key={p.persona_id} value={p.persona_id}>{p.persona_name}</option>
                     ))
+                  ) : personaKind !== 'protagonist' ? (
+                    <option value="">{copy('persona_picker_empty')}</option>
                   ) : (
                     <>
                       <option value="moderate">Moderate (Recommended)</option>
@@ -2078,6 +2204,22 @@ const App: React.FC = () => {
             )}
 
             {/* Position selection for 'explicit' method now happens IN the chat after protagonist greeting */}
+
+            {/* A type on the student's own work: they add it before the chat starts. */}
+            {selectedCaseId && isSectionValid && activity?.traits.material === 'student_submission' && (
+              <SubmissionForm
+                sectionId={selectedSection}
+                caseId={selectedCaseId}
+                title={copy('submission_title')}
+                help={copy('submission_help')}
+                onChange={(saved) => setHasSubmission(Boolean(saved))}
+              />
+            )}
+
+            {/* A type about the student's own life says so before the chat starts. */}
+            {selectedCaseId && activity?.traits.personal && (
+              <p className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{renderBold(copy('personal_notice'))}</p>
+            )}
 
             <p className="text-xs text-gray-500 italic px-2">Disclosure: In order to facilitate assessment and provide feedback in this case chat activity, your conversation with the chatbot will be recorded in a secure database. In addition to providing you with feedback at the end of the activity, the conversation transcript will be made available to the instructor for review.</p>
             
@@ -2100,7 +2242,7 @@ const App: React.FC = () => {
               disabled={isLoading || !canStartChat}
               className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : !positionRequirementMet ? 'Select Your Position' : 'Start Chat'}
+              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : selectedScenarioUsedUp ? 'No Chats Left' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : !positionRequirementMet ? 'Select Your Position' : !audienceRequirementMet ? copy('start_no_persona') : !submissionRequirementMet ? copy('start_no_submission') : 'Start Chat'}
             </button>
           </form>
         </div>
@@ -2116,6 +2258,40 @@ const App: React.FC = () => {
   // Check if case content should be shown (defaults to true if not specified)
   const showCaseContent = chatOptions?.show_case !== false;
 
+  // The instruction bar above the first message, for types whose copy has one (Teach-back;
+  // components/ActivityIntro.tsx). Case chat has none.
+  const activityIntro = (() => {
+    if (!activity?.copy.intro) return undefined;
+    const scenario = selectedScenarioId ? availableScenarios.find(s => s.scenario_id === selectedScenarioId) : null;
+    const studentText = readScenarioSettings(scenario?.chat_options_override).student;
+    const persona = availablePersonas.find((p) => p.persona_id === selectedPersonaId);
+    const caseInfo = availableCases.find(c => c.case_id === selectedCaseId);
+    const positionFirst = needsPositionPick(activityUsesPositions, caseInfo, scenario);
+    const text = activityIntroText(activity, {
+          caseTitle: activeCaseData?.case_title || '',
+          scenarioName: scenario?.scenario_name || undefined,
+          // Who the student talks to: the picked persona only on a persona-character type.
+          audienceName: (personaCharacter ? persona?.persona_name : null) || activeCaseData?.protagonist || '',
+          intro: selectedPersonaId ? studentText.personas[selectedPersonaId]?.intro : undefined,
+          topic: activeCaseData?.chat_question || '',
+          maxMessages: maxExchanges,
+          canKeepGoing: chatOptions?.max_exchanges_action === 'ask',
+          minMessages: effectiveMinExchanges,
+          timeLimitMinutes: Number(scenario?.chat_time_limit) > 0 ? Number(scenario.chat_time_limit) : 0,
+          autoEnd: Boolean(chatOptions?.timeout_chat),
+          allowFinish: Boolean(chatOptions?.allow_finish_button),
+          positionFirst,
+          showReading: showCaseContent,
+          readingWhere: isLargeScreen ? 'left' : 'above',
+          goal: chatGoal || undefined,
+          assignedPosition: assignedPosition || undefined,
+    });
+    return text ? <ActivityIntro text={text} /> : undefined;
+  })();
+  const personaLabel = availablePersonas.find((p) => p.persona_id === selectedPersonaId)?.persona_name
+    || selectedPersonaId || activity?.labels.ai_character || '';
+  const aiName = activeCaseData?.protagonist || activity?.labels.ai_fallback || '';
+
   // Chat panel content - reused for both layouts
   const chatPanel = (
     <aside className="w-full h-full flex flex-col bg-gray-200 rounded-xl shadow-lg">
@@ -2127,26 +2303,34 @@ const App: React.FC = () => {
             warningMinutes={5}
             onTimeUp={() => {
               // Auto-submit "time is up" when timer expires (only if timeout_chat is enabled)
-              if (chatOptions?.timeout_chat) {
-                handleSendMessage("time is up");
+              // A time limit is a hard end, so it skips the minimum-exchanges check.
+              if (chatOptions?.timeout_chat && conversationPhase === ConversationPhase.CHATTING) {
+                wrapUpChat({ role: MessageRole.USER, at: Date.now(), content: "time is up" }, 'time');
               }
             }}
           />
         </div>
       )}
+      {maxExchanges > 0 && conversationPhase === ConversationPhase.CHATTING && (
+        <div className={`flex justify-end px-3 py-1 text-xs font-medium text-gray-600 ${currentCaseChatId && chatOptions?.show_timer !== false ? '' : 'mt-12'}`} aria-live="polite">
+          {continuedPastLimit
+            ? copy('counter_past_limit', { used: exchangesUsed, max: maxExchanges })
+            : copy('counter_used', { used: Math.min(exchangesUsed, maxExchanges), max: maxExchanges })}
+        </div>
+      )}
       <ChatWindow
         messages={messages}
         isLoading={isLoading}
-        personaDisplayName={
-          availablePersonas.find((p) => p.persona_id === selectedPersonaId)?.persona_name
-          || selectedPersonaId
-        }
-        chatModelName={chatModelName}
         chatFontSize={chatFontSize}
-        protagonistName={activeCaseData?.protagonist}
         protagonistInitials={activeCaseData?.protagonist_initials}
-        caseTitle={activeCaseData?.case_title}
+        avatarTitle={copy('avatar_tooltip', {
+          ai_name: aiName,
+          persona_name: personaLabel,
+          case_title: activeCaseData?.case_title || '',
+          model: chatModelName || '...',
+        })}
         awaitingPositionSelection={awaitingPositionSelection && conversationPhase === ConversationPhase.CHATTING}
+        positionPrompt={copy('position_prompt')}
         positionOptions={(() => {
           const selectedScenario = selectedScenarioId
             ? availableScenarios.find(s => s.scenario_id === selectedScenarioId)
@@ -2154,25 +2338,28 @@ const App: React.FC = () => {
           return selectedScenario?.positions || [];
         })()}
         onPositionSelect={handleInitialPositionSelect}
+        intro={activityIntro}
       />
       {conversationPhase === ConversationPhase.FEEDBACK_COMPLETE ? (
           (() => {
             // Get position tracking settings for final position selection
             const activeCaseInfo = availableCases.find(c => c.case_id === selectedCaseId);
-            const isPosTrackingEnabled = isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
+            const isPosTrackingEnabled = activityUsesPositions && isEnabledFlag(activeCaseInfo?.position_tracking_enabled);
             const trackPosChange = !isDisabledFlag(activeCaseInfo?.track_position_change);
             const selectedScenario = selectedScenarioId
               ? availableScenarios.find((s: any) => s.scenario_id === selectedScenarioId)
               : null;
             const finalPositions = selectedScenario?.positions || [];
-            const shouldShowFinalPosition = isPosTrackingEnabled && trackPosChange && finalPositions.length > 0;
+            // Only when the student stated a position at the start: an AI-inferred, instructor-recorded
+            // or assigned position is not one the student was asked to choose.
+            const capturedExplicitly = (activeCaseInfo?.position_capture_method || 'explicit') === 'explicit';
+            const shouldShowFinalPosition = isPosTrackingEnabled && trackPosChange && capturedExplicitly && finalPositions.length > 0;
             const canProceed = !shouldShowFinalPosition || selectedFinalPositionId !== null;
 
             return (
               <div className="p-4 bg-white border-t border-gray-200 space-y-4">
                 {/* Final Position Selection - shown when position tracking enabled with change tracking */}
                 {shouldShowFinalPosition && (() => {
-                  const protagonistName = activeCaseData?.protagonist || 'the protagonist';
                   const chatQuestion = activeCaseData?.chat_question || '';
                   const initialPositionText = selectedInitialPositionId
                     ? finalPositions.find((p: any) => p.position_id === selectedInitialPositionId)?.position
@@ -2181,11 +2368,14 @@ const App: React.FC = () => {
                   return (
                     <div className="p-4 bg-green-50 rounded-lg border border-green-200">
                       <div className="text-sm text-gray-700 mb-3 space-y-2">
-                        <p>{protagonistName}'s original inquiry was: <strong>{chatQuestion}</strong></p>
+                        <p>{renderBold(copy('final_position_context', { ai_name: aiName, question: chatQuestion }))}</p>
                         {initialPositionText && (
                           <p>Your initial position on this was: {initialPositionText}</p>
                         )}
-                        <p>Has your position changed based on this simulated conversation with {protagonistName}?<br />What is your <strong>final position</strong> on this issue? (click one)</p>
+                        <p>
+                          {renderBold(copy('final_position_question', { ai_name: aiName }))}
+                          <br />What is your <strong>final position</strong> on this issue? (click one)
+                        </p>
                       </div>
                       <div className="flex flex-col gap-2 items-start">
                         {finalPositions.map((pos: { position_id: number; position_name: string; position: string }) => (
@@ -2237,9 +2427,9 @@ const App: React.FC = () => {
             {/* Chat control buttons */}
             {conversationPhase === ConversationPhase.CHATTING && (chatOptions?.allow_finish_button || chatOptions?.allow_exit || chatOptions?.restart_chat) && (
               <div className="px-4 py-2 bg-white border-t border-gray-200 flex gap-2 justify-end">
-                {chatOptions?.allow_finish_button && (() => {
-                  const minExchanges = chatOptions?.require_minimum_exchanges ?? 0;
-                  const userMessageCount = messages.filter(m => m.role === MessageRole.USER).length;
+                {chatOptions?.allow_finish_button && !limitChoicePending && (() => {
+                  const minExchanges = effectiveMinExchanges;
+                  const userMessageCount = exchangesUsed;
                   const meetsMinimum = minExchanges === 0 || userMessageCount >= minExchanges;
                   const isDisabled = !meetsMinimum || isLoading;
                   const tooltipText = !meetsMinimum 
@@ -2277,8 +2467,49 @@ const App: React.FC = () => {
                 )}
               </div>
             )}
-            {/* Position Selection prompt - shown while awaiting position selection */}
-            {awaitingPositionSelection && conversationPhase === ConversationPhase.CHATTING ? (
+            {/* The AI signalled the goal was reached: finish now or keep talking */}
+            {goalOffered && !limitChoicePending && conversationPhase === ConversationPhase.CHATTING && (
+              <div className="p-4 bg-green-50 border-t border-green-200 text-center">
+                <p className="text-sm font-medium text-gray-700 mb-3">{renderBold(copy('goal_reached_bar'))}</p>
+                <div className="flex justify-center gap-3">
+                  <button
+                    onClick={() => wrapUpChat(null, 'goal')}
+                    className="px-4 py-2 text-sm font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+                  >
+                    {copy('goal_finish_button') || 'Finish and get my evaluation'}
+                  </button>
+                  <button
+                    onClick={handleKeepTalkingPastGoal}
+                    className="px-4 py-2 text-sm font-medium text-green-700 bg-white border border-green-300 rounded-lg hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+                  >
+                    {copy('goal_keep_button') || 'Keep talking'}
+                  </button>
+                </div>
+              </div>
+            )}
+            {/* Maximum Responses reached with "ask": finish now or keep talking */}
+            {limitChoicePending && conversationPhase === ConversationPhase.CHATTING ? (
+              <div className="p-4 bg-blue-50 border-t border-blue-200 text-center">
+                <p className="text-sm font-medium text-gray-700 mb-3">
+                  {copy('limit_reached', { max: maxExchanges })}
+                </p>
+                <div className="flex justify-center gap-3">
+                  <button
+                    onClick={() => wrapUpChat(null, 'max_exchanges')}
+                    className="px-4 py-2 text-sm font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+                  >
+                    Finish and get my evaluation
+                  </button>
+                  <button
+                    onClick={handleKeepTalking}
+                    className="px-4 py-2 text-sm font-medium text-blue-700 bg-white border border-blue-300 rounded-lg hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                  >
+                    Keep talking
+                  </button>
+                </div>
+              </div>
+            ) : /* Position Selection prompt - shown while awaiting position selection */
+            awaitingPositionSelection && conversationPhase === ConversationPhase.CHATTING ? (
               <div className="p-4 bg-blue-50 border-t border-blue-200">
                 <p className="text-sm font-medium text-gray-700 text-center">
                   Please select your initial position from the options above to continue the conversation.
@@ -2313,7 +2544,7 @@ const App: React.FC = () => {
               fontSizes={FONT_SIZES}
               defaultFontSize={DEFAULT_FONT_SIZE}
               caseTitle={activeCaseData?.case_title}
-              caseContent={activeCaseData?.case_content}
+              readingParts={activeCaseData?.reading_parts}
             />
           </div>
           {chatPanel}
@@ -2338,6 +2569,8 @@ const App: React.FC = () => {
           onLogout={handleStudentLogout}
           onTitleContextNav={handleRestart}
           showDetails={chatOptions?.show_evaluation_details !== false}
+          freeHints={chatOptions?.free_hints ?? 1}
+          activity={activity}
         />
         <FeedbackWidget userId={sessionUser?.id || null} />
       </>

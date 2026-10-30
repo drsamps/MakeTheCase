@@ -46,12 +46,18 @@ function safeInt(val) {
  * @returns {{ criteria, totalScore, maxScore, summary, hints, rubric_id }}
  */
 export function normalizeEvaluationResult(raw, rubric = null) {
+  // Teach-back judges also report coverage per criterion (components/CriteriaCoverage.tsx).
+  // Whitelisted rather than spread: an unrecognised status must not reach the UI, and
+  // case-chat evaluations simply never set either field.
+  const COVERAGE_STATUSES = ['met', 'partial', 'not_met'];
   const mapCriterion = (c) => ({
     criteria_id: c?.criteria_id,
     question: String(c?.question || c?.criterion || 'Question'),
     score: safeInt(c?.score),
     max_score: Number.isFinite(Number(c?.max_score)) ? Number(c.max_score) : undefined,
     feedback: String(c?.feedback || ''),
+    status: COVERAGE_STATUSES.includes(c?.status) ? c.status : undefined,
+    evidence: typeof c?.evidence === 'string' && c.evidence.trim() ? c.evidence.trim() : undefined,
   });
 
   let criteria = null;
@@ -88,7 +94,8 @@ export function normalizeEvaluationResult(raw, rubric = null) {
   const maxScore = rubric?.total_points ?? 15;
   const rubric_id = rubric?.rubric_id;
 
-  return { criteria, totalScore, maxScore, summary, hints, rubric_id };
+  // Only when reported, so a result with no touchpoints keeps exactly this shape.
+  return { criteria, totalScore, maxScore, summary, hints, rubric_id, ...(Array.isArray(raw?.touchpoints) ? { touchpoints: raw.touchpoints } : {}) };
 }
 
 /**

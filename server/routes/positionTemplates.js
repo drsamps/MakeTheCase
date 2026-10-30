@@ -1,6 +1,8 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
+import { requireAdminOrInstructor, formatAccessError } from '../middleware/instructorAccess.js';
+import { canAccessResource } from '../services/resourceAccess.js';
 
 const router = express.Router();
 
@@ -169,11 +171,30 @@ router.delete('/:id', verifyToken, requireRole(['admin']), async (req, res) => {
   }
 });
 
-// POST /api/position-templates/:id/apply/:scenarioId - Apply template to scenario (admin only)
-router.post('/:id/apply/:scenarioId', verifyToken, requireRole(['admin']), async (req, res) => {
+// POST /api/position-templates/:id/apply/:scenarioId - Apply template to scenario
+// (anyone who can edit the scenario's case; creating/deleting templates stays admin-only)
+router.post('/:id/apply/:scenarioId', verifyToken, requireAdminOrInstructor, async (req, res) => {
   try {
     const { id, scenarioId } = req.params;
     const { clear_existing = false } = req.body;
+
+    // Check the scenario exists and the caller can edit its case, before revealing
+    // anything about the template. Clearing existing positions deletes rows (and
+    // cascades to section settings), so it needs the case's 'delete' right (owner/admin).
+    const [scenario] = await pool.execute(
+      'SELECT id, case_id, scenario_name FROM case_scenarios WHERE id = ?',
+      [scenarioId]
+    );
+
+    if (scenario.length === 0) {
+      return res.status(404).json({ data: null, error: { message: 'Scenario not found' } });
+    }
+
+    const access = await canAccessResource(req, 'case', scenario[0].case_id, clear_existing ? 'delete' : 'edit');
+    if (!access.allowed) {
+      return res.status(access.reason === 'not_found' ? 404 : 403)
+        .json({ data: null, error: { message: formatAccessError(access) } });
+    }
 
     // Check if template exists
     const [template] = await pool.execute(
@@ -183,16 +204,6 @@ router.post('/:id/apply/:scenarioId', verifyToken, requireRole(['admin']), async
 
     if (template.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Template not found' } });
-    }
-
-    // Check if scenario exists
-    const [scenario] = await pool.execute(
-      'SELECT id, scenario_name FROM case_scenarios WHERE id = ?',
-      [scenarioId]
-    );
-
-    if (scenario.length === 0) {
-      return res.status(404).json({ data: null, error: { message: 'Scenario not found' } });
     }
 
     // Get template items

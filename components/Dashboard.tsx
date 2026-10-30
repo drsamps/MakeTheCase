@@ -5,6 +5,11 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api, getApiBaseUrl, getImpersonationId, setImpersonationId } from '../services/apiClient'; // Dashboard with tiles/list view toggle
 import { fetchSectionCaseSetting } from '../services/sectionCaseSettings';
 import { detectProvider } from '../services/llmService';
+import { usesAudiencePersonas, isAudiencePersonaId, crossModePersonaIds, validateChatOptionsForSave } from '../teachBack';
+import { DEFAULT_MIN_OPENING_WORDS, minOpeningWords } from '../utils/openingWords.js';
+import { DEFAULT_ACTIVITY_TYPE } from '../utils/activityTypes.js';
+import { activityTypeInfo, usableActivityTypes, useActivityTypeList } from '../services/activityTypeList';
+import { DownloadCasesModal, InstallCasesModal } from './CasePackages';
 import { PromptManager } from './PromptManager';
 import { SettingsManager } from './SettingsManager';
 import { LoggingManager } from './LoggingManager';
@@ -41,6 +46,7 @@ import {
   useSemesterFilterState,
 } from './courses/semesterFilter';
 import BackupManager from './BackupManager';
+import ActivityTypeManager from './ActivityTypeManager';
 import DashboardHome from './DashboardHome';
 import WelcomeScreen from './WelcomeScreen';
 import Analytics from './Analytics';
@@ -48,8 +54,9 @@ import PositionAnalytics from './PositionAnalytics';
 import IssueAnalytics from './IssueAnalytics';
 import SectionResultsSummary from './SectionResultsSummary';
 import HelpTooltip from './ui/HelpTooltip';
+import InlineStatus from './ui/InlineStatus';
 import ModelsList, { defaultRank, defaultRankLabel, type Model, type ModelTestOutcome, type ModelUsage } from './models/ModelsList';
-import { ChatOptionsHelp, PersonasHelp } from '../help/dashboard';
+import { CasePackagesHelp, ChatOptionsHelp, PersonasHelp, TeachBackHelp } from '../help/dashboard';
 import { hasAccess } from '../utils/permissions';
 import { personLabel, caseLabel, quote } from '../utils/confirmLabels';
 import {
@@ -97,7 +104,7 @@ type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live' | 'ai-usage';
 type ResultsSubTab = 'responses' | 'positions' | 'issues' | 'section-results';
 type SetupSubTab = 'personas' | 'apikeys' | 'teams' | 'rubrics';
-type AdminSubTab = 'instructors' | 'settings' | 'models' | 'prompts' | 'admins' | 'logging' | 'backup' | 'shadow';
+type AdminSubTab = 'instructors' | 'settings' | 'models' | 'prompts' | 'admins' | 'logging' | 'backup' | 'activity_types' | 'shadow';
 type RubricsSubTab = 'criteria' | 'rubrics';
 type FeedbackSubTab = 'mine' | 'inbox' | 'summary';
 
@@ -161,7 +168,6 @@ interface StudentDetail {
   case_id: string | null;
   case_title: string | null;
   evaluation_id: string | null;
-  case_chat_id: string | null;
   allow_rechat: boolean;
 }
 
@@ -187,6 +193,12 @@ interface Case {
   case_id: string;
   case_title: string;
   case_version?: string | null;
+  activity_type?: string;
+  goal?: string | null;
+  // The case's own default settings (server/services/activityDefaults.js)
+  has_default_settings?: boolean | number;
+  default_settings_source?: string | null;
+  default_settings_saved_at?: string | null;
   base_scenario_id?: number | null;
   protagonist?: string | null;
   protagonist_initials?: string | null;
@@ -289,6 +301,8 @@ const SortablePositionItem: React.FC<SortablePositionItemProps> = ({ position, s
 };
 
 const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
+  // Activity type labels, traits and the case form's picker (services/activityTypeList.ts).
+  useActivityTypeList();
   // New workflow-centric navigation state
   const [primaryTab, setPrimaryTab] = useState<PrimaryTab>('home');
   const [homeSubTab, setHomeSubTab] = useState<HomeSubTab>('welcome');
@@ -378,7 +392,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     };
     const ADMIN: Record<AdminSubTab, string> = {
       instructors: 'Instructors', settings: 'Settings', models: 'Models', prompts: 'Prompts',
-      admins: 'Admins', logging: 'Logging', backup: 'Backup', shadow: 'Shadow-Owned',
+      admins: 'Admins', logging: 'Logging', backup: 'Backup', activity_types: 'Activity Types', shadow: 'Shadow-Owned',
     };
 
     const parts: string[] = ['Instructor Dashboard', PRIMARY_LABELS[primaryTab]];
@@ -450,7 +464,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const hasAdminAccess = useCallback(() => {
     return hasAccess(user, 'instructors') || hasAccess(user, 'prompts') ||
            hasAccess(user, 'models') || hasAccess(user, 'settings') ||
-           hasAccess(user, 'backups');
+           hasAccess(user, 'backups') || hasAccess(user, 'activity_types');
   }, [user]);
 
   const hasSetupAccess = useCallback(() => {
@@ -580,6 +594,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     case_id: '',
     case_title: '',
     case_version: '',
+    activity_type: DEFAULT_ACTIVITY_TYPE as string,
+    goal: '',
     protagonist: '',
     protagonist_initials: '',
     chat_topic: '',
@@ -589,13 +605,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     team_shares: [] as { team_id: number; access_level?: 'view' | 'edit' }[]
   });
   const [isSavingCase, setIsSavingCase] = useState(false);
+  // Activity packages (components/CasePackages.tsx): cases ticked for download, and the two dialogs.
+  const [selectedCaseIds, setSelectedCaseIds] = useState<Set<string>>(new Set());
+  const [downloadingCaseIds, setDownloadingCaseIds] = useState<string[] | null>(null);
+  const [showInstallCases, setShowInstallCases] = useState(false);
   const [goToScenariosAfterCreate, setGoToScenariosAfterCreate] = useState(false);
   const [caseFileUpload, setCaseFileUpload] = useState<{ type: 'case' | 'teaching_note'; file: File | null }>({ type: 'case', file: null });
   const [isUploadingCaseFile, setIsUploadingCaseFile] = useState(false);
 
   // Scenario management
   const [showScenarioManager, setShowScenarioManager] = useState(false);
-  const [managingScenarioCase, setManagingScenarioCase] = useState<Case | null>(null);
+  const [managingScenarioCase, setManagingScenarioCase] = useState<Pick<Case, 'case_id' | 'case_title' | 'activity_type'> | null>(null);
 
   // Section-Case management
   const [showSectionCasesModal, setShowSectionCasesModal] = useState(false);
@@ -664,6 +684,36 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const [isLoadingPositionSettings, setIsLoadingPositionSettings] = useState(false);
   const [isSavingPositionSettings, setIsSavingPositionSettings] = useState(false);
 
+  // Last loaded/saved copies of the Scenarios and Positions panel settings. The Save
+  // buttons are green only while the edited values differ from these.
+  const [savedScenarioSettings, setSavedScenarioSettings] = useState(scenarioSettings);
+  const [savedPositionSettings, setSavedPositionSettings] = useState(positionSettings);
+  // Save result shown beside the button that was clicked ('position' = Save Position
+  // Settings, 'settings' = Save Settings).
+  const [scenarioSaveStatus, setScenarioSaveStatus] = useState<{
+    where: 'position' | 'settings';
+    kind: 'saved' | 'error';
+    text: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (scenarioSaveStatus?.kind !== 'saved') return;
+    const timer = setTimeout(() => setScenarioSaveStatus(null), 3000);
+    return () => clearTimeout(timer);
+  }, [scenarioSaveStatus]);
+
+  const positionSettingsDirty =
+    positionSettings.position_tracking_enabled !== savedPositionSettings.position_tracking_enabled ||
+    positionSettings.position_capture_method !== savedPositionSettings.position_capture_method ||
+    positionSettings.track_position_change !== savedPositionSettings.track_position_change;
+  // Save Settings also writes the position settings, but only when positions exist.
+  const scenarioPanelDirty =
+    // Boolean(): the API returns these two as 0/1, the checkboxes set true/false.
+    Boolean(scenarioSettings.use_scenarios) !== Boolean(savedScenarioSettings.use_scenarios) ||
+    scenarioSettings.selection_mode !== savedScenarioSettings.selection_mode ||
+    Boolean(scenarioSettings.require_order) !== Boolean(savedScenarioSettings.require_order) ||
+    (assignmentPositions.length > 0 && positionSettingsDirty);
+
   // Drag-and-drop sensors for position reordering
   const positionSensors = useSensors(
     useSensor(PointerSensor, {
@@ -678,6 +728,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   // Default chat options
   const defaultChatOptions = {
+    min_opening_words: DEFAULT_MIN_OPENING_WORDS,
     hints_allowed: 3,
     free_hints: 1,
     ask_for_feedback: false,
@@ -699,6 +750,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     restart_chat: false,
     allow_exit: false,
     require_minimum_exchanges: 0,
+    max_exchanges: 0,
+    max_exchanges_action: 'end',
     max_message_length: 0,
     disable_position_tracking: false
   };
@@ -1168,7 +1221,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     setError(null);
     setStudentDetails([]);
   
-    let studentsData: { id: string, full_name: string, persona: string | null, finished_at: string | null, section_id: string | null, created_at: string | null }[] | null = null;
+    let studentsData: { id: string, full_name: string, favorite_persona: string | null, finished_at: string | null, section_id: string | null, created_at: string | null }[] | null = null;
     let studentsError: any = null;
 
     if (sectionId === 'other_courses') {
@@ -1213,7 +1266,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     } else {
       const { data, error } = await api
         .from('students')
-        .select('id, full_name, persona, finished_at, section_id, created_at')
+        .select('id, full_name, favorite_persona, finished_at, section_id, created_at')
         .eq('section_id', sectionId);
       studentsData = data as any;
       studentsError = error;
@@ -1237,7 +1290,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     // If filtering by case, only fetch evaluations for that specific case
     let evaluationsQuery = api
       .from('evaluations')
-      .select('id, student_id, case_id, score, hints, helpful, created_at, chat_model, super_model, summary, criteria, transcript, liked, improve, allow_rechat, persona')
+      .select('id, student_id, case_id, score, hints, helpful, created_at, chat_model, super_model, summary, criteria, liked, improve, allow_rechat, persona')
       .in('student_id', studentIds);
     
     if (caseIdFilter && caseIdFilter !== 'all') {
@@ -1248,7 +1301,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     
     // Also fetch cases for this section for the filter dropdown
     try {
-      const casesResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases`);
+      const token = localStorage.getItem('admin_auth_token');
+      const casesResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
       const casesResult = await casesResponse.json();
       if (casesResult.data) {
         setSectionCasesForFilter(casesResult.data);
@@ -1271,7 +1327,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         super_model: null,
         summary: null,
         criteria: null,
-        transcript: null,
         liked: null,
         improve: null,
         created_at: student.created_at,
@@ -1317,7 +1372,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               super_model: evaluation.super_model ?? null,
               summary: evaluation.summary ?? null,
               criteria: evaluation.criteria ?? null,
-              transcript: evaluation.transcript ?? null,
               liked: evaluation.liked ?? null,
               improve: evaluation.improve ?? null,
               created_at: evaluation.created_at,
@@ -1348,7 +1402,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       super_model: null,
       summary: null,
       criteria: null,
-      transcript: null,
       liked: null,
       improve: null,
       created_at: student.created_at,
@@ -1967,13 +2020,53 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
+  /**
+   * Activity type badge, shown for every type other than the default case chat. The
+   * activities look identical in every list until you open them, so the badge is the only
+   * thing telling an instructor which one a case runs. The type is the case's
+   * (`activity_type` on case, assignment and version rows).
+   */
+  const renderActivityTypeBadge = (activityType?: string | null) => {
+    const type = activityTypeInfo(activityType);
+    if (type.id === DEFAULT_ACTIVITY_TYPE) return null;
+    return (
+      <span
+        className="text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded"
+        title={type.summary}
+      >
+        {type.label}
+      </span>
+    );
+  };
+
+  // The activity type of the case whose chat options are open: in the section's case list
+  // (Manage Cases), else on the Chat Options tab. Null while a default is being edited,
+  // because a default is shared by cases of every type.
+  const editingActivityType: string | null = (() => {
+    const caseId = managingSectionCases ? expandedCaseOptions : (isEditingDefault ? null : chatOptionsCase);
+    if (!caseId) return null;
+    return sectionCasesList.find((sc: any) => sc.case_id === caseId)?.activity_type ?? null;
+  })();
+  // Activities whose AI is an audience the student picks (Teach-back and its clones) offer audiences.
+  const editingTeachBack = usesAudiencePersonas(editingActivityType);
+
   const renderPersonaChatOptionsFields = (disabled = false) => {
     if (!editingChatOptions) return null;
-    const enabledPersonas = personasList.filter((p) => p.enabled);
-    const { allowAll, selectedIds } = resolveAllowedPersonasForForm(
+    // Teach-back offers AUDIENCES (audience-*), case chat offers protagonist
+    // personalities. Filtering both the checkbox list and the default dropdown keeps an
+    // instructor from ever offering "Sycophantic" as a grandmother, or vice versa.
+    const teachBack = editingTeachBack;
+    const allEnabled = personasList.filter((p) => p.enabled);
+    const enabledPersonas = allEnabled.filter((p) => isAudiencePersonaId(p.persona_id) === teachBack);
+    const resolved = resolveAllowedPersonasForForm(
       editingChatOptions.allowed_personas,
       enabledPersonas
     );
+    const allowAll = resolved.allowAll;
+    // Ids of the other activity are dropped from the working selection, so the next tick
+    // or untick writes a list without them.
+    const crossModeSelected = crossModePersonaIds(editingChatOptions, editingActivityType);
+    const selectedIds = resolved.selectedIds.filter((id) => !crossModeSelected.includes(id));
     const defaultOptions = personasForDefaultDropdown(enabledPersonas, editingChatOptions.allowed_personas);
 
     const updateAllowed = (nextAllowAll: boolean, nextSelected: string[]) => {
@@ -1989,7 +2082,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     return (
       <>
         <div className="mb-4">
-          <label className="block text-xs font-medium text-gray-700 mb-2">Allowed Personas</label>
+          <label className="block text-xs font-medium text-gray-700 mb-2">
+            {teachBack ? 'Allowed Audiences' : 'Allowed Personas'}
+          </label>
+          {teachBack && enabledPersonas.length === 0 && (
+            <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2 mb-2">
+              No audience personas exist yet. Create them under <strong>Setup &rarr; Personas</strong> with
+              ids beginning <code>audience-</code> (see docs/teach-back-setup.md), or students will have
+              nobody to explain to.
+            </p>
+          )}
+          {crossModeSelected.length > 0 && (
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 mb-2">
+              This list still names {teachBack ? 'case-chat personalities' : 'teach-back audiences'} that
+              this activity will ignore: <code>{crossModeSelected.join(', ')}</code>. Changing the
+              selection below clears them.
+            </p>
+          )}
           <label className={`flex items-center gap-2 text-sm mb-2 ${disabled ? 'text-gray-400' : ''}`}>
             <input
               type="checkbox"
@@ -2028,10 +2137,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               ))}
             </div>
           )}
-          <p className="text-xs text-gray-500 mt-1">Leave &quot;All enabled&quot; checked to allow every enabled persona, including new clones.</p>
+          <p className="text-xs text-gray-500 mt-1">
+            Leave &quot;All enabled&quot; checked to allow every enabled {teachBack ? 'audience' : 'persona'}, including new clones.
+          </p>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-700 mb-1">Default Persona</label>
+          <label className="block text-xs font-medium text-gray-700 mb-1">
+            {teachBack ? 'Default Audience' : 'Default Persona'}
+          </label>
           <select
             value={editingChatOptions.default_persona ?? defaultOptions[0]?.persona_id ?? 'moderate'}
             onChange={(e) => setEditingChatOptions({ ...editingChatOptions, default_persona: e.target.value })}
@@ -2101,6 +2214,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         case_id: caseItem.case_id,
         case_title: caseItem.case_title,
         case_version: caseItem.case_version || '',
+        activity_type: caseItem.activity_type || DEFAULT_ACTIVITY_TYPE,
+        goal: caseItem.goal || '',
         protagonist: caseItem.protagonist || '',
         protagonist_initials: caseItem.protagonist_initials || '',
         chat_topic: caseItem.chat_topic || '',
@@ -2115,6 +2230,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         case_id: '',
         case_title: '',
         case_version: '',
+        activity_type: DEFAULT_ACTIVITY_TYPE,
+        goal: '',
         protagonist: '',
         protagonist_initials: '',
         chat_topic: '',
@@ -2141,6 +2258,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         const { error } = await api.from('cases').update({
           case_title: caseForm.case_title,
           case_version: caseForm.case_version || null,
+          activity_type: caseForm.activity_type,
+          goal: caseForm.goal.trim() || null,
           protagonist: caseForm.protagonist || null,
           protagonist_initials: caseForm.protagonist_initials || null,
           chat_topic: caseForm.chat_topic || null,
@@ -2153,6 +2272,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           case_id: caseForm.case_id,
           case_title: caseForm.case_title,
           case_version: caseForm.case_version || null,
+          activity_type: caseForm.activity_type,
+          goal: caseForm.goal.trim() || null,
           protagonist: caseForm.protagonist || null,
           protagonist_initials: caseForm.protagonist_initials || null,
           chat_topic: caseForm.chat_topic || null,
@@ -2201,6 +2322,44 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     } catch (err: any) {
       setError(err.message || 'Failed to delete case');
     }
+  };
+
+  // A copy is a new private case with the same documents, scenarios and default settings.
+  // Nothing that is assigned changes, and the copy is assigned nowhere.
+  const handleDuplicateCase = async (caseItem: Case) => {
+    if (!confirm(`Make a copy of ${caseLabel(caseItem.case_title, caseItem.case_id)}?\n\nThe copy is a new private case with the same documents, scenarios and default settings. It is not assigned to any course or section.`)) return;
+    const { data, error } = await api.post<{ case_id: string; case_title: string }>(`/cases/${encodeURIComponent(caseItem.case_id)}/duplicate`);
+    if (error || !data) {
+      setError(error?.message || 'Failed to copy the case');
+      return;
+    }
+    setSuccessMessage(`Copied as "${data.case_title}" (${data.case_id}).`);
+    setTimeout(() => setSuccessMessage(null), 8000);
+    fetchCases();
+  };
+
+  const toggleCaseSelected = (caseId: string) => {
+    setSelectedCaseIds((current) => {
+      const next = new Set(current);
+      if (next.has(caseId)) next.delete(caseId);
+      else next.add(caseId);
+      return next;
+    });
+  };
+
+  // Default settings are copied when the case is attached, so clearing them changes nothing
+  // that is already assigned.
+  const handleClearCaseDefaults = async (caseItem: Case) => {
+    if (!confirm(`Clear the default settings of ${caseLabel(caseItem.case_title, caseItem.case_id)}?\n\nCourses and sections that already have this case keep their settings.`)) return;
+    const { error } = await api.delete(`/cases/${encodeURIComponent(caseItem.case_id)}/defaults`);
+    if (error) {
+      setError(error.message || 'Failed to clear the default settings');
+      return;
+    }
+    setEditingCase((current) => (current && current.case_id === caseItem.case_id
+      ? { ...current, has_default_settings: false, default_settings_source: null, default_settings_saved_at: null }
+      : current));
+    fetchCases();
   };
 
   const handleToggleCaseEnabled = async (caseItem: Case) => {
@@ -2361,6 +2520,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   const handleSaveChatOptions = async (sectionId: string, caseId: string) => {
+    const caseActivityType = sectionCasesList.find((sc: any) => sc.case_id === caseId)?.activity_type;
+    const invalid = validateChatOptionsForSave(editingChatOptions, caseActivityType);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
     setIsSavingChatOptions(true);
     try {
       const token = localStorage.getItem('admin_auth_token');
@@ -2518,6 +2683,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Save position settings for section-case
   const handleSavePositionSettings = async (sectionId: string, caseId: string) => {
     setIsSavingPositionSettings(true);
+    setScenarioSaveStatus(null);
     try {
       const token = localStorage.getItem('admin_auth_token');
 
@@ -2534,12 +2700,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         throw new Error(result.error?.message || 'Failed to update position settings');
       }
       setExpandedPositionSettings(null);
+      setSavedPositionSettings(positionSettings);
+      setScenarioSaveStatus({ where: 'position', kind: 'saved', text: 'Saved!' });
       // Refresh the section cases list
       if (selectedAssignmentSection) {
         fetchSectionCases(selectedAssignmentSection);
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to update position settings');
+      setScenarioSaveStatus({ where: 'position', kind: 'error', text: err.message || 'Failed to update position settings' });
     } finally {
       setIsSavingPositionSettings(false);
     }
@@ -2625,8 +2793,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     }
   };
 
+  // Scenario and position reads refuse callers who can't see or teach the case (403/404).
+  // Throw so the caller shows the refusal instead of an empty list ("no scenarios").
+  const readScenarioJson = async (response: Response, what: string) => {
+    const result = await response.json().catch(() => null);
+    if (!response.ok) {
+      const reason = typeof result?.error === 'string' ? result.error : result?.error?.message;
+      throw new Error(`Couldn't load ${what}${reason ? ` (${reason})` : ''}.`);
+    }
+    return result;
+  };
+
   // Expand/collapse scenario assignment panel
   const handleExpandScenarios = async (sectionId: string, caseId: string, sectionCase: any) => {
+    setScenarioSaveStatus(null);
     if (expandedScenarios === caseId) {
       setExpandedScenarios(null);
       setAvailableScenariosForCase([]);
@@ -2647,7 +2827,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const scenariosResponse = await fetch(`${getApiBaseUrl()}/cases/${caseId}/scenarios`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
-      const scenariosResult = await scenariosResponse.json();
+      const scenariosResult = await readScenarioJson(scenariosResponse, "this case's scenarios");
       const allScenarios = scenariosResult.data || [];
       setAvailableScenariosForCase(allScenarios);
 
@@ -2655,23 +2835,25 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const assignedResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/scenarios`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
-      const assignedResult = await assignedResponse.json();
+      const assignedResult = await readScenarioJson(assignedResponse, "this section's scenarios");
       // API returns { data: { scenarios: [...], selection_mode, ... } }
       const assignedData = assignedResult.data || {};
       setAssignedScenarios(assignedData.scenarios || []);
 
       // Set current settings from API response (more reliable than sectionCase object)
-      setScenarioSettings({
+      const loadedScenarioSettings = {
         use_scenarios: assignedData.use_scenarios ?? sectionCase.use_scenarios ?? false,
         selection_mode: assignedData.selection_mode || sectionCase.selection_mode || 'student_choice',
         require_order: assignedData.require_order ?? sectionCase.require_order ?? false
-      });
+      };
+      setScenarioSettings(loadedScenarioSettings);
+      setSavedScenarioSettings(loadedScenarioSettings);
 
       // Also load positions for this assignment (needed for displaying under scenarios)
       const positionsResponse = await fetch(`${getApiBaseUrl()}/sections/${sectionId}/cases/${caseId}/positions`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
-      const positionsResult = await positionsResponse.json();
+      const positionsResult = await readScenarioJson(positionsResponse, "this section's positions");
       const loadedPositions = positionsResult.data || [];
       setAssignmentPositions(loadedPositions);
 
@@ -2681,15 +2863,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       });
       const settingsResult = await settingsResponse.json();
       if (settingsResult.data) {
-        setPositionSettings({
+        const loadedPositionSettings = {
           // Reflect persisted DB value; do not auto-enable when positions exist.
           position_tracking_enabled: isEnabledFlag(settingsResult.data.position_tracking_enabled),
           position_capture_method: settingsResult.data.position_capture_method || 'explicit',
           track_position_change: !isDisabledFlag(settingsResult.data.track_position_change)
-        });
+        };
+        setPositionSettings(loadedPositionSettings);
+        setSavedPositionSettings(loadedPositionSettings);
+      } else {
+        // Nothing loaded: the form keeps what it shows, so that is the baseline.
+        setSavedPositionSettings(positionSettings);
       }
     } catch (err) {
       console.error('Failed to load scenario assignments:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load scenario assignments');
       setAvailableScenariosForCase([]);
       setAssignedScenarios([]);
       setAssignmentPositions([]);
@@ -2744,8 +2932,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   };
 
   // View scenario details in modal
-  const handleViewScenario = async (scenario: any, caseId: string, caseTitle: string) => {
-    setViewingScenario({ ...scenario, case_id: caseId, case_title: caseTitle });
+  const handleViewScenario = async (scenario: any, caseId: string, caseTitle: string, activityType?: string) => {
+    setViewingScenario({ ...scenario, case_id: caseId, case_title: caseTitle, activity_type: activityType });
     setViewingScenarioPositions([]);
     setIsLoadingViewScenarioPositions(true);
 
@@ -2754,10 +2942,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       const response = await fetch(`${getApiBaseUrl()}/cases/${caseId}/scenarios/${scenario.id}/positions`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
-      const result = await response.json();
+      const result = await readScenarioJson(response, "this scenario's positions");
       setViewingScenarioPositions(result.data || []);
     } catch (err) {
       console.error('Failed to fetch scenario positions:', err);
+      setError(err instanceof Error ? err.message : 'Failed to fetch scenario positions');
     } finally {
       setIsLoadingViewScenarioPositions(false);
     }
@@ -2766,6 +2955,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Save scenario selection mode settings
   const handleSaveScenarioSettings = async (sectionId: string, caseId: string) => {
     setIsSavingScenarioAssignment(true);
+    setScenarioSaveStatus(null);
     try {
       const token = localStorage.getItem('admin_auth_token');
 
@@ -2782,6 +2972,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       if (!response.ok || result.error) {
         throw new Error(result.error?.message || 'Failed to update scenario settings');
       }
+      // Recorded per request, so a failure below leaves only the unsaved half pending.
+      setSavedScenarioSettings(scenarioSettings);
 
       // Also save position tracking settings if there are positions defined
       if (assignmentPositions.length > 0) {
@@ -2797,14 +2989,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         if (!positionResponse.ok || positionResult.error) {
           throw new Error(positionResult.error?.message || 'Failed to update position settings');
         }
+        setSavedPositionSettings(positionSettings);
       }
+      setScenarioSaveStatus({ where: 'settings', kind: 'saved', text: 'Saved!' });
 
       // Refresh section cases
       if (expandedAssignmentSection) {
         fetchSectionCases(expandedAssignmentSection);
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to update scenario settings');
+      setScenarioSaveStatus({ where: 'settings', kind: 'error', text: err.message || 'Failed to update scenario settings' });
     } finally {
       setIsSavingScenarioAssignment(false);
     }
@@ -3929,6 +4123,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           <p className="text-sm text-gray-500">{casesList.length} case{casesList.length !== 1 ? 's' : ''} available</p>
         </div>
         <div className="flex items-center gap-2">
+          <HelpTooltip title="Downloading and Installing Cases">
+            <CasePackagesHelp />
+          </HelpTooltip>
+          {selectedCaseIds.size > 0 && (
+            <button
+              onClick={() => setDownloadingCaseIds(casesList.filter((c) => selectedCaseIds.has(c.case_id)).map((c) => c.case_id))}
+              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              Download selected ({selectedCaseIds.size})
+            </button>
+          )}
+          <button
+            onClick={() => setShowInstallCases(true)}
+            title="Install cases from a package downloaded from a MakeTheCase server"
+            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          >
+            Install from file
+          </button>
           <button
             onClick={() => handleOpenCaseModal()}
             className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
@@ -3948,6 +4160,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       </div>
 
+      {/* While the case form is open it shows the error itself (it covers this banner). */}
+      {!showCaseModal && renderDismissibleErrorBanner('mb-4 bg-red-100 border border-red-200 text-red-700 p-4 rounded-lg')}
+      {successMessage && <div className="mb-4 bg-green-100 border border-green-200 text-green-700 p-4 rounded-lg">{successMessage}</div>}
+
       {isLoadingCases ? (
         <div className="text-center py-12">
           <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
@@ -3962,6 +4178,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
+                <th className="pl-4 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    className="rounded"
+                    aria-label="Select all cases"
+                    title="Select all, to download them as one package"
+                    checked={casesList.length > 0 && casesList.every((c) => selectedCaseIds.has(c.case_id))}
+                    onChange={(e) => setSelectedCaseIds(e.target.checked ? new Set(casesList.map((c) => c.case_id)) : new Set())}
+                  />
+                </th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Title</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Version</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
@@ -3972,8 +4198,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <tbody className="divide-y divide-gray-200">
               {casesList.map((caseItem) => (
                 <tr key={caseItem.case_id} className={!caseItem.enabled ? 'bg-gray-50 opacity-60' : 'hover:bg-gray-50'}>
+                  <td className="pl-4 py-3 w-8">
+                    <input
+                      type="checkbox"
+                      className="rounded"
+                      aria-label={`Select ${caseItem.case_title}`}
+                      checked={selectedCaseIds.has(caseItem.case_id)}
+                      onChange={() => toggleCaseSelected(caseItem.case_id)}
+                    />
+                  </td>
                   <td className="px-4 py-3">
-                    <div className="text-sm font-medium text-gray-900">{caseItem.case_title}</div>
+                    <div className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                      <span>{caseItem.case_title}</span>
+                      {renderActivityTypeBadge(caseItem.activity_type)}
+                    </div>
                     <div className="text-xs text-gray-400">
                       {caseItem.case_id}
                       {caseItem.visibility && (
@@ -4038,6 +4276,20 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-teal-600 border-teal-200 hover:bg-teal-50"
                       >
                         Scenarios
+                      </button>
+                      <button
+                        onClick={() => setDownloadingCaseIds([caseItem.case_id])}
+                        title="Download this case as a package to install on another MakeTheCase server"
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                      >
+                        Download
+                      </button>
+                      <button
+                        onClick={() => handleDuplicateCase(caseItem)}
+                        title="Make a copy of this case, for example to run a different activity on the same reading"
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                      >
+                        Copy
                       </button>
                       <button
                         onClick={() => handleDeleteCase(caseItem)}
@@ -4715,6 +4967,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           <div className="flex items-center gap-2">
                             <span className="font-medium text-gray-900">{sc.case_title}</span>
                             <span className="text-sm text-gray-500">({sc.case_id})</span>
+                            {renderActivityTypeBadge(sc.activity_type)}
                             {renderCaseSettingsSourceChip(sc, getSelectedSection()?.course_id
                               ? () => openCourseAssignments(getSelectedSection()?.course_id)
                               : undefined)}
@@ -4846,7 +5099,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                                     </label>
                                                     <button
                                                       type="button"
-                                                      onClick={() => handleViewScenario(scenario, sc.case_id, sc.case_title)}
+                                                      onClick={() => handleViewScenario(scenario, sc.case_id, sc.case_title, sc.activity_type)}
                                                       className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
                                                     >
                                                       (view details)
@@ -4951,7 +5204,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                             onClick={() => {
                                               setPrimaryTab('content');
                                               setContentSubTab('cases');
-                                              setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title } as Case);
+                                              setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title, activity_type: sc.activity_type });
                                               setShowScenarioManager(true);
                                               setExpandedScenarios(null);
                                             }}
@@ -4976,10 +5229,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                           onChange={(e) => setPositionSettings({...positionSettings, position_capture_method: e.target.value})}
                                           className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
                                         >
-                                          <option value="explicit">Student selects position</option>
-                                          <option value="ai_inferred">AI infers from conversation</option>
-                                          <option value="instructor_manual">Instructor assigns after review</option>
-                                          <option value="none">No position capture</option>
+                                          {[
+                                            ['explicit', 'Student selects position'],
+                                            ['ai_inferred', 'AI infers from conversation'],
+                                            ['instructor_manual', 'Instructor assigns after review'],
+                                            ['none', 'No position capture'],
+                                            ['assigned', 'Server assigns a side (balanced)'],
+                                          ].filter(([value]) => activityTypeInfo(sc.activity_type).captureMethods.includes(value)).map(([value, label]) => (
+                                            <option key={value} value={value}>{label}</option>
+                                          ))}
                                         </select>
                                       </div>
 
@@ -5028,7 +5286,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                             onClick={() => {
                                               setPrimaryTab('content');
                                               setContentSubTab('cases');
-                                              setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title } as Case);
+                                              setManagingScenarioCase({ case_id: sc.case_id, case_title: sc.case_title, activity_type: sc.activity_type });
                                               setShowScenarioManager(true);
                                               setExpandedScenarios(null);
                                             }}
@@ -5044,11 +5302,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
                                   {/* Save Position Settings Button */}
                                   {assignmentPositions.length > 0 && (
-                                    <div className="flex justify-end pt-2">
+                                    <div className="flex flex-wrap justify-end items-center gap-2 pt-2">
+                                      {scenarioSaveStatus?.where === 'position' && !(scenarioSaveStatus.kind === 'saved' && positionSettingsDirty) && (
+                                        <InlineStatus kind={scenarioSaveStatus.kind} text={scenarioSaveStatus.text} />
+                                      )}
                                       <button
                                         onClick={() => handleSavePositionSettings(selectedAssignmentSection!, sc.case_id)}
-                                        disabled={isSavingPositionSettings}
-                                        className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50"
+                                        disabled={isSavingPositionSettings || !positionSettingsDirty}
+                                        title={positionSettingsDirty ? undefined : 'No changes to save'}
+                                        className={`px-3 py-1.5 text-xs font-medium text-white rounded ${
+                                          positionSettingsDirty
+                                            ? 'bg-green-600 hover:bg-green-700 disabled:opacity-50'
+                                            : 'bg-gray-400 cursor-not-allowed'
+                                        }`}
                                       >
                                         {isSavingPositionSettings ? 'Saving...' : 'Save Position Settings'}
                                       </button>
@@ -5057,7 +5323,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                 </div>
 
                                 {/* Action Buttons */}
-                                <div className="flex justify-end gap-2 pt-2 border-t">
+                                <div className="flex flex-wrap justify-end items-center gap-2 pt-2 border-t">
+                                  {scenarioSaveStatus?.where === 'settings' && !(scenarioSaveStatus.kind === 'saved' && scenarioPanelDirty) && (
+                                    <InlineStatus kind={scenarioSaveStatus.kind} text={scenarioSaveStatus.text} />
+                                  )}
                                   <button
                                     onClick={() => { setExpandedScenarios(null); }}
                                     className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-100"
@@ -5066,8 +5335,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                                   </button>
                                   <button
                                     onClick={() => handleSaveScenarioSettings(selectedAssignmentSection!, sc.case_id)}
-                                    disabled={isSavingScenarioAssignment}
-                                    className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50"
+                                    disabled={isSavingScenarioAssignment || !scenarioPanelDirty}
+                                    title={scenarioPanelDirty ? undefined : 'No changes to save'}
+                                    className={`px-3 py-1.5 text-xs font-medium text-white rounded ${
+                                      scenarioPanelDirty
+                                        ? 'bg-green-600 hover:bg-green-700 disabled:opacity-50'
+                                        : 'bg-gray-400 cursor-not-allowed'
+                                    }`}
                                   >
                                     {isSavingScenarioAssignment ? 'Saving...' : 'Save Settings'}
                                   </button>
@@ -5367,7 +5641,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     return sectionCasesList.find((sc: any) => sc.case_id === chatOptionsCase);
   };
 
-  const goToCaseScenarios = (sectionCase?: { case_id: string; case_title?: string } | null) => {
+  const goToCaseScenarios = (sectionCase?: { case_id: string; case_title?: string; activity_type?: string } | null) => {
     setPrimaryTab('content');
     setContentSubTab('cases');
     if (casesList.length === 0) fetchCases();
@@ -5375,18 +5649,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       setManagingScenarioCase({
         case_id: sectionCase.case_id,
         case_title: sectionCase.case_title || sectionCase.case_id,
-        enabled: true,
-      } as Case);
+        activity_type: sectionCase.activity_type,
+      });
       setShowScenarioManager(true);
     }
   };
 
-  // Every scenario write route is requireRole(['admin']) (server/routes/scenarios.js), so only
-  // link admins into the editor — an instructor following the link would 403 on save.
+  // Scenario writes follow the case (requireCaseAccess(…, 'edit') in server/routes/scenarios.js),
+  // so anyone here may open the editor; ScenarioManager explains a refused save to a non-editor.
   const renderScenariosLocationLink = (sectionCase?: { case_id: string; case_title?: string } | null) => {
-    if (user?.role !== 'admin') {
-      return <strong>Content &gt; Cases &gt; Scenarios</strong>;
-    }
     return (
       <button
         type="button"
@@ -5507,6 +5778,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Handle saving chat options as defaults
   const handleSaveAsDefaults = async (forSection: boolean) => {
     if (!editingChatOptions) return;
+    const invalid = validateChatOptionsForSave(editingChatOptions);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
 
     const description = forSection
       ? `section "${assignmentsSectionsList.find((s: any) => s.section_id === chatOptionsSection)?.section_title || chatOptionsSection}"`
@@ -5546,6 +5822,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   // Handle saving the default directly (when in defaults editing mode)
   const handleSaveDefault = async () => {
     if (!editingChatOptions) return;
+    const invalid = validateChatOptionsForSave(editingChatOptions);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
 
     setIsSavingChatOptions(true);
     try {
@@ -5723,7 +6004,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               )}
               {sectionCasesList.map((sc: any) => (
                 <option key={sc.case_id} value={sc.case_id}>
-                  {sc.case_title} ({sc.case_id})
+                  {sc.case_title} ({sc.case_id}){activityTypeInfo(sc.activity_type).id !== DEFAULT_ACTIVITY_TYPE ? ` - ${activityTypeInfo(sc.activity_type).label}` : ''}
                 </option>
               ))}
             </select>
@@ -5761,8 +6042,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 )}
               </>
             ) : (
-              <h3 className="font-medium text-gray-900">
-                Chat Options for {getSelectedChatOptionsCase()?.case_title}
+              <h3 className="font-medium text-gray-900 flex items-center gap-2">
+                <span>Chat Options for {getSelectedChatOptionsCase()?.case_title}</span>
+                {renderActivityTypeBadge(editingActivityType)}
               </h3>
             )}
           </div>
@@ -5869,6 +6151,66 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               }
               return null;
             })()}
+
+            {/* Activity type. Deliberately ABOVE the categories, not inside one: it decides
+                what every option below it means, and which of them apply at all. It belongs to
+                the case (Content > Cases), so it is shown here but not edited here. A default
+                has no type: it is shared by cases of every type. */}
+            {editingChatOptions && (
+            <div className="mb-4 p-3 border border-purple-200 bg-purple-50 rounded-lg">
+              <div className="flex items-center gap-2 mb-2">
+                <label className="block text-xs font-semibold text-gray-800">Activity Type</label>
+                <HelpTooltip title="Teach-Back Help">
+                  <TeachBackHelp />
+                </HelpTooltip>
+              </div>
+              {isEditingDefault ? (
+                <p className="text-xs text-gray-700">
+                  A default applies to cases of every activity type. The activity type is set on each
+                  case under <strong>Content &gt; Cases</strong>.
+                </p>
+              ) : (
+                <p className="text-sm text-gray-900">
+                  <strong>{activityTypeInfo(editingActivityType).label}</strong> - {activityTypeInfo(editingActivityType).summary}.
+                  <span className="block text-xs text-gray-600 mt-0.5">
+                    Set on the case under <strong>Content &gt; Cases</strong>, and fixed once the case is assigned.
+                  </span>
+                </p>
+              )}
+              {(editingTeachBack || isEditingDefault) && (
+                <div className="mt-3">
+                  {editingTeachBack && (
+                  <p className="text-xs text-gray-700 mb-2">
+                    In teach-back the roles reverse: the AI does not understand the material and the
+                    student teaches it. Positions, arguments and the teaching note are not used.
+                    The audience has read the reading, so teach-back is a practice activity -
+                    see <code>docs/teach-back-setup.md</code>.
+                  </p>
+                  )}
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Minimum Words (opening explanation){isEditingDefault ? ' - teach-back cases only' : ''}
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="200"
+                    value={minOpeningWords(editingChatOptions)}
+                    onChange={(e) => {
+                      // min_opening_words replaces the old teach_back_min_words key (still read; utils/openingWords.js).
+                      const { teach_back_min_words: _old, ...rest } = editingChatOptions;
+                      setEditingChatOptions({ ...rest, min_opening_words: parseInt(e.target.value) || 0 });
+                    }}
+                    disabled={!isEditingDefault && useDefaultOptions}
+                    className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
+                  />
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    The student&apos;s first message must reach this many words (0 = no minimum). Short
+                    openings are refused before any AI call, so nothing is charged and no chat is used.
+                  </p>
+                </div>
+              )}
+            </div>
+            )}
 
             {/* Categories Header with Expand/Collapse All */}
             <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-200">
@@ -6179,12 +6521,38 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                           disabled={!isEditingDefault && useDefaultOptions}
                           className="rounded border-gray-300"
                         />
-                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Allow students to repeat the chat multiple times</span>
+                        <span className={useDefaultOptions ? 'text-gray-500' : ''}>Allow students to repeat the chat as often as they like</span>
                       </label>
                       {!useDefaultOptions && isOptionModified('allow_repeat', editingChatOptions.allow_repeat, applicableDefault) && (
                         <button type="button" onClick={() => setEditingChatOptions({...editingChatOptions, allow_repeat: applicableDefault?.allow_repeat ?? false})} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
                       )}
                     </div>
+                    {/* Allowed Repeats (chat_repeats), enforced by the server at chat start: server/services/chatAttempts.js */}
+                    {!(editingChatOptions.allow_repeat ?? false) && (
+                      <div className={`${!useDefaultOptions && isOptionModified('chat_repeats', editingChatOptions.chat_repeats, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-2 text-sm">
+                            <span className={useDefaultOptions ? 'text-gray-500' : ''}>Allowed repeats</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="10"
+                              value={editingChatOptions.chat_repeats ?? 0}
+                              onChange={(e) => setEditingChatOptions({ ...editingChatOptions, chat_repeats: Math.max(0, parseInt(e.target.value) || 0) })}
+                              disabled={!isEditingDefault && useDefaultOptions}
+                              className={`w-16 px-2 py-1 border border-gray-300 rounded text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
+                            />
+                          </label>
+                          {!useDefaultOptions && isOptionModified('chat_repeats', editingChatOptions.chat_repeats, applicableDefault) && (
+                            <button type="button" onClick={() => setEditingChatOptions({ ...editingChatOptions, chat_repeats: applicableDefault?.chat_repeats ?? 0 })} className="text-xs text-gray-500 hover:text-purple-600" title="Reset to default">↩</button>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-0.5 ml-1">
+                          Extra graded chats each student may have, per scenario (0 = one chat). Abandoned or cancelled
+                          chats do not count. A student&apos;s re-chat switch in Results always allows one more.
+                        </p>
+                      </div>
+                    )}
                     <div>
                       <div className={`flex items-center justify-between ${!useDefaultOptions && isOptionModified('timeout_chat', editingChatOptions.timeout_chat, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
                         <label className="flex items-center gap-2 text-sm">
@@ -6276,7 +6644,66 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                         disabled={!isEditingDefault && useDefaultOptions}
                         className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                       />
-                      <p className="text-xs text-gray-500 mt-1">Required before "time is up" (0 = none)</p>
+                      <p className="text-xs text-gray-500 mt-1">Answered messages before the student can finish (0 = none)</p>
+                    </div>
+                    <div className={`${!useDefaultOptions && isOptionModified('max_exchanges', editingChatOptions.max_exchanges, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-gray-700">Maximum Responses</label>
+                        {!useDefaultOptions && isOptionModified('max_exchanges', editingChatOptions.max_exchanges, applicableDefault) && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">Modified</span>
+                            <button
+                              type="button"
+                              onClick={() => setEditingChatOptions({...editingChatOptions, max_exchanges: applicableDefault?.max_exchanges ?? 0})}
+                              className="text-xs text-gray-500 hover:text-purple-600"
+                              title={`Reset to default (${applicableDefault?.max_exchanges ?? 0})`}
+                            >
+                              ↩
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        max="50"
+                        value={editingChatOptions.max_exchanges ?? 0}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, max_exchanges: Math.min(50, Math.max(0, parseInt(e.target.value) || 0))})}
+                        disabled={!isEditingDefault && useDefaultOptions}
+                        className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Chat wraps up after the AI answers this many (0 = no limit)</p>
+                      {(editingChatOptions.max_exchanges ?? 0) > 0 && (editingChatOptions.require_minimum_exchanges ?? 0) > (editingChatOptions.max_exchanges ?? 0) && (
+                        <p className="text-xs text-amber-700 mt-1">Minimum Exchanges is higher than this, so the minimum becomes {editingChatOptions.max_exchanges}.</p>
+                      )}
+                    </div>
+                    <div className={`${!useDefaultOptions && isOptionModified('max_exchanges_action', editingChatOptions.max_exchanges_action, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-gray-700">At the Response Limit</label>
+                        {!useDefaultOptions && isOptionModified('max_exchanges_action', editingChatOptions.max_exchanges_action, applicableDefault) && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">Modified</span>
+                            <button
+                              type="button"
+                              onClick={() => setEditingChatOptions({...editingChatOptions, max_exchanges_action: applicableDefault?.max_exchanges_action ?? 'end'})}
+                              className="text-xs text-gray-500 hover:text-purple-600"
+                              title={`Reset to default (${applicableDefault?.max_exchanges_action ?? 'end'})`}
+                            >
+                              ↩
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <select
+                        value={editingChatOptions.max_exchanges_action ?? 'end'}
+                        onChange={(e) => setEditingChatOptions({...editingChatOptions, max_exchanges_action: e.target.value})}
+                        disabled={(!isEditingDefault && useDefaultOptions) || !(editingChatOptions.max_exchanges > 0)}
+                        className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white ${useDefaultOptions || !(editingChatOptions.max_exchanges > 0) ? 'bg-gray-50 text-gray-500' : ''}`}
+                      >
+                        <option value="end">End the chat</option>
+                        <option value="ask">Let the student finish or keep talking</option>
+                      </select>
+                      <p className="text-xs text-gray-500 mt-1">"Keep talking" removes the limit for that chat</p>
                     </div>
                     <div className={`${!useDefaultOptions && isOptionModified('max_message_length', editingChatOptions.max_message_length, applicableDefault) ? 'pl-2 border-l-2 border-purple-400' : ''}`}>
                       <div className="flex items-center justify-between mb-1">
@@ -6311,8 +6738,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               )}
             </div>
 
-            {/* Advanced Section */}
-            <div className="border-b border-gray-200">
+            {/* Advanced Section. Hidden for an activity type without positions: it holds only
+                the position-tracking override. */}
+            <div className={`border-b border-gray-200 ${editingActivityType && !activityTypeInfo(editingActivityType).usesPositions ? 'hidden' : ''}`}>
               <button
                 type="button"
                 onClick={() => toggleCategory('advanced')}
@@ -6540,7 +6968,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         <div className="flex items-center gap-2">
           <div>
             <h2 className="text-2xl font-bold text-gray-900">Chatbot Personas</h2>
-            <p className="text-sm text-gray-500">Manage AI personality configurations for case chats</p>
+            <p className="text-sm text-gray-500">
+              Protagonist personalities for case chats, and audiences for teach-back. An
+              <strong> Activity</strong> of Teach-back means the id begins <code>audience-</code>; the two
+              are never offered in the same assignment.
+            </p>
           </div>
           <HelpTooltip title="Chatbot Personas">
             <PersonasHelp />
@@ -6594,6 +7026,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">ID</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Name</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider whitespace-nowrap">Activity</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Type</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Owner</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Description</th>
@@ -6610,19 +7043,47 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 <tr key={persona.persona_id} className={!persona.enabled ? 'bg-gray-50 opacity-60' : 'hover:bg-gray-50'}>
                   <td className="px-4 py-3 text-sm font-medium text-gray-900">{persona.persona_id}</td>
                   <td className="px-4 py-3 text-sm text-gray-700 font-medium">{persona.persona_name}</td>
-                  <td className="px-4 py-3">
-                    {isSystemPersona(persona) ? (
-                      <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded">Built-in</span>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {isAudiencePersonaId(persona.persona_id) ? (
+                      <span
+                        className="inline-block whitespace-nowrap px-2 py-0.5 text-xs bg-indigo-50 text-indigo-700 border border-indigo-200 rounded"
+                        title="Offered on teach-back assignments: someone the student explains to"
+                      >
+                        Teach-back
+                      </span>
                     ) : (
-                      <span className="px-2 py-0.5 text-xs bg-gray-100 text-gray-700 rounded">Custom</span>
+                      <span
+                        className="inline-block whitespace-nowrap px-2 py-0.5 text-xs bg-amber-50 text-amber-800 border border-amber-200 rounded"
+                        title="Offered on case-chat assignments: how the protagonist pushes back"
+                      >
+                        Case chat
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {isSystemPersona(persona) ? (
+                      <span className="inline-block whitespace-nowrap px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded">Built-in</span>
+                    ) : (
+                      <span className="inline-block whitespace-nowrap px-2 py-0.5 text-xs bg-gray-100 text-gray-700 rounded">Custom</span>
                     )}
                     {!isSystemPersona(persona) && persona.visibility && persona.visibility !== 'private' && (
-                      <span className="ml-1 px-2 py-0.5 text-xs bg-purple-50 text-purple-700 rounded">{visibilityLabel(persona.visibility)}</span>
+                      <span className="inline-block whitespace-nowrap ml-1 px-2 py-0.5 text-xs bg-purple-50 text-purple-700 rounded">{visibilityLabel(persona.visibility)}</span>
                     )}
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">{ownerLabel(persona, personaAccessContext)}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600 max-w-xs truncate" title={persona.description || undefined}>
-                    {persona.description || '-'}
+                  {/* `max-w-*` on a <td> is ignored by an auto-layout table, which is why this
+                      column used to stretch. The width goes on an inner div instead, and the text
+                      is clamped to two smaller lines with the full description on hover.
+                      Clamping is inline rather than `line-clamp-2` because Tailwind is loaded
+                      from the unpinned CDN and that utility only exists from v3.3. */}
+                  <td className="px-4 py-3">
+                    <div
+                      className="text-xs text-gray-500 leading-snug w-56 overflow-hidden"
+                      style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
+                      title={persona.description || undefined}
+                    >
+                      {persona.description || '-'}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     {canToggle ? (
@@ -6644,8 +7105,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="flex gap-2 flex-wrap">
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <div className="flex gap-2">
                       {editable ? (
                         <button
                           onClick={() => handleOpenPersonaModal(persona, false)}
@@ -7468,7 +7929,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   // (e.g. just Backups) lands on the first one they can open instead.
                   if (adminSubTab === 'instructors' && !hasAccess(user, 'instructors')) {
                     const first = (['settings', 'models', 'prompts'] as AdminSubTab[]).find((t) => hasAccess(user, t));
-                    setAdminSubTab(first ?? (hasAccess(user, 'backups') ? 'backup' : 'instructors'));
+                    setAdminSubTab(first ?? (hasAccess(user, 'backups') ? 'backup' : hasAccess(user, 'activity_types') ? 'activity_types' : 'instructors'));
                   }
                 }}
                 className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
@@ -7924,6 +8385,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   Logging
                 </button>
               )}
+              {hasAccess(user, 'activity_types') && (
+                <button
+                  onClick={() => setAdminSubTab('activity_types')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'activity_types'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Activity Types
+                </button>
+              )}
               {hasAccess(user, 'backups') && (
                 <button
                   onClick={() => setAdminSubTab('backup')}
@@ -8078,6 +8551,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <LoggingManager />
           ) : adminSubTab === 'backup' && hasAccess(user, 'backups') ? (
             <BackupManager />
+          ) : adminSubTab === 'activity_types' && hasAccess(user, 'activity_types') ? (
+            <ActivityTypeManager />
           ) : adminSubTab === 'shadow' ? (
             <ShadowOwnershipManager />
           ) : null
@@ -9601,6 +10076,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         </div>
       )}
 
+      {/* Activity packages: download cases, install a package */}
+      {downloadingCaseIds && (
+        <DownloadCasesModal caseIds={downloadingCaseIds} onClose={() => setDownloadingCaseIds(null)} />
+      )}
+      {showInstallCases && (
+        <InstallCasesModal
+          isAdmin={user?.role === 'admin'}
+          userId={user?.role === 'instructor' ? user.id : null}
+          onClose={() => setShowInstallCases(false)}
+          onInstalled={() => fetchCases()}
+        />
+      )}
+
       {/* Case Modal */}
       {showCaseModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -9619,6 +10107,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               </button>
             </div>
             <div className="p-4 space-y-4">
+              {renderDismissibleErrorBanner('bg-red-100 border border-red-200 text-red-700 p-3 rounded-lg text-sm')}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Case ID *</label>
                 <input
@@ -9652,6 +10141,59 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 />
                 <p className="text-xs text-gray-500 mt-1">Optional version label (such as the year of the case)</p>
               </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Activity type</label>
+                <select
+                  value={caseForm.activity_type}
+                  onChange={(e) => setCaseForm({ ...caseForm, activity_type: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  {/* Published, enabled types; a case already on another type keeps showing it. */}
+                  {[...usableActivityTypes(), ...(caseForm.activity_type && !activityTypeInfo(caseForm.activity_type).enabled ? [activityTypeInfo(caseForm.activity_type)] : [])].map((type) => (
+                    <option key={type.id} value={type.id} disabled={!type.enabled}>{type.label} - {type.summary}{type.enabled ? '' : ' (not available)'}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  {editingCase
+                    ? 'Can be changed only while the case has no assignments, course listings or chats. Changing it clears the default settings.'
+                    : 'What students do with this case. It is fixed once the case is assigned.'}
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Goal</label>
+                <textarea
+                  value={caseForm.goal}
+                  onChange={(e) => setCaseForm({ ...caseForm, goal: e.target.value })}
+                  rows={2}
+                  placeholder="e.g., Students can apply safety stock to a new situation"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">Optional. The learning objective, for the AI and the grader where the activity type uses it. Some types also show it to students.</p>
+              </div>
+              {editingCase && (
+                <div>
+                  <span className="block text-sm font-medium text-gray-700 mb-1">Default settings</span>
+                  {editingCase.has_default_settings ? (
+                    <p className="text-sm text-gray-700">
+                      Saved{editingCase.default_settings_source ? ` from ${editingCase.default_settings_source}` : ''}
+                      {editingCase.default_settings_saved_at ? ` on ${new Date(editingCase.default_settings_saved_at).toLocaleDateString()}` : ''}.
+                      <button
+                        type="button"
+                        onClick={() => handleClearCaseDefaults(editingCase)}
+                        className="ml-2 text-xs text-red-600 hover:underline"
+                      >
+                        Clear
+                      </button>
+                    </p>
+                  ) : (
+                    <p className="text-sm text-gray-500">None.</p>
+                  )}
+                  <p className="text-xs text-gray-500 mt-1">
+                    The chat options, rubric and scenarios used when this case is added to a course or
+                    section. Save them from Assignments &gt; By course with &quot;Save as case defaults&quot;.
+                  </p>
+                </div>
+              )}
               {/* Info box for editing - encourage going to Scenarios */}
               {editingCase && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
@@ -9773,6 +10315,30 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
                   />
                   <p className="text-xs text-gray-500 mt-1">Lowercase, hyphens only</p>
+                  {/* Teach-back audiences are distinguished from case-chat personalities by
+                      this id prefix rather than by a column, so the two are never offered in
+                      the same activity. See teachBack.ts. */}
+                  {!editingPersona && !personaViewOnly && (
+                    <label className="flex items-center gap-2 text-xs text-gray-700 mt-2">
+                      <input
+                        type="checkbox"
+                        checked={isAudiencePersonaId(personaForm.persona_id)}
+                        onChange={(e) => {
+                          const bare = personaForm.persona_id.replace(/^audience-/, '');
+                          setPersonaForm({ ...personaForm, persona_id: e.target.checked ? `audience-${bare}` : bare });
+                        }}
+                        className="rounded border-gray-300"
+                      />
+                      <span>Teach-back audience (someone the student explains to)</span>
+                    </label>
+                  )}
+                  {isAudiencePersonaId(personaForm.persona_id) && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Write the instructions as <em>who this listener is and how they react</em> - never
+                      what they know, and never how strictly to mark. The judge never sees the audience,
+                      so a warm audience cannot raise a score.
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Display Name *</label>
@@ -9880,6 +10446,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         <ScenarioManager
           caseId={managingScenarioCase.case_id}
           caseTitle={managingScenarioCase.case_title}
+          activityType={managingScenarioCase.activity_type}
           onClose={() => {
             setShowScenarioManager(false);
             setManagingScenarioCase(null);
@@ -10008,7 +10575,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               <button
                 onClick={() => {
                   // Open ScenarioManager for this scenario's case
-                  const caseInfo = { case_id: viewingScenario.case_id, case_title: viewingScenario.case_title };
+                  const caseInfo = { case_id: viewingScenario.case_id, case_title: viewingScenario.case_title, activity_type: viewingScenario.activity_type };
                   setViewingScenario(null);
                   setManagingScenarioCase(caseInfo);
                   setShowScenarioManager(true);

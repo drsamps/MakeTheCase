@@ -6,8 +6,10 @@
 import { pool } from '../../db.js';
 import { getAccessibleSectionIds } from '../../middleware/instructorAccess.js';
 import { getSetting } from '../promptService.js';
+import { typeTraits } from '../activityTypeStore.js';
 import { getWeeklyUsage } from '../usageGuard.js';
-import { loadPrompt, loadRunContext, nameHints, prepareTranscript, sha256 } from './common.js';
+import { extractCacheTag, loadPrompt, loadRunContext, nameHints, prepareTranscript, sha256 } from './common.js';
+import { aiSpeakerNameSql, aiSpeakerJoinsSql, activityCacheVersion } from '../activityTypes.js';
 
 export class HttpError extends Error {
   constructor(status, message) {
@@ -130,11 +132,12 @@ export async function loadScopeChats(scope) {
   let sql = `
     SELECT cc.id AS case_chat_id, cc.student_id, cc.section_id,
            st.full_name, st.first_name, st.last_name,
-           cs.protagonist AS scenario_protagonist,
+           ${aiSpeakerNameSql()} AS ai_speaker,
            t.transcript
       FROM case_chats cc
       JOIN students st ON st.id = cc.student_id
       LEFT JOIN case_scenarios cs ON cs.id = cc.scenario_id
+      ${aiSpeakerJoinsSql()}
       -- transcripts.case_chat_id is only a non-unique index and the upsert is SELECT-then-INSERT,
       -- so two rapid auto-saves can leave two rows. Pin the newest: a second row here would plan
       -- the same chat twice and blow up the (run_id, case_chat_id) primary key mid-transaction.
@@ -354,6 +357,7 @@ export async function planRun(req, input) {
   const extract = await loadPrompt('issue_analytics.extract_facts');
   const cluster = await loadPrompt('issue_analytics.cluster_themes');
   const context = await loadRunContext({ case_id: scope.caseId, scenario_id: scope.scenarioId });
+  const cacheTag = extractCacheTag(extract, activityCacheVersion(context.caseRow?.activity_type));
   const chats = await loadScopeChats(scope);
 
   // Which transcripts already have pass-1 facts for this model + prompt text.
@@ -362,7 +366,7 @@ export async function planRun(req, input) {
         `SELECT case_chat_id, transcript_hash FROM issue_analysis_chat_facts
           WHERE model_id = ? AND prompt_version = ?
             AND case_chat_id IN (${chats.map(() => '?').join(',')})`,
-        [model.model_id, extract.versionTag, ...chats.map(c => c.case_chat_id)]
+        [model.model_id, cacheTag, ...chats.map(c => c.case_chat_id)]
       )
     : [[]];
   const cached = new Set(cachedRows.map(r => `${r.case_chat_id}:${r.transcript_hash}`));
@@ -426,7 +430,7 @@ export async function planRun(req, input) {
     scope,
     model,
     billedInstructorId,
-    extractVersion: extract.versionTag,
+    extractVersion: cacheTag,
     planned,
     sample: {
       size: sampling ? planned.length : null,
@@ -434,6 +438,7 @@ export async function planRun(req, input) {
       pool: usable.length,
     },
     summary: {
+      personal_activity: Boolean(typeTraits(context.caseRow?.activity_type)?.personal),
       case_id: scope.caseId,
       scenario_id: scope.scenarioId,
       section_ids: scope.sectionIds,

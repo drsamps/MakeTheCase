@@ -1,4 +1,4 @@
-export const BUSINESS_CASE_TEXT = `Malawi's Pizza Catering
+export const BUSINESS_CASE_TEXT = `# Malawi's Pizza Catering
 
 "Have you loaded the wood for the oven?" Dan Evans asked his assistant, Ed Jones, as they hurried to load their truck for a wedding reception catering engagement on a sunny June evening. Jones hurried over to the large mobile oven that was hitched up to the truck and swung open the door of the cabinet underneath. "Not yet, but I'll get it," he replied. A few other employees were busily helping load the Toyota Tundra pickup truck with ice chests, tables, paper products, and other supplies for the wedding reception they were catering that night. Evans and two other employees soon jumped in the pickup with the mobile oven attached and headed off to the reception.
 
@@ -6,7 +6,7 @@ As they drove ten minutes to the park on the other side of the freeway, Evans ha
 
 Beck had been thinking about franchising Malawi's since its inception and had been working to develop and document restaurant processes in a way that he felt could be handed over to franchisees with successful results. The catering process was an important part of the planned movement into franchising, and catering was the most profitable part of the restaurant operation. Evans had played an essential role in developing the catering operation; it was an extremely interactive and hands-on process that depended on the intuition, experience, and knowledge that Evans had gained throughout his career in the restaurant industry. The catering clients were paying a premium to get customized service, but Evans and Beck needed to somehow figure out how to increase the scale of the catering operation and make the process replicable. They were considering using a methodology called PCN Analysis, which is used for service design, process improvement, and innovation discovery. Perhaps PCN Analysis could provide some guidance about where to go with the catering operation, and maybe also provide direction about how catering can provide effective synergy within a restaurant franchise.
 
-Company Overview
+## Company Overview
 
 Malawi's Pizza, founded by Kent Beck and Daryl Romney, opened in August 2010. Both men had previously been successful entrepreneurs. Beck, who graduated from the New England Culinary Institute and earned an Executive MBA degree from Brigham Young University, had a successful career in the food services industry up to that point. Prior to starting Malawi's Pizza he had managed different food businesses for large luxury resorts and hotel chains such as Four Seasons and Ritz-Carlton. In 2002, Beck started his own restaurant, the Chef's Table, which became a huge success. In early 2010, Beck sold Chefs Table to a pair of professional chefs, and he was interested in starting a new venture. Beck found an ideal partner in Romney, who had also been a successful entrepreneur. Romney had started a consumer products company in 1984, which, by 2010, grew to nearly $2 billion in annual sales. Romney and a few of his colleagues also founded a charitable foundation that provided meals to children in less developed parts of the world. Beck and Romney discussed the idea for a pizza restaurant called Malawi's in which a portion of sales would be used to provide meals for hungry children in the African nation of Malawi.
 
@@ -18,7 +18,7 @@ Malawi's Pizza restaurant became a quick success. The restaurant broke even the 
 
 Malawi's had been offering catering service since they opened in 2010. In fact, they purchased a mobile oven even before they had a kitchen in their restaurant. The mobile oven was purchased from an oven manufacturer for about $20,000 and was painted with the Malawi's logo. Other than that, the only advertising they did for their catering service was the brief description on their website and a few lines on the back of their menu that referred customers to the website. Beck felt that in the future, catering could be a larger portion of Malawi's business, especially as they moved toward franchising.
 
-Catering Industry Overview
+## Catering Industry Overview
 
 By 2013 food catering sales in the United States were estimated at $8.3 billion, preceded by a weak five-year annual growth rate of only 0.9% due to the global recession of 2009.⁴ However, the recession appeared to be on its last leg in 2013, and industry analysts projected catering to grow 2.3% annually for the next five years, to $9.3 billion by 2018.⁵ Because of the low barriers to entry⁶ in the food catering industry, competition was high. It was estimated that the four largest firms comprised less than 5% of the total industry revenue.⁷ Most of these catering providers were very small as well, with 54% employing four or fewer people and the next 17% employing between five and nine.⁸
 
@@ -28,27 +28,27 @@ The two general customer segments for catering services are institutional events
 
 Catering was seen as a much more profitable model than traditional restaurant service because of the low overhead (i.e., no need to maintain an entire restaurant facility) and higher profit margin. Even for full-service restaurants, catering was an exceptionally profitable activity. The major costs associated with catering were food and beverage purchases and employee wages. Since catering was a labor-intensive process that included client management, food preparation, setup, cleanup, and menu planning, wages were expected to account for approximately 30% of an average catering firms' expenses.¹¹ Like some other restaurants that offer catering service, Malawi's did not have a staff that was dedicated to catering functions, but used the regular restaurant employees, most of whom worked part-time.
 
-Catering Process Overview
+## Catering Process Overview
 
 The catering process can vary widely depending on the event and the offering of the caterer. For example, some events are buffet style and others are plated. In a buffet-style event, the caterers set out options and the attendees choose what to eat at the event. For a plated event, the attendees choose what they will eat some time before the event, often indicating in the RSVP which of the different plates they prefer. This difference has implications for the caterer in the preparation stages of the process as well as the process of serving the food.
 
 Generally speaking there are four to five parties involved in a catering event: the caterer, the venue host, the event planner, the principal individual(s) commissioning the event, and the attendees. The relationship between these parties varies, as does the division of responsibilities. For example, some caterers own their own venues and cater only at their own location (or locations). Other caterers have some form of relationship with venue hosts but operate independently. Still other caterers rely completely on the client to determine and provide a venue for the event, making the caterer and the venue host completely independent. In some situations, one party assumes more than one role, such as a bride (the principal individual) planning her own wedding reception at her own house (making her the event planner and venue host as well).
 
-Malawi's Catering Business
+## Malawi's Catering Business
 
 Catering fit nicely into the day-to-day operations of the restaurant. For the most part, catering didn't require a lot of extra effort outside of the restaurant's normal operations. The main exception was the time Evans would spend with the client planning the event, which could take anywhere between 3 and 10 hours depending on the client's needs. There were also additional tasks such as scheduling restaurant employees to prepare the food and attend the event and increasing the normal weekly purchase order from Sysco (a major supplier of restaurant food and supplies) to accommodate the spike in demand. Overall Malawi's was catering about ten events per year, mostly in the summer months with one or two in the winter.
 
-Social Events
+### Social Events
 
 For social events, Malawi's catered mostly wedding dinners and wedding receptions, which constituted roughly half of the events they catered each year. These types of events were typically held on Saturdays and averaged around 300 attendees. These events were also more formal in nature. The increased formality meant that Malawi's would bring nicer china, clear the tables, and generally have more interaction with the attendees, usually consisting of answering questions about the food. Presentation was paramount, and Evans knew the importance of selecting the right employees to serve at these events.
 
-Institutional Events
+### Institutional Events
 
 Institutional events were catered for local companies and other organizations such as churches. These were generally smaller events with 175-250 attendees and were usually held on a weekday. The formality of these events ranged widely. For company and church parties, the client often just wanted Malawi's to bring out the food and leave. On the other end of the spectrum were company awards dinners where Malawi’s was asked to clear tables and, at times, even serve the food.
 
-Malawi's Catering Process
+## Malawi's Catering Process
 
-Planning
+### Planning
 
 If potential clients wanted to learn about Malawi's catering their event, or if they had already decided to have Malawi's cater, they could find the phone number to call on the company website. Potential clients could also go to the restaurant and ask to speak with someone. In both cases, they were always directed to Evans, who would ask a few specific questions to determine the date (preventing scheduling conflicts), the type of event, and the expected number of attendees. At this time, he would also ask a few initial questions to get a broad picture of the clients' needs and would then set up an appointment to discuss the clients' expectations in more detail. While Evans would occasionally hold this meeting over the phone, he disliked that approach, preferring to have as much direct interaction with the client as possible. Evans knew that catering events commanded premium pricing, and he wanted the customers to feel as though they were receiving the highest degree of attention and customization.
 
@@ -64,15 +64,15 @@ The planning stage of the catering process was central to the success of the eve
 
 Once the order had been placed, Evans put it on his calendar in his office and recorded the information in the catering book, which held all the information for each catering event. Other employees had access to this book, although Jones, who was second in command, was the only other employee who typically needed it.
 
-Food Preparation and Delivery
+### Food Preparation and Delivery
 
 Extra employees were scheduled to arrive early on the day of the event to initially prepare the pizzas that would be used for the event. This initial preparation included rolling the dough into pizza crusts and cooking the crusts most of the way, which is called "par cooking." It also included putting on pizza sauce and cheese and other non-fresh toppings (such as pepperoni). This initial preparation could usually be done in the morning, although for events early in the day Malawi's would often need to par cook the night before. Par cooked pizzas were then placed on racks that fit into ice chests until the event. Besides par cooking the pizza, the employees would put together toppings for dessert pizzas and make the salads and wrap them in plastic wrap.
 
-Transporting
+### Transporting
 
 Malawi's had a Toyota Tundra to transport everything to events. It was large enough to hold some ice chests, a folding table, and boxes of other supplies such as cutting boards, napkins, sanitation buckets, gloves, serving utensils, and pizza cutters. The truck also pulled the Malawi's mobile oven, which was part of the ambiance Malawi's brought to the event. The large dome-shaped oven was on a double axle trailer that had storage room underneath the stone slab where firewood and other supplies could be stored. Attendees at events always commented on the oven and were often interested in getting a closer look. Evans felt like the oven added a great deal of value for the customer because of the feel it generated at the event. The team would plan to arrive at the venue between 30 and 45 minutes before the event was scheduled to begin. This provided plenty of time for setup and usually resulted in the team waiting a short time before the event began. Evans recognized that being there early and ready to begin was important to maintaining a professional appearance.
 
-Setup
+### Setup
 
 The relatively nimble nature of the portable kitchen made catering possible in a wide variety of circumstances and situations. The quick setup and take down added a lot of flexibility as well; in one case, an outdoor event held by a church was caught off-guard by extremely high levels of wind. While the wind itself wasn't the entire problem, being located adjacent to a sand volleyball court created a problem when the wind began blowing sand in the direction of the portable kitchen and the dining area. Sand was in everything. Fortunately the client had an alternative location and the Malawi's team was able to quickly take down the kitchen and relocate with the attendees just a few blocks away.
 
@@ -80,29 +80,29 @@ Even with the flexible nature of the portable kitchen, there were still limitati
 
 Once the pickup truck was parked and the oven positioned properly, the team of 3-5 employees would begin unloading the trailer and setting up their portable kitchen. It was a fairly simple setup that only required about fifteen minutes. There was a folding table with a white tablecloth that was set up next to the oven, alongside ice chests and the garbage. The table was used for adding toppings (either before or after the pizzas had finished cooking) and cutting the pizzas. The team could usually identify where the serving area was, though in rare cases Evans would seek out the client to find out exactly where they should set up the serving area. Setting up the serving area mainly consisted of placing the salads, cutlery, napkins, and so on, in a convenient way for attendees to serve themselves. If it was clear where the client wanted to serve the food, the team would set out the salads as soon as it was time to start. This was not always clear, however, and Evans often had to talk to the client or venue to determine where they would be serving the food.
 
-Serving
+### Serving
 
 The par-cooked pizzas only required approximately ninety seconds to cook in the oven at the venue location, and four pizzas could fit in the oven at once, so Evans did not begin cooking until it was just about time to start eating. Evans manned the oven and would cook four pizzas at a time, choosing different types to keep variety on the serving table. As soon as a pizza was finished in the oven, he would set it on a cardboard round and hand it to the employee at the table, who would then finish topping them with additional fresh toppings if needed and cut them into six slices. The runner would then take the hot pizzas to the serving table and assess which types of pizza were in high demand, then report back to Evans on what pizzas he should bake more of to keep the variety up as long as possible.
 
 The people attending the event would file through the line just as they would in any other buffet, helping themselves to salad and pizza. Occasionally an attendee would wander over to the preparation area and ask what was on a certain pizza or whether there would be any more of another type of pizza. Evans always planned a little extra and never ran out of pizza, although there were times when they would run out of a specific style of pizza.
 
-Cleanup and Payment
+### Cleanup and Payment
 
 Cleanup was relatively quick. After everything was served, the team would extinguish the fire in the mobile oven and pack up any food that was reusable, such as unused pizza toppings. If there was salad left over, they would either move if off the platters and leave it for the customer or throw it away. According to the U.S. Department of Health regulations, certain foods such as tomatoes had to be discarded if they left the restaurant. Par-cooked pizzas that were never completed were typically thrown away, and if there were extra pizzas already assembled they might give them to employees or just throw them away.
 
 While the team packed up the portable kitchen, Evans would find the client (usually either the principal individual or the event planner) and give them the final invoice. The client had the option to provide his or her credit card number to Evans, who would take it back to the restaurant to charge it, or they could pay via check. Evans used to require customers pay a deposit upfront for the services, but has since stopped because it made many customers uncomfortable. On rare occasions the final invoice would be slightly higher than the quoted price. This was because Evans always brought some extra items to ensure they wouldn't run out. If they had to dip into those reserves, he would add in the additional cost. He tried to keep it as close to the quoted price as possible, however, and customers never complained when he explained why the final price was higher than the quoted price.
 
-The Attendee Experience
+## The Attendee Experience
 
 Since Malawi's did almost no advertising of the catering service, they depended heavily on word-of-mouth and attendee experience. It was assumed that most of the catering clients chose Malawi's based on attending a previous Malawi's-catered event or on the recommendation of someone who had. Event attendees did not need to have any interaction with Malawi's catering prior to the event. For example, Malawi's did not receive any RSVP information or pizza preferences in advance. In most settings, the first interaction an attendee had with Malawi's was seeing the large mobile oven with smoke wafting out of its chimney and the smell of hot pizza. Sometimes attendees were impressed and would come over to ask the employees questions about the oven, even asking them if they could try their hand at putting a pizza in the oven. The team always had to explain that due to liability issues, only employees were allowed to use the oven. However, Evans had considered allowing customers to rent the oven for their own events, signing a release of liability. In that case, Evans would sell customers par-pizzas and toppings and let the customers handle all operations at the venue.
 
 Once the event started, the attendees would gradually line up at the serving table to get their food. First in line were the plates and cutlery. Next was the salad and dressing, followed by the various types of pizza that the event planner had worked with Evans to select. Sometimes the client would request signs indicating the different types of pizza and their ingredients, but Malawi's only provided these upon client request. Guests typically took two or three slices of pizza and some salad. As people served themselves, the "runner” from Malawi's would bring pizzas fresh out of the oven and replace the empty cardboard rounds with more pizza. There were usually anywhere from four to six pizzas on the serving table at any moment. Since the runner would let the cook know which pizza types were low, they were able to maintain a fairly even distribution of different pizza types. This could be kept up for only so long, however, and occasionally they would run out of a certain type of pizza. The attendees would sometimes walk over to the employees or catch the runner to ask if there was any more of a certain type of pizza coming out, or to clarify what each of the types of pizzas were. After getting their food, the attendees returned to their seats to eat. There was always enough for the attendees who wanted seconds to return to the serving table for more pizza and salad.¹³
 
-An Event Planner Experience
+## An Event Planner Experience
 
 Evans had every reason to think that event planners liked Malawi's catering service, although he did realize that on occasion he had not been able to meet client needs. For example, a potential client, Jane Goodman, recently contacted Malawi's to cater a large event at a local university. Unfortunately, Evans had to tell Goodman they already had an event booked that night and would not be able to accommodate her request. After looking into some other options and not finding anything satisfactory, Goodman called back to find out if she could place an order for essentially par-cooked pizzas for about 120 people and simply pick them up at the restaurant. Jane apparently had access to catering equipment such as ovens, pizza stones, and warmers, so could self-cater the event. Although the restaurant could provide 20 completed pizzas, providing par cooked pizzas to self-caterers was not in line with what Malawi's normally did, and Evans had to respectfully decline. Although there were not food safety issues with selling par-cooked pizzas, if the pizzas were not heated property the quality might suffer, which would not reflect favorably on the Malawi's high-quality image. Evans later learned that Goodman was upset about Malawi's inability to accommodate her request and shared those feelings with her colleagues. This highlighted again both the opportunity and need for scaling the catering operation.
 
-Scaling the Process
+## Scaling the Process
 
 That June evening after the wedding reception, Evans sat in his office and thought about the last three years and about what he hoped for the next three years. The main Malawi's restaurant continued to grow in popularity, and managing its operations continued to consume most of his time. Beck had recently reminded Evans that he needed to expand the high-margin catering operation if possible, which could include increased marketing and perhaps hiring a part-time catering salesperson. The second Malawi's location occasionally borrowed the mobile oven, but with increased catering business would probably get their own. Also, the shift to franchising provided additional pressure to make the catering process both scalable and replicable.
 

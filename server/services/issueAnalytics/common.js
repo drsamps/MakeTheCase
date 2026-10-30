@@ -8,6 +8,7 @@ import { jsonrepair } from 'jsonrepair';
 import { pool } from '../../db.js';
 import { getActivePrompt } from '../promptService.js';
 import { parseTranscript } from '../../../utils/transcriptFormat.js';
+import { typeTraits } from '../activityTypeStore.js';
 
 export const FALLBACK_LEANS = ['for', 'against', 'mixed'];
 export const THEME_TYPES = ['topic', 'argument', 'friction'];
@@ -24,6 +25,17 @@ export async function loadPrompt(use) {
   const row = await getActivePrompt(use);
   const tag = `${row.version}@${sha256(row.prompt_template).slice(0, 12)}`;
   return { template: row.prompt_template, versionTag: tag };
+}
+
+/**
+ * The pass-1 cache key for a run's case: the extract prompt's version tag, plus a short hash of
+ * the activity type's version when the type is defined as data (callers pass
+ * activityTypes.js#activityCacheVersion, which this module cannot import without a cycle;
+ * '' for the built-ins, so their key, and every fact cached under it, is unchanged). Kept short:
+ * prompt_version is VARCHAR(100).
+ */
+export function extractCacheTag(extract, typeVersion) {
+  return typeVersion ? `${extract.versionTag}+t${sha256(typeVersion).slice(0, 12)}` : extract.versionTag;
 }
 
 /**
@@ -66,7 +78,7 @@ function defangTags(s) {
 /** Candidate names for legacy transcripts ("Jane Doe: ...", "Sylvia Cooper: ..."). */
 export function nameHints(chat) {
   const studentNames = [chat.full_name, chat.first_name].filter(Boolean);
-  const protagonistNames = [chat.scenario_protagonist].filter(Boolean);
+  const protagonistNames = [chat.ai_speaker].filter(Boolean);
   return { studentNames, protagonistNames };
 }
 
@@ -140,19 +152,27 @@ export function verifyQuote(text, turns, quote) {
 }
 
 /**
+ * `(quote) => boolean`: whether a quote is (part of) one of these position wordings, or
+ * contains one. Used to keep the instructor's position text from passing as a student quote.
+ */
+export function positionTextMatcher(texts) {
+  const positionTexts = texts
+    .map(t => normalizeWithMap(t || '').out.trim())
+    .filter(t => t.length >= 8);
+  return (quote) => {
+    const q = normalizeWithMap(String(quote ?? '')).out.trim();
+    return q.length > 0 && positionTexts.some(t => t.includes(q) || q.includes(t));
+  };
+}
+
+/**
  * The position axis for a scenario. With positions, a lean is one of their names; without,
  * the fallback for / against / mixed relative to the question.
  */
 export function leanContext(positions, scenario = null) {
   // Picking a position posts its full wording as the student's message. That text is the
   // instructor's, not the student's, so it is never kept as a quote.
-  const positionTexts = positions
-    .map(p => normalizeWithMap(p.position || '').out.trim())
-    .filter(t => t.length >= 8);
-  const isPositionText = (quote) => {
-    const q = normalizeWithMap(String(quote ?? '')).out.trim();
-    return q.length > 0 && positionTexts.some(t => t.includes(q) || q.includes(t));
-  };
+  const isPositionText = positionTextMatcher(positions.map(p => p.position));
   if (positions.length > 0) {
     return {
       mode: 'positions',
@@ -189,7 +209,7 @@ export function leanContext(positions, scenario = null) {
 /** Case, scenario and positions for a run, in the shape the prompts need. */
 export async function loadRunContext(run) {
   const [[caseRow]] = await pool.execute(
-    'SELECT case_id, case_title FROM cases WHERE case_id = ?',
+    'SELECT case_id, case_title, activity_type FROM cases WHERE case_id = ?',
     [run.case_id]
   );
   let scenario = null;
@@ -209,9 +229,15 @@ export async function loadRunContext(run) {
       )
     : [[]];
   const lean = leanContext(positions, scenario);
-  const scenarioText = scenario
-    ? `${scenario.scenario_name || 'Scenario'}. The AI played ${scenario.protagonist || 'the protagonist'}${scenario.protagonist_role ? `, ${scenario.protagonist_role}` : ''}.`
-    : 'The AI played the case protagonist.';
+  // Persona-character types (Teach-back): the AI was whichever listener each student picked, not
+  // the scenario's placeholder protagonist. Case chat's wording is unchanged, so its cached
+  // pass-1 facts stay valid.
+  const personaCharacter = typeTraits(caseRow?.activity_type)?.character === 'persona';
+  const scenarioText = personaCharacter
+    ? `${scenario?.scenario_name || 'Scenario'}. The student explained the topic to an AI listener they chose; the listener's turns are prompts, not the student's content.`
+    : scenario
+      ? `${scenario.scenario_name || 'Scenario'}. The AI played ${scenario.protagonist || 'the protagonist'}${scenario.protagonist_role ? `, ${scenario.protagonist_role}` : ''}.`
+      : 'The AI played the case protagonist.';
   return {
     caseRow,
     scenario,

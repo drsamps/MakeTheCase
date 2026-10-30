@@ -1,7 +1,7 @@
 {
   "name": "make-the-case",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,9 +9,12 @@
     "server:watch": "nodemon --watch server --ext js,json server/index.js",
     "dev:all": "concurrently \"npm run server:watch\" \"npm run dev\"",
     "build": "vite build",
+    "typecheck": "tsc --noEmit -p .",
     "preview": "vite preview",
     "create-admin": "node server/scripts/create-admin.js",
     "seed-malawis": "node server/scripts/seed-malawis-pizza.js",
+    "seed-audiences": "node server/scripts/seed-teach-back-audiences.js",
+    "seed-activity-types": "node server/scripts/seed-activity-types.js",
     "migrate": "node server/scripts/run-pending-migrations.js",
     "migrate:dry": "node server/scripts/run-pending-migrations.js --dry-run"
   },
@@ -26,10 +29,12 @@
     "diff": "^9.0.0",
     "docx": "^9.6.1",
     "dotenv": "^16.4.5",
+    "easymde": "^2.21.0",
     "express": "^4.21.0",
     "jsdom": "^29.1.1",
     "jsonrepair": "^3.14.0",
     "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.1",
     "mammoth": "^1.11.0",
     "multer": "^2.0.2",
     "mysql2": "^3.11.0",
@@ -42,6 +47,8 @@
     "rehype-raw": "^7.0.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
+    "turndown": "^7.2.4",
+    "turndown-plugin-gfm": "^1.0.2",
     "uuid": "^10.0.0"
   },
   "devDependencies": {

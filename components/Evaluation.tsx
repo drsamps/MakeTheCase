@@ -1,5 +1,45 @@
 import React from 'react';
 import { EvaluationResult } from '../types';
+import CriteriaCoverage from './CriteriaCoverage';
+import { StudentActivityView } from '../services/activityCopy';
+
+/**
+ * The summary is plain text except for `**bold**`. A type's grader may be asked for headed
+ * sections (its definition's summary headings: Teach-back's "What you explained well" …), but
+ * the model does not reliably mark them: they arrive bold, as "## " headings, with a trailing
+ * colon, or as bare lines. The known headings are therefore recognised by their wording,
+ * however decorated, and shown as headings. Any other bold run that opens a line is a heading
+ * too; a bold run elsewhere is inline emphasis.
+ */
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// After the wording there must be a colon, a closing "**", or the end of the line — a
+// sentence that merely starts "What you explained well was the tradeoff..." is not a heading.
+const knownHeadingPattern = (headings: string[]) => headings.length === 0 ? null : new RegExp(
+  String.raw`^\s*(?:#+\s*)?(?:\*\*)?\s*(` + headings.map(escapeRegExp).join('|') + String.raw`)(?:(?:\*\*)?\s*:\s*(?:\*\*)?|\*\*|\s*$)\s*(.*)$`,
+  'i'
+);
+
+const renderInlineBold = (text: string) =>
+  text.split(/\*\*(.+?)\*\*/g).map((part, i) => (i % 2 === 1 ? <strong key={i}>{part}</strong> : part));
+
+const renderSummary = (summary: string, headings: string[]) => {
+  const pattern = knownHeadingPattern(headings);
+  return (summary || '').split(/\n+/).filter((line) => line.trim()).map((line, i) => {
+    const known = pattern ? line.match(pattern) : null;
+    const heading = known
+      ? [line, headings.find((h) => h.toLowerCase() === known[1].toLowerCase()) ?? known[1], known[2]]
+      : line.match(/^\s*\*\*(.+?)\*\*:?\s*(.*)$/);
+    if (!heading) {
+      return <p key={i} className="text-gray-700 mt-1 first:mt-0">{renderInlineBold(line)}</p>;
+    }
+    return (
+      <React.Fragment key={i}>
+        <p className="font-semibold text-gray-800 mt-3 first:mt-0">{heading[1]}</p>
+        {heading[2] && <p className="text-gray-700 mt-1">{renderInlineBold(heading[2])}</p>}
+      </React.Fragment>
+    );
+  });
+};
 
 interface EvaluationProps {
   result: EvaluationResult | null;
@@ -9,7 +49,15 @@ interface EvaluationProps {
   onLogout?: () => void;
   onTitleContextNav?: () => void;
   showDetails?: boolean; // Show detailed criteria (default: true)
+  freeHints?: number; // chat option free_hints; the hint note is left out when unknown
+  activity?: StudentActivityView | null; // the activity's summary headings and coverage wording
 }
+
+/** The hint note, worded for the assignment's free hints (chat option free_hints). */
+const hintRule = (freeHints: number) =>
+  freeHints === 0
+    ? 'Each hint reduces your final score by one point.'
+    : `You get ${freeHints === 1 ? 'one free hint' : `${freeHints} free hints`}. Each additional hint reduces your final score by one point.`;
 
 const LoadingSpinner: React.FC<{ modelName: string | null }> = ({ modelName }) => (
     <div className="flex flex-col items-center justify-center text-center p-4">
@@ -21,7 +69,7 @@ const LoadingSpinner: React.FC<{ modelName: string | null }> = ({ modelName }) =
 );
 
 // FIX: Correctly type the component's props using React.FC<EvaluationProps> to resolve type errors.
-const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart, superModelName, onLogout, onTitleContextNav, showDetails = true }) => {
+const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart, superModelName, onLogout, onTitleContextNav, showDetails = true, freeHints, activity }) => {
   if (!result) {
     return (
         <div className="flex items-center justify-center min-h-screen bg-gray-200">
@@ -48,17 +96,20 @@ const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart,
         
         <div className="p-4 bg-blue-50 rounded-lg">
             <h2 className="text-xl font-semibold text-gray-800 mb-2">Supervisor's Summary</h2>
-            <p className="text-gray-700">{result.summary}</p>
+            {/* Line by line: a single <p> collapses a multi-paragraph or headed summary. */}
+            {renderSummary(result.summary, activity?.copy.summary_headings ?? [])}
         </div>
 
         {typeof result.hints === 'number' && (
           <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
               <h3 className="text-lg font-semibold text-yellow-800">Hints Requested: {result.hints}</h3>
               <p className="text-sm text-yellow-700 mt-1">
-                  You get one free hint. Each additional hint reduces your final score by one point. This adjustment is already reflected in your total score.
+                  {typeof freeHints === 'number' && `${hintRule(freeHints)} `}This adjustment is already reflected in your total score.
               </p>
           </div>
         )}
+
+        {showDetails && <CriteriaCoverage criteria={result.criteria} activity={activity} />}
 
         {showDetails && (
           <div className="space-y-6">
@@ -67,7 +118,7 @@ const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart,
                       <div className="flex justify-between items-start">
                           <p className="text-md font-semibold text-gray-800 flex-1 pr-4">{criterion.question}</p>
                           <div className="text-lg font-bold text-white bg-blue-600 rounded-full w-12 h-12 flex items-center justify-center flex-shrink-0">
-                              {criterion.score}/5
+                              {criterion.score}/{criterion.max_score ?? 5}
                           </div>
                       </div>
                       <p className="text-sm text-gray-600 mt-2 pl-1"><strong className="font-medium">Feedback:</strong> {criterion.feedback}</p>

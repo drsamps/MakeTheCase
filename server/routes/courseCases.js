@@ -35,6 +35,9 @@ import {
 } from '../services/caseVersionSync.js';
 import { writeAudit } from '../services/auditLog.js';
 import { canAccessResource } from '../services/resourceAccess.js';
+import { withoutActivityMode } from '../services/chatOptions.js';
+import { caseDefaultsForCaller } from '../services/activityDefaults.js';
+import { assertCaptureAllowed, assertVersionCanAssign, PositionRuleError } from '../services/positionRules.js';
 import { addMinutes, parseDateInput } from '../utils/dateInput.js';
 import { executeRollover, planRollover } from '../services/courseRollover.js';
 import { ProvisioningError } from '../services/sectionProvisioning.js';
@@ -120,7 +123,7 @@ router.get('/courses/:id/cases', verifyToken, requireAdminOrInstructor, requireC
   try {
     const courseId = req.params.id;
     const [cases] = await pool.execute(
-      `SELECT cc.id AS course_case_id, cc.case_id, cc.sort_order, c.case_title, c.enabled AS case_enabled
+      `SELECT cc.id AS course_case_id, cc.case_id, cc.sort_order, c.case_title, c.activity_type, c.enabled AS case_enabled
          FROM course_cases cc JOIN cases c ON c.case_id = cc.case_id
         WHERE cc.course_id = ?
         ORDER BY cc.sort_order, c.case_title`,
@@ -149,9 +152,16 @@ router.get('/courses/:id/cases', verifyToken, requireAdminOrInstructor, requireC
       [courseId]
     );
     const sectionRow = ({ case_title, ...row }) => ({ ...row, active: Boolean(row.active) });
+    // A course owner may list a case they cannot edit (public or team-shared). Saving its
+    // default settings needs edit access to the case (PUT /api/cases/:id/defaults).
+    const canEditCase = new Map();
+    for (const cc of cases) {
+      canEditCase.set(cc.case_id, isAdminUser(req) || (await canAccessResource(req, 'case', cc.case_id, 'edit')).allowed);
+    }
 
     const data = cases.map((cc) => ({
       ...cc,
+      can_edit_case: canEditCase.get(cc.case_id),
       versions: versions
         .filter((v) => v.course_case_id === cc.course_case_id)
         .map((v) => ({
@@ -178,7 +188,8 @@ router.get('/courses/:id/cases', verifyToken, requireAdminOrInstructor, requireC
 // POST /api/courses/:id/cases - Add a case to the course.
 // Body: { case_id, from_section_id?, section_ids?: string[] }
 //   from_section_id  start Main from that section's current settings for this case
-//                    (that section is then linked to Main)
+//                    (that section is then linked to Main). Without it, Main starts from the
+//                    case's own default settings when it has any (services/activityDefaults.js)
 //   section_ids      also give these course sections the case, inactive, following Main
 router.post('/courses/:id/cases', verifyToken, requireAdminOrInstructor, requireCourseOwnerOrAdmin('id'), async (req, res) => {
   const conn = await pool.getConnection();
@@ -210,9 +221,12 @@ router.post('/courses/:id/cases', verifyToken, requireAdminOrInstructor, require
       fromSectionCaseId = src[0].id;
     }
 
+    // Without a section to start from, Main starts from the case's own default settings.
+    const defaults = fromSectionCaseId ? null : await caseDefaultsForCaller(req, case_id, conn);
+
     await conn.beginTransaction();
     const { courseCaseId, mainVersionId } = await createCourseCase(conn, {
-      courseId, caseId: case_id, fromSectionCaseId, createdBy: req.user.id,
+      courseId, caseId: case_id, fromSectionCaseId, defaults, createdBy: req.user.id,
     });
 
     const targets = new Set(Array.isArray(section_ids) ? section_ids : []);
@@ -556,11 +570,12 @@ router.patch('/case-versions/:versionId/options', ...WRITE, versionWrite(async (
   if (chat_options !== null && typeof chat_options !== 'object') {
     throw new CaseVersionError(400, 'chat_options must be an object or null');
   }
+  const stored = withoutActivityMode(chat_options);
   await conn.execute(
     'UPDATE course_case_versions SET chat_options = ? WHERE version_id = ?',
-    [chat_options ? JSON.stringify(chat_options) : null, v.version_id]
+    [stored ? JSON.stringify(stored) : null, v.version_id]
   );
-  return { version_id: v.version_id, chat_options };
+  return { version_id: v.version_id, chat_options: stored };
 }));
 
 // PATCH /api/case-versions/:versionId/rubric - { rubric_id }
@@ -599,9 +614,20 @@ router.patch('/case-versions/:versionId/selection-mode', ...WRITE, versionWrite(
 // PATCH /api/case-versions/:versionId/position-settings
 router.patch('/case-versions/:versionId/position-settings', ...WRITE, versionWrite(async (conn, v, req) => {
   const { position_tracking_enabled, position_capture_method, track_position_change } = req.body || {};
-  const validMethods = ['explicit', 'ai_inferred', 'instructor_manual', 'none'];
+  const validMethods = ['explicit', 'ai_inferred', 'instructor_manual', 'none', 'assigned'];
   if (position_capture_method && !validMethods.includes(position_capture_method)) {
     throw new CaseVersionError(400, `position_capture_method must be one of: ${validMethods.join(', ')}`);
+  }
+  // The type decides which methods apply; 'assigned' also needs sides to assign (positionRules.js).
+  if (position_capture_method) {
+    const [typeRows] = await conn.execute('SELECT activity_type FROM cases WHERE case_id = ?', [v.case_id]);
+    try {
+      assertCaptureAllowed(typeRows[0]?.activity_type, position_capture_method);
+      if (position_capture_method === 'assigned') await assertVersionCanAssign(conn, v.version_id, typeRows[0]?.activity_type);
+    } catch (ruleError) {
+      if (ruleError instanceof PositionRuleError) throw new CaseVersionError(ruleError.status, ruleError.message);
+      throw ruleError;
+    }
   }
   const sets = [];
   const params = [];

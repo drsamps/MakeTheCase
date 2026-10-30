@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { api, getApiBaseUrl } from '../services/apiClient';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { api, getApiBaseUrl, getAuthHeaders } from '../services/apiClient';
 
 interface ChatTimerProps {
   chatId: string;
@@ -21,10 +21,25 @@ export const ChatTimer: React.FC<ChatTimerProps> = ({
   const [isExpired, setIsExpired] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<number>(Date.now());
 
+  // onTimeUp fires once per chat. The page passes a new inline callback on every render, so it
+  // is read from a ref: as an effect dependency it re-ran the server sync, which called it again
+  // while the chat was expired (the wrap-up then ran several times).
+  const onTimeUpRef = useRef(onTimeUp);
+  onTimeUpRef.current = onTimeUp;
+  const timeUpFiredRef = useRef(false);
+  useEffect(() => {
+    timeUpFiredRef.current = false;
+  }, [chatId]);
+  const fireTimeUp = useCallback(() => {
+    if (timeUpFiredRef.current) return;
+    timeUpFiredRef.current = true;
+    onTimeUpRef.current?.();
+  }, []);
+
   // Fetch time remaining from server
   const syncWithServer = useCallback(async () => {
     try {
-      const response = await fetch(`${getApiBaseUrl()}/case-chats/${chatId}/time-remaining`);
+      const response = await fetch(`${getApiBaseUrl()}/case-chats/${chatId}/time-remaining`, { headers: getAuthHeaders() });
       const result = await response.json();
 
       if (result.data) {
@@ -36,8 +51,8 @@ export const ChatTimer: React.FC<ChatTimerProps> = ({
           setRemainingSeconds(result.data.remaining_seconds);
           setIsExpired(result.data.expired);
 
-          if (result.data.expired && onTimeUp) {
-            onTimeUp();
+          if (result.data.expired) {
+            fireTimeUp();
           }
         } else if (result.data.has_time_limit && !result.data.timer_started) {
           // Timer not started yet - show full time
@@ -48,7 +63,7 @@ export const ChatTimer: React.FC<ChatTimerProps> = ({
     } catch (err) {
       console.error('Failed to sync timer:', err);
     }
-  }, [chatId, onTimeUp]);
+  }, [chatId, fireTimeUp]);
 
   // Initial sync and periodic re-sync every 30 seconds
   useEffect(() => {
@@ -62,20 +77,20 @@ export const ChatTimer: React.FC<ChatTimerProps> = ({
     if (!hasTimeLimit || !timerStarted || remainingSeconds === null) return;
 
     const countdownInterval = setInterval(() => {
-      setRemainingSeconds(prev => {
-        if (prev === null || prev <= 0) {
-          if (!isExpired) {
-            setIsExpired(true);
-            onTimeUp?.();
-          }
-          return 0;
-        }
-        return prev - 1;
-      });
+      setRemainingSeconds(prev => (prev === null || prev <= 0 ? 0 : prev - 1));
     }, 1000);
 
     return () => clearInterval(countdownInterval);
-  }, [hasTimeLimit, timerStarted, isExpired, onTimeUp]);
+  }, [hasTimeLimit, timerStarted, isExpired]);
+
+  // Time up when the countdown reaches zero. Not inside the state updater above, which React
+  // may run twice (StrictMode in dev).
+  useEffect(() => {
+    if (hasTimeLimit && timerStarted && remainingSeconds === 0) {
+      setIsExpired(true);
+      fireTimeUp();
+    }
+  }, [hasTimeLimit, timerStarted, remainingSeconds, fireTimeUp]);
 
   // Don't render if no time limit
   if (!hasTimeLimit || timeLimitMinutes === null) {

@@ -499,6 +499,57 @@ export async function canManageSectionCases(req, sectionId) {
 }
 
 /**
+ * Section IDs whose chats, transcripts and evaluations the caller may see: any section they
+ * are primary on (directly or via course ownership) OR a TA assignment with can_view_chats=1.
+ * Admins (without impersonation) get null = no scope filter. Honors admin "act as".
+ * Callers must run verifyToken + requireRole(['admin', 'instructor']) first.
+ *
+ * A chat's section is case_chats.section_id; chats from before that column was filled in
+ * fall back to the student's enrolled section: COALESCE(cc.section_id, st.section_id).
+ * @returns {Promise<string[]|null>}
+ */
+export async function getChatViewableSectionIds(req) {
+  const isAdmin = req.user.role === 'admin';
+  const scopedInstructorId = req.effectiveInstructorId || (req.user.role === 'instructor' ? req.user.id : null);
+
+  if (isAdmin && !scopedInstructorId) return null; // full vision
+
+  const [rows] = await pool.execute(`
+    SELECT section_id FROM sections WHERE primary_instructor_id = ?
+    UNION
+    SELECT s.section_id FROM sections s
+    JOIN courses c ON s.course_id = c.id
+    WHERE c.primary_instructor_id = ?
+    UNION
+    SELECT section_id FROM instructor_sections
+    WHERE instructor_id = ? AND can_view_chats = 1
+  `, [scopedInstructorId, scopedInstructorId, scopedInstructorId]);
+  return rows.map(r => r.section_id);
+}
+
+/** True when sectionId is inside a getChatViewableSectionIds() result (null = everything). */
+export function isSectionInScope(scopedSectionIds, sectionId) {
+  return scopedSectionIds === null || (sectionId != null && scopedSectionIds.includes(sectionId));
+}
+
+/**
+ * True when the caller may view this case chat (and its transcript and positions).
+ * False for a chat that does not exist, so callers answer 404 either way.
+ */
+export async function canViewChat(req, caseChatId) {
+  const scopedSectionIds = await getChatViewableSectionIds(req);
+  if (scopedSectionIds === null) return true;
+  const [rows] = await pool.execute(
+    `SELECT COALESCE(cc.section_id, st.section_id) AS section_id
+       FROM case_chats cc
+       LEFT JOIN students st ON st.id = cc.student_id
+      WHERE cc.id = ?`,
+    [caseChatId]
+  );
+  return rows.length > 0 && isSectionInScope(scopedSectionIds, rows[0].section_id);
+}
+
+/**
  * Non-middleware section access check (view), admin-aware.
  * @returns {Promise<boolean>}
  */
@@ -523,6 +574,73 @@ export async function canViewSection(req, sectionId) {
  */
 export function requireCaseAccess(caseIdParam = 'id', action = 'view') {
   return requireResourceAccess('case', caseIdParam, action);
+}
+
+/**
+ * Does this instructor teach the case? True when a section they can access (the same
+ * sources as canAccessSection) has it assigned, or ran chats on it after the assignment
+ * was removed (Results still lists those chats), or when they own a course whose case
+ * list has it (course owners edit its versions). Course access alone is not enough: a
+ * TA on one section would otherwise read every case on the course's list.
+ * @param {string} instructorId
+ * @param {string} caseId
+ * @returns {Promise<boolean>}
+ */
+export async function teachesCase(instructorId, caseId) {
+  const [rows] = await pool.execute(`
+    SELECT 1
+    FROM sections s
+    WHERE (EXISTS (SELECT 1 FROM section_cases sc WHERE sc.section_id = s.section_id AND sc.case_id = ?)
+           OR EXISTS (SELECT 1 FROM case_chats cc WHERE cc.section_id = s.section_id AND cc.case_id = ?))
+      AND (s.primary_instructor_id = ?
+           OR EXISTS (SELECT 1 FROM instructor_sections isec WHERE isec.section_id = s.section_id AND isec.instructor_id = ?)
+           OR EXISTS (SELECT 1 FROM instructor_semesters isem WHERE isem.semester_id = s.semester_id AND isem.instructor_id = ?)
+           OR EXISTS (SELECT 1 FROM courses c WHERE c.id = s.course_id AND c.primary_instructor_id = ?))
+    UNION ALL
+    SELECT 1
+    FROM course_cases ccs
+    JOIN courses c ON c.id = ccs.course_id
+    WHERE ccs.case_id = ? AND c.primary_instructor_id = ?
+    LIMIT 1
+  `, [caseId, caseId, instructorId, instructorId, instructorId, instructorId, caseId, instructorId]);
+  return rows.length > 0;
+}
+
+/**
+ * Middleware factory: read access to a case's teaching data (scenarios, positions).
+ *
+ * Allowed when the case is visible to the caller (as requireCaseAccess(…, 'view')),
+ * or when the caller teaches it (see teachesCase). Teaching does not imply visibility —
+ * an admin can assign a case the instructor was never shared, or the owner can make it
+ * private later — and such an instructor still needs its scenarios for Assignments,
+ * Results and case versions.
+ * Students and anonymous callers are refused (these rows are AI-only content).
+ *
+ * @param {string} caseIdParam - request param holding the case ID
+ */
+export function requireCaseReadAccess(caseIdParam = 'caseId') {
+  return async (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    if (req.user.role !== 'admin' && req.user.role !== 'instructor') {
+      return res.status(403).json({ error: 'Admin or instructor access required' });
+    }
+    const caseId = req.params[caseIdParam];
+    try {
+      const result = await canAccessResource(req, 'case', caseId, 'view');
+      if (result.allowed) return next();
+
+      const instructorId = getEffectiveInstructorId(req);
+      if (result.reason !== 'not_found' && instructorId && await teachesCase(instructorId, caseId)) {
+        return next();
+      }
+      return res.status(404).json({ error: formatAccessError(result) });
+    } catch (err) {
+      console.error('[requireCaseReadAccess]', err);
+      return res.status(500).json({ error: 'Access check failed' });
+    }
+  };
 }
 
 /**
@@ -588,7 +706,7 @@ export function requireCaseAccessByRow(table, paramName = 'fileId', action = 'vi
  * Build a user-facing error message from a canAccessResource result. For
  * `not_owner` we append the owner's name/email so the user knows who to ask.
  */
-function formatAccessError(result) {
+export function formatAccessError(result) {
   if (result.reason === 'not_owner' && result.ownerLabel) {
     return `not_owner — owned by ${result.ownerLabel}`;
   }

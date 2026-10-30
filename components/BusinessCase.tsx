@@ -1,15 +1,19 @@
 import React from 'react';
 import { BUSINESS_CASE_TEXT } from '../data/business_case';
 import FontSizeControl from './FontSizeControl';
+import ReadingText, { type ReadingPart } from './ReadingText';
+import { MARKDOWN } from '../utils/readingFormat.js';
+
+const DEFAULT_READING: ReadingPart[] = [{ kind: 'file', format: MARKDOWN, content: BUSINESS_CASE_TEXT }];
 
 interface BusinessCaseProps {
   fontSize: string;
   onFontSizeChange: (size: string) => void;
   fontSizes: string[];
   defaultFontSize: string;
-  // Optional props for dynamic case content
   caseTitle?: string;
-  caseContent?: string;
+  /** The reading one file at a time with each file's format (GET /api/llm/case-data). */
+  readingParts?: ReadingPart[];
 }
 
 const BusinessCase: React.FC<BusinessCaseProps> = ({ 
@@ -18,30 +22,17 @@ const BusinessCase: React.FC<BusinessCaseProps> = ({
   fontSizes, 
   defaultFontSize,
   caseTitle,
-  caseContent 
+  readingParts,
 }) => {
-  // Use provided case content or fall back to hardcoded content
-  const textContent = caseContent || BUSINESS_CASE_TEXT;
   const title = caseTitle || "Malawi's Pizza Catering Case";
-  
-  const paragraphs = textContent.trim().split('\n').filter(p => p.trim() !== '');
+  // Each file renders by its own format. No parts (the case could not be loaded): the built-in
+  // Malawi's Pizza case.
+  const parts = readingParts && readingParts.length > 0 ? readingParts : DEFAULT_READING;
 
   const handleCopyPaste = (e: React.ClipboardEvent) => {
     e.preventDefault();
     alert('Sorry, cut-and-paste are disabled while using this simulation.');
   };
-
-  const formattedText = paragraphs.map((p, i) => {
-    // A simple heuristic for a heading: it's a short line with no period at the end.
-    if (p.length < 50 && !p.endsWith('.') && !p.endsWith('?')) {
-        return <h3 key={i} className="text-xl font-bold text-gray-800 mt-6 mb-2">{p}</h3>;
-    }
-    // Render text wrapped in underscores as italic
-    if (p.startsWith('_') && p.endsWith('_')) {
-        return <p key={i} className={`text-gray-700 mb-4 italic ${fontSize}`}>{p.slice(1, -1)}</p>;
-    }
-    return <p key={i} className={`text-gray-700 mb-4 ${fontSize}`}>{p}</p>;
-  });
 
   return (
     <div 
@@ -58,8 +49,14 @@ const BusinessCase: React.FC<BusinessCaseProps> = ({
           defaultSize={defaultFontSize}
         />
       </div>
-      <div className="max-w-none">
-        {formattedText}
+      {/* The same renderer as the instructor's Case Files preview, sized by the font control. */}
+      <div className={`max-w-none ${fontSize}`}>
+        {parts.map((part, i) => (
+          <section key={i} className={i > 0 ? 'mt-6 pt-4 border-t border-gray-200' : undefined}>
+            {part.kind === 'outline' && <h2 className="text-[1.3em] font-bold text-gray-900 mb-2">Outline</h2>}
+            <ReadingText text={part.content} format={part.format} scaleWithText emptyText="" />
+          </section>
+        ))}
       </div>
     </div>
   );

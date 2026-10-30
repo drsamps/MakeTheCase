@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { api, getApiBaseUrl } from '../services/apiClient';
+import { api, getApiBaseUrl, getAuthHeaders } from '../services/apiClient';
+import ReadingEditor, { type OriginalText } from './caseFiles/ReadingEditor';
+import WebFetchModal, { FetchPreview } from './caseFiles/WebFetchModal';
+import type { ReadingFormat } from './ReadingText';
+import { quote } from '../utils/confirmLabels';
+import HelpTooltip from './ui/HelpTooltip';
+import { CaseFilesHelp } from '../help/dashboard';
+import { MARKDOWN, readingFormatOf } from '../utils/readingFormat.js';
 
 interface Case {
   case_id: string;
@@ -14,8 +21,14 @@ interface CaseFile {
   file_type: string;
   file_type_label: string;
   file_format: string | null;
-  file_source: 'uploaded' | 'ai_prepped' | 'downloaded';
+  text_format?: string | null;
+  // 'imported' / 'imported_text': installed from an activity package, with or without the original file
+  file_source: 'uploaded' | 'ai_prepped' | 'downloaded' | 'case_writer' | 'web' | 'pasted' | 'imported' | 'imported_text';
   source_url: string | null;
+  fetched_at: string | null;
+  text_edited_at: string | null;
+  has_original: boolean;
+  has_text: boolean;
   proprietary: boolean;
   proprietary_confirmed_by: number | null;
   proprietary_confirmed_at: string | null;
@@ -26,6 +39,17 @@ interface CaseFile {
   processing_status: 'pending' | 'processing' | 'completed' | 'failed' | null;
   created_at: string;
 }
+
+// Only http(s) URLs become links, so a stored javascript: URL can never run.
+const safeHttpUrl = (url: string | null): URL | null => {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
 
 const PREDEFINED_FILE_TYPES = [
   { value: 'case', label: 'Case Document' },
@@ -55,10 +79,13 @@ export const CaseFilesManager: React.FC = () => {
   const [uploadPromptOrder, setUploadPromptOrder] = useState<number>(0);
   const [uploadVersion, setUploadVersion] = useState<string>('');
 
-  // URL download state
+  // Add-from-web state. The review modal opens with a fetch preview, or empty for Paste.
   const [downloadUrl, setDownloadUrl] = useState<string>('');
   const [downloadFileType, setDownloadFileType] = useState<string>('reading');
   const [downloadCustomType, setDownloadCustomType] = useState<string>('');
+  const [urlFetchEnabled, setUrlFetchEnabled] = useState<boolean>(true);
+  const [webModal, setWebModal] = useState<{ url?: string; preview?: FetchPreview } | null>(null);
+  const [refetchingId, setRefetchingId] = useState<number | null>(null);
 
   // Edit modal state
   const [editingFile, setEditingFile] = useState<CaseFile | null>(null);
@@ -87,6 +114,10 @@ export const CaseFilesManager: React.FC = () => {
   const [textModalSaving, setTextModalSaving] = useState(false);
   const [textModalDirty, setTextModalDirty] = useState(false);
   const [textModalConvertedAt, setTextModalConvertedAt] = useState<string | null>(null);
+  const [textModalEditedAt, setTextModalEditedAt] = useState<string | null>(null);
+  const [textModalHasOriginal, setTextModalHasOriginal] = useState(false);
+  const [textModalFormat, setTextModalFormat] = useState<ReadingFormat>(MARKDOWN);
+  const [textModalOriginal, setTextModalOriginal] = useState<OriginalText | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -97,6 +128,9 @@ export const CaseFilesManager: React.FC = () => {
       setIsInitializing(false);
     };
     initialize();
+    api.get('/case-files/config/web-fetch').then((response) => {
+      if (response.data) setUrlFetchEnabled(!!response.data.url_fetch_enabled);
+    });
   }, []);
 
   useEffect(() => {
@@ -131,7 +165,7 @@ export const CaseFilesManager: React.FC = () => {
     }
   };
 
-  const fetchFiles = async (caseId: string) => {
+  const fetchFiles = async (caseId: string): Promise<CaseFile[] | null> => {
     setIsLoading(true);
     setError(null);
     try {
@@ -141,6 +175,7 @@ export const CaseFilesManager: React.FC = () => {
         setFiles([]);
       } else if (response.data) {
         setFiles(response.data);
+        return response.data;
       }
     } catch (err: any) {
       setError(err.message || 'Failed to fetch files');
@@ -148,6 +183,7 @@ export const CaseFilesManager: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
+    return null;
   };
 
   const getEffectiveFileType = (type: string, customType: string): string => {
@@ -234,18 +270,20 @@ export const CaseFilesManager: React.FC = () => {
     }
   };
 
-  const handleDownloadUrl = async () => {
+  // A row whose only source is a URL (web page, or an old URL import with no file).
+  const isUrlOnly = (file: CaseFile) => !!safeHttpUrl(file.source_url) && !file.has_original;
+
+  // Fetch: preview only. Nothing is stored until Save in the review modal.
+  const handleFetchUrl = async () => {
     if (!selectedCase) {
       alert('Please select a case first');
       return;
     }
-
-    if (!downloadUrl.trim()) {
+    const url = downloadUrl.trim();
+    if (!url) {
       alert('Please enter a URL');
       return;
     }
-
-    const effectiveType = getEffectiveFileType(downloadFileType, downloadCustomType);
     if (downloadFileType === 'other' && !downloadCustomType.trim()) {
       alert('Please enter a custom file type label');
       return;
@@ -254,28 +292,80 @@ export const CaseFilesManager: React.FC = () => {
     setIsDownloading(true);
     setError(null);
     try {
-      const response = await api.post(`/case-files/${selectedCase}/download-url`, {
-        url: downloadUrl.trim(),
-        file_type: effectiveType,
-        proprietary: false,
-        include_in_chat_prompt: true,
-        prompt_order: 0,
-      });
-
+      const response = await api.post(`/case-files/${selectedCase}/fetch-url`, { url, preview: true });
       if (response.error) {
         throw new Error(response.error.message);
       }
-
-      await fetchFiles(selectedCase);
-      setSuccess('File downloaded successfully');
-      setDownloadUrl('');
-      setDownloadCustomType('');
+      setWebModal({ url, preview: response.data as FetchPreview });
     } catch (err: any) {
-      setError(err.message || 'Download failed');
+      setError(err.message || 'Fetch failed');
     } finally {
       setIsDownloading(false);
     }
   };
+
+  const handlePasteText = () => {
+    if (!selectedCase) {
+      alert('Please select a case first');
+      return;
+    }
+    if (downloadFileType === 'other' && !downloadCustomType.trim()) {
+      alert('Please enter a custom file type label');
+      return;
+    }
+    setWebModal({});
+  };
+
+  // Re-fetch replaces the stored text (and file); warn only when there are edits to lose.
+  const handleRefetch = async (file: CaseFile) => {
+    const edited = file.text_edited_at || (textModalFile?.id === file.id && (textModalEditedAt || textModalDirty));
+    if (edited && !confirm(`Fetch ${quote(file.original_filename || file.filename)} again? This replaces the text, including your edits.`)) return;
+
+    setRefetchingId(file.id);
+    setError(null);
+    try {
+      const response = await api.post(`/case-files/${file.id}/refetch`);
+      if (response.error) {
+        throw new Error(response.error.message);
+      }
+      const list = selectedCase ? await fetchFiles(selectedCase) : null;
+      if (textModalFile?.id === file.id) {
+        setTextModalDirty(false);
+        await openTextModal(list?.find(f => f.id === file.id) || file);
+      }
+      if (response.data?.degraded) {
+        setError('Fetched, but very little text was found. The page may be built by JavaScript or behind a paywall; check the text, or paste it instead.');
+      } else if (response.data?.container_fallback) {
+        setSuccess(`Fetched again (${(response.data?.converted_text_length ?? 0).toLocaleString()} chars). Reader view found only part of the article, so the page's whole main section was kept: check the text for leftover menus or captions.`);
+      } else {
+        setSuccess(`Fetched again (${(response.data?.converted_text_length ?? 0).toLocaleString()} chars)`);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Re-fetch failed');
+    } finally {
+      setRefetchingId(null);
+    }
+  };
+
+  const handleRevertText = async () => {
+    if (!textModalFile) return;
+    if (!confirm('Put back the text as it was first extracted? Your edits will be lost.')) return;
+    setTextModalLoading(true);
+    try {
+      const response = await api.post(`/case-files/${textModalFile.id}/revert-text`);
+      if (response.error) {
+        throw new Error(response.error.message);
+      }
+      setTextModalDirty(false);
+      await openTextModal(textModalFile);
+      if (selectedCase) fetchFiles(selectedCase);
+      setSuccess('Text reverted');
+    } catch (err: any) {
+      setError(err.message || 'Revert failed');
+      setTextModalLoading(false);
+    }
+  };
+
 
   const handleDelete = async (file: CaseFile) => {
     const name = file.original_filename || file.filename || '(unnamed)';
@@ -309,6 +399,44 @@ export const CaseFilesManager: React.FC = () => {
     }
   };
 
+  // A plain link cannot carry the Bearer token, so fetch the file and hand the browser a blob URL.
+  const downloadFromApi = async (apiPath: string, fallbackName: string) => {
+    setError(null);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}${apiPath}`, { headers: getAuthHeaders() });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error?.message || `Download failed (${response.status})`);
+      }
+      // The server names the file; fall back only if the header is unreadable.
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+      const plain = disposition.match(/filename="([^"]+)"/i);
+      const name = encoded ? decodeURIComponent(encoded[1]) : plain ? plain[1] : fallbackName;
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err: any) {
+      setError(err.message || 'Download failed');
+    }
+  };
+
+  // Rows with no original on disk (text-only entries) download their text instead.
+  const handleDownload = (file: CaseFile) => {
+    const name = file.original_filename || file.filename;
+    if (file.has_original) {
+      downloadFromApi(`/case-files/${file.id}/download`, name);
+    } else {
+      downloadFromApi(`/case-files/${file.id}/download-text`, `${name}.txt`);
+    }
+  };
+
   const openTextModal = async (file: CaseFile) => {
     setTextModalFile(file);
     setTextModalLoading(true);
@@ -316,6 +444,9 @@ export const CaseFilesManager: React.FC = () => {
     setTextModalContent('');
     setTextModalHasText(false);
     setTextModalConvertedAt(null);
+    setTextModalEditedAt(null);
+    setTextModalHasOriginal(false);
+    setTextModalOriginal(null);
     try {
       const response = await api.get(`/case-files/${file.id}/converted-text`);
       if (response.error) {
@@ -325,6 +456,12 @@ export const CaseFilesManager: React.FC = () => {
       setTextModalContent(d.converted_text || '');
       setTextModalHasText(d.has_converted_text);
       setTextModalConvertedAt(d.converted_at || null);
+      setTextModalEditedAt(d.text_edited_at || null);
+      setTextModalHasOriginal(!!d.has_original_text);
+      setTextModalFormat(d.text_format || readingFormatOf(file));
+      setTextModalOriginal(d.original_text != null
+        ? { text: d.original_text, format: d.original_text_format || d.text_format || readingFormatOf(file) }
+        : null);
     } catch (err: any) {
       setError(err.message || 'Failed to load text');
       setTextModalFile(null);
@@ -339,13 +476,14 @@ export const CaseFilesManager: React.FC = () => {
     try {
       const response = await api.put(`/case-files/${textModalFile.id}/converted-text`, {
         converted_text: textModalContent,
+        text_format: textModalFormat,
       });
       if (response.error) {
         throw new Error(response.error.message);
       }
       setTextModalDirty(false);
-      setTextModalHasText(true);
-      setTextModalConvertedAt(response.data?.converted_at || new Date().toISOString());
+      await openTextModal(textModalFile);
+      if (selectedCase) fetchFiles(selectedCase);
       setSuccess('Text saved');
     } catch (err: any) {
       setError(err.message || 'Save failed');
@@ -356,6 +494,7 @@ export const CaseFilesManager: React.FC = () => {
 
   const handleTextModalConvert = async () => {
     if (!textModalFile) return;
+    if ((textModalEditedAt || textModalDirty) && !confirm('Re-extract the text from the original file? Your edits will be replaced.')) return;
     setTextModalLoading(true);
     try {
       const response = await api.post(`/case-files/${textModalFile.id}/reconvert`);
@@ -363,13 +502,9 @@ export const CaseFilesManager: React.FC = () => {
         throw new Error(response.error.message);
       }
       // Reload the text after conversion
-      const textResponse = await api.get(`/case-files/${textModalFile.id}/converted-text`);
-      if (textResponse.data) {
-        setTextModalContent(textResponse.data.converted_text || '');
-        setTextModalHasText(textResponse.data.has_converted_text);
-        setTextModalConvertedAt(textResponse.data.converted_at || null);
-      }
       setTextModalDirty(false);
+      await openTextModal(textModalFile);
+      if (selectedCase) fetchFiles(selectedCase);
       setSuccess(`Text extracted (${response.data?.converted_text_length?.toLocaleString() ?? 0} chars)`);
     } catch (err: any) {
       setError(err.message || 'Conversion failed');
@@ -547,10 +682,16 @@ export const CaseFilesManager: React.FC = () => {
       uploaded: 'bg-blue-100 text-blue-800',
       downloaded: 'bg-purple-100 text-purple-800',
       ai_prepped: 'bg-green-100 text-green-800',
+      web: 'bg-teal-100 text-teal-800',
+      pasted: 'bg-amber-100 text-amber-800',
+      imported: 'bg-indigo-100 text-indigo-800',
+      imported_text: 'bg-indigo-100 text-indigo-800',
     };
+    // Installed from an activity package; "text only" when its original file did not travel.
+    const label = source === 'imported_text' ? 'imported, text only' : source;
     return (
       <span className={`px-2 py-0.5 rounded text-xs ${colors[source as keyof typeof colors] || 'bg-gray-100 text-gray-800'}`}>
-        {source}
+        {label}
       </span>
     );
   };
@@ -737,14 +878,29 @@ export const CaseFilesManager: React.FC = () => {
                         <td className="px-3 py-2 text-gray-500">{file.prompt_order}</td>
                         <td className="px-3 py-2">
                           <div className="font-medium">{file.original_filename || file.filename}</div>
-                          <div className="text-xs text-gray-500">{file.file_format?.toUpperCase()}</div>
+                          <div className="text-xs text-gray-500">
+                            {file.file_format?.toUpperCase()}
+                            {safeHttpUrl(file.source_url) && (
+                              <>{file.file_format ? ' · ' : ''}{safeHttpUrl(file.source_url)!.hostname}</>
+                            )}
+                          </div>
                         </td>
                         <td className="px-3 py-2">
                           <span className="px-2 py-0.5 bg-gray-100 rounded text-xs">
                             {file.file_type_label}
                           </span>
                         </td>
-                        <td className="px-3 py-2">{getSourceBadge(file.file_source)}</td>
+                        <td className="px-3 py-2">
+                          {getSourceBadge(file.file_source)}
+                          {file.text_edited_at && (
+                            <span
+                              className="ml-1 px-2 py-0.5 rounded text-xs bg-orange-100 text-orange-800"
+                              title={`Text edited ${new Date(file.text_edited_at).toLocaleString()}`}
+                            >
+                              edited
+                            </span>
+                          )}
+                        </td>
                         <td className="px-3 py-2">{formatFileSize(file.file_size)}</td>
                         <td className="px-3 py-2 text-center">
                           {file.proprietary ? (
@@ -788,7 +944,7 @@ export const CaseFilesManager: React.FC = () => {
                             >
                               Edit
                             </button>
-                            {['pdf', 'docx', 'doc', 'md', 'txt'].includes(file.file_format || '') && (
+                            {(file.has_text || ['pdf', 'docx', 'doc', 'md', 'txt'].includes(file.file_format || '')) && (
                               <>
                                 <span className="text-gray-300">|</span>
                                 <button
@@ -810,6 +966,45 @@ export const CaseFilesManager: React.FC = () => {
                                 >
                                   Reconvert
                                 </button>
+                              </>
+                            )}
+                            {safeHttpUrl(file.source_url) && !file.has_text && urlFetchEnabled && (
+                              <>
+                                <span className="text-gray-300">|</span>
+                                <button
+                                  onClick={() => handleRefetch(file)}
+                                  disabled={refetchingId === file.id}
+                                  className="text-green-600 hover:text-green-800 text-xs disabled:text-gray-400"
+                                  title="Fetch the page again and extract its text"
+                                >
+                                  {refetchingId === file.id ? 'Fetching...' : 'Re-fetch'}
+                                </button>
+                              </>
+                            )}
+                            {(file.has_original || file.has_text) && (
+                              <>
+                                <span className="text-gray-300">|</span>
+                                <button
+                                  onClick={() => handleDownload(file)}
+                                  className="text-gray-700 hover:text-gray-900 text-xs"
+                                  title={file.has_original ? 'Download the original file' : 'No original file is stored; download its text'}
+                                >
+                                  Download
+                                </button>
+                              </>
+                            )}
+                            {safeHttpUrl(file.source_url) && (
+                              <>
+                                <span className="text-gray-300">|</span>
+                                <a
+                                  href={safeHttpUrl(file.source_url)!.href}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-gray-700 hover:text-gray-900 text-xs whitespace-nowrap"
+                                  title={file.source_url!}
+                                >
+                                  Visit ↗
+                                </a>
                               </>
                             )}
                             <span className="text-gray-300">|</span>
@@ -928,18 +1123,31 @@ export const CaseFilesManager: React.FC = () => {
             </div>
           </div>
 
-          {/* URL Import Section */}
+          {/* Add from web page (or paste) */}
           <div className="bg-white border rounded-lg p-6 mb-4">
-            <h3 className="text-lg font-semibold mb-4">Import file from URL</h3>
-            <div className="flex gap-4 items-end">
-              <div className="flex-1">
+            <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
+              Add from web page
+              <HelpTooltip title="Case Files Help">
+                <CaseFilesHelp />
+              </HelpTooltip>
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Fetch an article or a PDF/DOCX link, review and edit the text, then save it. For pages that can't be
+              fetched (paywalls, logins, pages built by JavaScript), paste the text instead.
+            </p>
+            <div className="flex flex-wrap gap-4 items-end">
+              <div className="flex-1 min-w-[16rem]">
                 <label className="font-medium block mb-1 text-sm">URL:</label>
                 <input
                   type="url"
                   value={downloadUrl}
                   onChange={(e) => setDownloadUrl(e.target.value)}
-                  placeholder="https://example.com/document.pdf"
-                  className="border rounded px-3 py-2 w-full"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && urlFetchEnabled && !isDownloading && downloadUrl.trim()) handleFetchUrl();
+                  }}
+                  placeholder="https://example.com/article"
+                  disabled={!urlFetchEnabled}
+                  className="border rounded px-3 py-2 w-full disabled:bg-gray-100"
                 />
               </div>
               <div className="w-48">
@@ -968,13 +1176,24 @@ export const CaseFilesManager: React.FC = () => {
                 </div>
               )}
               <button
-                onClick={handleDownloadUrl}
-                disabled={isDownloading || !downloadUrl.trim()}
+                onClick={handleFetchUrl}
+                disabled={!urlFetchEnabled || isDownloading || !downloadUrl.trim()}
                 className="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 disabled:bg-gray-400"
               >
-                {isDownloading ? 'Downloading...' : 'Download'}
+                {isDownloading ? 'Fetching...' : 'Fetch'}
+              </button>
+              <button
+                onClick={handlePasteText}
+                className="px-4 py-2 border rounded hover:bg-gray-50"
+              >
+                Paste text instead
               </button>
             </div>
+            {!urlFetchEnabled && (
+              <p className="text-sm text-gray-500 mt-3">
+                Fetching from URLs is turned off on this server (an admin can turn it on in Settings). You can still paste text.
+              </p>
+            )}
           </div>
         </>
       )}
@@ -1107,10 +1326,30 @@ export const CaseFilesManager: React.FC = () => {
         </div>
       )}
 
+      {/* Add-from-web / Paste review modal */}
+      {webModal && selectedCase && (
+        <WebFetchModal
+          caseId={selectedCase}
+          fileType={getEffectiveFileType(downloadFileType, downloadCustomType)}
+          fileTypeLabel={downloadFileType === 'other'
+            ? downloadCustomType.trim()
+            : PREDEFINED_FILE_TYPES.find(t => t.value === downloadFileType)?.label || downloadFileType}
+          url={webModal.url}
+          preview={webModal.preview}
+          onClose={() => setWebModal(null)}
+          onSaved={async (title) => {
+            setWebModal(null);
+            setDownloadUrl('');
+            await fetchFiles(selectedCase);
+            setSuccess(`Saved "${title}"`);
+          }}
+        />
+      )}
+
       {/* Converted Text Modal */}
       {textModalFile && (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
+          <div className="bg-white rounded-lg w-full max-w-7xl max-h-[95vh] flex flex-col">
             <div className="px-6 py-4 border-b flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-bold">Extracted Text</h3>
@@ -1148,48 +1387,80 @@ export const CaseFilesManager: React.FC = () => {
                     Click below to convert it now.
                   </p>
                   <button
-                    onClick={handleTextModalConvert}
+                    onClick={() => (isUrlOnly(textModalFile) ? handleRefetch(textModalFile) : handleTextModalConvert())}
                     className="px-6 py-2 bg-purple-600 text-white rounded hover:bg-purple-700"
                   >
-                    Convert to Text
+                    {isUrlOnly(textModalFile) ? 'Fetch the page' : 'Convert to Text'}
                   </button>
                 </div>
               ) : (
-                <>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs text-gray-500">
-                      {textModalContent.length.toLocaleString()} characters
+                <ReadingEditor
+                  value={textModalContent}
+                  format={textModalFormat}
+                  onChange={(value, format) => {
+                    setTextModalContent(value);
+                    setTextModalFormat(format);
+                    setTextModalDirty(true);
+                  }}
+                  original={textModalOriginal}
+                  caseId={textModalFile.case_id}
+                  meta={
+                    <>
                       {textModalConvertedAt && (
-                        <> &middot; converted {new Date(textModalConvertedAt).toLocaleString()}</>
+                        <> &middot; {textModalFile.fetched_at ? 'updated' : 'converted'} {new Date(textModalConvertedAt).toLocaleString()}</>
                       )}
-                    </span>
-                    {textModalDirty && (
-                      <span className="text-xs text-orange-600 font-medium">Unsaved changes</span>
-                    )}
-                  </div>
-                  <textarea
-                    value={textModalContent}
-                    onChange={(e) => {
-                      setTextModalContent(e.target.value);
-                      setTextModalDirty(true);
-                    }}
-                    className="w-full h-[50vh] border rounded p-3 font-mono text-sm resize-y focus:ring-2 focus:ring-purple-300 focus:border-purple-400"
-                    spellCheck={false}
-                  />
-                </>
+                      {textModalEditedAt && !textModalDirty && <> &middot; edited by hand</>}
+                    </>
+                  }
+                  status={textModalDirty ? <span className="text-xs text-orange-600 font-medium">Unsaved changes</span> : undefined}
+                />
               )}
             </div>
 
             {textModalHasText && !textModalLoading && (
-              <div className="px-6 py-4 border-t flex items-center justify-between">
-                <button
-                  onClick={handleTextModalConvert}
-                  disabled={textModalLoading}
-                  className="text-sm text-green-600 hover:text-green-800"
-                  title="Re-extract text from the original file (discards edits)"
-                >
-                  Re-extract from file
-                </button>
+              <div className="px-6 py-4 border-t flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap gap-4">
+                  {textModalFile.has_original && (
+                    <button
+                      onClick={handleTextModalConvert}
+                      disabled={textModalLoading}
+                      className="text-sm text-green-600 hover:text-green-800"
+                      title="Extract the text from the original file again"
+                    >
+                      Re-extract from file
+                    </button>
+                  )}
+                  {safeHttpUrl(textModalFile.source_url) && urlFetchEnabled && (
+                    <button
+                      onClick={() => handleRefetch(textModalFile)}
+                      disabled={refetchingId === textModalFile.id}
+                      className="text-sm text-green-600 hover:text-green-800 disabled:text-gray-400"
+                      title={textModalFile.source_url || ''}
+                    >
+                      {refetchingId === textModalFile.id ? 'Fetching...' : 'Re-fetch from page'}
+                    </button>
+                  )}
+                  {textModalHasOriginal && (textModalEditedAt || textModalDirty) && (
+                    <button
+                      onClick={handleRevertText}
+                      className="text-sm text-gray-600 hover:text-gray-800"
+                      title="Put back the text as it was first extracted or fetched"
+                    >
+                      Revert to extracted text
+                    </button>
+                  )}
+                  <button
+                    onClick={() => downloadFromApi(
+                      `/case-files/${textModalFile.id}/download-text`,
+                      `${textModalFile.original_filename || textModalFile.filename}.txt`
+                    )}
+                    disabled={textModalDirty}
+                    className="text-sm text-gray-600 hover:text-gray-800 disabled:text-gray-300"
+                    title={textModalDirty ? 'Save your changes first' : 'Download the saved text (what the AI reads)'}
+                  >
+                    Download text
+                  </button>
+                </div>
                 <div className="flex gap-2">
                   <button
                     onClick={closeTextModal}

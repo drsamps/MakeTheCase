@@ -86,6 +86,7 @@ const AVAILABLE_PERMISSIONS = [
   { id: 'settings', label: 'Settings' },
   { id: 'instructors', label: 'Instructors' },
   { id: 'backups', label: 'Backups' },
+  { id: 'activity_types', label: 'Activity Types' },
 ];
 
 const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => {
@@ -290,7 +291,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
         }
         const response = await api.patch(`/admins/${editingAdmin.id}`, updateData);
         if (response.error) {
-          setError(response.error.message || response.error);
+          setError(response.error.message);
           return;
         }
       } else {
@@ -300,7 +301,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
         }
         const response = await api.post('/admins', adminFormData);
         if (response.error) {
-          setError(response.error.message || response.error);
+          setError(response.error.message);
           return;
         }
       }
@@ -321,7 +322,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
     try {
       const response = await api.delete(`/admins/${admin.id}`);
       if (response.error) {
-        setError(response.error.message || response.error);
+        setError(response.error.message);
       } else {
         fetchAdmins();
       }
@@ -486,7 +487,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
         }
         const response = await api.patch(`/instructors/${editingInstructor.id}`, updateData);
         if (response.error) {
-          setError(response.error.message || response.error);
+          setError(response.error.message);
           return;
         }
       } else {
@@ -505,7 +506,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
         }
         const response = await api.post('/instructors', createPayload);
         if (response.error) {
-          setError(response.error.message || response.error);
+          setError(response.error.message);
           return;
         }
       }
@@ -529,7 +530,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
     try {
       const response = await api.delete(`/instructors/${instructor.id}`);
       if (response.error) {
-        setError(response.error.message || response.error);
+        setError(response.error.message);
       } else {
         fetchInstructors();
       }
@@ -568,7 +569,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
           semester_id: parseInt(assignFormData.semester_id),
         });
         if (response.error) {
-          setError(response.error.message || response.error);
+          setError(response.error.message);
           return;
         }
       } else {
@@ -583,7 +584,7 @@ const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => 
           can_view_chats: assignFormData.can_view_chats,
         });
         if (response.error) {
-          setError(response.error.message || response.error);
+          setError(response.error.message);
           return;
         }
       }

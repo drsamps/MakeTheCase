@@ -123,6 +123,8 @@ const PURPOSE_LABELS: Record<string, string> = {
   evaluation: 'Evaluations',
   case_writer: 'Case Writer',
   case_prep: 'Case Prep',
+  scenario_drafts: 'Scenario Drafts',
+  case_file_format: 'Format with AI',
   position_inference: 'Position inference',
   issue_analytics: 'Issue analytics',
   feedback_summary: 'Feedback summaries',

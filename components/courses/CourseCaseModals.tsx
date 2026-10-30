@@ -41,6 +41,8 @@ export interface CourseCaseRow {
   course_case_id: number;
   case_id: string;
   case_title: string;
+  /** The caller may edit the case itself (save its default settings), not just the course. */
+  can_edit_case?: boolean;
   versions: VersionRow[];
   customized_sections: CourseCaseSectionRow[];
 }

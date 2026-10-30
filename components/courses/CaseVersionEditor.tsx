@@ -3,6 +3,8 @@ import { api } from '../../services/apiClient';
 import HelpTooltip from '../ui/HelpTooltip';
 import { ChatOptionsHelp } from '../../help/dashboard';
 import { formatAllowedPersonas, personasForDefaultDropdown, resolveAllowedPersonasForForm, type PersonaRow } from '../../utils/personas';
+import { crossModePersonaIds, isAudiencePersonaId, usesAudiencePersonas, validateChatOptionsForSave } from '../../teachBack';
+import { activityTypeInfo, useActivityTypeList } from '../../services/activityTypeList';
 
 /**
  * Edit one course case version ("Main" or a semester copy). Every save is written through to
@@ -53,6 +55,7 @@ const CAPTURE_METHODS = [
   { value: 'ai_inferred', label: 'AI infers position' },
   { value: 'instructor_manual', label: 'Instructor records position' },
   { value: 'none', label: 'Do not capture' },
+  { value: 'assigned', label: 'Server assigns a side' },
 ];
 
 const Section: React.FC<{ title: React.ReactNode; children: React.ReactNode; sectionRef?: React.Ref<HTMLDivElement> }> = ({ title, children, sectionRef }) => (
@@ -72,6 +75,7 @@ const MoveButtons: React.FC<{ disabled: boolean; canUp: boolean; canDown: boolea
 );
 
 const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, initialPart, onClose, onChanged }) => {
+  useActivityTypeList();
   const [version, setVersion] = useState<any>(null);
   const [schema, setSchema] = useState<SchemaField[]>([]);
   const [options, setOptions] = useState<Record<string, any> | null>(null);
@@ -113,13 +117,14 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
   const scrolled = useRef(false);
 
   const load = useCallback(async () => {
-    const [vRes, schemaRes, rubricRes] = await Promise.all([
+    const [vRes, rubricRes] = await Promise.all([
       api.get<any>(`/case-versions/${versionId}`),
-      api.get<SchemaField[]>('/chat-options/schema'),
       api.get<any[]>('/rubrics'),
     ]);
     if (vRes.error || !vRes.data) { setError(vRes.error?.message || 'Failed to load version'); return; }
     const v = vRes.data;
+    // The fields this case's activity type uses (its definition hides the rest).
+    const schemaRes = await api.get<SchemaField[]>(`/chat-options/schema?activity_type=${encodeURIComponent(activityTypeInfo(v.activity_type).id)}`);
     setVersion(v);
     setLabel(v.label);
     setSchema(schemaRes.data || []);
@@ -183,14 +188,36 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
   const isMain = version.is_main;
   const assignedIds = new Set(assigned.map((s) => s.scenario_id));
   const disabled = !canEdit || busy;
+  // The activity type is the case's (cases.activity_type), not a chat option.
+  const activityType = activityTypeInfo(version.activity_type);
+
+  // Same check as the section form, because this save is written through to every section
+  // that follows the version.
+  const saveOptions = () => {
+    const invalid = useDefaults ? null : validateChatOptionsForSave(options, activityType.id);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
+    write('patch', '/options', { chat_options: useDefaults ? null : options }, 'Chat options saved');
+  };
 
   // Same semantics as the section form (Dashboard renderPersonaChatOptionsFields): an empty
-  // allowed_personas means every enabled persona, including ones added later.
+  // allowed_personas means every enabled persona, including ones added later. Teach-back
+  // offers audiences (audience-*) and case chat offers personalities, never both.
   const renderPersonaFields = () => {
     const fieldDisabled = disabled || useDefaults;
+    const teachBack = usesAudiencePersonas(activityType.id);
     const enabledPersonas: PersonaRow[] = (schema.find((f) => f.key === 'allowed_personas')?.options || [])
-      .map((o) => ({ persona_id: o.value, persona_name: o.label }));
-    const { allowAll, selectedIds } = resolveAllowedPersonasForForm(options.allowed_personas, enabledPersonas);
+      .map((o) => ({ persona_id: o.value, persona_name: o.label }))
+      .filter((p) => isAudiencePersonaId(p.persona_id) === teachBack);
+    const resolved = resolveAllowedPersonasForForm(options.allowed_personas, enabledPersonas);
+    const allowAll = resolved.allowAll;
+    // Ids of the other activity are dropped from the working selection, so the next tick
+    // or untick writes a list without them.
+    const crossModeSelected = crossModePersonaIds(options, activityType.id);
+    const selectedIds = resolved.selectedIds.filter((id) => !crossModeSelected.includes(id));
+    const noun = teachBack ? 'audience' : 'persona';
     const defaultChoices = personasForDefaultDropdown(enabledPersonas, options.allowed_personas);
     const updateAllowed = (nextAllowAll: boolean, nextSelected: string[]) => {
       const allowedSet = nextAllowAll ? enabledPersonas.map((p) => p.persona_id) : nextSelected;
@@ -200,13 +227,27 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
     return (
       <>
         <div className="text-sm md:col-span-2">
-          <span className="text-gray-700">Allowed Personas</span>
+          <span className="text-gray-700">{teachBack ? 'Allowed Audiences' : 'Allowed Personas'}</span>
+          {teachBack && enabledPersonas.length === 0 && (
+            <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2 mt-1">
+              No audience personas exist yet. Create them under <strong>Setup &rarr; Personas</strong> with
+              ids beginning <code>audience-</code> (see docs/teach-back-setup.md), or students will have
+              nobody to explain to.
+            </p>
+          )}
+          {crossModeSelected.length > 0 && (
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 mt-1">
+              This list still names {teachBack ? 'case-chat personalities' : 'teach-back audiences'} that
+              this activity will ignore: <code>{crossModeSelected.join(', ')}</code>. Changing the
+              selection below clears them.
+            </p>
+          )}
           <label className="flex items-center gap-2 mt-1">
             <input type="checkbox" className="rounded" checked={allowAll} disabled={fieldDisabled}
               onChange={(e) => e.target.checked
                 ? updateAllowed(true, [])
                 : updateAllowed(false, selectedIds.length ? selectedIds : enabledPersonas.map((p) => p.persona_id))} />
-            All enabled personas
+            All enabled {noun}s
           </label>
           {!allowAll && (
             <div className="flex flex-wrap gap-3 mt-1 ml-5">
@@ -221,10 +262,10 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
               ))}
             </div>
           )}
-          <span className="block text-xs text-gray-500">Leave "All enabled personas" checked to allow every enabled persona, including new clones.</span>
+          <span className="block text-xs text-gray-500">Leave "All enabled {noun}s" checked to allow every enabled {noun}, including new clones.</span>
         </div>
         <label className="block text-sm">
-          <span className="text-gray-700">Default Persona</span>
+          <span className="text-gray-700">{teachBack ? 'Default Audience' : 'Default Persona'}</span>
           <select value={options.default_persona ?? defaultChoices[0]?.persona_id ?? ''} disabled={fieldDisabled || defaultChoices.length === 0}
             onChange={(e) => setOptions({ ...options, default_persona: e.target.value })}
             className="mt-1 block w-full px-2 py-1 border border-gray-300 rounded bg-white disabled:bg-gray-100">
@@ -330,6 +371,8 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
           <div className="min-w-0">
             <h3 className="text-lg font-bold text-gray-900">{version.case_title}</h3>
             <p className="text-sm text-gray-600">
+              <span title={`${activityType.summary}. Set on the case under Content > Cases.`}>{activityType.label}</span>
+              {' · '}
               {isMain ? 'Main settings' : `${version.semester_name} copy`}
               {' · '}
               {followerCount === 0 ? (
@@ -387,12 +430,14 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
               Use the default chat options
             </label>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {schema.filter((f) => !PERSONA_KEYS.has(f.key)).map(renderField)}
+              {schema
+                .filter((f) => !PERSONA_KEYS.has(f.key))
+                .map(renderField)}
               {schema.some((f) => f.key === 'allowed_personas') && renderPersonaFields()}
             </div>
             <div className="flex justify-end">
               <button disabled={disabled}
-                onClick={() => write('patch', '/options', { chat_options: useDefaults ? null : options }, 'Chat options saved')}
+                onClick={saveOptions}
                 className="px-4 py-1.5 text-sm text-white bg-indigo-600 rounded disabled:opacity-50">Save chat options</button>
             </div>
           </Section>
@@ -462,7 +507,7 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
             )}
           </Section>
 
-          <Section title="Position tracking" sectionRef={partRefs.positions}>
+          {activityType.usesPositions && <Section title="Position tracking" sectionRef={partRefs.positions}>
             <div className="flex flex-wrap items-center gap-3 text-sm">
               <label className="flex items-center gap-1">
                 <input type="checkbox" className="rounded" disabled={disabled} checked={positionSettings.position_tracking_enabled}
@@ -472,7 +517,7 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
               <select value={positionSettings.position_capture_method} disabled={disabled}
                 onChange={(e) => setPositionSettings({ ...positionSettings, position_capture_method: e.target.value })}
                 className="px-2 py-1 border border-gray-300 rounded bg-white">
-                {CAPTURE_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                {CAPTURE_METHODS.filter((m) => activityType.captureMethods.includes(m.value)).map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
               </select>
               <label className="flex items-center gap-1">
                 <input type="checkbox" className="rounded" disabled={disabled} checked={positionSettings.track_position_change}
@@ -505,7 +550,7 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
                 })}
               </div>
             )}
-          </Section>
+          </Section>}
         </div>
 
         <div className="flex justify-end p-4 border-t bg-gray-50 rounded-b-xl">

@@ -176,6 +176,16 @@ Visit `https://services.byu.edu/makethecase` in your browser to verify the app i
 
 When you need to deploy updates:
 
+**Before pushing a release, bump the app version** (on your own machine, then commit it):
+
+```bash
+npm version patch --no-git-tag-version   # or minor, for a release that adds a feature
+```
+
+The version is written into activity packages and shown by `GET /api/version`, so that a
+package that will not install can say which MakeTheCase made it and which one refused it. See
+`docs/activity-packages.md`.
+
 ### 1. SSH into Server
 
 ```bash

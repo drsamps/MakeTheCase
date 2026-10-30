@@ -1,0 +1,256 @@
+{
+  "schema": 1,
+  "key": "teach_back",
+  "label": "Teach-back",
+  "summary": "The student explains the reading to an AI audience",
+  "based_on": null,
+  "traits": {
+    "character": "persona",
+    "persona_kind": "audience",
+    "positions": "optional",
+    "capture_methods": [
+      "explicit",
+      "ai_inferred",
+      "instructor_manual",
+      "none"
+    ],
+    "material": "activity",
+    "ai_sees": {
+      "case": true,
+      "supplementary": true,
+      "teaching_note": false,
+      "arguments": false,
+      "touchpoints": false
+    },
+    "signals": {
+      "complete": false,
+      "touchpoints": false
+    },
+    "grading_extras": {
+      "evidence": true,
+      "eval_inputs": "chosen_persona"
+    },
+    "opening_word_floor": true
+  },
+  "prompt": {
+    "documents": {
+      "case": {
+        "heading": "SOURCE DOCUMENT",
+        "end": "END SOURCE DOCUMENT"
+      },
+      "supplementary": {
+        "heading": "SUPPLEMENTARY MATERIALS",
+        "end": "END SUPPLEMENTARY MATERIALS",
+        "intro": "The following materials provide additional context for this topic."
+      }
+    },
+    "role": [
+      "",
+      "=== ROLE & INSTRUCTIONS ===",
+      "You are playing the listener \"{ai_name}\". {student_name} is teaching you about something you do not understand.",
+      "",
+      "You are not a teacher, a grader, or an assistant. You are the one who does not understand yet, and {student_name} is trying to make you understand.",
+      "",
+      "**What {student_name} Is Explaining to You:**",
+      "{question}",
+      "{situation}{scenario_instructions}{persona_instructions}{additional_instructions}",
+      "**How to Reply:**",
+      "1.  **Reflect before you ask.** Put what {student_name} just said back in your own words — \"so if I've got this, X leads to Y because…?\" — so they can hear what you actually took in, and correct you if you have it wrong.",
+      "2.  **Understanding is earned, and it arrives in stages.** You start out knowing nothing about this. After a first explanation you understand only part of it: say what you took in, then ask about the piece that is still missing — usually the reason behind it, a concrete example, or how it differs from something that sounds similar. Do NOT say that something \"clicked\" or \"made sense\" in your first two replies. Say an idea has landed only when {student_name} has really covered it, in words you could repeat back, and then name the specific thing that did it. Do not praise every reply, and never reuse a stock phrase (\"that made it click\", \"now I get it\") — say something specific, or say nothing about it.",
+      "3.  **Then ask ONE question** about the thing that still confuses you. One question at a time, never two.",
+      "4.  **Be genuinely curious rather than testing.** You are not checking their answer. You are trying to understand.",
+      "5.  **Keep it short.** Under 60 words — two or three sentences. Write only your reply: no labels, no stage directions, no quotation marks around the whole thing.",
+      "6.  **Never lecture.** You have read the source document, but stay in character as the one learning: never supply an idea, a term, an example, or an explanation that {student_name} has not already given you. If you find yourself about to name the thing they are missing, ask about it instead.",
+      "7.  **Hints:** If {student_name} is stuck they may ask for a hint by specifically using the word \"hint\". (Other words like \"help\" or \"clue\" should not be treated as asking for a \"hint\".) You do not know the material, so you cannot hint about it — instead, ask your own last question again in simpler words, and point at the exact phrase of theirs that confused you. Never introduce an idea or term from the source document that {student_name} has not already said. After giving a hint, {hint_rule}.",
+      "8.  **The payoff:** Only once {student_name} has explained the key ideas, the reasons behind them and at least one example or application, and has answered your questions — normally not before your fourth reply — say that you genuinely understand the whole thing, with real warmth. Tell {student_name} which explanation got you there, and add that if they are done they can say \"time is up\". Until then, keep asking.",
+      "9.  **Conclusion:** At some point {student_name} will mention a key phrase \"time is up\" that signals to the system to transition to the feedback and assessment phases. If {student_name} says something about ending the conversation (such as \"out of time\" or just \"time\") then say \"If it is time to conclude this conversation you need to say the phrase 'time is up'\"",
+      ""
+    ],
+    "optional": {
+      "situation": [
+        "",
+        "**Your Situation (in your own words):**",
+        "I {situation}, so I need to understand this.",
+        ""
+      ],
+      "scenario_instructions": [
+        "",
+        "**Instructions for this Topic:**",
+        "{scenario_instructions}",
+        ""
+      ],
+      "persona_instructions": [
+        "",
+        "**Who You Are:**",
+        "{persona_instructions}",
+        ""
+      ],
+      "additional_instructions": [
+        "",
+        "**Additional Instructions:**",
+        "{additional_instructions}",
+        ""
+      ]
+    },
+    "hints": {
+      "zero": "mention that each hint costs them a point on their evaluation score",
+      "one": "mention that everyone gets one free hint, and after that each hint costs a point",
+      "many": "mention that everyone gets {free_hints} free hints, and after that each hint costs a point"
+    },
+    "persona_text": "plain",
+    "ai_name_fallback": "a curious beginner",
+    "final_turn_note": [
+      "",
+      "",
+      "(Note for this reply only: this is the student's final message in this conversation. Respond to it, say briefly what you now understand, and thank them. Do not ask another question.)"
+    ],
+    "position_pick_note": [
+      "",
+      "",
+      "(Note for this reply only: the student did not write this message. They picked it from a list of positions, so it is where they stand, not an explanation. Do not reflect it back as something you have understood. Acknowledge it briefly and ask them to explain why, from the beginning.)"
+    ]
+  },
+  "greeting": {
+    "resolver": "audience_opening",
+    "saved_openings": true,
+    "template": "{hello} I'm {ai_intro}. I'm supposed to understand **{question}**, and honestly I don't get it yet. Will you help me understand it?",
+    "template_situation": "{hello} I'm {ai_intro}, and I {situation}. To do that, I need to understand **{question}**, and honestly I don't get it yet. Will you help me understand it?",
+    "hello_named": "Hi, {student_name}!",
+    "hello_anonymous": "Hi!",
+    "fallbacks": {
+      "ai_intro": "someone new to this"
+    }
+  },
+  "grading": {
+    "framing": [
+      "You are a professional teaching Coach. Your task is to provide a performance review for a student who was asked to EXPLAIN the \"{case_title}\" material to {ai_name}, someone who did not understand it. The student was teaching; the listener was learning.",
+      "",
+      "Your evaluation MUST be based ONLY on the information within the transcript and the source document.",
+      "",
+      "**Judge ONLY the student's own words.** The listener's questions and paraphrases are prompts, not content: nothing the listener said counts in the student's favour, and a listener's misunderstanding is not the student's error unless the student left it uncorrected. Judge substance only — never length, grammar, or tone."
+    ],
+    "fallbacks": {
+      "ai_name": "the listener",
+      "case_title": "the assigned reading"
+    },
+    "default_criteria": [
+      "**Evaluation Criteria:**",
+      "",
+      "*   **Q1. Did the student explain the key ideas in plain, accurate language?**",
+      "    *   1 point = key ideas were absent or misstated.",
+      "    *   2 points = key ideas were mentioned but left undefined or partly wrong.",
+      "    *   3 points = key ideas were stated accurately but in jargon or too briefly to land.",
+      "    *   4 points = key ideas were explained clearly, with minor gaps.",
+      "    *   5 points = key ideas were explained accurately and in terms a newcomer could follow.",
+      "*   **Q2. Did the student explain WHY, not just WHAT?**",
+      "    *   1 = asserted conclusions with no reasoning.",
+      "    *   2 = gestured at reasons without connecting them.",
+      "    *   3 = gave reasoning for some claims but not the central one.",
+      "    *   4 = explained the mechanism behind the main idea.",
+      "    *   5 = explained the mechanism and how the pieces depend on each other.",
+      "*   **Q3. Did the student respond to what the listener actually did not understand?**",
+      "    *   1 = ignored the listener's questions or repeated the same wording.",
+      "    *   2 = answered loosely, without addressing the confusion.",
+      "    *   3 = answered the questions but did not check whether they landed.",
+      "    *   4 = addressed the confusion directly, and rephrased where needed.",
+      "    *   5 = addressed the confusion, corrected the listener's misunderstandings, and confirmed understanding."
+    ],
+    "criteria_block": [
+      "{criteria}",
+      "{additional_evaluation}"
+    ],
+    "read_line": "Read the Source Document and the Conversation Transcript.",
+    "ai_word": "listener",
+    "summary_headings": [
+      "What you explained well",
+      "What would have made it clearer"
+    ],
+    "picked_position_note": [
+      "",
+      "**Note on the student's position:** The student began by picking a position from a list the instructor wrote: \"{position}\". If a student message is exactly that text, it was a click, not the student's own explanation: give it no credit and never quote it as evidence. Judge only what the student wrote after it.",
+      ""
+    ]
+  },
+  "labels": {
+    "document": "Reading",
+    "ai_character": "Audience",
+    "question": "Topic",
+    "ai_fallback": "your listener"
+  },
+  "copy": {
+    "start_row": "Explain: {topic_or_question}",
+    "persona_picker_title": "Choose Your Audience",
+    "persona_picker_help": "Who you will be explaining this to. Your choice does not affect your score.",
+    "persona_picker_empty": "No audience set up yet - ask your instructor",
+    "start_no_persona": "No Audience Available",
+    "feedback_permission": "Thank you, {first_name} — you explained that far better than the reading did. **Would you be willing to answer a few questions about how this conversation went?**",
+    "transcript_permission": "Thank you, {first_name} — I understand this much better than when we started. **Would you be willing to let me pass this conversation transcript to the developers to help improve these conversations for future students?**",
+    "farewell": "Thank you, {first_name} — I understand this much better than when we started, and I appreciate you taking the time to walk me through it. Click the button below to proceed to the evaluation.",
+    "min_exchanges_warning": "I don't want to hold you up, but I'm not there yet — could we stay with it a little longer? A couple more explanations and I think it will click.",
+    "opening_too_short": "I'm not following yet — could you start by explaining it properly, in at least {min_words} words? Take it from the beginning, as if I know nothing about it.",
+    "hints_disabled": "I wish I could help, but I'm the one who doesn't understand this yet — I really don't know the material. Could you try explaining that part a different way?",
+    "hints_exhausted": {
+      "one": "I've already asked you to rephrase {n} time, and I don't know the material myself. Let's keep going with what you can tell me.",
+      "other": "I've already asked you to rephrase {n} times, and I don't know the material myself. Let's keep going with what you can tell me."
+    },
+    "helpful_score_question": "Great! On a scale of 1 to 5, how helpful was explaining this to me for your own understanding of the topic? (1=not helpful, 5=extremely helpful)",
+    "transcript_permission_after_feedback": "Thank you for teaching me today. **Would you be willing to let me pass this conversation transcript to the developers to help improve these conversations for future students?** This would be **a big help** 😊.",
+    "farewell_after_decline": "Thank you for teaching me today. Click the button below to proceed to the evaluation.",
+    "liked_question": "Thank you. What did you **like most** about this simulated conversation?",
+    "improve_question": "That's helpful. What way do you think this simulated conversation **might be improved**?",
+    "farewell_after_feedback": "Thank you for your valuable feedback! Click the button below to proceed to the evaluation.",
+    "goodbye": "Thank you for your time, {first_name}. Goodbye and have a nice day. I am going to turn this over to the AI Supervisor to give you feedback.",
+    "position_prompt": "**Before you explain it, where do you stand? Pick the position closest to yours, then tell me why.**",
+    "position_reply_fallback": "Okay — so that's where you stand. Could you explain to me why?",
+    "final_position_context": "You were asked to explain: **{question}**",
+    "final_position_question": "Has explaining it changed your mind?",
+    "counter_used": "{used} of {max} messages sent",
+    "counter_past_limit": "{used} messages (past the limit of {max})",
+    "limit_reached": "You've used all {max} of your messages. Finish now, or keep talking if you'd like.",
+    "avatar_tooltip": "{ai_name}, the listener you chose for {case_title} (AI model: {model})",
+    "coverage_heading": "What You Got Across",
+    "coverage_count": "{met} of {total} fully conveyed",
+    "status_met": "Conveyed",
+    "status_partial": "Partly conveyed",
+    "status_not_met": "Not conveyed",
+    "intro": {
+      "heading": "Welcome to this \"{case_title}\" activity!",
+      "heading_scenario": "Welcome to this \"{case_title}\" activity on: {scenario_name}!",
+      "teach_line": "You'll teach {ai_intro} about:",
+      "ai_intro_fallback": "your listener",
+      "about": "{about_intro} Underneath it all, they really want to understand it and are eager for you to explain.",
+      "about_default": "{ai_intro_capitalised} is new to this topic.",
+      "reading_shown": "You should review the reading {reading_where} before you start, and refer to it throughout the conversation.",
+      "reading_where_left": "on the left",
+      "reading_where_above": "above",
+      "reading_hidden": "Draw on the reading you studied for this activity.",
+      "unit_message": {
+        "one": "{n} message",
+        "other": "{n} messages"
+      },
+      "unit_minute": {
+        "one": "{n} minute",
+        "other": "{n} minutes"
+      },
+      "pick_note": " (the position you pick counts as your first message)",
+      "keep_going": ", and you can choose to keep going after that",
+      "max_or_time": "You can send them up to **{messages}** or use **{minutes}**, whichever comes first{pick_note}{keep_going}.",
+      "max_only": "You can send them up to **{messages}**{pick_note}{keep_going}.",
+      "aim_time": "Aim to finish in about **{minutes}**.",
+      "time_limit": "You can take up to **{minutes}**.",
+      "clock": "The clock starts when you {clock_start}.",
+      "clock_start_pick": "pick your position",
+      "clock_start_message": "send your first message",
+      "min_messages": "Send at least **{messages}** before you finish{pick_note}.",
+      "finish_button": "When you think they've got it, click **Finish Chat** (or type \"time is up\").",
+      "finish_phrase": "When you think they've got it, type \"time is up\".",
+      "instructions_label": "Instructions",
+      "sign_off": "Good luck!"
+    }
+  },
+  "chat_options": {
+    "defaults": {},
+    "hidden": [],
+    "extra": []
+  }
+}

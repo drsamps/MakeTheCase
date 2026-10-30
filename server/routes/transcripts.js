@@ -3,14 +3,18 @@ import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { writeAudit } from '../services/auditLog.js';
+import { isPersonalType, hiddenNameFor, hideNameInTranscript } from '../services/personalActivity.js';
+import { getChatViewableSectionIds, isSectionInScope } from '../middleware/instructorAccess.js';
 
 const router = express.Router();
 
 /**
  * POST /api/transcripts
- * Create a new transcript for a case_chat
+ * Create a new transcript for a case_chat. Admin only: student transcripts are written by the
+ * server from its own copy of the chat (services/chatTurns.js#writeTranscript), never by the
+ * student's browser.
  */
-router.post('/', async (req, res) => {
+router.post('/', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { case_chat_id, transcript, saved_with_permission } = req.body;
 
@@ -78,10 +82,10 @@ router.post('/', async (req, res) => {
 
 /**
  * PUT /api/transcripts/chat/:caseChatId
- * Upsert transcript for a case_chat (used by auto-save during active chat).
- * Creates the transcript row on first call; updates it on subsequent calls.
+ * Upsert transcript for a case_chat. Creates the transcript row on first call; updates it on
+ * subsequent calls. Admin only: the student chat no longer writes transcripts (see POST above).
  */
-router.put('/chat/:caseChatId', async (req, res) => {
+router.put('/chat/:caseChatId', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { caseChatId } = req.params;
     const { transcript, saved_with_permission } = req.body;
@@ -155,15 +159,16 @@ router.put('/chat/:caseChatId', async (req, res) => {
 
 /**
  * GET /api/transcripts/:id
- * Get a transcript by ID
+ * Get a transcript by ID (staff; 404 outside the caller's chat scope)
  */
-router.get('/:id', async (req, res) => {
+router.get('/:id', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { id } = req.params;
 
     const [rows] = await pool.execute(
       `SELECT t.*, 
               cc.student_id, cc.case_id, cc.section_id,
+              COALESCE(cc.section_id, s.section_id) AS scope_section_id,
               s.full_name as student_name,
               c.case_title
        FROM transcripts t
@@ -174,14 +179,16 @@ router.get('/:id', async (req, res) => {
       [id]
     );
 
-    if (rows.length === 0) {
+    const scopedSectionIds = await getChatViewableSectionIds(req);
+    if (rows.length === 0 || !isSectionInScope(scopedSectionIds, rows[0].scope_section_id)) {
       return res.status(404).json({
         data: null,
         error: { message: 'Transcript not found' }
       });
     }
 
-    res.json({ data: rows[0], error: null });
+    const { scope_section_id, ...data } = rows[0];
+    res.json({ data, error: null });
   } catch (error) {
     console.error('Error fetching transcript:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
@@ -190,17 +197,18 @@ router.get('/:id', async (req, res) => {
 
 /**
  * GET /api/transcripts/chat/:caseChatId
- * Get transcript by case_chat_id
+ * Get transcript by case_chat_id (staff; 404 outside the caller's chat scope)
  */
-router.get('/chat/:caseChatId', async (req, res) => {
+router.get('/chat/:caseChatId', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { caseChatId } = req.params;
 
     const [rows] = await pool.execute(
       `SELECT t.*, 
               cc.student_id, cc.case_id, cc.section_id,
+              COALESCE(cc.section_id, s.section_id) AS scope_section_id,
               s.full_name as student_name,
-              c.case_title
+              c.case_title, c.activity_type
        FROM transcripts t
        JOIN case_chats cc ON t.case_chat_id = cc.id
        LEFT JOIN students s ON cc.student_id = s.id
@@ -209,14 +217,22 @@ router.get('/chat/:caseChatId', async (req, res) => {
       [caseChatId]
     );
 
-    if (rows.length === 0) {
+    const scopedSectionIds = await getChatViewableSectionIds(req);
+    if (rows.length === 0 || !isSectionInScope(scopedSectionIds, rows[0].scope_section_id)) {
       return res.status(404).json({
         data: null,
         error: { message: 'Transcript not found for this case chat' }
       });
     }
 
-    res.json({ data: rows[0], error: null });
+    const { scope_section_id, ...data } = rows[0];
+    // A personal activity hides the student's name by default (services/personalActivity.js).
+    if (isPersonalType(data.activity_type) && req.query.show_personal !== '1') {
+      data.transcript = hideNameInTranscript(data.transcript, data.student_name, data.student_id);
+      data.student_name = hiddenNameFor(data.student_id);
+      data.names_hidden = true;
+    }
+    res.json({ data, error: null });
   } catch (error) {
     console.error('Error fetching transcript by case_chat_id:', error);
     res.status(500).json({ data: null, error: { message: error.message } });

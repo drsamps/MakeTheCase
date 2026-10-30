@@ -4,43 +4,38 @@ import { pool } from '../db.js';
 import { verifyToken, requireRole } from '../middleware/auth.js';
 import { inferPositionsFromChat, shouldInferPositions } from '../services/positionInference.js';
 import { checkSectionReadiness } from '../services/keyResolver.js';
+import { getChatViewableSectionIds, canViewChat } from '../middleware/instructorAccess.js';
+import { requireChatOwner, requireSelfStudent } from '../middleware/chatOwner.js';
+import { resolveSectionModel } from '../services/modelChoice.js';
+import { loadChatContext, buildGreeting, sanitizeStudentName } from '../services/chatPrompt.js';
+import { appendTurns } from '../services/chatTurns.js';
+import { isTypeUsable } from '../services/activityTypes.js';
+import { typeTraits } from '../services/activityTypeStore.js';
+import { assignSide, offeredPositions } from '../services/sideAssignment.js';
+import { latestSubmission } from '../services/studentSubmissions.js';
+import { assertCanComplete, recordCompletionReason, CompletionError } from '../services/chatCompletion.js';
+import { chatAttemptStatus } from '../services/chatAttempts.js';
 
 const router = express.Router();
 
 // Valid status values
 const VALID_STATUSES = ['started', 'in_progress', 'abandoned', 'canceled', 'killed', 'completed', 'evaluation_failed'];
 
-// Section IDs an instructor may see chats for: any section they are primary on
-// (directly or via course) OR a TA assignment with can_view_chats=1.
-// Admins (without impersonation) get null = no scope filter.
-async function getChatViewableSectionIds(req) {
-  const isAdmin = req.user.role === 'admin';
-  const scopedInstructorId = req.effectiveInstructorId || (req.user.role === 'instructor' ? req.user.id : null);
-
-  if (isAdmin && !scopedInstructorId) return null; // full vision
-
-  const [rows] = await pool.execute(`
-    SELECT section_id FROM sections WHERE primary_instructor_id = ?
-    UNION
-    SELECT s.section_id FROM sections s
-    JOIN courses c ON s.course_id = c.id
-    WHERE c.primary_instructor_id = ?
-    UNION
-    SELECT section_id FROM instructor_sections
-    WHERE instructor_id = ? AND can_view_chats = 1
-  `, [scopedInstructorId, scopedInstructorId, scopedInstructorId]);
-  return rows.map(r => r.section_id);
-}
-
-// POST /api/case-chats - Create a new chat session
-router.post('/', async (req, res) => {
+// POST /api/case-chats - Create a new chat session (students only). The student comes from the
+// token and the chat model from the section (services/modelChoice.js), never from the body.
+// Also writes the AI's greeting as turn 0 of the server's copy (services/chatTurns.js) and
+// returns it as data.greeting for the browser to show. student_name is the first name the
+// greeting uses (cleaned like every name that reaches the prompt).
+router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
+  let txn = null;
   try {
-    const { student_id, case_id, section_id, scenario_id, persona, chat_model, initial_position, initial_position_id, position_method } = req.body;
+    const { case_id, section_id, scenario_id, persona, initial_position, initial_position_id, position_method, student_name } = req.body;
+    const student_id = req.user.id;
 
-    if (!student_id || !case_id) {
+    if (!case_id) {
       return res.status(400).json({
         data: null,
-        error: { message: 'student_id and case_id are required' }
+        error: { message: 'case_id is required' }
       });
     }
 
@@ -58,7 +53,103 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // The case's activity type must be usable for a NEW chat: known, published and enabled. A
+    // disabled type still serves chats already in progress (activityTypeStore.js).
+    const [typeRows] = await pool.execute('SELECT activity_type FROM cases WHERE case_id = ?', [case_id]);
+    if (typeRows.length && !isTypeUsable(typeRows[0].activity_type)) {
+      return res.status(409).json({
+        data: null,
+        error: { code: 'ACTIVITY_TYPE_UNAVAILABLE', message: 'This activity is not available right now. Please tell your instructor.' },
+      });
+    }
+
+    // Chats allowed on this assignment (chat_repeats, allow_repeat, re-chat): services/chatAttempts.js.
+    // Checked here as well as on the start screen, so a stale page cannot start one more.
+    const attempts = await chatAttemptStatus({
+      studentId: student_id, sectionId: section_id || null, caseId: case_id, scenarioId: scenario_id || null,
+    });
+    if (!attempts.can_start_new) {
+      return res.status(409).json({
+        data: null,
+        error: {
+          code: 'CHAT_LIMIT_REACHED',
+          message: attempts.scope === 'scenario'
+            ? 'You have used all your chats for this scenario.'
+            : 'You have used all your chats for this activity.',
+          chats_used: attempts.chats_used,
+          chats_allowed: attempts.chats_allowed,
+        },
+      });
+    }
+
     const id = uuidv4();
+    const chat_model = await resolveSectionModel(section_id, 'chat_model');
+
+    // Capture method 'assigned': the server picks the side (services/sideAssignment.js) and any
+    // position in the request is ignored. The row lock is held until the chat is inserted, so
+    // students starting at the same moment are balanced one after the other.
+    let assigned = null;
+    const startTraits = typeTraits(typeRows[0]?.activity_type);
+    // The assignment's position settings, read once for the readiness check and side assignment.
+    const needsSectionCase = section_id
+      && (startTraits?.positions === 'required' || (scenario_id && startTraits?.capture_methods?.includes('assigned')));
+    const [sectionCaseRows] = needsSectionCase
+      ? await pool.execute(
+        'SELECT id, position_tracking_enabled, position_capture_method FROM section_cases WHERE section_id = ? AND case_id = ?',
+        [section_id, case_id]
+      )
+      : [[]];
+    const sectionCase = sectionCaseRows[0];
+    // A type that requires positions cannot run without them. Refused here, in words, rather than
+    // run a debate with no sides.
+    if (section_id && startTraits?.positions === 'required') {
+      const row = sectionCase;
+      const method = row?.position_capture_method;
+      const usable = row && row.position_tracking_enabled && method !== 'none' && startTraits.capture_methods?.includes(method);
+      const count = usable && scenario_id ? (await offeredPositions(pool, row.id, scenario_id)).length : 0;
+      if (count < 2 || (startTraits.two_sided && count !== 2)) {
+        return res.status(409).json({
+          data: null,
+          error: { code: 'POSITIONS_NOT_READY', message: 'This activity is not ready: its positions are not set up. Please tell your instructor.' },
+        });
+      }
+    }
+    // The student's own work, for a type that takes it. The chat pins this one.
+    let submissionId = null;
+    if (startTraits?.material === 'student_submission') {
+      const submission = section_id ? await latestSubmission(section_id, case_id, student_id) : null;
+      if (!submission) {
+        return res.status(409).json({ data: null, error: { code: 'SUBMISSION_REQUIRED', message: 'Add your work before you start this chat.' } });
+      }
+      submissionId = submission.id;
+    }
+    if (section_id && scenario_id) {
+      const traits = startTraits;
+      if (traits?.capture_methods?.includes('assigned')) {
+        if (sectionCase?.position_capture_method === 'assigned' && sectionCase.position_tracking_enabled) {
+          txn = await pool.getConnection();
+          await txn.beginTransaction();
+          await txn.execute('SELECT id FROM section_cases WHERE id = ? FOR UPDATE', [sectionCase.id]);
+          assigned = await assignSide(txn, {
+            sectionCaseId: sectionCase.id, sectionId: section_id, caseId: case_id, scenarioId: scenario_id,
+            studentId: student_id, twoSided: Boolean(traits.two_sided),
+          });
+        }
+      }
+    }
+    const startPositionId = assigned ? assigned.position_id : (initial_position_id || null);
+    const startPositionMethod = assigned ? 'assigned' : (position_method || null);
+
+    // Built before the insert so a case that cannot load refuses the chat instead of leaving a
+    // record with no greeting.
+    const context = await loadChatContext({
+      id, case_id, section_id: section_id || null, scenario_id: scenario_id || null,
+      persona: persona || null, initial_position_id: startPositionId, position_method: startPositionMethod, submission_id: submissionId,
+    });
+    const greeting = buildGreeting(context, sanitizeStudentName(student_name));
+    // The type version this chat runs on (migration 090), and the student copy from it, so the
+    // page's wording cannot change mid-chat.
+    const activity = context.behaviour;
 
     // If scenario_id provided, get the time limit from the scenario
     let timeLimitMinutes = null;
@@ -73,8 +164,8 @@ router.post('/', async (req, res) => {
     }
 
     // Get position_name from scenario_positions if initial_position_id is provided
-    let positionName = initial_position || null;
-    if (initial_position_id) {
+    let positionName = assigned ? assigned.position_name : (initial_position || null);
+    if (!assigned && initial_position_id) {
       const [posRows] = await pool.execute(
         'SELECT position_name FROM scenario_positions WHERE position_id = ?',
         [initial_position_id]
@@ -84,32 +175,92 @@ router.post('/', async (req, res) => {
       }
     }
 
-    await pool.execute(
-      `INSERT INTO case_chats (id, student_id, case_id, section_id, scenario_id, persona, chat_model, status, time_limit_minutes, initial_position, initial_position_id, position_method)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?)`,
-      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, chat_model || null, timeLimitMinutes, positionName, initial_position_id || null, position_method || null]
+    const db = txn || pool;
+    await db.execute(
+      `INSERT INTO case_chats (id, student_id, case_id, section_id, scenario_id, persona, activity_type_version, chat_model, status, time_limit_minutes, initial_position, initial_position_id, position_method, submission_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?, ?)`,
+      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, activity.version, chat_model || null, timeLimitMinutes, positionName, startPositionId, startPositionMethod, submissionId]
     );
 
     // Log initial position if provided (using position_id or position string)
-    if ((initial_position_id || initial_position) && position_method) {
-      await pool.execute(
+    if ((startPositionId || initial_position) && startPositionMethod) {
+      await db.execute(
         `INSERT INTO chat_position_logs (case_chat_id, position_type, position_value, recorded_by, notes)
          VALUES (?, 'initial', ?, ?, NULL)`,
-        [id, positionName, position_method === 'explicit' ? 'student' : 'instructor']
+        [id, positionName, startPositionMethod === 'explicit' ? 'student' : 'instructor']
       );
     }
+    if (txn) {
+      await txn.commit();
+      txn.release();
+      txn = null;
+    }
+
+    await appendTurns(id, [{ role: 'protagonist', content: greeting }]);
 
     const [rows] = await pool.execute('SELECT * FROM case_chats WHERE id = ?', [id]);
 
-    res.status(201).json({ data: rows[0], error: null });
+    res.status(201).json({
+      data: {
+        ...rows[0],
+        greeting,
+        activity: activity.studentView,
+        // For the intro bar. The goal only for a type whose student copy shows it.
+        goal: activity.studentView.copy?.intro?.goal ? (context.caseData.goal || null) : null,
+        assigned_position: assigned ? assigned.position : null,
+      },
+      error: null,
+    });
   } catch (error) {
+    if (txn) {
+      await txn.rollback().catch(() => {});
+      txn.release();
+    }
+    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE' || error?.code === 'POSITIONS_NOT_READY') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: error.message } });
+    }
+    if (error?.status === 404) {
+      return res.status(404).json({ data: null, error: { message: error.message } });
+    }
     console.error('Error creating case chat:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
 
+// POST /api/case-chats/:id/complete - The student's chat is ending, and why: { reason }
+// (student | goal | max_exchanges | time). Enforces the minimum on the server and records
+// completion_reason; grading itself is /api/evaluations/run. See services/chatCompletion.js.
+router.post('/:id/complete', requireChatOwner('id'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+    const [rows] = await pool.execute(
+      `SELECT id, case_id, section_id, scenario_id, persona, initial_position_id, activity_type_version, status,
+              time_limit_minutes, time_started, goal_reached_at, completion_reason
+         FROM case_chats WHERE id = ?`,
+      [id]
+    );
+    const chat = rows[0];
+    if (!chat) return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    const context = await loadChatContext(chat);
+    const [[{ used }]] = await pool.execute("SELECT COUNT(*) AS used FROM chat_turns WHERE case_chat_id = ? AND role = 'student'", [id]);
+    assertCanComplete(chat, reason, context.chatOptions, Number(used));
+    await recordCompletionReason(id, reason);
+    res.json({ data: { completion_reason: chat.completion_reason || reason }, error: null });
+  } catch (error) {
+    if (error instanceof CompletionError) {
+      return res.status(error.status).json({ data: null, error: { code: error.code, message: error.message, ...error.details } });
+    }
+    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: error.message } });
+    }
+    console.error('Error completing chat:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 // PATCH /api/case-chats/:id/activity - Update last_activity timestamp (heartbeat)
-router.patch('/:id/activity', async (req, res) => {
+router.patch('/:id/activity', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -144,7 +295,7 @@ router.patch('/:id/activity', async (req, res) => {
 
 // PATCH /api/case-chats/:id/status - Update chat status
 // NOTE: Transcript handling removed - use /api/transcripts instead
-router.patch('/:id/status', async (req, res) => {
+router.patch('/:id/status', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { status, hints_used } = req.body;
@@ -168,6 +319,10 @@ router.patch('/:id/status', async (req, res) => {
     // Set end_time for terminal states
     if (['abandoned', 'canceled', 'killed', 'completed'].includes(status)) {
       updates.push('end_time = CURRENT_TIMESTAMP');
+    }
+    if (status === 'canceled' || status === 'killed') {
+      updates.push('completion_reason = COALESCE(completion_reason, ?)');
+      params.push(status === 'killed' ? 'instructor' : 'canceled');
     }
 
     if (hints_used !== undefined) {
@@ -208,7 +363,7 @@ router.patch('/:id/status', async (req, res) => {
 // NOTE: evaluation_id and transcript removed from this endpoint
 // - Evaluations link via case_chat_id (one-way reference)
 // - Transcripts saved via /api/transcripts
-router.patch('/:id/complete', async (req, res) => {
+router.patch('/:id/complete', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { hints_used } = req.body;
@@ -379,19 +534,30 @@ router.get('/', verifyToken, requireRole(['admin', 'instructor']), async (req, r
   }
 });
 
-// GET /api/case-chats/student/:studentId - Get a student's chats
-router.get('/student/:studentId', async (req, res) => {
+// GET /api/case-chats/student/:studentId - Get a student's chats (staff; only sections in scope)
+router.get('/student/:studentId', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { studentId } = req.params;
     const { case_id } = req.query;
+
+    const scopedSectionIds = await getChatViewableSectionIds(req);
+    if (scopedSectionIds && scopedSectionIds.length === 0) {
+      return res.json({ data: [], error: null });
+    }
 
     let query = `
       SELECT cc.*, c.case_title
       FROM case_chats cc
       LEFT JOIN cases c ON cc.case_id = c.case_id
+      LEFT JOIN students st ON cc.student_id = st.id
       WHERE cc.student_id = ?
     `;
     const params = [studentId];
+
+    if (scopedSectionIds) {
+      query += ` AND COALESCE(cc.section_id, st.section_id) IN (${scopedSectionIds.map(() => '?').join(',')})`;
+      params.push(...scopedSectionIds);
+    }
 
     if (case_id) {
       query += ' AND cc.case_id = ?';
@@ -405,65 +571,6 @@ router.get('/student/:studentId', async (req, res) => {
     res.json({ data: rows, error: null });
   } catch (error) {
     console.error('Error fetching student chats:', error);
-    res.status(500).json({ data: null, error: { message: error.message } });
-  }
-});
-
-// GET /api/case-chats/check-repeats/:studentId/:caseId - Check if student can start another chat
-router.get('/check-repeats/:studentId/:caseId', async (req, res) => {
-  try {
-    const { studentId, caseId } = req.params;
-    const { section_id } = req.query;
-
-    // Get the chat_repeats setting from section_cases
-    let chatRepeats = 0; // Default: no repeats allowed (single chat only)
-
-    if (section_id) {
-      const [sectionCase] = await pool.execute(
-        'SELECT chat_options FROM section_cases WHERE section_id = ? AND case_id = ?',
-        [section_id, caseId]
-      );
-
-      if (sectionCase.length > 0 && sectionCase[0].chat_options) {
-        const options = typeof sectionCase[0].chat_options === 'string'
-          ? JSON.parse(sectionCase[0].chat_options)
-          : sectionCase[0].chat_options;
-        chatRepeats = options.chat_repeats ?? 0;
-      }
-    }
-
-    // Count completed chats for this student/case
-    const [completedChats] = await pool.execute(
-      `SELECT COUNT(*) as count FROM case_chats
-       WHERE student_id = ? AND case_id = ? AND status = 'completed'`,
-      [studentId, caseId]
-    );
-
-    // Check for any active (non-terminal) chats
-    const [activeChats] = await pool.execute(
-      `SELECT id, status FROM case_chats
-       WHERE student_id = ? AND case_id = ? AND status IN ('started', 'in_progress')`,
-      [studentId, caseId]
-    );
-
-    const completedCount = completedChats[0].count;
-    const hasActiveChat = activeChats.length > 0;
-    const maxChats = chatRepeats + 1; // chatRepeats = 0 means 1 chat allowed
-    const canStartNew = !hasActiveChat && completedCount < maxChats;
-
-    res.json({
-      data: {
-        can_start_new: canStartNew,
-        completed_count: completedCount,
-        max_chats: maxChats,
-        has_active_chat: hasActiveChat,
-        active_chat_id: hasActiveChat ? activeChats[0].id : null,
-        chat_repeats: chatRepeats
-      },
-      error: null
-    });
-  } catch (error) {
-    console.error('Error checking chat repeats:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }
 });
@@ -697,10 +804,14 @@ router.get('/responses', verifyToken, requireRole(['admin']), async (req, res) =
 
 // ===== END SPECIFIC ROUTES =====
 
-// GET /api/case-chats/:id - Get a single chat session
-router.get('/:id', async (req, res) => {
+// GET /api/case-chats/:id - Get a single chat session (staff; 404 outside scope)
+router.get('/:id', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (!(await canViewChat(req, id))) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
 
     const [rows] = await pool.execute(
       `SELECT cc.*, s.full_name as student_name, c.case_title, sec.section_title
@@ -743,7 +854,7 @@ router.patch('/:id/kill', verifyToken, requireRole(['admin']), async (req, res) 
     }
 
     await pool.execute(
-      `UPDATE case_chats SET status = 'killed', end_time = CURRENT_TIMESTAMP WHERE id = ?`,
+      `UPDATE case_chats SET status = 'killed', end_time = CURRENT_TIMESTAMP, completion_reason = COALESCE(completion_reason, 'instructor') WHERE id = ?`,
       [id]
     );
 
@@ -819,7 +930,7 @@ router.post('/mark-abandoned', verifyToken, requireRole(['admin', 'instructor'])
 // =====================================================
 
 // POST /api/case-chats/:id/start-timer - Start the chat timer (call on first student message)
-router.post('/:id/start-timer', async (req, res) => {
+router.post('/:id/start-timer', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -886,7 +997,7 @@ router.post('/:id/start-timer', async (req, res) => {
 });
 
 // GET /api/case-chats/:id/time-remaining - Get remaining time for active chat
-router.get('/:id/time-remaining', async (req, res) => {
+router.get('/:id/time-remaining', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -957,7 +1068,7 @@ router.get('/:id/time-remaining', async (req, res) => {
 });
 
 // GET /api/case-chats/check-scenario-completion/:studentId/:caseId - Check which scenarios are completed
-router.get('/check-scenario-completion/:studentId/:caseId', async (req, res) => {
+router.get('/check-scenario-completion/:studentId/:caseId', requireSelfStudent('studentId'), async (req, res) => {
   try {
     const { studentId, caseId } = req.params;
     const { section_id } = req.query;
@@ -1034,7 +1145,7 @@ router.get('/check-scenario-completion/:studentId/:caseId', async (req, res) => 
 // =====================================================
 
 // PATCH /api/case-chats/:id/position - Set or update position for a chat
-router.patch('/:id/position', async (req, res) => {
+router.patch('/:id/position', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { position_type, position_value, recorded_by, notes } = req.body;
@@ -1095,10 +1206,14 @@ router.patch('/:id/position', async (req, res) => {
   }
 });
 
-// GET /api/case-chats/:id/positions - Get position history for a chat
-router.get('/:id/positions', async (req, res) => {
+// GET /api/case-chats/:id/positions - Get position history for a chat (staff; 404 outside scope)
+router.get('/:id/positions', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (!(await canViewChat(req, id))) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
 
     const [chat] = await pool.execute(
       'SELECT id, initial_position, final_position, position_method FROM case_chats WHERE id = ?',
@@ -1132,7 +1247,7 @@ router.get('/:id/positions', async (req, res) => {
 });
 
 // PATCH /api/case-chats/:id/initial-position - Set initial position by position_id (for explicit capture method)
-router.patch('/:id/initial-position', async (req, res) => {
+router.patch('/:id/initial-position', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { initial_position_id } = req.body;
@@ -1144,10 +1259,14 @@ router.patch('/:id/initial-position', async (req, res) => {
       });
     }
 
-    const [existing] = await pool.execute('SELECT id FROM case_chats WHERE id = ?', [id]);
+    const [existing] = await pool.execute('SELECT id, position_method FROM case_chats WHERE id = ?', [id]);
 
     if (existing.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
+    // A side the server assigned is not the student's to change.
+    if (existing[0].position_method === 'assigned') {
+      return res.status(409).json({ data: null, error: { code: 'POSITION_ASSIGNED', message: 'Your side was assigned for this activity.' } });
     }
 
     // Get position_name from scenario_positions
@@ -1180,7 +1299,7 @@ router.patch('/:id/initial-position', async (req, res) => {
 });
 
 // PATCH /api/case-chats/:id/final-position - Set final position by position_id (new FK-based system)
-router.patch('/:id/final-position', async (req, res) => {
+router.patch('/:id/final-position', requireChatOwner('id'), async (req, res) => {
   try {
     const { id } = req.params;
     const { final_position_id } = req.body;
@@ -1231,7 +1350,8 @@ router.patch('/:id/final-position', async (req, res) => {
 router.post('/:id/infer-position', verifyToken, requireRole(['admin']), async (req, res) => {
   try {
     const { id } = req.params;
-    const { model_id = 'gemini-1.5-flash' } = req.body;
+    // No model named: the section's supervisor model, as after grading (positionInference.js).
+    const { model_id = null } = req.body || {};
 
     // Check if chat exists
     const [existing] = await pool.execute(
@@ -1278,10 +1398,13 @@ router.post('/:id/infer-position', verifyToken, requireRole(['admin']), async (r
   }
 });
 
-// GET /api/case-chats/:id/should-infer - Check if chat should have positions inferred
-router.get('/:id/should-infer', async (req, res) => {
+// GET /api/case-chats/:id/should-infer - Check if chat should have positions inferred (staff; 404 outside scope)
+router.get('/:id/should-infer', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const { id } = req.params;
+    if (!(await canViewChat(req, id))) {
+      return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    }
     const shouldInfer = await shouldInferPositions(id);
     res.json({ data: { should_infer: shouldInfer }, error: null });
   } catch (error) {

@@ -10,6 +10,8 @@ import {
 } from '../middleware/instructorAccess.js';
 import { canAccessResource } from '../services/resourceAccess.js';
 import { resolveAvailablePersonas } from '../services/personaService.js';
+import { resolveChatOptions, withoutActivityMode } from '../services/chatOptions.js';
+import { applySettingsToSectionCase, caseDefaultsForCaller } from '../services/activityDefaults.js';
 import {
   CaseVersionError,
   findMainVersionForSection,
@@ -17,6 +19,10 @@ import {
   linkSectionToVersion,
 } from '../services/caseVersionSync.js';
 import { parseDateInput } from '../utils/dateInput.js';
+import { studentScenarioSettings, readScenarioSettings } from '../../utils/scenarioSettings.js';
+import { studentActivityViewFor, activityTraits } from '../services/activityTypes.js';
+import { assertCaptureAllowed, assertSectionCaseCanAssign, PositionRuleError } from '../services/positionRules.js';
+import { isPersonalType, hiddenNameFor } from '../services/personalActivity.js';
 
 // SETTINGS WRITERS BELOW CARRY guardFollowedCaseSettings. A section_cases row that follows a
 // course case version (version_id set) has its settings written through from that version, so a
@@ -32,6 +38,9 @@ import { parseDateInput } from '../utils/dateInput.js';
 const router = express.Router();
 
 const manageSectionCases = [requireAdminOrInstructor, requireSectionCaseManager('sectionId')];
+// Assignment reads that return AI-only scenario and position content (prompt instructions,
+// arguments). Only the dashboard calls them; students get theirs from GET /:sectionId/cases.
+const viewSectionCases = [verifyToken, requireAdminOrInstructor, requireSectionAccess('sectionId')];
 const isAdminUser = (req) => Boolean(req.user?.superuser || req.user?.role === 'admin');
 
 function normalizeChatOptions(chatOptions) {
@@ -42,48 +51,43 @@ function normalizeChatOptions(chatOptions) {
   return chatOptions;
 }
 
-async function attachAvailablePersonas(parsedChatOptions) {
+async function attachAvailablePersonas(parsedChatOptions, activityType) {
   const opts = normalizeChatOptions(parsedChatOptions) || {};
-  const available_personas = await resolveAvailablePersonas(opts.allowed_personas);
+  // Teach-back offers audience personas, case chat offers protagonist personalities. The
+  // activity type is the case's (cases.activity_type), selected with each row below.
+  const available_personas = await resolveAvailablePersonas(opts.allowed_personas, activityType);
   return available_personas;
 }
 
-// Helper function to resolve chat options with defaults fallback
-async function resolveChatOptions(sectionId, chatOptions) {
-  // If chat_options is explicitly set, use it
-  if (chatOptions !== null && chatOptions !== undefined) {
-    return chatOptions;
-  }
-
-  // Otherwise, fetch defaults (section-specific or global)
-  try {
-    // Try section-specific default first
-    const [sectionDefaults] = await pool.execute(
-      'SELECT chat_options FROM chat_options_defaults WHERE section_id = ?',
-      [sectionId]
-    );
-    if (sectionDefaults.length > 0) {
-      return sectionDefaults[0].chat_options;
-    }
-
-    // Fall back to global default
-    const [globalDefaults] = await pool.execute(
-      'SELECT chat_options FROM chat_options_defaults WHERE section_id IS NULL'
-    );
-    if (globalDefaults.length > 0) {
-      return globalDefaults[0].chat_options;
-    }
-
-    // Final fallback: return null (frontend will use its hardcoded defaults)
-    return null;
-  } catch (error) {
-    console.error('Error fetching chat options defaults:', error);
-    return null;
-  }
+// What a STUDENT may see of a section-case row. The server builds the chat prompt
+// (services/chatPrompt.js), so scenario prompt_instructions, position arguments, persona
+// instructions and chatbot_personality stay on the server, and of a scenario's settings document
+// only the `student` subtree is sent. Staff get the full row.
+function forStudent(row) {
+  const opts = normalizeChatOptions(row.chat_options);
+  const { chatbot_personality, ...chatOptions } = opts || {};
+  return {
+    ...row,
+    // The type's labels and student copy (utils/activityEngine/view.js), never its templates.
+    activity: studentActivityViewFor(row.activity_type),
+    chat_options: opts ? chatOptions : opts,
+    available_personas: (row.available_personas || []).map(({ instructions, ...p }) => p),
+    ...(row.scenarios && {
+      scenarios: row.scenarios.map(({ prompt_instructions, chat_options_override, ...scenario }) => ({
+        ...scenario,
+        // Only the `student` subtree of the scenario's settings (utils/scenarioSettings.js).
+        chat_options_override: studentScenarioSettings(chat_options_override),
+        ...(scenario.positions && {
+          positions: scenario.positions.map(({ arguments_for, arguments_against, ...p }) => p),
+        }),
+      })),
+    }),
+  };
 }
 
 // GET /api/sections/:sectionId/cases - List cases assigned to a section
-router.get('/:sectionId/cases', async (req, res) => {
+// Any login: the dashboard reads full rows; students get forStudent() rows for the start screen.
+router.get('/:sectionId/cases', verifyToken, async (req, res) => {
   try {
     const { sectionId } = req.params;
     const { student_id } = req.query; // Optional: to check scenario completion
@@ -94,7 +98,7 @@ router.get('/:sectionId/cases', async (req, res) => {
               sc.selection_mode, sc.require_order, sc.use_scenarios,
               sc.position_tracking_enabled, sc.position_capture_method, sc.track_position_change,
               sc.rubric_id, sc.version_id, v.label AS version_label, v.semester_id AS version_semester_id,
-              c.case_title, c.enabled as case_enabled
+              c.case_title, c.activity_type, c.enabled as case_enabled
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
        LEFT JOIN course_case_versions v ON v.version_id = sc.version_id
@@ -116,11 +120,11 @@ router.get('/:sectionId/cases', async (req, res) => {
 
         // If chat_options is NULL, resolve from defaults
         if (!chatOptionsIsCustom) {
-          parsedChatOptions = await resolveChatOptions(row.section_id, parsedChatOptions);
+          parsedChatOptions = await resolveChatOptions(row.section_id, parsedChatOptions, row.activity_type);
         }
 
         if (!row.use_scenarios) {
-          const available_personas = await attachAvailablePersonas(parsedChatOptions);
+          const available_personas = await attachAvailablePersonas(parsedChatOptions, row.activity_type);
           return { ...row, chat_options: parsedChatOptions, chat_options_is_custom: chatOptionsIsCustom, available_personas };
         }
 
@@ -198,7 +202,7 @@ router.get('/:sectionId/cases', async (req, res) => {
           }));
         }
 
-        const available_personas = await attachAvailablePersonas(parsedChatOptions);
+        const available_personas = await attachAvailablePersonas(parsedChatOptions, row.activity_type);
         return {
           ...row,
           chat_options: parsedChatOptions,
@@ -209,7 +213,8 @@ router.get('/:sectionId/cases', async (req, res) => {
       })
     );
 
-    res.json({ data: withScenarios, error: null });
+    const isStudent = req.user.role === 'student';
+    res.json({ data: isStudent ? withScenarios.map(forStudent) : withScenarios, error: null });
   } catch (error) {
     console.error('Error fetching section cases:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
@@ -245,8 +250,10 @@ function isCaseAvailable(openDate, closeDate, manualStatus) {
   return { available: true, reason: null };
 }
 
-// GET /api/sections/:sectionId/active-case - Get the currently active case for a section (used by students)
-router.get('/:sectionId/active-case', async (req, res) => {
+// GET /api/sections/:sectionId/active-case - Get the currently active case for a section.
+// Nothing calls this today (the student app uses GET /:sectionId/cases). Login required;
+// students get a forStudent() row.
+router.get('/:sectionId/active-case', verifyToken, async (req, res) => {
   try {
     const { sectionId } = req.params;
     const { student_id } = req.query; // Optional: to check scenario completion
@@ -257,7 +264,7 @@ router.get('/:sectionId/active-case', async (req, res) => {
               sc.selection_mode, sc.require_order, sc.use_scenarios,
               sc.position_tracking_enabled, sc.position_capture_method, sc.track_position_change,
               sc.rubric_id,
-              c.case_title
+              c.case_title, c.activity_type
        FROM section_cases sc
        JOIN cases c ON sc.case_id = c.case_id
        WHERE sc.section_id = ? AND sc.active = TRUE AND c.enabled = TRUE
@@ -355,22 +362,20 @@ router.get('/:sectionId/active-case', async (req, res) => {
     // Resolve chat_options with defaults if NULL
     let resolvedChatOptions = caseData.chat_options;
     if (resolvedChatOptions === null || resolvedChatOptions === undefined) {
-      resolvedChatOptions = await resolveChatOptions(caseData.section_id, resolvedChatOptions);
+      resolvedChatOptions = await resolveChatOptions(caseData.section_id, resolvedChatOptions, caseData.activity_type);
     }
 
-    const available_personas = await attachAvailablePersonas(resolvedChatOptions);
+    const available_personas = await attachAvailablePersonas(resolvedChatOptions, caseData.activity_type);
 
-    res.json({
-      data: {
-        ...caseData,
-        chat_options: resolvedChatOptions,
-        available_personas,
-        is_available: availability.available,
-        availability_message: availability.reason,
-        scenarios: scenarios
-      },
-      error: null
-    });
+    const data = {
+      ...caseData,
+      chat_options: resolvedChatOptions,
+      available_personas,
+      is_available: availability.available,
+      availability_message: availability.reason,
+      scenarios: scenarios
+    };
+    res.json({ data: req.user.role === 'student' ? forStudent(data) : data, error: null });
   } catch (error) {
     console.error('Error fetching active case:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
@@ -423,7 +428,7 @@ router.post('/:sectionId/cases', verifyToken, manageSectionCases, async (req, re
 
     // Insert the assignment with scheduling fields
     // New cases default to active=true (multiple cases can be active, students choose)
-    const chatOptionsJson = chat_options ? JSON.stringify(chat_options) : null;
+    const chatOptionsJson = chat_options ? JSON.stringify(withoutActivityMode(chat_options)) : null;
     const isActive = active !== false; // Default to true unless explicitly set to false
     await pool.execute(
       `INSERT INTO section_cases (section_id, case_id, active, chat_options, open_date, close_date, manual_status)
@@ -440,18 +445,29 @@ router.post('/:sectionId/cases', verifyToken, manageSectionCases, async (req, re
     );
 
     // If the section's course already lists this case, follow its Main settings -- unless the
-    // caller supplied chat_options, which makes this assignment Customized on purpose.
+    // caller supplied chat_options, which makes this assignment Customized on purpose. With no
+    // Main to follow, the assignment starts from the case's own default settings, if it has any
+    // (services/activityDefaults.js); the row has no version_id, so this is not a guarded write.
     if (!chat_options) {
       const mainVersionId = await findMainVersionForSection(pool, sectionId, case_id);
-      if (mainVersionId != null) {
+      const defaults = mainVersionId == null ? await caseDefaultsForCaller(req, case_id) : null;
+      if (mainVersionId != null || defaults) {
         const conn = await pool.getConnection();
         try {
           await conn.beginTransaction();
-          await linkSectionToVersion(conn, sectionId, mainVersionId);
+          if (mainVersionId != null) {
+            await linkSectionToVersion(conn, sectionId, mainVersionId);
+          } else {
+            const [[created]] = await conn.execute(
+              'SELECT id FROM section_cases WHERE section_id = ? AND case_id = ?',
+              [sectionId, case_id]
+            );
+            await applySettingsToSectionCase(conn, created.id, case_id, defaults);
+          }
           await conn.commit();
         } catch (linkError) {
           await conn.rollback();
-          console.error('Assigned case but could not link it to the course Main version:', linkError);
+          console.error('Assigned case but could not apply its course Main or default settings:', linkError);
         } finally {
           conn.release();
         }
@@ -585,7 +601,7 @@ router.patch('/:sectionId/cases/:caseId/options', verifyToken, manageSectionCase
       return res.status(400).json({ data: null, error: { message: 'chat_options must be an object or null' } });
     }
 
-    const chatOptionsJson = chat_options ? JSON.stringify(chat_options) : null;
+    const chatOptionsJson = chat_options ? JSON.stringify(withoutActivityMode(chat_options)) : null;
 
     await db.execute(
       'UPDATE section_cases SET chat_options = ? WHERE section_id = ? AND case_id = ?',
@@ -749,7 +765,7 @@ router.patch('/:sectionId/cases/:caseId/scheduling', verifyToken, manageSectionC
 // =====================================================
 
 // GET /api/sections/:sectionId/cases/:caseId/scenarios - List scenarios assigned to this section-case
-router.get('/:sectionId/cases/:caseId/scenarios', async (req, res) => {
+router.get('/:sectionId/cases/:caseId/scenarios', ...viewSectionCases, async (req, res) => {
   try {
     const { sectionId, caseId } = req.params;
 
@@ -1121,7 +1137,7 @@ router.patch('/:sectionId/cases/:caseId/position-settings', verifyToken, manageS
     const { position_tracking_enabled, position_capture_method, track_position_change } = req.body;
 
     // Validate position_capture_method
-    const validMethods = ['explicit', 'ai_inferred', 'instructor_manual', 'none'];
+    const validMethods = ['explicit', 'ai_inferred', 'instructor_manual', 'none', 'assigned'];
     if (position_capture_method && !validMethods.includes(position_capture_method)) {
       return res.status(400).json({
         data: null,
@@ -1137,6 +1153,18 @@ router.patch('/:sectionId/cases/:caseId/position-settings', verifyToken, manageS
 
     if (existing.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Case assignment not found' } });
+    }
+
+    // The type decides which methods apply; 'assigned' also needs sides to assign (positionRules.js).
+    if (position_capture_method) {
+      const [typeRows] = await db.execute('SELECT activity_type FROM cases WHERE case_id = ?', [caseId]);
+      try {
+        assertCaptureAllowed(typeRows[0]?.activity_type, position_capture_method);
+        if (position_capture_method === 'assigned') await assertSectionCaseCanAssign(db, existing[0].id, typeRows[0]?.activity_type);
+      } catch (ruleError) {
+        if (ruleError instanceof PositionRuleError) return res.status(ruleError.status).json({ data: null, error: { code: ruleError.code, message: ruleError.message } });
+        throw ruleError;
+      }
     }
 
     // Build update query
@@ -1183,7 +1211,7 @@ router.patch('/:sectionId/cases/:caseId/position-settings', verifyToken, manageS
 });
 
 // GET /api/sections/:sectionId/cases/:caseId/positions - Get all positions for this assignment's scenarios
-router.get('/:sectionId/cases/:caseId/positions', async (req, res) => {
+router.get('/:sectionId/cases/:caseId/positions', ...viewSectionCases, async (req, res) => {
   try {
     const { sectionId, caseId } = req.params;
 
@@ -1427,7 +1455,7 @@ router.post('/:targetSectionId/cases/copy-from/:sourceSectionId', verifyToken, r
       const [insertResult] = await pool.execute(
         `INSERT INTO section_cases (section_id, case_id, active, chat_options, open_date, close_date, manual_status, selection_mode, require_order, use_scenarios, rubric_id)
          VALUES (?, ?, FALSE, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [targetSectionId, sourceCase.case_id, chatOptions ? JSON.stringify(chatOptions) : null, openDate, closeDate, manualStatus, selectionMode, requireOrder, useScenarios, rubricId]
+        [targetSectionId, sourceCase.case_id, chatOptions ? JSON.stringify(withoutActivityMode(chatOptions)) : null, openDate, closeDate, manualStatus, selectionMode, requireOrder, useScenarios, rubricId]
       );
 
       const newSectionCaseId = insertResult.insertId;
@@ -1532,7 +1560,7 @@ router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireAdminOr
 
     // Get chat data for each student for this case
     const [chats] = await pool.execute(
-      `SELECT cc.student_id, cc.id as chat_id, cc.status, cc.start_time, cc.end_time,
+      `SELECT cc.student_id, cc.id as chat_id, cc.status, cc.start_time, cc.end_time, cc.scenario_id,
               cc.initial_position, cc.final_position, cc.initial_position_id, cc.final_position_id,
               sp_initial.position_name as initial_position_name,
               sp_final.position_name as final_position_name,
@@ -1555,6 +1583,39 @@ router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireAdminOr
     for (const chat of chats) {
       if (!studentChatMap.has(chat.student_id)) {
         studentChatMap.set(chat.student_id, chat);
+      }
+    }
+
+    // A personal activity hides names by default (services/personalActivity.js).
+    const [liveTypeRows] = await pool.execute('SELECT activity_type FROM cases WHERE case_id = ?', [caseId]);
+    const personalActivity = isPersonalType(liveTypeRows[0]?.activity_type);
+    const hideNames = personalActivity && req.query.show_personal !== '1';
+
+    // Live touchpoints: what the AI has signalled so far, for types that use the signal channel.
+    // chat_turns.signals is never in a turn's content, so this is the only place it surfaces.
+    const liveTraits = activityTraits(liveTypeRows[0]?.activity_type);
+    const liveTouchpoints = new Map();
+    if (liveTraits?.signals?.touchpoints) {
+      const [scenarioRows] = await pool.execute('SELECT id, chat_options_override FROM case_scenarios WHERE case_id = ?', [caseId]);
+      const labels = new Map(scenarioRows.map((s) => [s.id, readScenarioSettings(s.chat_options_override).ai.touchpoints]));
+      const tracked = [...studentChatMap.values()].filter((chat) => (labels.get(chat.scenario_id) || []).length);
+      // Every tracked chat's signals in one query, not one per student.
+      const hitsByChat = new Map();
+      if (tracked.length) {
+        const [turnRows] = await pool.query(
+          'SELECT case_chat_id, signals FROM chat_turns WHERE case_chat_id IN (?) AND signals IS NOT NULL',
+          [tracked.map((chat) => chat.chat_id)]
+        );
+        for (const t of turnRows) {
+          const parsed = typeof t.signals === 'string' ? JSON.parse(t.signals) : t.signals;
+          const hit = hitsByChat.get(t.case_chat_id) || new Set();
+          (parsed?.touchpoints || []).forEach((key) => hit.add(key));
+          hitsByChat.set(t.case_chat_id, hit);
+        }
+      }
+      for (const chat of tracked) {
+        const hit = hitsByChat.get(chat.chat_id) || new Set();
+        liveTouchpoints.set(chat.student_id, labels.get(chat.scenario_id).map((t) => ({ key: t.key, label: t.label, hit: hit.has(t.key) })));
       }
     }
 
@@ -1590,8 +1651,11 @@ router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireAdminOr
 
       return {
         student_id: student.student_id,
-        student_name: student.full_name || `${student.first_name} ${student.last_name}`.trim(),
-        email: student.email,
+        student_name: hideNames ? hiddenNameFor(student.student_id) : (student.full_name || `${student.first_name} ${student.last_name}`.trim()),
+        email: hideNames ? null : student.email,
+        names_hidden: hideNames || undefined,
+        personal_activity: personalActivity || undefined,
+        touchpoints: liveTouchpoints.get(student.student_id) || undefined,
         status: sessionStatus,
         chat_id: chat?.chat_id || null,
         start_time: chat?.start_time || null,
