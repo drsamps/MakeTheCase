@@ -37,6 +37,13 @@ const ActivityTypesHelp: React.FC = () => (
       fixed, because chats already ran on them. To change one, clone the type.
     </p>
 
+    <h4>Designing an activity</h4>
+    <p>
+      Before cloning a type, it is worth reading <strong>Designing StudyChat activities</strong> on <strong>Home → Help</strong>: it covers what
+      each existing type is for, the five choices that define a type, and what to settle before you
+      start. The full reference is listed there too.
+    </p>
+
     <div className="help-callout">
       <strong>Tip:</strong> You cannot break grading from here. The grader&apos;s task list and output format are fixed by the platform. You edit its framing, default criteria and a few words.
     </div>

@@ -6,7 +6,7 @@ Last updated: 2026-10-30 (Phases 3-6, overnight run), on the desktop with MySQL 
 
 ## For morning review
 
-**All planned phases (0-6) are committed on `studychat`. Nothing is pushed, and nothing has touched production.** Each phase's own "decisions for your review" list is below; these are the ones most worth your attention:
+**All planned phases (0-6) are committed on `studychat`, pushed to `origin/studychat`, and open for review as [PR #51](https://github.com/drsamps/MakeTheCase/pull/51) (`studychat` -> `main`). Not merged, and nothing has touched production.** Each phase's own "decisions for your review" list is below; these are the ones most worth your attention:
 
 1. **Grading now refuses a chat below Minimum Exchanges** unless a reason was recorded (Phase 4). This applies to every type, including Case chat and Teach-back. It closes a real gap, but it is a behaviour change. A page open during a deploy could see an error until refreshed.
 2. **LIKEN2ME has a distress line in its AI prompt** (encourage them to talk to someone they trust or a campus counselor). You didn't ask for this. Please read the wording in `server/scripts/seeds/systemActivityTypes.js`.
@@ -27,7 +27,7 @@ Last updated: 2026-10-30 (Phases 3-6, overnight run), on the desktop with MySQL 
 
 ## Where things stand
 
-- **Branch:** `studychat`, created from `reading-import` at `3b1c7d9`. `reading-import` is not merged into local `main`, so `studychat` contains its commits too. Nothing is pushed.
+- **Branch:** `studychat`, created from `reading-import` at `3b1c7d9`. `reading-import` is not merged into local `main`, so `studychat` contains its commits too. Pushed to `origin/studychat` and open as [PR #51](https://github.com/drsamps/MakeTheCase/pull/51) against `main` (not merged). Keep pushing as work continues, so the PR stays current.
 - **Phase 0 (fixes): committed and verified on the dev database** (see "Phase 0 verification" below).
 - **Phase 1 (the engine): committed and verified on the dev database** (see "Phase 1" below). Migration 090 is applied on the dev `ceochat`, not on production.
 - **Phase 2 (types as data, admin screen, packages): committed and verified on the dev database** (see "Phase 2" below). Migration 091 is applied on the dev `ceochat`, not on production.

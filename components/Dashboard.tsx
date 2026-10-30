@@ -49,6 +49,7 @@ import BackupManager from './BackupManager';
 import ActivityTypeManager from './ActivityTypeManager';
 import DashboardHome from './DashboardHome';
 import WelcomeScreen from './WelcomeScreen';
+import HelpScreen from './HelpScreen';
 import Analytics from './Analytics';
 import PositionAnalytics from './PositionAnalytics';
 import IssueAnalytics from './IssueAnalytics';
@@ -95,7 +96,7 @@ import { CSS } from '@dnd-kit/utilities';
 
 // New workflow-centric navigation types
 type PrimaryTab = 'home' | 'assignments' | 'monitor' | 'results' | 'courses' | 'content' | 'setup' | 'feedback' | 'admin';
-type HomeSubTab = 'welcome' | 'dashboard';
+type HomeSubTab = 'welcome' | 'dashboard' | 'help';
 type AssignmentsSubTab = 'assignments' | 'chat-options';
 type AssignmentsView = 'course' | 'section';
 const ASSIGNMENTS_VIEW_KEY = 'mtc_assignments_view';
@@ -368,7 +369,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
       admin: 'Admin',
     };
     const HOME: Record<HomeSubTab, string> = {
-      welcome: 'Welcome', dashboard: 'Dashboard',
+      welcome: 'Welcome', dashboard: 'Dashboard', help: 'Help',
     };
     const ASSIGNMENTS: Record<AssignmentsSubTab, string> = {
       assignments: 'Assignments', 'chat-options': 'Chat Options',
@@ -7971,6 +7972,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               >
                 Dashboard
               </button>
+              <button
+                onClick={() => setHomeSubTab('help')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  homeSubTab === 'help'
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Help
+              </button>
             </div>
           )}
 
@@ -8461,6 +8472,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
         {primaryTab === 'home' ? (
           homeSubTab === 'welcome' ? (
             <WelcomeScreen />
+          ) : homeSubTab === 'help' ? (
+            <HelpScreen />
           ) : (
             <DashboardHome user={user} onNavigate={handleNavigate} />
           )
