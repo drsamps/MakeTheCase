@@ -38,19 +38,25 @@ export async function chatAttemptStatus({ studentId, sectionId = null, caseId, s
   const options = (sectionId ? await getSectionCaseChatOptions(sectionId, caseId) : null) || {};
   const perScenario = useScenarios && scenarioId !== null && scenarioId !== undefined && scenarioId !== '';
 
-  // Graded chats, newest first. Per case this includes evaluations with no chat record (older
-  // rows), as completion always has.
+  // Graded chats, newest first, on THIS assignment: a chat graded in another section (a course
+  // retaken next semester) does not count. Per case this includes evaluations with no chat record,
+  // or a chat with no section (older rows), as completion always has.
+  const sectionFilter = sectionId ? ' AND (cc.section_id = ? OR cc.section_id IS NULL)' : '';
+  const sectionParams = sectionId ? [sectionId] : [];
   const [graded] = perScenario
     ? await pool.execute(
         `SELECT e.allow_rechat FROM evaluations e
            JOIN case_chats cc ON cc.id = e.case_chat_id
-          WHERE e.student_id = ? AND e.case_id = ? AND cc.scenario_id = ?
+          WHERE e.student_id = ? AND e.case_id = ? AND cc.scenario_id = ?${sectionFilter}
           ORDER BY e.created_at DESC`,
-        [studentId, caseId, scenarioId]
+        [studentId, caseId, scenarioId, ...sectionParams]
       )
     : await pool.execute(
-        'SELECT allow_rechat FROM evaluations WHERE student_id = ? AND case_id = ? ORDER BY created_at DESC',
-        [studentId, caseId]
+        `SELECT e.allow_rechat FROM evaluations e
+           LEFT JOIN case_chats cc ON cc.id = e.case_chat_id
+          WHERE e.student_id = ? AND e.case_id = ?${sectionFilter}
+          ORDER BY e.created_at DESC`,
+        [studentId, caseId, ...sectionParams]
       );
 
   const used = graded.length;

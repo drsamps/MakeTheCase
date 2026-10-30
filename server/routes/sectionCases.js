@@ -1598,19 +1598,24 @@ router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireAdminOr
     if (liveTraits?.signals?.touchpoints) {
       const [scenarioRows] = await pool.execute('SELECT id, chat_options_override FROM case_scenarios WHERE case_id = ?', [caseId]);
       const labels = new Map(scenarioRows.map((s) => [s.id, readScenarioSettings(s.chat_options_override).ai.touchpoints]));
-      for (const chat of studentChatMap.values()) {
-        const defined = labels.get(chat.scenario_id) || [];
-        if (!defined.length) continue;
-        const [turnRows] = await pool.execute(
-          'SELECT signals FROM chat_turns WHERE case_chat_id = ? AND signals IS NOT NULL',
-          [chat.chat_id]
+      const tracked = [...studentChatMap.values()].filter((chat) => (labels.get(chat.scenario_id) || []).length);
+      // Every tracked chat's signals in one query, not one per student.
+      const hitsByChat = new Map();
+      if (tracked.length) {
+        const [turnRows] = await pool.query(
+          'SELECT case_chat_id, signals FROM chat_turns WHERE case_chat_id IN (?) AND signals IS NOT NULL',
+          [tracked.map((chat) => chat.chat_id)]
         );
-        const hit = new Set();
         for (const t of turnRows) {
           const parsed = typeof t.signals === 'string' ? JSON.parse(t.signals) : t.signals;
+          const hit = hitsByChat.get(t.case_chat_id) || new Set();
           (parsed?.touchpoints || []).forEach((key) => hit.add(key));
+          hitsByChat.set(t.case_chat_id, hit);
         }
-        liveTouchpoints.set(chat.student_id, defined.map((t) => ({ key: t.key, label: t.label, hit: hit.has(t.key) })));
+      }
+      for (const chat of tracked) {
+        const hit = hitsByChat.get(chat.chat_id) || new Set();
+        liveTouchpoints.set(chat.student_id, labels.get(chat.scenario_id).map((t) => ({ key: t.key, label: t.label, hit: hit.has(t.key) })));
       }
     }
 

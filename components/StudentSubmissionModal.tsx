@@ -9,7 +9,9 @@ interface Choice { section_id: string; section_label: string; case_id: string; c
  * Students screen: an instructor adds or replaces a student's work for an activity that takes a
  * submission (StudyChat D6). The server checks the caller manages the section.
  */
-const StudentSubmissionModal: React.FC<{ student: { id: string; full_name: string }; onClose: () => void }> = ({ student, onClose }) => {
+interface ModalStudent { id: string; full_name: string; section_id?: string | null }
+
+const StudentSubmissionModal: React.FC<{ student: ModalStudent; onClose: () => void }> = ({ student, onClose }) => {
   const rev = useActivityTypeList();
   const [choices, setChoices] = useState<Choice[] | null>(null);
   const [picked, setPicked] = useState(0);
@@ -17,20 +19,23 @@ const StudentSubmissionModal: React.FC<{ student: { id: string; full_name: strin
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const { data: sections } = await api.get<{ section_id: string; section_title?: string }[]>(`/students/${encodeURIComponent(student.id)}/sections`);
-      const found: Choice[] = [];
-      for (const s of sections || []) {
+      const { data: enrolled } = await api.get<{ section_id: string; section_title?: string }[]>(`/students/${encodeURIComponent(student.id)}/sections`);
+      // The legacy students.section_id counts as enrolment too (the server accepts it).
+      const sections = [...(enrolled || [])];
+      if (student.section_id && !sections.some((s) => s.section_id === student.section_id)) sections.push({ section_id: student.section_id });
+      const perSection = await Promise.all(sections.map(async (s) => {
         const { data: cases } = await api.get<{ case_id: string; case_title: string; activity_type?: string }[]>(`/sections/${encodeURIComponent(s.section_id)}/cases`);
-        for (const c of cases || []) {
-          if (activityTypeInfo(c.activity_type).material === 'student_submission') {
-            found.push({ section_id: s.section_id, section_label: s.section_title || s.section_id, case_id: c.case_id, case_title: c.case_title });
-          }
-        }
+        return (cases || [])
+          .filter((c) => activityTypeInfo(c.activity_type).material === 'student_submission')
+          .map((c): Choice => ({ section_id: s.section_id, section_label: s.section_title || s.section_id, case_id: c.case_id, case_title: c.case_title }));
+      }));
+      if (!cancelled) {
+        setChoices(perSection.flat());
+        setPicked(0);
       }
-      if (!cancelled) setChoices(found);
     })();
     return () => { cancelled = true; };
-  }, [student.id, rev]);
+  }, [student.id, student.section_id, rev]);
 
   const choice = choices?.[picked];
   return (

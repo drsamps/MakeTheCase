@@ -74,7 +74,9 @@ export async function recordCompletionReason(chatId, reason, db = pool) {
  * met the minimum. Throws CompletionError when not.
  */
 export function assertGradable(chat, chatOptions, exchangesUsed) {
-  if (chat.completion_reason) return;
+  // Only a reason that was checked (assertCanComplete) or written by staff skips the minimum.
+  // 'canceled' is the student's own PATCH /status, which checks nothing.
+  if (chat.completion_reason && chat.completion_reason !== 'canceled') return;
   const min = effectiveMinExchanges(chatOptions);
   if (exchangesUsed < min) throw minimumNotMet(min, exchangesUsed);
 }

@@ -32,6 +32,7 @@ import {
 } from '../services/activityTypeStore.js';
 import { loadChatContext, buildChatSystemPrompt, buildGreeting, sanitizeStudentName } from '../services/chatPrompt.js';
 import { formatTranscript } from '../../utils/transcriptFormat.js';
+import { historyForGrading } from '../services/chatTurns.js';
 import { previewBehaviour } from '../services/activityTypes.js';
 import { extractSignals, neutralizeSignalTags } from '../../utils/activityEngine/signals.js';
 import { chatWithFallback } from '../services/chatFallback.js';
@@ -102,10 +103,10 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
          FROM activity_types t JOIN activity_type_versions v ON v.type_key = t.type_key AND v.status = 'draft'`
     );
     const draftByKey = new Map(drafts.map((d) => [d.type_key, d]));
-    const rows = [];
-    for (const entry of listTypeEntries()) {
+    // Usage counts for every type at once, not one type after another.
+    const rows = await Promise.all(listTypeEntries().map(async (entry) => {
       const draft = draftByKey.get(entry.key);
-      rows.push({
+      return {
         ...(entry.current ? summaryOf(entry) : {
           key: entry.key, label: draft?.label || entry.key, summary: draft?.summary || '', tier: entry.tier,
           enabled: false, based_on: entry.based_on, version: null, traits: null, saved_openings: false, labels: null,
@@ -113,8 +114,8 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
         locked: entry.tier !== 'custom',
         draft: draft ? { version_no: draft.version_no, updated_at: draft.updated_at } : null,
         usage: await typeUsage(entry.key),
-      });
-    }
+      };
+    }));
     res.json({ data: rows, error: null });
   } catch (error) {
     sendError(res, error, 'Error listing activity types:');
@@ -158,6 +159,8 @@ router.delete('/:key/draft', ...adminAuth, checkKey, async (req, res) => {
 });
 
 /** Sample inputs for a preview or Test chat with no real case: every slot has something in it. */
+const SAMPLE_SUBMISSION = 'Sample submission: I argue that Acme should double its safety stock, because stockouts cost more than carrying the stock.';
+
 function sampleContext(definition) {
   const behaviour = previewBehaviour(definition);
   const persona = definition.traits.character === 'persona';
@@ -187,7 +190,7 @@ function sampleContext(definition) {
         { key: 'carrying_cost', label: 'Carrying cost', description: 'What holding the stock costs' },
         { key: 'stockouts', label: 'Lost sales from stockouts', description: '' },
       ],
-      submission_text: definition.traits.material === 'student_submission' ? 'Sample submission: I argue that Acme should double its safety stock, because stockouts cost more than carrying the stock.' : undefined,
+      submission_text: definition.traits.material === 'student_submission' ? SAMPLE_SUBMISSION : undefined,
     },
   };
 }
@@ -203,10 +206,15 @@ async function definitionFor(req) {
 async function testContext(req, definition) {
   const { case_id: caseId = null, scenario_id: scenarioId = null, persona_id: personaId = null } = req.body || {};
   if (!caseId) return sampleContext(definition);
-  return loadChatContext(
+  const ctx = await loadChatContext(
     { id: null, case_id: caseId, section_id: null, scenario_id: scenarioId || null, persona: personaId || null, initial_position_id: null },
     { definition }
   );
+  // A test has no student, so a type on the student's work gets the sample submission.
+  if (definition.traits?.material === 'student_submission' && ctx?.caseData && !ctx.caseData.submission_text) {
+    ctx.caseData = { ...ctx.caseData, submission_text: SAMPLE_SUBMISSION };
+  }
+  return ctx;
 }
 
 const MAX_TEST_TURNS = 80;
@@ -268,7 +276,8 @@ router.post('/:key/test-grade', ...adminAuth, checkKey, async (req, res) => {
     const history = testHistory(req.body);
     if (!history.some((t) => t.role === 'student')) return res.status(400).json({ data: null, error: { message: 'There is no conversation to grade yet' } });
     const label = ctx.caseData.protagonist || 'AI';
-    const chatHistory = history.map((t) => `${t.role === 'student' ? 'Student' : label}: ${t.content}`).join('\n\n');
+    // The same transcript format real grading uses (/evaluations/run).
+    const chatHistory = historyForGrading(history, label);
     const prompt = ctx.behaviour.buildCoachPrompt(chatHistory, 'Sam', ctx.caseData, ctx.options.freeHints ?? 1, null);
     const modelId = req.body?.model_id || (await defaultModel()).model_id;
     const { getModelConfig } = await import('./llm.js');

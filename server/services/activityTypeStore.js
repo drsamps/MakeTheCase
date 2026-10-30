@@ -29,6 +29,9 @@ import crypto from 'node:crypto';
 import { pool } from '../db.js';
 import { BUILTIN_DEFINITIONS } from '../../utils/activityEngine/builtins/index.js';
 import { validateDefinition, isCustomKey, customKeyFor, sameTraits } from '../../utils/activityEngine/index.js';
+// A cycle (chatOptions.js -> activityTypes.js -> here), safe because the set is read only when a
+// definition is checked, never while modules load.
+import { KNOWN_CHAT_OPTION_KEYS } from './chatOptions.js';
 
 export const DEFAULT_ACTIVITY_TYPE = 'case_chat';
 
@@ -99,7 +102,8 @@ function buildRegistry(typeRows = [], versionRows = []) {
     } catch {
       continue;
     }
-    const { ok, errors } = validateDefinition(definition);
+    const errors = definitionErrors(definition);
+    const ok = errors.length === 0;
     if (!ok || definition.key !== v.type_key) {
       console.error(`[activity types] ${v.type_key} v${v.version_no} is invalid and is not used:`, ok ? 'key mismatch' : errors.join('; '));
       continue;
@@ -228,9 +232,29 @@ export async function getTypeDetail(key) {
 // Writing (admin, permission activity_types). Every write reloads the registry.
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * The engine's validator plus what only the server knows: the chat option keys. A type's
+ * chat_options.defaults and .hidden may name only options this server has (fail closed, like
+ * packages), since the defaults are layered into assignments (chatOptions.js#resolveChatOptions).
+ */
+function definitionErrors(definition) {
+  const { errors } = validateDefinition(definition);
+  const o = definition?.chat_options;
+  if (o && typeof o === 'object') {
+    const named = [
+      ...(o.defaults && typeof o.defaults === 'object' && !Array.isArray(o.defaults) ? Object.keys(o.defaults) : []),
+      ...(Array.isArray(o.hidden) ? o.hidden.filter((k) => typeof k === 'string') : []),
+    ];
+    for (const k of new Set(named)) {
+      if (!KNOWN_CHAT_OPTION_KEYS.has(k)) errors.push(`chat_options: "${k}" is not a chat option on this server`);
+    }
+  }
+  return errors;
+}
+
 function assertValid(definition) {
-  const { ok, errors } = validateDefinition(definition);
-  if (!ok) throw new ActivityTypeError(400, 'INVALID_DEFINITION', 'The definition is not valid.', { errors });
+  const errors = definitionErrors(definition);
+  if (errors.length) throw new ActivityTypeError(400, 'INVALID_DEFINITION', 'The definition is not valid.', { errors });
 }
 
 async function assertCustom(key, conn = pool) {

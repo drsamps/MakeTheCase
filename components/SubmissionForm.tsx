@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { getApiBaseUrl, getAuthHeaders } from '../services/apiClient';
+import { api, getApiBaseUrl, getAuthHeaders } from '../services/apiClient';
 
 export interface SavedSubmission { id: number; filename: string | null; text: string; uploaded_by_role: string; created_at: string }
 
@@ -29,21 +29,32 @@ const SubmissionForm: React.FC<Props> = ({ sectionId, caseId, studentId, title, 
     ? `/submissions/student?section_id=${encodeURIComponent(sectionId)}&case_id=${encodeURIComponent(caseId)}&student_id=${encodeURIComponent(studentId)}`
     : `/submissions/mine?section_id=${encodeURIComponent(sectionId)}&case_id=${encodeURIComponent(caseId)}`;
 
-  const load = async () => {
-    try {
-      const r = await fetch(`${getApiBaseUrl()}${readUrl}`, { headers: getAuthHeaders() });
-      const j = await r.json();
-      const row: SavedSubmission | null = r.ok ? (j.data ?? null) : null;
-      setSaved(row);
-      setEditing(!row);
-      onChange?.(row);
-    } catch {
-      setError('Could not load your submission. Please refresh the page.');
+  /** `isCurrent` is false once the form has moved to another assignment, so a late reply is dropped. */
+  const load = async (isCurrent: () => boolean = () => true) => {
+    const { data, error: loadError } = await api.get<SavedSubmission | null>(readUrl);
+    if (!isCurrent()) return;
+    if (loadError) {
+      setError('Could not load the saved submission. Please refresh the page.');
+      return;
     }
+    const row = data ?? null;
+    setSaved(row);
+    setEditing(!row);
+    onChange?.(row);
   };
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setText(''); setError(null); load(); }, [sectionId, caseId, studentId]);
+  // A new assignment starts empty, and the parent hears "none" until its own answer arrives.
+  useEffect(() => {
+    let current = true;
+    setSaved(null);
+    setEditing(false);
+    setText('');
+    setError(null);
+    onChange?.(null);
+    load(() => current);
+    return () => { current = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sectionId, caseId, studentId]);
 
   const submit = async (file: File | null) => {
     setBusy(true);
@@ -105,7 +116,7 @@ const SubmissionForm: React.FC<Props> = ({ sectionId, caseId, studentId, title, 
               <input
                 type="file"
                 className="hidden"
-                accept=".pdf,.docx,.doc,.md,.txt"
+                accept=".pdf,.docx,.md,.txt"
                 disabled={busy}
                 onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) submit(f); }}
               />

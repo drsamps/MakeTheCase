@@ -90,15 +90,22 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
     // students starting at the same moment are balanced one after the other.
     let assigned = null;
     const startTraits = typeTraits(typeRows[0]?.activity_type);
+    // The assignment's position settings, read once for the readiness check and side assignment.
+    const needsSectionCase = section_id
+      && (startTraits?.positions === 'required' || (scenario_id && startTraits?.capture_methods?.includes('assigned')));
+    const [sectionCaseRows] = needsSectionCase
+      ? await pool.execute(
+        'SELECT id, position_tracking_enabled, position_capture_method FROM section_cases WHERE section_id = ? AND case_id = ?',
+        [section_id, case_id]
+      )
+      : [[]];
+    const sectionCase = sectionCaseRows[0];
     // A type that requires positions cannot run without them. Refused here, in words, rather than
     // run a debate with no sides.
     if (section_id && startTraits?.positions === 'required') {
-      const [requiredRows] = await pool.execute(
-        'SELECT id, position_tracking_enabled, position_capture_method FROM section_cases WHERE section_id = ? AND case_id = ?',
-        [section_id, case_id]
-      );
-      const row = requiredRows[0];
-      const usable = row && row.position_tracking_enabled && ['assigned', 'explicit'].includes(row.position_capture_method);
+      const row = sectionCase;
+      const method = row?.position_capture_method;
+      const usable = row && row.position_tracking_enabled && method !== 'none' && startTraits.capture_methods?.includes(method);
       const count = usable && scenario_id ? (await offeredPositions(pool, row.id, scenario_id)).length : 0;
       if (count < 2 || (startTraits.two_sided && count !== 2)) {
         return res.status(409).json({
@@ -119,16 +126,12 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
     if (section_id && scenario_id) {
       const traits = startTraits;
       if (traits?.capture_methods?.includes('assigned')) {
-        const [assignRows] = await pool.execute(
-          'SELECT id, position_tracking_enabled, position_capture_method FROM section_cases WHERE section_id = ? AND case_id = ?',
-          [section_id, case_id]
-        );
-        if (assignRows[0]?.position_capture_method === 'assigned' && assignRows[0].position_tracking_enabled) {
+        if (sectionCase?.position_capture_method === 'assigned' && sectionCase.position_tracking_enabled) {
           txn = await pool.getConnection();
           await txn.beginTransaction();
-          await txn.execute('SELECT id FROM section_cases WHERE id = ? FOR UPDATE', [assignRows[0].id]);
+          await txn.execute('SELECT id FROM section_cases WHERE id = ? FOR UPDATE', [sectionCase.id]);
           assigned = await assignSide(txn, {
-            sectionCaseId: assignRows[0].id, sectionId: section_id, caseId: case_id, scenarioId: scenario_id,
+            sectionCaseId: sectionCase.id, sectionId: section_id, caseId: case_id, scenarioId: scenario_id,
             studentId: student_id, twoSided: Boolean(traits.two_sided),
           });
         }

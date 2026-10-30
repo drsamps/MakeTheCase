@@ -22,7 +22,8 @@ import { latestSubmission, saveSubmission, SubmissionError } from '../services/s
 
 const router = express.Router();
 
-const ALLOWED = ['.pdf', '.docx', '.doc', '.md', '.txt'];
+// Not .doc: the converter reads only .docx (mammoth), so a Word 97 file would always fail.
+const ALLOWED = ['.pdf', '.docx', '.md', '.txt'];
 const upload = multer({
   dest: os.tmpdir(),
   limits: { fileSize: 10 * 1024 * 1024 },
@@ -98,8 +99,12 @@ router.post('/', verifyToken, requireRole(['student', 'instructor', 'admin']), (
       if (req.file) {
         // The name a browser sends is latin1-decoded by multer.
         filename = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
-        const converted = await convertFile(tempPath, path.extname(req.file.originalname));
-        text = converted.text;
+        try {
+          text = (await convertFile(tempPath, path.extname(req.file.originalname))).text;
+        } catch (conversionError) {
+          console.warn('Submission file could not be read:', conversionError.message);
+          throw new SubmissionError(400, 'SUBMISSION_UNREADABLE', 'That file could not be read. Save it as .docx or .pdf and try again, or paste the text.');
+        }
       }
       const saved = await saveSubmission({
         sectionId, caseId, studentId, uploadedBy: req.user.id, uploadedByRole: isStudent ? 'student' : req.user.role, filename, text,

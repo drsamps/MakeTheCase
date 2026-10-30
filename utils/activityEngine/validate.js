@@ -232,6 +232,10 @@ export function validateDefinition(def) {
       }
     }
     text(p.role, 'prompt.role', ROLE_SLOTS, { channel: 'system' });
+    // The server assigns the side (sideAssignment.js); the AI learns it only through {position}.
+    if (Array.isArray(t?.capture_methods) && t.capture_methods.includes('assigned') && isText(p.role) && !slotsIn(p.role).includes('position')) {
+      err('prompt.role', 'a type with assigned positions must tell the AI the side: use {position}');
+    }
     if (keysOnly(p.optional, 'prompt.optional', WRAPPABLE, [])) {
       for (const [slot, w] of Object.entries(p.optional)) {
         text(w, `prompt.optional.${slot}`, ROLE_SLOTS, { channel: 'system' });

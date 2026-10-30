@@ -31,6 +31,9 @@ import {
 
 const router = express.Router();
 
+/** Chat ids being graded by POST /run right now (this process). */
+const gradingInFlight = new Set();
+
 /**
  * The case data a chat is graded against: the case plus that chat's scenario (protagonist,
  * question) and, for persona-character types, the persona as the AI's name, exactly as the
@@ -206,6 +209,7 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
     return res.status(400).json({ data: null, error: { message: 'case_chat_id is required' } });
   }
 
+  let claimedGrading = null;
   try {
     // 1. Look up case_chat details
     const [chatRows] = await pool.execute(
@@ -220,9 +224,28 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
     }
     const { case_id, student_id, section_id, full_name } = chatRows[0];
 
+    // One grading at a time per chat (one server process), so a double click or a retry cannot
+    // grade, bill and save twice while the first call is still waiting on the model.
+    if (gradingInFlight.has(case_chat_id)) {
+      return res.status(409).json({ data: null, error: { code: 'EVALUATION_IN_PROGRESS', message: 'This chat is already being evaluated.' } });
+    }
+    gradingInFlight.add(case_chat_id);
+    claimedGrading = case_chat_id;
+
     const [existingEval] = await pool.execute('SELECT id FROM evaluations WHERE case_chat_id = ? LIMIT 1', [case_chat_id]);
     if (existingEval.length) {
       return res.status(409).json({ data: null, error: { code: 'ALREADY_EVALUATED', message: 'This chat has already been evaluated.' } });
+    }
+    // The chat limit counts graded chats, so it is checked again here: chats started side by side
+    // (before any was graded) cannot all be graded (services/chatAttempts.js).
+    const attempts = await chatAttemptStatus({
+      studentId: student_id, sectionId: section_id || null, caseId: case_id, scenarioId: chatRows[0].scenario_id ?? null,
+    });
+    if (!attempts.can_start_new) {
+      return res.status(409).json({
+        data: null,
+        error: { code: 'CHAT_LIMIT_REACHED', message: 'You have already been graded on all the chats this activity allows.', chats_used: attempts.chats_used, chats_allowed: attempts.chats_allowed },
+      });
     }
 
     // 2. The conversation to grade: the server's copy, never the browser's
@@ -419,6 +442,8 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
     console.error('[Eval run] Error:', error.message);
     console.error('[Eval run] Stack:', error.stack);
     res.status(500).json({ data: null, error: { message: error.message || 'Evaluation failed' } });
+  } finally {
+    if (claimedGrading) gradingInFlight.delete(claimedGrading);
   }
 });
 
