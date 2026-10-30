@@ -1,5 +1,6 @@
 import React from 'react';
 import { EvaluationCriterion } from '../types';
+import { StudentActivityView, copyFor } from '../services/activityCopy';
 
 /**
  * Criteria coverage strip — the retrospective version of Quizzer EXPLAIN's live progress
@@ -7,22 +8,24 @@ import { EvaluationCriterion } from '../types';
  * MakeTheCase scores once at the end, so we report the same information after the fact:
  * which rubric criteria the student actually conveyed.
  *
- * `status` and `evidence` are optional fields the Teach-Back judge fills in
- * (`server/services/teachBackCoachPrompt.js`). Case-chat evaluations never set them, so
- * this renders nothing at all for them — no branch needed at the call site.
+ * `status` and `evidence` are optional fields the grader fills in for activity types with
+ * `traits.grading_extras.evidence` (utils/activityEngine/grading.js). Other evaluations never
+ * set them, so this renders nothing at all for them — no branch needed at the call site. The
+ * words are the activity's copy (coverage_heading, coverage_count, status_*).
  */
 
-const STATUS_STYLES: Record<string, { pip: string; label: string; text: string }> = {
-  met: { pip: 'bg-green-500', label: 'Conveyed', text: 'text-green-700' },
-  partial: { pip: 'bg-yellow-400', label: 'Partly conveyed', text: 'text-yellow-700' },
-  not_met: { pip: 'bg-gray-300', label: 'Not conveyed', text: 'text-gray-500' },
+const STATUS_STYLES: Record<string, { pip: string; key: 'status_met' | 'status_partial' | 'status_not_met'; text: string }> = {
+  met: { pip: 'bg-green-500', key: 'status_met', text: 'text-green-700' },
+  partial: { pip: 'bg-yellow-400', key: 'status_partial', text: 'text-yellow-700' },
+  not_met: { pip: 'bg-gray-300', key: 'status_not_met', text: 'text-gray-500' },
 };
 
 interface CriteriaCoverageProps {
   criteria: EvaluationCriterion[];
+  activity?: StudentActivityView | null;
 }
 
-const CriteriaCoverage: React.FC<CriteriaCoverageProps> = ({ criteria }) => {
+const CriteriaCoverage: React.FC<CriteriaCoverageProps> = ({ criteria, activity }) => {
   const scored = (criteria || []).filter((c) => c.status && STATUS_STYLES[c.status]);
   if (scored.length === 0) return null;
 
@@ -31,9 +34,9 @@ const CriteriaCoverage: React.FC<CriteriaCoverageProps> = ({ criteria }) => {
   return (
     <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
       <div className="flex items-baseline justify-between mb-3">
-        <h3 className="text-lg font-semibold text-gray-800">What You Got Across</h3>
+        <h3 className="text-lg font-semibold text-gray-800">{copyFor(activity, 'coverage_heading')}</h3>
         <span className="text-sm text-gray-500">
-          {metCount} of {scored.length} fully conveyed
+          {copyFor(activity, 'coverage_count', { met: metCount, total: scored.length })}
         </span>
       </div>
       <ul className="space-y-2">
@@ -48,7 +51,7 @@ const CriteriaCoverage: React.FC<CriteriaCoverageProps> = ({ criteria }) => {
               <div className="flex-1 min-w-0">
                 <div className="flex flex-wrap items-baseline gap-x-2">
                   <span className="text-sm font-medium text-gray-800">{criterion.question}</span>
-                  <span className={`text-xs font-medium ${style.text}`}>{style.label}</span>
+                  <span className={`text-xs font-medium ${style.text}`}>{copyFor(activity, style.key)}</span>
                 </div>
                 {criterion.evidence && (
                   <p className="text-xs text-gray-500 italic mt-0.5 break-words">

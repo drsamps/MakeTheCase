@@ -7,8 +7,8 @@ import { pool } from '../../db.js';
 import { getAccessibleSectionIds } from '../../middleware/instructorAccess.js';
 import { getSetting } from '../promptService.js';
 import { getWeeklyUsage } from '../usageGuard.js';
-import { loadPrompt, loadRunContext, nameHints, prepareTranscript, sha256 } from './common.js';
-import { aiSpeakerNameSql, aiSpeakerJoinsSql } from '../activityTypes.js';
+import { extractCacheTag, loadPrompt, loadRunContext, nameHints, prepareTranscript, sha256 } from './common.js';
+import { aiSpeakerNameSql, aiSpeakerJoinsSql, activityCacheVersion } from '../activityTypes.js';
 
 export class HttpError extends Error {
   constructor(status, message) {
@@ -356,6 +356,7 @@ export async function planRun(req, input) {
   const extract = await loadPrompt('issue_analytics.extract_facts');
   const cluster = await loadPrompt('issue_analytics.cluster_themes');
   const context = await loadRunContext({ case_id: scope.caseId, scenario_id: scope.scenarioId });
+  const cacheTag = extractCacheTag(extract, activityCacheVersion(context.caseRow?.activity_type));
   const chats = await loadScopeChats(scope);
 
   // Which transcripts already have pass-1 facts for this model + prompt text.
@@ -364,7 +365,7 @@ export async function planRun(req, input) {
         `SELECT case_chat_id, transcript_hash FROM issue_analysis_chat_facts
           WHERE model_id = ? AND prompt_version = ?
             AND case_chat_id IN (${chats.map(() => '?').join(',')})`,
-        [model.model_id, extract.versionTag, ...chats.map(c => c.case_chat_id)]
+        [model.model_id, cacheTag, ...chats.map(c => c.case_chat_id)]
       )
     : [[]];
   const cached = new Set(cachedRows.map(r => `${r.case_chat_id}:${r.transcript_hash}`));
@@ -428,7 +429,7 @@ export async function planRun(req, input) {
     scope,
     model,
     billedInstructorId,
-    extractVersion: extract.versionTag,
+    extractVersion: cacheTag,
     planned,
     sample: {
       size: sampling ? planned.length : null,

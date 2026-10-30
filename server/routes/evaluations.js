@@ -8,7 +8,7 @@ import { loadChatContext, protagonistLabel } from '../services/chatPrompt.js';
 import { listTurns, historyForGrading, writeTranscript } from '../services/chatTurns.js';
 import { resolveSectionModel } from '../services/modelChoice.js';
 import { inferPositionsFromChat, shouldInferPositions } from '../services/positionInference.js';
-import { activityBehaviour } from '../services/activityTypes.js';
+import { activityBehaviour, studentActivityViewFor } from '../services/activityTypes.js';
 import { stripTurnTiming } from '../../utils/transcriptFormat.js';
 import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
@@ -246,10 +246,10 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
       const { helpful, liked, improve } = cleanFeedback(feedback);
       const evaluationId = uuidv4();
       await pool.execute(
-        `INSERT INTO evaluations (id, student_id, case_id, case_chat_id, score, summary, criteria, helpful, liked, improve, super_model, allow_rechat, rubric_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?)`,
+        `INSERT INTO evaluations (id, student_id, case_id, case_chat_id, score, summary, criteria, helpful, liked, improve, super_model, allow_rechat, rubric_id, activity_type_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?)`,
         [evaluationId, student_id, case_id, case_chat_id, result.totalScore ?? 0, result.summary || null,
-         result.criteria ? JSON.stringify(result.criteria) : null, helpful, liked, improve, modelId, result.rubric_id || null]
+         result.criteria ? JSON.stringify(result.criteria) : null, helpful, liked, improve, modelId, result.rubric_id || null, activity.version]
       );
       await pool.execute(
         `UPDATE case_chats SET status = 'completed', end_time = CURRENT_TIMESTAMP WHERE id = ?`,
@@ -625,22 +625,25 @@ router.patch('/:id/allow-rechat', verifyToken, requireRole(['admin']), async (re
 router.get('/:id', verifyToken, requireRole(['admin', 'instructor']), async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT ${EVAL_FIELDS_E}, ${EVAL_SECTION_SQL} AS scope_section_id
+      `SELECT ${EVAL_FIELDS_E}, ${EVAL_SECTION_SQL} AS scope_section_id, ec.activity_type
        FROM evaluations e
        ${EVAL_SCOPE_JOINS}
+       LEFT JOIN cases ec ON ec.case_id = e.case_id
        WHERE e.id = ?`,
       [req.params.id]
     );
-    
+
     const scopedSectionIds = await getChatViewableSectionIds(req);
     if (rows.length === 0 || !isSectionInScope(scopedSectionIds, rows[0].scope_section_id)) {
       return res.status(404).json({ data: null, error: { message: 'Evaluation not found' } });
     }
-    
-    const { scope_section_id, ...row } = rows[0];
+
+    const { scope_section_id, activity_type, ...row } = rows[0];
     const data = {
       ...row,
-      criteria: row.criteria ? (typeof row.criteria === 'string' ? JSON.parse(row.criteria) : row.criteria) : null
+      criteria: row.criteria ? (typeof row.criteria === 'string' ? JSON.parse(row.criteria) : row.criteria) : null,
+      // The case type's labels and copy, for the evaluation screen's headings (view.js).
+      activity: studentActivityViewFor(activity_type),
     };
     
     res.json({ data, error: null });

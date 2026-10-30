@@ -405,7 +405,7 @@ async function collectActivity(req, item, opts, shared) {
   if (chosen) {
     const { bundle, sectionId } = chosen;
     // NULL means "follow this server's defaults", which another server does not have.
-    const effective = parseJson(bundle.chat_options ?? (await resolveChatOptions(sectionId, null)));
+    const effective = parseJson(bundle.chat_options ?? (await resolveChatOptions(sectionId, null, caseRow.activity_type)));
     if (effective && typeof effective === 'object') {
       chatOptions = Object.fromEntries(Object.entries(effective).filter(([k]) => KNOWN_CHAT_OPTION_KEYS.has(k)));
       // Maximum Responses switched off means the same as an older server without the option, so

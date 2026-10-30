@@ -36,8 +36,6 @@ interface SchemaField {
   max?: number;
   description?: string;
   category?: string;
-  /** When present, the option applies only to cases of these activity types. */
-  activity_types?: string[];
   options?: { value: string; label: string }[];
 }
 
@@ -117,13 +115,14 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
   const scrolled = useRef(false);
 
   const load = useCallback(async () => {
-    const [vRes, schemaRes, rubricRes] = await Promise.all([
+    const [vRes, rubricRes] = await Promise.all([
       api.get<any>(`/case-versions/${versionId}`),
-      api.get<SchemaField[]>('/chat-options/schema'),
       api.get<any[]>('/rubrics'),
     ]);
     if (vRes.error || !vRes.data) { setError(vRes.error?.message || 'Failed to load version'); return; }
     const v = vRes.data;
+    // The fields this case's activity type uses (its definition hides the rest).
+    const schemaRes = await api.get<SchemaField[]>(`/chat-options/schema?activity_type=${encodeURIComponent(getActivityType(v.activity_type).id)}`);
     setVersion(v);
     setLabel(v.label);
     setSchema(schemaRes.data || []);
@@ -431,7 +430,6 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {schema
                 .filter((f) => !PERSONA_KEYS.has(f.key))
-                .filter((f) => !f.activity_types || f.activity_types.includes(activityType.id))
                 .map(renderField)}
               {schema.some((f) => f.key === 'allowed_personas') && renderPersonaFields()}
             </div>

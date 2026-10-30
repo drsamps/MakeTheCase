@@ -20,6 +20,7 @@ import {
 } from '../services/caseVersionSync.js';
 import { parseDateInput } from '../utils/dateInput.js';
 import { studentScenarioSettings } from '../../utils/scenarioSettings.js';
+import { studentActivityViewFor } from '../services/activityTypes.js';
 
 // SETTINGS WRITERS BELOW CARRY guardFollowedCaseSettings. A section_cases row that follows a
 // course case version (version_id set) has its settings written through from that version, so a
@@ -65,6 +66,8 @@ function forStudent(row) {
   const { chatbot_personality, ...chatOptions } = opts || {};
   return {
     ...row,
+    // The type's labels and student copy (utils/activityEngine/view.js), never its templates.
+    activity: studentActivityViewFor(row.activity_type),
     chat_options: opts ? chatOptions : opts,
     available_personas: (row.available_personas || []).map(({ instructions, ...p }) => p),
     ...(row.scenarios && {
@@ -115,7 +118,7 @@ router.get('/:sectionId/cases', verifyToken, async (req, res) => {
 
         // If chat_options is NULL, resolve from defaults
         if (!chatOptionsIsCustom) {
-          parsedChatOptions = await resolveChatOptions(row.section_id, parsedChatOptions);
+          parsedChatOptions = await resolveChatOptions(row.section_id, parsedChatOptions, row.activity_type);
         }
 
         if (!row.use_scenarios) {
@@ -357,7 +360,7 @@ router.get('/:sectionId/active-case', verifyToken, async (req, res) => {
     // Resolve chat_options with defaults if NULL
     let resolvedChatOptions = caseData.chat_options;
     if (resolvedChatOptions === null || resolvedChatOptions === undefined) {
-      resolvedChatOptions = await resolveChatOptions(caseData.section_id, resolvedChatOptions);
+      resolvedChatOptions = await resolveChatOptions(caseData.section_id, resolvedChatOptions, caseData.activity_type);
     }
 
     const available_personas = await attachAvailablePersonas(resolvedChatOptions, caseData.activity_type);

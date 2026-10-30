@@ -28,6 +28,17 @@ export async function loadPrompt(use) {
 }
 
 /**
+ * The pass-1 cache key for a run's case: the extract prompt's version tag, plus a short hash of
+ * the activity type's version when the type is defined as data (callers pass
+ * activityTypes.js#activityCacheVersion, which this module cannot import without a cycle;
+ * '' for the built-ins, so their key, and every fact cached under it, is unchanged). Kept short:
+ * prompt_version is VARCHAR(100).
+ */
+export function extractCacheTag(extract, typeVersion) {
+  return typeVersion ? `${extract.versionTag}+t${sha256(typeVersion).slice(0, 12)}` : extract.versionTag;
+}
+
+/**
  * Render {placeholders} in ONE pass. promptService.renderPrompt() substitutes variables one
  * after another, so a transcript containing "{position_list}" would itself be expanded by a
  * later substitution; here each placeholder is resolved against the template only.

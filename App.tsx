@@ -3,14 +3,16 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Message, MessageRole, ConversationPhase, EvaluationResult, Section, CaseChat, ChatStatus } from './types';
 import { createChatSession, getEvaluation, type LLMChatReply } from './services/llmService';
-import { TEACH_BACK, TEACH_BACK_COPY, DEFAULT_TEACH_BACK_MIN_WORDS, countWords, initialsOf, isTeachBackType } from './teachBack';
+import { initialsOf } from './teachBack';
 import { getActivityType } from './utils/activityTypes.js';
+import { countWords, minOpeningWords, DEFAULT_MIN_OPENING_WORDS } from './utils/openingWords.js';
+import { copyFor, activityIntroText, type StudentActivityView, type CopyKey, type CopyVars } from './services/activityCopy';
 import type { LLMChatSession } from './services/llmService';
 import { CaseData, DEFAULT_CASE_DATA } from './constants';
 import { api, getApiBaseUrl, getAuthHeaders, refreshAuthToken } from './services/apiClient';
 import BusinessCase from './components/BusinessCase';
 import ChatWindow from './components/ChatWindow';
-import TeachBackIntro from './components/TeachBackIntro';
+import ActivityIntro from './components/ActivityIntro';
 import { readScenarioSettings } from './utils/scenarioSettings.js';
 import MessageInput from './components/MessageInput';
 import Evaluation from './components/Evaluation';
@@ -54,6 +56,12 @@ const needsPositionPick = (
   && (caseInfo?.position_capture_method || 'explicit') === 'explicit'
   && (scenario?.positions?.length || 0) > 0;
 
+
+/** **bold** spans in activity copy, as the chat bubbles render them (ChatWindow#renderMessageContent). */
+const renderBold = (text: string) =>
+  text.split(/(\*\*.*?\*\*)/g).map((part, i) =>
+    part.startsWith('**') && part.endsWith('**') ? <strong key={i}>{part.slice(2, -2)}</strong> : part
+  );
 
 /** Yes/no for feedback/transcript permission replies. Avoids substring false positives (e.g. includes('y') matches "today"). */
 function isAffirmativeConsentReply(message: string): boolean {
@@ -133,6 +141,7 @@ const App: React.FC = () => {
   const [sessionUser, setSessionUser] = useState<any>(null);
   const [viewingEvaluationId, setViewingEvaluationId] = useState<string | null>(null);
   const [viewingEvaluationData, setViewingEvaluationData] = useState<EvaluationResult | null>(null);
+  const [viewingEvaluationActivity, setViewingEvaluationActivity] = useState<StudentActivityView | null>(null);
   const [isLoadingEvaluation, setIsLoadingEvaluation] = useState(false);
   
   // Student-specific state
@@ -197,7 +206,7 @@ const App: React.FC = () => {
   
   // Default chat options
   const defaultChatOptions = {
-    teach_back_min_words: DEFAULT_TEACH_BACK_MIN_WORDS,
+    min_opening_words: DEFAULT_MIN_OPENING_WORDS,
     hints_allowed: 3,
     free_hints: 1,
     ask_for_feedback: false,
@@ -218,11 +227,18 @@ const App: React.FC = () => {
   // Available cases for selected section
   const [availableCases, setAvailableCases] = useState<any[]>([]);
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
-  // Teach-back reverses the activity: the AI is the one who does not understand, and the
-  // student explains the reading to it. The activity type is the case's (`activity_type` on
-  // each assigned case), not a chat option; a missing type is the case chat. See teachBack.ts.
-  const selectedActivityType = availableCases.find((c) => c.case_id === selectedCaseId)?.activity_type;
-  const teachBackMode = isTeachBackType(selectedActivityType);
+  // The activity type is the case's (`activity_type` on each assigned case); a missing type is
+  // the case chat. What differs by type comes from its student view: traits, labels and copy
+  // (services/activityCopy.ts). Once a chat starts, the view pinned in the POST /case-chats
+  // response is used, so the wording cannot change mid-chat. Never test a type key here.
+  const selectedCaseRow = availableCases.find((c) => c.case_id === selectedCaseId);
+  const selectedActivityType = selectedCaseRow?.activity_type;
+  const [chatActivity, setChatActivity] = useState<StudentActivityView | null>(null);
+  const activity: StudentActivityView | null = chatActivity ?? selectedCaseRow?.activity ?? null;
+  const copy = <K extends CopyKey>(key: K, ...vars: CopyVars[K] extends Record<string, never> ? [] : [CopyVars[K]]) =>
+    copyFor(activity, key, ...vars);
+  // The AI is the persona the student picks (Teach-back's audience), not the scenario's protagonist.
+  const personaCharacter = getActivityType(selectedActivityType).characterFrom === 'persona';
   // Whether this activity type tracks a student position at all (utils/activityTypes.js).
   const activityUsesPositions = getActivityType(selectedActivityType).usesPositions;
   const [isLoadingAvailableCases, setIsLoadingAvailableCases] = useState(false);
@@ -310,6 +326,7 @@ const App: React.FC = () => {
                         hints: result.data.hints || 0
                     };
                     setViewingEvaluationData(evalData);
+                    setViewingEvaluationActivity(result.data.activity ?? null);
                 } else {
                     console.error('Evaluation not found:', result.error);
                     setViewingEvaluationData(null);
@@ -824,11 +841,11 @@ const App: React.FC = () => {
 
       const personaRow = availablePersonas.find((p) => p.persona_id === personaId);
 
-      // In teach-back the character comes from the PERSONA, not the scenario: the student
-      // chooses who they are explaining to. Overriding caseData here means the greeting,
-      // the ChatWindow avatar and the evaluation's protagonist label all follow the
-      // audience with no further edits downstream.
-      if (teachBackMode && personaRow?.persona_name) {
+      // For persona-character types (Teach-back) the character comes from the PERSONA, not the
+      // scenario: the student chooses who they are talking to. Overriding caseData here means
+      // the ChatWindow avatar and the end-of-chat labels follow the persona with no further
+      // edits downstream.
+      if (personaCharacter && personaRow?.persona_name) {
         caseData = {
           ...caseData,
           protagonist: personaRow.persona_name,
@@ -865,7 +882,7 @@ const App: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId, chatOptions, teachBackMode, activityUsesPositions, availablePersonas, studentDBId]);
+  }, [activeCaseData, selectedScenarioId, availableScenarios, selectedInitialPositionId, availableCases, selectedCaseId, chatOptions, personaCharacter, activityUsesPositions, availablePersonas, studentDBId]);
   
   // Ends the chat: the farewell, then the optional feedback and transcript questions, then
   // evaluation. Every way a chat ends comes here: the "time is up" phrase and the Finish
@@ -883,9 +900,7 @@ const App: React.FC = () => {
         // Ask for feedback (existing behavior)
         const ceoPermissionRequest: Message = {
             role: MessageRole.MODEL, at: Date.now(),
-            content: teachBackMode
-              ? TEACH_BACK_COPY.feedbackPermission(studentFirstName)
-              : `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. **Would you be willing to provide feedback by answering a few questions about our interaction?**`
+            content: copy('feedback_permission', { first_name: studentFirstName })
         };
         setMessages(prev => [...prev, ...finalTurn, ceoPermissionRequest]);
         setConversationPhase(ConversationPhase.AWAITING_HELPFUL_PERMISSION);
@@ -893,9 +908,7 @@ const App: React.FC = () => {
         // Skip feedback, ask for transcript permission
         const ceoTranscriptRequest: Message = {
             role: MessageRole.MODEL, at: Date.now(),
-            content: teachBackMode
-              ? TEACH_BACK_COPY.transcriptPermission(studentFirstName)
-              : `${studentFirstName}, thank you for meeting with me. I am glad you were able to study this case and share your insights. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?**`
+            content: copy('transcript_permission', { first_name: studentFirstName })
         };
         setMessages(prev => [...prev, ...finalTurn, ceoTranscriptRequest]);
         setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
@@ -903,9 +916,7 @@ const App: React.FC = () => {
         // Skip both feedback and transcript permission
         const ceoFarewell: Message = {
             role: MessageRole.MODEL, at: Date.now(),
-            content: teachBackMode
-              ? TEACH_BACK_COPY.farewell(studentFirstName)
-              : `${studentFirstName}, thank you for meeting with me today. I am glad you were able to study this case and share your insights. I hope our conversation was challenging yet helpful. Click the button below to proceed to the evaluation.`
+            content: copy('farewell', { first_name: studentFirstName })
         };
         setMessages(prev => [...prev, ...finalTurn, ceoFarewell]);
         setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
@@ -960,9 +971,7 @@ const App: React.FC = () => {
             if (minExchanges > 0 && exchangesUsed < minExchanges) {
               const ceoWarning: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: teachBackMode
-                  ? TEACH_BACK_COPY.minExchangesWarning()
-                  : `I appreciate your time management, but we haven't had enough of a discussion yet. Let's continue our conversation a bit longer - I'd like to hear more of your analysis before we wrap up.`
+                content: copy('min_exchanges_warning')
               };
               setMessages(prev => [...prev, { role: MessageRole.USER, at: Date.now(), content: userMessage }, ceoWarning]);
               return;
@@ -971,13 +980,14 @@ const App: React.FC = () => {
             return;
         }
         
-        // Teach-back only: floor on the OPENING explanation. The opening is the whole
-        // point of the activity, and MTC otherwise has no minimum at all - a student can
-        // type "idk" and burn their one chat. Refused before any AI call, so nothing is
-        // charged. Replies stay unfloored: "exactly, that's the trap" is a legitimate
-        // turn. (Quizzer floors its graded opening the same way.)
-        if (teachBackMode) {
-            const minWords = chatOptions?.teach_back_min_words ?? DEFAULT_TEACH_BACK_MIN_WORDS;
+        // Types with an opening floor (Teach-back): the OPENING message must reach the chat
+        // option's word count. The opening is the whole point of such an activity, and MTC
+        // otherwise has no minimum at all - a student can type "idk" and burn their one chat.
+        // Refused before any AI call, so nothing is charged; the server refuses too
+        // (OPENING_TOO_SHORT). Replies stay unfloored: "exactly, that's the trap" is a
+        // legitimate turn. (Quizzer floors its graded opening the same way.)
+        if (activity?.traits.opening_word_floor) {
+            const minWords = minOpeningWords(chatOptions);
             // The refused attempt stays on screen (like a refused hint), so "no opening
             // yet" cannot be "no student message yet": it is "no student message has
             // reached the floor yet". Otherwise the retry would go through unfloored.
@@ -986,7 +996,7 @@ const App: React.FC = () => {
             if (minWords > 0 && !openingAccepted && countWords(userMessage) < minWords) {
                 setMessages((prev) => [...prev,
                     { role: MessageRole.USER, at: Date.now(), content: userMessage },
-                    { role: MessageRole.MODEL, at: Date.now(), content: TEACH_BACK_COPY.openingTooShort(minWords) }
+                    { role: MessageRole.MODEL, at: Date.now(), content: copy('opening_too_short', { min_words: minWords }) }
                 ]);
                 return;
             }
@@ -1001,13 +1011,9 @@ const App: React.FC = () => {
             const newUserMessage: Message = { role: MessageRole.USER, at: Date.now(), content: userMessage };
             const refusalMessage: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: teachBackMode
-                    ? (hintsAllowed === 0
-                        ? TEACH_BACK_COPY.hintsDisabled()
-                        : TEACH_BACK_COPY.hintsExhausted(hintsAllowed))
-                    : hintsAllowed === 0
-                    ? "I'm sorry, but hints have been disabled for this conversation. Please try to work through this on your own using the case materials."
-                    : `I'm sorry, but you've already used all ${hintsAllowed} of your allowed hints. You'll need to work through this on your own now.`
+                content: hintsAllowed === 0
+                    ? copy('hints_disabled')
+                    : copy('hints_exhausted', { n: hintsAllowed })
             };
             setMessages((prev) => [...prev, newUserMessage, refusalMessage]);
             return;
@@ -1051,12 +1057,11 @@ const App: React.FC = () => {
                 setError((e as Error).message);
                 return;
             }
-            // The server's copy of the Teach-back opening floor (the page normally refuses first).
+            // The server's copy of the opening floor (the page normally refuses first).
             if (code === 'OPENING_TOO_SHORT') {
                 // The server's number wins: this page's options may be older than the server's.
-                const minWords = (e as { minWords?: number })?.minWords
-                    ?? chatOptions?.teach_back_min_words ?? DEFAULT_TEACH_BACK_MIN_WORDS;
-                setMessages((prev) => [...prev, { role: MessageRole.MODEL, at: Date.now(), content: TEACH_BACK_COPY.openingTooShort(minWords) }]);
+                const minWords = (e as { minWords?: number })?.minWords ?? minOpeningWords(chatOptions);
+                setMessages((prev) => [...prev, { role: MessageRole.MODEL, at: Date.now(), content: copy('opening_too_short', { min_words: minWords }) }]);
                 return;
             }
             playErrorSound();
@@ -1104,9 +1109,7 @@ const App: React.FC = () => {
         if (affirmative) {
             const ceoScoreRequest: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: teachBackMode
-                  ? TEACH_BACK_COPY.helpfulScoreQuestion()
-                  : "Great! On a scale of 1 to 5, how helpful was our conversation in your thinking through this case situation? (1=not helpful, 5=extremely helpful)"
+                content: copy('helpful_score_question')
             };
             setMessages(prev => [...prev, ceoScoreRequest]);
             setConversationPhase(ConversationPhase.AWAITING_HELPFUL_SCORE);
@@ -1117,9 +1120,7 @@ const App: React.FC = () => {
             if (askSaveTranscript) {
                 const ceoTranscriptRequest: Message = {
                     role: MessageRole.MODEL, at: Date.now(),
-                    content: teachBackMode
-                      ? TEACH_BACK_COPY.transcriptPermissionAfterFeedback()
-                      : "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** This would be **a big help** in developing this AI chat case teaching tool 😊."
+                    content: copy('transcript_permission_after_feedback')
                 };
                 setMessages(prev => [...prev, ceoTranscriptRequest]);
                 setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
@@ -1127,9 +1128,7 @@ const App: React.FC = () => {
                 // Skip transcript permission
                 const ceoFarewell: Message = {
                     role: MessageRole.MODEL, at: Date.now(),
-                    content: teachBackMode
-                      ? TEACH_BACK_COPY.farewellAfterDecline()
-                      : "It has been a delight talking with you today. Click the button below to proceed to the evaluation."
+                    content: copy('farewell_after_decline')
                 };
                 setMessages(prev => [...prev, ceoFarewell]);
                 setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
@@ -1150,7 +1149,7 @@ const App: React.FC = () => {
 
         const ceoLikedRequest: Message = {
             role: MessageRole.MODEL, at: Date.now(),
-            content: "Thank you. What did you **like most** about this simulated conversation?",
+            content: copy('liked_question'),
         };
         setMessages(prev => [...prev, userScoreReply, ceoLikedRequest]);
         setConversationPhase(ConversationPhase.AWAITING_LIKED_FEEDBACK);
@@ -1160,7 +1159,7 @@ const App: React.FC = () => {
 
         const ceoImproveRequest: Message = {
             role: MessageRole.MODEL, at: Date.now(),
-            content: "That's helpful. What way do you think this simulated conversation **might be improved**?",
+            content: copy('improve_question'),
         };
         setMessages(prev => [...prev, userLikedReply, ceoImproveRequest]);
         setConversationPhase(ConversationPhase.AWAITING_IMPROVE_FEEDBACK);
@@ -1174,9 +1173,7 @@ const App: React.FC = () => {
         if (askSaveTranscript) {
             const ceoTranscriptRequest: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: teachBackMode
-                  ? TEACH_BACK_COPY.transcriptPermissionAfterFeedback()
-                  : "It has been a delight talking with you today. **Would you be willing to let me pass this conversation transcript to the developers to help improve the simulated conversations for future students?** This would be **a big help** in developing this AI chat case teaching tool 😊.",
+                content: copy('transcript_permission_after_feedback'),
             };
             setMessages(prev => [...prev, userImproveReply, ceoTranscriptRequest]);
             setConversationPhase(ConversationPhase.AWAITING_TRANSCRIPT_PERMISSION);
@@ -1184,7 +1181,7 @@ const App: React.FC = () => {
             // Skip transcript permission
             const ceoFarewell: Message = {
                 role: MessageRole.MODEL, at: Date.now(),
-                content: "Thank you for your valuable feedback! Click the button below to proceed to the evaluation.",
+                content: copy('farewell_after_feedback'),
             };
             setMessages(prev => [...prev, userImproveReply, ceoFarewell]);
             setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
@@ -1199,7 +1196,7 @@ const App: React.FC = () => {
 
         const ceoGoodbyeMessage: Message = {
             role: MessageRole.MODEL, at: Date.now(),
-            content: `Thank you for your time, ${studentFirstName}. Goodbye and have a nice day. I am going to turn this over to the AI Supervisor to give you feedback.`,
+            content: copy('goodbye', { first_name: studentFirstName }),
         };
         setMessages(prev => [...prev, userTranscriptReply, ceoGoodbyeMessage]);
         setConversationPhase(ConversationPhase.FEEDBACK_COMPLETE);
@@ -1288,9 +1285,7 @@ const App: React.FC = () => {
         }
         const errorMessage: Message = {
           role: MessageRole.MODEL, at: Date.now(),
-          content: teachBackMode
-            ? TEACH_BACK_COPY.positionReplyFallback()
-            : "Okay, can you explain why you recommend that action?"
+          content: copy('position_reply_fallback')
         };
         setMessages(prev => [...prev, errorMessage]);
       } finally {
@@ -1384,6 +1379,8 @@ const App: React.FC = () => {
         return null;
       }
       setCurrentCaseChatId(caseChatResult.data.id);
+      // The activity's copy as of this chat's start (pinned with its type version).
+      setChatActivity(caseChatResult.data.activity ?? null);
       return { id: caseChatResult.data.id, greeting: caseChatResult.data.greeting };
     } catch (err) {
       console.error('Failed to create case_chat record:', err);
@@ -1488,6 +1485,7 @@ const App: React.FC = () => {
     setSelectedPersonaId('moderate');
     setAvailablePersonas([]);
     setCurrentCaseChatId(null);
+    setChatActivity(null);
     setSelectedInitialPositionId(null);
     setSelectedFinalPositionId(null);
     setAwaitingPositionSelection(false);
@@ -1619,6 +1617,7 @@ const App: React.FC = () => {
     setError(null);
     setConversationPhase(ConversationPhase.PRE_CHAT);
     setCurrentCaseChatId(null);
+    setChatActivity(null);
     setHintsUsed(0);
     setExchangesUsed(0);
     setLimitChoicePending(false);
@@ -1671,6 +1670,7 @@ const App: React.FC = () => {
         superModelName={null}
         onLogout={() => window.close()}
         onTitleContextNav={() => window.close()}
+        activity={viewingEvaluationActivity}
       />
     );
   }
@@ -1781,7 +1781,7 @@ const App: React.FC = () => {
     const positionRequirementMet = true;
     // Teach-back has no built-in fallback character: with no audience the case protagonist
     // would be cast as the confused listener, so the chat must not start at all.
-    const audienceRequirementMet = !teachBackMode || availablePersonas.some((p) => p.persona_id === selectedPersonaId);
+    const audienceRequirementMet = !personaCharacter || availablePersonas.some((p) => p.persona_id === selectedPersonaId);
     const canStartChat = isSectionValid && selectedCaseId && activeCaseData && !isLoadingCase && !isCaseCompleted && scenarioRequirementMet && !allScenariosCompleted && positionRequirementMet && audienceRequirementMet;
     const sectionName = sections.find(s => s.section_id === selectedSection)?.section_title || selectedSection;
 
@@ -2076,11 +2076,14 @@ const App: React.FC = () => {
                                   )}
                                 </div>
                                 <span className="block text-sm text-gray-600 mt-0.5">
-                                  {isTeachBackType(caseItem.activity_type)
-                                    // Teach-back: the audience is chosen below, so the scenario's
-                                    // protagonist is only a placeholder; name the topic instead.
-                                    ? <>Explain: {scenario.chat_topic || scenario.chat_question}</>
-                                    : <>Chat with {scenario.protagonist}{protagonistRole} about {scenario.chat_topic}.</>}
+                                  {/* The type's wording: Teach-back names the topic (its audience is
+                                      chosen below, so the scenario's protagonist is a placeholder). */}
+                                  {copyFor(caseItem.activity, 'start_row', {
+                                    ai_name: scenario.protagonist ?? '',
+                                    ai_role_suffix: protagonistRole,
+                                    topic: scenario.chat_topic ?? '',
+                                    topic_or_question: scenario.chat_topic || scenario.chat_question || '',
+                                  })}
                                 </span>
                                 {!availability.available && availability.message && (
                                   <span className="block text-xs text-amber-600 mt-1">
@@ -2106,12 +2109,10 @@ const App: React.FC = () => {
             {selectedCaseId && activeCaseData && (
               <div>
                 <label htmlFor="ceoPersona" className="block text-sm font-medium text-gray-700">
-                  {teachBackMode ? 'Choose Your Audience' : 'Protagonist Personality'}
+                  {copy('persona_picker_title')}
                 </label>
                 <p className="mt-1 text-xs text-gray-500">
-                  {teachBackMode
-                    ? 'Who you will be explaining this to. Your choice does not affect your score.'
-                    : 'Determines how strictly the protagonist requires you to cite case facts.'}
+                  {copy('persona_picker_help')}
                 </p>
                 <select
                   id="ceoPersona"
@@ -2123,8 +2124,8 @@ const App: React.FC = () => {
                     availablePersonas.map((p) => (
                       <option key={p.persona_id} value={p.persona_id}>{p.persona_name}</option>
                     ))
-                  ) : teachBackMode ? (
-                    <option value="">No audience set up yet - ask your instructor</option>
+                  ) : getActivityType(selectedActivityType).personaKind !== 'protagonist' ? (
+                    <option value="">{copy('persona_picker_empty')}</option>
                   ) : (
                     <>
                       <option value="moderate">Moderate (Recommended)</option>
@@ -2161,7 +2162,7 @@ const App: React.FC = () => {
               disabled={isLoading || !canStartChat}
               className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : !positionRequirementMet ? 'Select Your Position' : !audienceRequirementMet ? 'No Audience Available' : 'Start Chat'}
+              {isLoading ? 'Initializing...' : !isSectionValid ? 'Select Your Section' : !selectedCaseId ? 'Select a Case' : isCaseCompleted ? 'Case Already Completed' : !activeCaseData ? 'Loading Case...' : allScenariosCompleted ? 'All Scenarios Completed' : useScenarios && !selectedScenarioId ? 'Select a Scenario' : !positionRequirementMet ? 'Select Your Position' : !audienceRequirementMet ? copy('start_no_persona') : 'Start Chat'}
             </button>
           </form>
         </div>
@@ -2177,17 +2178,16 @@ const App: React.FC = () => {
   // Check if case content should be shown (defaults to true if not specified)
   const showCaseContent = chatOptions?.show_case !== false;
 
-  // Teach-back: the instruction bar above the first message (components/TeachBackIntro.tsx).
-  const teachBackIntro = (() => {
-    if (!teachBackMode) return undefined;
+  // The instruction bar above the first message, for types whose copy has one (Teach-back;
+  // components/ActivityIntro.tsx). Case chat has none.
+  const activityIntro = (() => {
+    if (!activity?.copy.intro) return undefined;
     const scenario = selectedScenarioId ? availableScenarios.find(s => s.scenario_id === selectedScenarioId) : null;
     const studentText = readScenarioSettings(scenario?.chat_options_override).student;
     const persona = availablePersonas.find((p) => p.persona_id === selectedPersonaId);
     const caseInfo = availableCases.find(c => c.case_id === selectedCaseId);
     const positionFirst = needsPositionPick(activityUsesPositions, caseInfo, scenario);
-    return (
-      <TeachBackIntro
-        facts={{
+    const text = activityIntroText(activity, {
           caseTitle: activeCaseData?.case_title || '',
           scenarioName: scenario?.scenario_name || undefined,
           audienceName: persona?.persona_name || activeCaseData?.protagonist || '',
@@ -2202,10 +2202,12 @@ const App: React.FC = () => {
           positionFirst,
           showReading: showCaseContent,
           readingWhere: isLargeScreen ? 'left' : 'above',
-        }}
-      />
-    );
+    });
+    return text ? <ActivityIntro text={text} /> : undefined;
   })();
+  const personaLabel = availablePersonas.find((p) => p.persona_id === selectedPersonaId)?.persona_name
+    || selectedPersonaId || activity?.labels.ai_character || '';
+  const aiName = activeCaseData?.protagonist || activity?.labels.ai_fallback || '';
 
   // Chat panel content - reused for both layouts
   const chatPanel = (
@@ -2229,26 +2231,23 @@ const App: React.FC = () => {
       {maxExchanges > 0 && conversationPhase === ConversationPhase.CHATTING && (
         <div className={`flex justify-end px-3 py-1 text-xs font-medium text-gray-600 ${currentCaseChatId && chatOptions?.show_timer !== false ? '' : 'mt-12'}`} aria-live="polite">
           {continuedPastLimit
-            ? `${exchangesUsed} ${teachBackMode ? 'messages' : 'responses'} (past the limit of ${maxExchanges})`
-            : teachBackMode
-              ? `${Math.min(exchangesUsed, maxExchanges)} of ${maxExchanges} messages sent`
-              : `${Math.min(exchangesUsed, maxExchanges)} of ${maxExchanges} responses used`}
+            ? copy('counter_past_limit', { used: exchangesUsed, max: maxExchanges })
+            : copy('counter_used', { used: Math.min(exchangesUsed, maxExchanges), max: maxExchanges })}
         </div>
       )}
       <ChatWindow
         messages={messages}
         isLoading={isLoading}
-        personaDisplayName={
-          availablePersonas.find((p) => p.persona_id === selectedPersonaId)?.persona_name
-          || selectedPersonaId
-        }
-        chatModelName={chatModelName}
         chatFontSize={chatFontSize}
-        protagonistName={activeCaseData?.protagonist}
         protagonistInitials={activeCaseData?.protagonist_initials}
-        caseTitle={activeCaseData?.case_title}
+        avatarTitle={copy('avatar_tooltip', {
+          ai_name: aiName,
+          persona_name: personaLabel,
+          case_title: activeCaseData?.case_title || '',
+          model: chatModelName || '...',
+        })}
         awaitingPositionSelection={awaitingPositionSelection && conversationPhase === ConversationPhase.CHATTING}
-        positionPrompt={teachBackMode ? TEACH_BACK_COPY.positionPrompt() : undefined}
+        positionPrompt={copy('position_prompt')}
         positionOptions={(() => {
           const selectedScenario = selectedScenarioId
             ? availableScenarios.find(s => s.scenario_id === selectedScenarioId)
@@ -2256,7 +2255,7 @@ const App: React.FC = () => {
           return selectedScenario?.positions || [];
         })()}
         onPositionSelect={handleInitialPositionSelect}
-        intro={teachBackIntro}
+        intro={activityIntro}
       />
       {conversationPhase === ConversationPhase.FEEDBACK_COMPLETE ? (
           (() => {
@@ -2275,7 +2274,6 @@ const App: React.FC = () => {
               <div className="p-4 bg-white border-t border-gray-200 space-y-4">
                 {/* Final Position Selection - shown when position tracking enabled with change tracking */}
                 {shouldShowFinalPosition && (() => {
-                  const protagonistName = activeCaseData?.protagonist || 'the protagonist';
                   const chatQuestion = activeCaseData?.chat_question || '';
                   const initialPositionText = selectedInitialPositionId
                     ? finalPositions.find((p: any) => p.position_id === selectedInitialPositionId)?.position
@@ -2284,18 +2282,12 @@ const App: React.FC = () => {
                   return (
                     <div className="p-4 bg-green-50 rounded-lg border border-green-200">
                       <div className="text-sm text-gray-700 mb-3 space-y-2">
-                        {teachBackMode ? (
-                          <p>You were asked to explain: <strong>{chatQuestion}</strong></p>
-                        ) : (
-                          <p>{protagonistName}'s original inquiry was: <strong>{chatQuestion}</strong></p>
-                        )}
+                        <p>{renderBold(copy('final_position_context', { ai_name: aiName, question: chatQuestion }))}</p>
                         {initialPositionText && (
                           <p>Your initial position on this was: {initialPositionText}</p>
                         )}
                         <p>
-                          {teachBackMode
-                            ? TEACH_BACK_COPY.finalPositionQuestion()
-                            : `Has your position changed based on this simulated conversation with ${protagonistName}?`}
+                          {renderBold(copy('final_position_question', { ai_name: aiName }))}
                           <br />What is your <strong>final position</strong> on this issue? (click one)
                         </p>
                       </div>
@@ -2393,7 +2385,7 @@ const App: React.FC = () => {
             {limitChoicePending && conversationPhase === ConversationPhase.CHATTING ? (
               <div className="p-4 bg-blue-50 border-t border-blue-200 text-center">
                 <p className="text-sm font-medium text-gray-700 mb-3">
-                  You've used all {maxExchanges} of your {teachBackMode ? 'messages' : 'responses'}. Finish now, or keep talking if you'd like.
+                  {copy('limit_reached', { max: maxExchanges })}
                 </p>
                 <div className="flex justify-center gap-3">
                   <button
@@ -2472,6 +2464,7 @@ const App: React.FC = () => {
           onTitleContextNav={handleRestart}
           showDetails={chatOptions?.show_evaluation_details !== false}
           freeHints={chatOptions?.free_hints ?? 1}
+          activity={activity}
         />
         <FeedbackWidget userId={sessionUser?.id || null} />
       </>

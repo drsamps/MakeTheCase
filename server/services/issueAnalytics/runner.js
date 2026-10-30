@@ -25,11 +25,11 @@ import { generateOutlineWithLLM } from '../llmRouter.js';
 import { getWeeklyUsage, UsageCostCapExceededError, UnpricedModelBlockedError } from '../usageGuard.js';
 import { MissingInstructorKeyError } from '../keyResolver.js';
 import {
-  extractJsonObject, isRateLimit, loadPrompt, loadRunContext, nameHints,
+  extractJsonObject, extractCacheTag, isRateLimit, loadPrompt, loadRunContext, nameHints,
   prepareTranscript, renderOnce, sha256, THEME_TYPES, verifyQuote,
 } from './common.js';
 import { parseJsonArray } from './scope.js';
-import { aiSpeakerNameSql, aiSpeakerJoinsSql } from '../activityTypes.js';
+import { aiSpeakerNameSql, aiSpeakerJoinsSql, activityCacheVersion } from '../activityTypes.js';
 
 const CONCURRENCY = 2;
 const HEARTBEAT_MS = 60_000;
@@ -235,10 +235,11 @@ async function executeRun(runId, job) {
 
     const ctx = await loadRunContext(run);
     const extract = await loadPrompt('issue_analytics.extract_facts');
+    const cacheTag = extractCacheTag(extract, activityCacheVersion(ctx.caseRow?.activity_type));
     const vendor = await modelVendor(run.model_id);
     // The prompt may have been edited since launch; the cache key follows the text used.
     await pool.execute('UPDATE issue_analysis_runs SET prompt_version = ?, heartbeat_at = NOW() WHERE id = ?',
-      [extract.versionTag, runId]);
+      [cacheTag, runId]);
 
     const [pending] = await pool.execute(
       `SELECT rc.case_chat_id, rc.section_id, st.full_name, st.first_name, st.last_name,
@@ -282,7 +283,7 @@ async function executeRun(runId, job) {
       const [[hit]] = await pool.execute(
         `SELECT id FROM issue_analysis_chat_facts
           WHERE case_chat_id = ? AND transcript_hash = ? AND model_id = ? AND prompt_version = ?`,
-        [chat.case_chat_id, hash, run.model_id, extract.versionTag]
+        [chat.case_chat_id, hash, run.model_id, cacheTag]
       );
       if (hit) {
         await setState('done', { hash, factsId: hit.id });
@@ -298,7 +299,7 @@ async function executeRun(runId, job) {
           `INSERT INTO issue_analysis_chat_facts (case_chat_id, transcript_hash, model_id, prompt_version, facts)
            VALUES (?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), facts = VALUES(facts)`,
-          [chat.case_chat_id, hash, run.model_id, extract.versionTag, JSON.stringify(facts)]
+          [chat.case_chat_id, hash, run.model_id, cacheTag, JSON.stringify(facts)]
         );
         await setState('done', { hash, factsId: ins.insertId });
         consecutiveFailures = 0;

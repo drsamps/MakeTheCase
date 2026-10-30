@@ -10,6 +10,7 @@ import { resolveSectionModel } from '../services/modelChoice.js';
 import { loadChatContext, buildGreeting, sanitizeStudentName } from '../services/chatPrompt.js';
 import { appendTurns } from '../services/chatTurns.js';
 import { getSectionCaseChatOptions } from '../services/chatOptions.js';
+import { activityBehaviour } from '../services/activityTypes.js';
 
 const router = express.Router();
 
@@ -57,6 +58,9 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
       persona: persona || null, initial_position_id: initial_position_id || null,
     });
     const greeting = buildGreeting(context, sanitizeStudentName(student_name));
+    // The type version this chat runs on (migration 090), and the student copy from it, so the
+    // page's wording cannot change mid-chat.
+    const activity = activityBehaviour(context.mode);
 
     // If scenario_id provided, get the time limit from the scenario
     let timeLimitMinutes = null;
@@ -83,9 +87,9 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
     }
 
     await pool.execute(
-      `INSERT INTO case_chats (id, student_id, case_id, section_id, scenario_id, persona, chat_model, status, time_limit_minutes, initial_position, initial_position_id, position_method)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?)`,
-      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, chat_model || null, timeLimitMinutes, positionName, initial_position_id || null, position_method || null]
+      `INSERT INTO case_chats (id, student_id, case_id, section_id, scenario_id, persona, activity_type_version, chat_model, status, time_limit_minutes, initial_position, initial_position_id, position_method)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?)`,
+      [id, student_id, case_id, section_id || null, scenario_id || null, persona || null, activity.version, chat_model || null, timeLimitMinutes, positionName, initial_position_id || null, position_method || null]
     );
 
     // Log initial position if provided (using position_id or position string)
@@ -101,7 +105,7 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
 
     const [rows] = await pool.execute('SELECT * FROM case_chats WHERE id = ?', [id]);
 
-    res.status(201).json({ data: { ...rows[0], greeting }, error: null });
+    res.status(201).json({ data: { ...rows[0], greeting, activity: activity.studentView }, error: null });
   } catch (error) {
     if (error?.status === 404) {
       return res.status(404).json({ data: null, error: { message: error.message } });

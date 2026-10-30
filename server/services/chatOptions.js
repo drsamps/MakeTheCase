@@ -7,12 +7,13 @@
  */
 
 import { pool } from '../db.js';
+import { activityOptionDefaults } from './activityTypes.js';
 
 // Default chat options - used when section_cases.chat_options is NULL and no default is stored.
 // The activity type (case chat, teach-back) is NOT a chat option: it belongs to the case
 // (cases.activity_type, utils/activityTypes.js).
 export const DEFAULT_CHAT_OPTIONS = {
-  teach_back_min_words: 15,      // Teach-back only: word floor on the opening explanation (0 = off)
+  min_opening_words: 15,         // Types with an opening floor (Teach-back): words in the first message (0 = off); utils/openingWords.js
   // Hints configuration
   hints_allowed: 3,
   free_hints: 1,
@@ -54,7 +55,9 @@ export const DEFAULT_CHAT_OPTIONS = {
  * exporter writes no others and the installer refuses any other, because an option this
  * server does not know would be silently ignored at chat time.
  */
-export const KNOWN_CHAT_OPTION_KEYS = new Set([...Object.keys(DEFAULT_CHAT_OPTIONS), 'always_save_transcript']);
+// `teach_back_min_words` is the old name of `min_opening_words`, still read (utils/openingWords.js)
+// and still accepted in packages made before the rename.
+export const KNOWN_CHAT_OPTION_KEYS = new Set([...Object.keys(DEFAULT_CHAT_OPTIONS), 'always_save_transcript', 'teach_back_min_words']);
 
 const parseJson = (value) => {
   if (typeof value !== 'string') return value;
@@ -72,11 +75,26 @@ export function withoutActivityMode(chatOptions) {
   return rest;
 }
 
-/** Resolve a section-case's stored chat_options against the defaults. Never throws. */
-export async function resolveChatOptions(sectionId, chatOptions) {
+/**
+ * Resolve a section-case's stored chat_options against the defaults. Never throws.
+ *
+ * Order: the assignment's own options win whole; else the section default, else the global
+ * default, with the activity type's partial defaults laid over it (activity type definition,
+ * `chat_options.defaults`). The built-ins have none, so for them this is the stored default as it
+ * always was. Case default settings are not a layer here: they are copied into the assignment when
+ * the case is attached (activityDefaults.js).
+ */
+export async function resolveChatOptions(sectionId, chatOptions, activityType = null) {
   if (chatOptions !== null && chatOptions !== undefined) {
     return chatOptions;
   }
+  const fallback = await resolveDefaultChatOptions(sectionId);
+  const typeDefaults = activityType ? activityOptionDefaults(activityType) : null;
+  if (!typeDefaults || Object.keys(typeDefaults).length === 0) return fallback;
+  return { ...(parseJson(fallback) || DEFAULT_CHAT_OPTIONS), ...typeDefaults };
+}
+
+async function resolveDefaultChatOptions(sectionId) {
   try {
     const [sectionDefaults] = await pool.execute(
       'SELECT chat_options FROM chat_options_defaults WHERE section_id = ?',
@@ -102,9 +120,11 @@ export async function resolveChatOptions(sectionId, chatOptions) {
 export async function getSectionCaseChatOptions(sectionId, caseId) {
   if (!sectionId || !caseId) return null;
   const [rows] = await pool.execute(
-    'SELECT chat_options FROM section_cases WHERE section_id = ? AND case_id = ?',
+    `SELECT sc.chat_options, c.activity_type
+       FROM section_cases sc JOIN cases c ON c.case_id = sc.case_id
+      WHERE sc.section_id = ? AND sc.case_id = ?`,
     [sectionId, caseId]
   );
   const own = rows.length ? parseJson(rows[0].chat_options) : null;
-  return parseJson(await resolveChatOptions(sectionId, own ?? null));
+  return parseJson(await resolveChatOptions(sectionId, own ?? null, rows[0]?.activity_type ?? null));
 }

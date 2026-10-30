@@ -13,10 +13,8 @@ import { fileURLToPath } from 'url';
 import { convertFile } from '../services/fileConverter.js';
 import { MARKDOWN, readingFormatOf, textFormatOfConversion } from '../../utils/readingFormat.js';
 import { isStudentVisibleRole } from '../../utils/documentRoles.js';
-import { DEFAULT_CHAT_OPTIONS } from '../services/chatOptions.js';
-
-// Same rule as the page (teachBack.ts#countWords).
-const countWords = (text) => String(text || '').trim().split(/\s+/).filter(Boolean).length;
+// The page counts with the same helper.
+import { countWords, minOpeningWords } from '../../utils/openingWords.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -446,12 +444,12 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
     }
     const isPick = (text) => pickedText !== null && pickedText === String(text).trim();
     const isPositionPick = Boolean(behaviour.positionPickNote) && exchangesBefore === 0 && isPick(message);
-    // Teach-back's word floor on the opening explanation (chat option teach_back_min_words),
-    // enforced here as well as in the page, so a stale page cannot spend a chat on "idk". The
-    // opening is the first student message that is not a clicked position; once one has been
-    // answered, later replies are not floored.
+    // The word floor on the opening (types with traits.opening_word_floor; chat option
+    // min_opening_words, utils/openingWords.js), enforced here as well as in the page, so a stale
+    // page cannot spend a chat on "idk". The opening is the first student message that is not a
+    // clicked position; once one has been answered, later replies are not floored.
     if (behaviour.openingWordFloor) {
-      const minWords = Number(context.chatOptions.teach_back_min_words ?? DEFAULT_CHAT_OPTIONS.teach_back_min_words) || 0;
+      const minWords = minOpeningWords(context.chatOptions);
       const studentTurns = turns.filter((t) => t.role === 'student');
       const openingAnswered = studentTurns.some((t, i) => !(i === 0 && isPick(t.content)));
       if (minWords > 0 && !openingAnswered && !isPick(message) && countWords(message) < minWords) {

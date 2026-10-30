@@ -7,6 +7,8 @@ import {
   requireAdminOrInstructor,
 } from '../middleware/instructorAccess.js';
 import { DEFAULT_CHAT_OPTIONS, withoutActivityMode } from '../services/chatOptions.js';
+import { activityHiddenOptions } from '../services/activityTypes.js';
+import { isKnownActivityType } from '../../utils/activityTypes.js';
 
 const router = express.Router();
 
@@ -17,18 +19,18 @@ const forbid = (res, message) => res.status(403).json({ data: null, error: { mes
 
 // Base schema describing available options (for UI generation)
 // Note: persona options are loaded dynamically from database.
-// A field with `activity_types` applies only to cases of those types; editors hide it otherwise.
+// Which fields a case's editor shows is its activity type's: GET /schema?activity_type= leaves out
+// the keys the type's definition hides (chat_options.hidden).
 const BASE_CHAT_OPTIONS_SCHEMA = [
   {
-    key: 'teach_back_min_words',
-    label: 'Minimum Words (opening explanation)',
+    key: 'min_opening_words',
+    label: 'Minimum Words (opening message)',
     type: 'number',
     default: 15,
     min: 0,
     max: 200,
-    description: 'Teach-back only. The FIRST student message must reach this many words (0 = no minimum). Short openings are refused before any AI call, so nothing is charged and no turn is used.',
-    category: 'activity',
-    activity_types: ['teach_back']
+    description: 'Activity types with an opening floor (Teach-back). The FIRST student message must reach this many words (0 = no minimum). Short openings are refused before any AI call, so nothing is charged and no turn is used.',
+    category: 'activity'
   },
   {
     key: 'hints_allowed',
@@ -272,11 +274,18 @@ async function buildSchemaWithPersonas() {
   ];
 }
 
-// GET /api/chat-options/schema - Returns schema for UI generation (with dynamic personas)
+// GET /api/chat-options/schema - Returns schema for UI generation (with dynamic personas).
+// ?activity_type= leaves out the options that type hides; without it, every option (defaults
+// editors are shared by cases of every type).
 router.get('/schema', async (req, res) => {
   try {
     const schema = await buildSchemaWithPersonas();
-    res.json({ data: schema, error: null });
+    const type = req.query.activity_type;
+    if (type !== undefined && !isKnownActivityType(type)) {
+      return res.status(400).json({ data: null, error: { code: 'UNKNOWN_ACTIVITY_TYPE', message: 'Unknown activity type' } });
+    }
+    const hidden = new Set(type ? activityHiddenOptions(type) : []);
+    res.json({ data: schema.filter((f) => !hidden.has(f.key)), error: null });
   } catch (error) {
     console.error('Error building chat options schema:', error);
     res.status(500).json({ data: null, error: { message: error.message } });

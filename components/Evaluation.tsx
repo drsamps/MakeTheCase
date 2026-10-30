@@ -1,27 +1,33 @@
 import React from 'react';
 import { EvaluationResult } from '../types';
 import CriteriaCoverage from './CriteriaCoverage';
+import { StudentActivityView } from '../services/activityCopy';
 
 /**
- * The summary is plain text except for `**bold**`. The teach-back judge is asked for two
- * headings but does not reliably mark them: they arrive bold, as "## " headings, with a
- * trailing colon, or as bare lines. The two known headings are therefore recognised by
- * their wording, however decorated, and shown as headings. Any other bold run that opens a
- * line is a heading too; a bold run elsewhere is inline emphasis.
+ * The summary is plain text except for `**bold**`. A type's grader may be asked for headed
+ * sections (its definition's summary headings: Teach-back's "What you explained well" …), but
+ * the model does not reliably mark them: they arrive bold, as "## " headings, with a trailing
+ * colon, or as bare lines. The known headings are therefore recognised by their wording,
+ * however decorated, and shown as headings. Any other bold run that opens a line is a heading
+ * too; a bold run elsewhere is inline emphasis.
  */
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // After the wording there must be a colon, a closing "**", or the end of the line — a
 // sentence that merely starts "What you explained well was the tradeoff..." is not a heading.
-const KNOWN_HEADING =
-  /^\s*(?:#+\s*)?(?:\*\*)?\s*(what you explained well|what would have made it clearer)(?:(?:\*\*)?\s*:\s*(?:\*\*)?|\*\*|\s*$)\s*(.*)$/i;
+const knownHeadingPattern = (headings: string[]) => headings.length === 0 ? null : new RegExp(
+  String.raw`^\s*(?:#+\s*)?(?:\*\*)?\s*(` + headings.map(escapeRegExp).join('|') + String.raw`)(?:(?:\*\*)?\s*:\s*(?:\*\*)?|\*\*|\s*$)\s*(.*)$`,
+  'i'
+);
 
 const renderInlineBold = (text: string) =>
   text.split(/\*\*(.+?)\*\*/g).map((part, i) => (i % 2 === 1 ? <strong key={i}>{part}</strong> : part));
 
-const renderSummary = (summary: string) =>
-  (summary || '').split(/\n+/).filter((line) => line.trim()).map((line, i) => {
-    const known = line.match(KNOWN_HEADING);
+const renderSummary = (summary: string, headings: string[]) => {
+  const pattern = knownHeadingPattern(headings);
+  return (summary || '').split(/\n+/).filter((line) => line.trim()).map((line, i) => {
+    const known = pattern ? line.match(pattern) : null;
     const heading = known
-      ? [line, known[1].charAt(0).toUpperCase() + known[1].slice(1).toLowerCase(), known[2]]
+      ? [line, headings.find((h) => h.toLowerCase() === known[1].toLowerCase()) ?? known[1], known[2]]
       : line.match(/^\s*\*\*(.+?)\*\*:?\s*(.*)$/);
     if (!heading) {
       return <p key={i} className="text-gray-700 mt-1 first:mt-0">{renderInlineBold(line)}</p>;
@@ -33,6 +39,7 @@ const renderSummary = (summary: string) =>
       </React.Fragment>
     );
   });
+};
 
 interface EvaluationProps {
   result: EvaluationResult | null;
@@ -43,6 +50,7 @@ interface EvaluationProps {
   onTitleContextNav?: () => void;
   showDetails?: boolean; // Show detailed criteria (default: true)
   freeHints?: number; // chat option free_hints; the hint note is left out when unknown
+  activity?: StudentActivityView | null; // the activity's summary headings and coverage wording
 }
 
 /** The hint note, worded for the assignment's free hints (chat option free_hints). */
@@ -61,7 +69,7 @@ const LoadingSpinner: React.FC<{ modelName: string | null }> = ({ modelName }) =
 );
 
 // FIX: Correctly type the component's props using React.FC<EvaluationProps> to resolve type errors.
-const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart, superModelName, onLogout, onTitleContextNav, showDetails = true, freeHints }) => {
+const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart, superModelName, onLogout, onTitleContextNav, showDetails = true, freeHints, activity }) => {
   if (!result) {
     return (
         <div className="flex items-center justify-center min-h-screen bg-gray-200">
@@ -89,7 +97,7 @@ const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart,
         <div className="p-4 bg-blue-50 rounded-lg">
             <h2 className="text-xl font-semibold text-gray-800 mb-2">Supervisor's Summary</h2>
             {/* Line by line: a single <p> collapses a multi-paragraph or headed summary. */}
-            {renderSummary(result.summary)}
+            {renderSummary(result.summary, activity?.copy.summary_headings ?? [])}
         </div>
 
         {typeof result.hints === 'number' && (
@@ -101,7 +109,7 @@ const Evaluation: React.FC<EvaluationProps> = ({ result, studentName, onRestart,
           </div>
         )}
 
-        {showDetails && <CriteriaCoverage criteria={result.criteria} />}
+        {showDetails && <CriteriaCoverage criteria={result.criteria} activity={activity} />}
 
         {showDetails && (
           <div className="space-y-6">

@@ -141,7 +141,8 @@ export interface SectionCase {
 // The activity type (case chat, teach-back) is not a chat option: it is the case's
 // `activity_type`. See utils/activityTypes.js.
 export interface ChatOptions {
-  teach_back_min_words: number;   // Teach-back only: word floor on the opening explanation (0 = off)
+  min_opening_words: number;      // Types with an opening floor (Teach-back): words in the first message (0 = off)
+  teach_back_min_words?: number;  // old name of min_opening_words, still read (utils/openingWords.js)
   hints_allowed: number;
   free_hints: number;
   ask_for_feedback: boolean;

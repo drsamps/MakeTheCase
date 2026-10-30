@@ -2,13 +2,52 @@
 
 The plan is in [StudyChat-plan.md](StudyChat-plan.md); decisions D1–D8 are in its Context section. This file says where the work stands and what to do next. **Update it at the end of every session.**
 
-Last updated: 2026-10-29 (evening), on the desktop with MySQL (MSB-SSAMPSON20).
+Last updated: 2026-10-30, on the desktop with MySQL (MSB-SSAMPSON20).
 
 ## Where things stand
 
 - **Branch:** `studychat`, created from `reading-import` at `3b1c7d9`. `reading-import` is not merged into local `main`, so `studychat` contains its commits too. Nothing is pushed.
-- **Phase 0 (fixes): committed and verified on the dev database** (see "Phase 0 verification" below). Two small fixes came out of it and are committed.
-- Phases 1–6: not started. Phase 1 waits for your go-ahead.
+- **Phase 0 (fixes): committed and verified on the dev database** (see "Phase 0 verification" below).
+- **Phase 1 (the engine): committed and verified on the dev database** (see "Phase 1" below). Migration 090 is applied on the dev `ceochat`, not on production.
+- Phases 2–6: not started.
+
+### Phase 1: what changed
+
+| Part | Files |
+|---|---|
+| The engine, pure JS: one-pass rendering with optional wrappers, named resolvers, system prompt (platform document blocks), greeting, coach prompt (platform task list and JSON contract), student copy and intro bar, the student view, the schema-v1 validator with channels | `utils/activityEngine/` (`render.js`, `resolvers.js`, `prompt.js`, `greeting.js`, `grading.js`, `copy.js`, `view.js`, `validate.js`, `index.js`) |
+| Built-in definitions | `utils/activityEngine/builtins/case_chat.json`, `teach_back.json`, `index.js` |
+| `activityBehaviour` is now an adapter over the engine (same shape; adds `definition`, `version`, `studentView`). The hand builders moved to `legacyActivityBuilders.js` and are kept one release for the triple check | `server/services/activityTypes.js`, `server/services/legacyActivityBuilders.js` |
+| Goldens captured from the hand builders after Phase 0: 22 system prompts (the old 13 plus whitespace-only instructions, braces and `$&`, every persona, every optional block), 8 greetings, 12 coach prompts (with and without rubric, 0/1/2 free hints, picked position, missing fields), both notes, 63 copy strings, 7 intro bars. The old `chat-prompt-golden.json` is folded in | `server/scripts/check-activity-engine.js`, `fixtures/activity-engine-golden.json`; `check-chat-prompt.js` is an alias |
+| Student page reads every type-specific sentence from the activity's copy. `TEACH_BACK_COPY`, `teachBackIntroText` and `TeachBackIntro.tsx` are gone; `teachBack.ts` keeps the audience helpers | `services/activityCopy.ts`, `components/ActivityIntro.tsx`, `App.tsx`, `ChatWindow.tsx` (no Kent Beck default), `Evaluation.tsx` (headings from the view), `CriteriaCoverage.tsx`, `teachBack.ts` |
+| The student view is on student case rows, pinned in the `POST /case-chats` response, and on `GET /evaluations/:id` (staff viewer) | `sectionCases.js#forStudent`, `caseChats.js`, `evaluations.js` |
+| Migration 090: `case_chats.activity_type_version`, `evaluations.activity_type_version`, written at chat start and at grading (`case_chat@e79517f4eda9`, `teach_back@cc1b4bef6145` today) | `server/migrations/090_activity_type_version.sql` |
+| Chat options: type-defaults layer (empty for the built-ins), `min_opening_words` with `teach_back_min_words` still read, `GET /chat-options/schema?activity_type=` drops the keys a type hides | `chatOptions.js`, `utils/openingWords.js`, `routes/chatOptions.js`, `llm.js`, `CaseVersionEditor.tsx`, `Dashboard.tsx`, `types.ts` |
+| Issue Analytics cache key hook (adds nothing for built-ins) | `issueAnalytics/common.js#extractCacheTag`, `runner.js`, `scope.js`, `activityTypes.js#activityCacheVersion` |
+| CLAUDE.md: new "Activity engine" section; prompt and chat-option notes updated | `CLAUDE.md` |
+
+### Phase 1 verification (2026-10-30, dev `ceochat`)
+
+| Check | Result |
+|---|---|
+| `check-activity-engine.js` | 181/181 offline; with `--db`, 909/909 (150 real chats: system prompt and greeting for two names; 46 real coach prompts at 0/1/2 free hints) |
+| `check-activity-pack.js --db`, `typecheck`, `npm run build` | 37/37; 0 errors; builds |
+| Student bundle | no prompt template text and none of the old inline copy (`dist/assets/*.js` scanned) |
+| Student case rows | carry the view, no templates; schema filter: case chat hides the floor field, Teach-back shows it, an unknown type gets 400 |
+| Word floor | default 15; old key `teach_back_min_words: 40` is honoured; `min_opening_words` wins when both are set |
+| Case chat in the browser | start rows, picker, avatar tooltip and minimum-exchanges reply word for word as before; graded via API; chat and evaluation record `case_chat@e79517f4eda9` |
+| Teach-back in the browser, end to end | intro bar, counter, position prompt, opening-floor reply, limit bar, every feedback-phase message (this closes Phase 0's unverified item), final-position block, evaluation headings and coverage strip; chat and evaluation record `teach_back@cc1b4bef6145`; `GET /evaluations/:id` carries the view |
+
+### Phase 1: decisions made on the way (review these)
+
+1. **Issue Analytics cache key.** The plan said to include the type version in the pass-1 prompt hash. Doing that for the built-ins would have thrown away every cached (paid-for) result on deploy, while the built-in definitions never reach those prompts. So `extractCacheTag` adds a hash of the type version **only for types defined as data** (Phase 2); for built-ins the key is unchanged.
+2. **`utils/activityTypes.js` keeps its small static table** instead of deriving from the definitions: deriving would bundle the prompt templates into the student page. The engine check asserts the table agrees with the definitions.
+3. **The recorded version is not yet used to pick the definition.** Each built-in has one version, so every turn and grade already runs on it. Resolving by the recorded version belongs with the store in Phase 2.
+4. **Deliberate wording change:** the Teach-back avatar tooltip read "Sam, a curious beginner, Sam, a curious beginner protagonist of …"; it now reads "Sam, a curious beginner, the listener you chose for … (AI model: …)". Case chat's is unchanged.
+5. Case chat gained three copy strings it never shows (`opening_too_short`, `persona_picker_empty`, `start_no_persona`), because every definition must have every key.
+6. **Packages:** an assignment saved after this change can carry `min_opening_words`; an older server refuses such a package (fail closed, as designed). Packages from older servers (with `teach_back_min_words`) still install here.
+
+Found, not fixed: a hint request sent as the first Teach-back message gets the opening-floor reply, not the hint reply (the floor is checked first; unchanged from before).
 
 ### What Phase 0 changed
 
@@ -89,13 +128,23 @@ Kept for the record; results are in "Phase 0 verification" above.
    - An Issue Analytics run (or a transcript view) on a Teach-back case shows the audience name.
 5. Fix anything found, update this file, and commit.
 
-### B. Phase 1 (engine; no visible change)
+### B. Phase 1 (engine) — DONE 2026-10-30
 
-Follow the plan's §3 and the Phase 1 section. Capture the extended goldens **after** Phase 0 (Phase 0 changed the coach prompt on purpose). Keep the hand builders until engine output = hand-builder output = golden.
+Results are in "Phase 1" above. Before production: run migration 090 (`npm run migrate` on the server).
 
-### C. Later phases
+### C. Phase 2 next: type storage, packages, minimal admin flow
 
-2: type storage, packages, minimal admin flow. 3: DEBATE, APPLY, LIKEN2ME. 4: PITCH, ROLEPLAY (signals, touchpoints). 5: full admin editor. 6: DEFEND (minimal). Each phase gets its own migration (next free number: **090**). Open questions for the user are at the end of the plan (LIKEN2ME privacy, multi-sided debates, showing the goal, simulated students).
+Follow the plan's Phase 2 section. Notes from Phase 1:
+- `activityBehaviour()` builds behaviours from `BUILTIN_DEFINITIONS` at startup and validates them (`behaviourFor`). Phase 2's `activityTypeStore.js` should produce definitions from the database the same way, cached by version, and resolve a chat by its recorded `activity_type_version` (decision 3 above).
+- Start enforcing `ACTIVITY_TYPE_UNAVAILABLE` there: today an unknown type still falls back to case chat (`normalizeActivityType`).
+- `activityCacheVersion()` must return the version for data types (decision 1).
+- `validate.js` refuses `signals`, `touchpoints`, `chat_options.extra` and any `material` but `activity` ("not supported by this server yet"); lift each with its phase and add its package capability token.
+- The "traits are fixed for a type key" check (refuse a traits change on a published key) belongs to the store; add it to `check-activity-definitions.js`.
+- Delete the hand builders (`legacyActivityBuilders.js`, `chatPromptTemplates.js`, `teachBackCoachPrompt.js`, the builder in `promptBuilder.js`) in the release after Phase 1 ships, and drop the "hand" comparisons from the check.
+
+### D. Later phases
+
+3: DEBATE, APPLY, LIKEN2ME. 4: PITCH, ROLEPLAY (signals, touchpoints). 5: full admin editor. 6: DEFEND (minimal). Each phase gets its own migration (next free number: **091**). Open questions for the user are at the end of the plan (LIKEN2ME privacy, multi-sided debates, showing the goal, simulated students), plus the `chat_repeats` question in "Phase 0 verification".
 
 ## Practical notes (learned the hard way)
 
@@ -103,7 +152,7 @@ Follow the plan's §3 and the Phase 1 section. Capture the extended goldens **af
 - **Shell heredocs eat backslashes.** A Node edit script in a heredoc turned `/\s+/` into `/s+/` (a word-count bug, caught in review). Use the Edit tool for anything containing regexes or backslashes, and re-read the diff.
 - **Recursive `grep -r` over this OneDrive folder takes minutes** (it reads `case_files/`, `node_modules/`, …). Use the Grep tool, or restrict the paths.
 - The machine-specific MySQL path is in `.claude/PLATFORM.md` (gitignored).
-- **Live-test recipe that worked (desktop).** API: `SERVER_PORT=3011 node server/index.js`. Web: the `makethecase-test-3010` entry in `.claude/launch.json` (Vite on 3010 with `SERVER_PORT=3011`). Throwaway data: a `zz-studychat-1` student in `case-chat-testers` and a `zz-studychat-tb` Teach-back case (case, reading and `instructor_notes` files with `converted_text`, one scenario with two positions, an `ai_inferred` assignment). Delete the student and the case afterwards (cascades), plus any `issue_analysis_runs` for the case. Drive the API with `curl` and a token from `generateToken()`; set `student_auth_token` in the page for the browser.
+- **Live-test recipe that worked (desktop).** API: the `makethecase-test-api-3011` entry in `.claude/launch.json`. Web: the `makethecase-test-3010` entry (Vite on 3010 with `SERVER_PORT=3011`). Throwaway data: a `zz-studychat-1` student in `case-chat-testers` and a `zz-studychat-tb` Teach-back case (case, reading and `instructor_notes` files with `converted_text`, one scenario with two positions, an `ai_inferred` assignment). Delete the student and the case afterwards (cascades), plus any `issue_analysis_runs` for the case. Drive the API with `curl` and a token from `generateToken()`; set `student_auth_token` in the page for the browser.
 - To let a test student chat again, set `evaluations.allow_rechat = TRUE`; `chat_repeats` is not read by the page.
 - A chat session object in the page is created at chat start, so a hot reload of `services/llmService.ts` does not reach a chat already open: reload the page.
 - Live AI cost of a full verification pass: a few cents (gpt-5-mini).

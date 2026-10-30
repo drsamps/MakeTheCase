@@ -5,7 +5,8 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api, getApiBaseUrl, getImpersonationId, setImpersonationId } from '../services/apiClient'; // Dashboard with tiles/list view toggle
 import { fetchSectionCaseSetting } from '../services/sectionCaseSettings';
 import { detectProvider } from '../services/llmService';
-import { DEFAULT_TEACH_BACK_MIN_WORDS, isTeachBackType, isAudiencePersonaId, crossModePersonaIds, validateChatOptionsForSave } from '../teachBack';
+import { isTeachBackType, isAudiencePersonaId, crossModePersonaIds, validateChatOptionsForSave } from '../teachBack';
+import { DEFAULT_MIN_OPENING_WORDS, minOpeningWords } from '../utils/openingWords.js';
 import { DEFAULT_ACTIVITY_TYPE, getActivityType, listActivityTypes } from '../utils/activityTypes.js';
 import { DownloadCasesModal, InstallCasesModal } from './CasePackages';
 import { PromptManager } from './PromptManager';
@@ -721,7 +722,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
   // Default chat options
   const defaultChatOptions = {
-    teach_back_min_words: DEFAULT_TEACH_BACK_MIN_WORDS,
+    min_opening_words: DEFAULT_MIN_OPENING_WORDS,
     hints_allowed: 3,
     free_hints: 1,
     ask_for_feedback: false,
@@ -6177,8 +6178,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                     type="number"
                     min="0"
                     max="200"
-                    value={editingChatOptions.teach_back_min_words ?? DEFAULT_TEACH_BACK_MIN_WORDS}
-                    onChange={(e) => setEditingChatOptions({ ...editingChatOptions, teach_back_min_words: parseInt(e.target.value) || 0 })}
+                    value={minOpeningWords(editingChatOptions)}
+                    onChange={(e) => {
+                      // min_opening_words replaces the old teach_back_min_words key (still read; utils/openingWords.js).
+                      const { teach_back_min_words: _old, ...rest } = editingChatOptions;
+                      setEditingChatOptions({ ...rest, min_opening_words: parseInt(e.target.value) || 0 });
+                    }}
                     disabled={!isEditingDefault && useDefaultOptions}
                     className={`w-full px-3 py-2 border border-gray-300 rounded-lg text-sm ${useDefaultOptions ? 'bg-gray-50 text-gray-500' : ''}`}
                   />
