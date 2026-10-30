@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, getApiBaseUrl, getAuthHeaders } from '../services/apiClient';
-import { getActivityType } from '../utils/activityTypes.js';
+import { activityTypeInfo, useActivityTypeList } from '../services/activityTypeList';
 
 /**
  * Activity packages on the Cases screen: download cases as a package, install a package from
@@ -66,6 +66,7 @@ interface OmittedDocument { activity: string; title: string; role: string; reaso
 interface DownloadSummary { filename: string; activities: number; omitted?: OmittedDocument[]; warnings?: { activity: string; message: string }[]; omitted_count?: number; warnings_count?: number }
 
 export const DownloadCasesModal: React.FC<{ caseIds: string[]; onClose: () => void }> = ({ caseIds, onClose }) => {
+  useActivityTypeList();
   const [cases, setCases] = useState<ExportCase[] | null>(null);
   const [sourceIndex, setSourceIndex] = useState<Record<string, number>>({});
   const [includeOriginals, setIncludeOriginals] = useState(false);
@@ -185,7 +186,7 @@ export const DownloadCasesModal: React.FC<{ caseIds: string[]; onClose: () => vo
                 <div key={c.case_id} className="border border-gray-200 rounded-lg p-3 space-y-2">
                   <div className="text-sm">
                     <span className="font-medium text-gray-900">{c.case_title}</span>
-                    <span className="ml-2 text-gray-500">({c.case_id}) · {getActivityType(c.activity_type).label}</span>
+                    <span className="ml-2 text-gray-500">({c.case_id}) · {activityTypeInfo(c.activity_type).label}</span>
                   </div>
                   <label className="block text-sm">
                     <span className="text-gray-700">Settings to include</span>
@@ -288,6 +289,8 @@ interface InstallPlan {
   rubrics: PlanItem[];
   course: { course_id: number; course_name: string } | null;
   review: { where: string; kind: string; name: string; text: string }[];
+  /** Types defined as data that the package brings (activity_types.json), with the full definition to read. */
+  activity_types?: { key: string; label: string; summary: string; action: 'reuse' | 'create' | 'new_key'; target_key: string; note: string | null; definition: unknown }[];
   plan_hash: string;
 }
 interface InstallResult { installed: { case_id: string; case_title: string }[]; personas_created: string[]; rubrics_created: { rubric_name: string }[]; course: { course_name: string } | null }
@@ -530,6 +533,27 @@ export const InstallCasesModal: React.FC<{ isAdmin: boolean; userId: string | nu
                               </select>
                             )}
                             {p.note && <span className="block text-xs text-gray-500">{p.note}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {(plan.activity_types?.length ?? 0) > 0 && (
+                    <div className="text-sm">
+                      <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Activity types</div>
+                      <ul className="space-y-2">
+                        {plan.activity_types!.map((t) => (
+                          <li key={t.key}>
+                            <span className="text-gray-900">{t.label}</span>
+                            <span className="text-gray-500"> (<code>{t.target_key}</code>): {t.action === 'reuse' ? 'Use the one already here' : t.action === 'create' ? 'Add as a new type (disabled draft)' : 'Add as a new type under a new key (disabled draft)'}</span>
+                            {t.note && <span className="block text-xs text-amber-700">{t.note}</span>}
+                            {t.action !== 'reuse' && (
+                              <details className="mt-1 border border-gray-200 rounded">
+                                <summary className="px-2 py-1 text-xs text-gray-700 cursor-pointer">Read the whole definition: its chat prompt, grading and student wording</summary>
+                                <pre className="whitespace-pre-wrap text-xs text-gray-800 bg-gray-50 p-2 max-h-80 overflow-y-auto">{JSON.stringify(t.definition, null, 2)}</pre>
+                              </details>
+                            )}
                           </li>
                         ))}
                       </ul>

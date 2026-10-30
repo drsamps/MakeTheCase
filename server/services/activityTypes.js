@@ -1,15 +1,15 @@
 /**
  * What each Study-Chat activity type does on the server: its chat prompt, its opening line and
  * how its chat is graded, rendered by the activity engine (utils/activityEngine/) from the type's
- * definition. The built-in definitions are utils/activityEngine/builtins/*.json; the list of types
- * and their static traits for the dashboard is utils/activityTypes.js.
+ * definition. Definitions come from the registry (activityTypeStore.js: the built-ins in code plus
+ * the types defined as data).
  *
- * Every caller asks `activityBehaviour(type)` instead of testing a type key, so a new type is a
- * definition, not code. A missing or unknown type behaves as case chat (until Phase 2 adds data
- * types and the ACTIVITY_TYPE_UNAVAILABLE refusal).
+ * Every caller asks `activityBehaviour(type)` (or `behaviourForChat(chat, type)` for a chat in
+ * progress) instead of testing a type key, so a new type is a definition, not code. A MISSING type
+ * is case chat; an unknown or unpublished one throws 409 ACTIVITY_TYPE_UNAVAILABLE.
  *
- * The type comes from the case (`cases.activity_type`). `loadCaseData()` returns it, so callers
- * that already hold the case data read `caseData.activity_type` and need no extra query.
+ * The type comes from the case (`cases.activity_type`). `loadCaseData()` returns it, and
+ * services/chatPrompt.js#loadChatContext resolves the chat's behaviour once (`ctx.behaviour`).
  *
  * buildSystemPrompt(studentName, personaId, caseData, options)        -> string
  * buildGreeting(caseData, studentName, personaId)                     -> string (turn 0)
@@ -28,13 +28,15 @@
  *   student receives (utils/activityEngine/view.js)
  */
 
-import crypto from 'node:crypto';
-import { normalizeActivityType, listActivityTypes } from '../../utils/activityTypes.js';
-import { BUILTIN_DEFINITIONS } from '../../utils/activityEngine/builtins/index.js';
 import {
   buildSystemPrompt, buildGreeting, buildCoachPrompt, studentActivityView, validateDefinition, templateText,
 } from '../../utils/activityEngine/index.js';
 import { teachBackEvalInputs, verifyEvidence } from './teachBack.js';
+import {
+  ActivityTypeError, getTypeEntry, getVersion, isTypeUsable, listTypeEntries,
+} from './activityTypeStore.js';
+
+export { ActivityTypeError, isTypeUsable };
 
 // Grading inputs a definition can name (traits.grading_extras.eval_inputs). These read the
 // database, so they live here rather than in the engine.
@@ -45,18 +47,7 @@ const EVAL_INPUTS = {
   chosen_persona: teachBackEvalInputs,
 };
 
-/** `case_chat@3f2a…`: changes whenever the definition's text does. */
-const versionTag = (def) =>
-  `${def.key}@${crypto.createHash('sha256').update(JSON.stringify(def), 'utf8').digest('hex').slice(0, 12)}`;
-
-function behaviourFor(def) {
-  // Fail closed at startup: a broken built-in must stop the server, not grade a chat wrongly.
-  const { ok, errors } = validateDefinition(def);
-  if (!ok) throw new Error(`Activity type "${def.key}" is invalid:\n  ${errors.join('\n  ')}`);
-  // Chat-option keys a definition names are checked by check-activity-engine.js (importing
-  // chatOptions.js here would be an import cycle: it reads the type defaults from this module).
-
-  const version = versionTag(def);
+function makeBehaviour(def, version) {
   const evidence = Boolean(def.traits.grading_extras.evidence);
   return Object.freeze({
     definition: def,
@@ -76,55 +67,109 @@ function behaviourFor(def) {
   });
 }
 
-const BEHAVIOUR = Object.fromEntries(Object.entries(BUILTIN_DEFINITIONS).map(([key, def]) => [key, behaviourFor(def)]));
-
-/** The behaviour for an activity type (case chat when the type is missing or unknown). */
-export function activityBehaviour(activityType) {
-  return BEHAVIOUR[normalizeActivityType(activityType)];
+// Behaviours by version tag. A version's definition never changes (activityTypeStore.js), so the
+// cache needs no invalidation.
+const behaviours = new Map();
+function behaviourFor(def, version) {
+  let b = behaviours.get(version);
+  if (!b) {
+    b = makeBehaviour(def, version);
+    behaviours.set(version, b);
+  }
+  return b;
 }
 
-/** The student-safe view of a type, for case rows and chat starts (never templates). */
+const unavailable = (activityType) => new ActivityTypeError(409, 'ACTIVITY_TYPE_UNAVAILABLE',
+  'This activity is not available right now (its activity type is unknown on this server or not published). Please tell your instructor.',
+  { activity_type: activityType ?? null });
+
+/**
+ * The current behaviour for an activity type. A MISSING type is case chat; an unknown type, or one
+ * with no published version, throws 409 ACTIVITY_TYPE_UNAVAILABLE (never a silent case chat). A
+ * disabled type still returns its behaviour: chats in progress keep working, and POST /case-chats
+ * refuses new ones itself (isTypeUsable).
+ */
+export function activityBehaviour(activityType) {
+  const entry = getTypeEntry(activityType);
+  if (!entry?.current) throw unavailable(activityType);
+  return behaviourFor(entry.current.definition, entry.current.version);
+}
+
+/**
+ * The behaviour a chat runs and is graded on: the version it recorded at its start
+ * (case_chats.activity_type_version), so a publish mid-chat changes nothing for it. A built-in
+ * version whose text has since changed falls back to the current built-in; a chat from before
+ * versions were recorded uses the case's current type.
+ * @param {{ activity_type_version?: string|null }} chat
+ * @param {string|null} caseActivityType
+ */
+export function behaviourForChat(chat, caseActivityType) {
+  const tag = chat?.activity_type_version;
+  if (tag) {
+    const v = getVersion(tag);
+    if (v) return behaviourFor(v.definition, tag);
+    const entry = getTypeEntry(tag.split('@')[0]);
+    if (entry?.tier === 'builtin') return activityBehaviour(entry.key);
+  }
+  return activityBehaviour(caseActivityType);
+}
+
+/**
+ * A behaviour for a definition that is not published (the admin preview of a draft). Not cached
+ * by a real version tag, so it can never be mistaken for one.
+ */
+export function previewBehaviour(definition) {
+  const { ok, errors } = validateDefinition(definition);
+  if (!ok) throw new ActivityTypeError(400, 'INVALID_DEFINITION', 'The definition is not valid.', { errors });
+  return makeBehaviour(definition, `${definition.key}@preview`);
+}
+
+/** The student-safe view of a type for case rows (never templates); null when unavailable. */
 export function studentActivityViewFor(activityType) {
-  return activityBehaviour(activityType).studentView;
+  const entry = getTypeEntry(activityType);
+  return entry?.current ? behaviourFor(entry.current.definition, entry.current.version).studentView : null;
+}
+
+/** The current traits of a type, or null when it is unavailable (activityTypeStore.js#typeTraits). */
+export function activityTraits(activityType) {
+  return getTypeEntry(activityType)?.current?.definition.traits ?? null;
 }
 
 /**
  * The type's part of the Issue Analytics pass-1 cache key (issueAnalytics/common.js#extractCacheTag).
  * Built-ins give '': their definitions never reach the Issue Analytics prompts, and adding them to
- * the key would throw away every cached (paid-for) result. Types defined as data (Phase 2) will
- * return their version here, so editing one never reuses facts extracted under the old text.
+ * the key would throw away every cached (paid-for) result (decided 2026-10-30). Types defined as
+ * data give their current version, so editing one never reuses facts extracted under the old text.
  */
 export function activityCacheVersion(activityType) {
-  void activityType;
-  return '';
+  const entry = getTypeEntry(activityType);
+  return !entry || entry.tier === 'builtin' ? '' : (entry.current?.version || '');
 }
 
 /** The chat-option defaults a type layers over the section and global defaults (chatOptions.js). */
 export function activityOptionDefaults(activityType) {
-  return activityBehaviour(activityType).definition.chat_options.defaults;
+  return getTypeEntry(activityType)?.current?.definition.chat_options.defaults || {};
 }
 
 /** The chat-option keys a type hides from editors (GET /api/chat-options/schema?activity_type=). */
 export function activityHiddenOptions(activityType) {
-  return activityBehaviour(activityType).definition.chat_options.hidden;
+  return getTypeEntry(activityType)?.current?.definition.chat_options.hidden || [];
 }
-
-// Types whose AI character is the persona the student picked (Teach-back's audience), not the
-// scenario's protagonist. Keys are code constants (utils/activityTypes.js), checked before use.
-const PERSONA_CHARACTER_TYPES = listActivityTypes()
-  .filter((t) => t.characterFrom === 'persona')
-  .map((t) => t.id)
-  .filter((id) => /^[a-z_]+$/.test(id));
 
 /**
  * SQL for the name the AI went by in a chat, which is the name its transcript turns carry: the
  * picked persona's name for persona-character types, else the scenario's protagonist (as
  * services/chatPrompt.js#loadChatContext does). Needs the joins from aiSpeakerJoinsSql() and the
- * scenario joined as `scenario`.
+ * scenario joined as `scenario`. Type keys are [a-z0-9_] (validate.js#isTypeKey), checked again
+ * here before they are written into SQL.
  */
 export function aiSpeakerNameSql({ kase = 'ai_case', persona = 'ai_persona', scenario = 'cs' } = {}) {
-  if (PERSONA_CHARACTER_TYPES.length === 0) return `${scenario}.protagonist`;
-  const types = PERSONA_CHARACTER_TYPES.map((id) => `'${id}'`).join(', ');
+  const personaTypes = listTypeEntries()
+    .filter((e) => e.current?.definition.traits.character === 'persona')
+    .map((e) => e.key)
+    .filter((key) => /^[a-z0-9_]+$/.test(key));
+  if (personaTypes.length === 0) return `${scenario}.protagonist`;
+  const types = personaTypes.map((id) => `'${id}'`).join(', ');
   return `CASE WHEN ${kase}.activity_type IN (${types}) THEN COALESCE(${persona}.persona_name, ${scenario}.protagonist) ELSE ${scenario}.protagonist END`;
 }
 

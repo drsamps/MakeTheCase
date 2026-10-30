@@ -23,6 +23,25 @@ import { GREETING_RESOLVERS } from './greeting.js';
 
 export const DEFINITION_SCHEMA = 1;
 
+// Type keys fit cases.activity_type (VARCHAR(30)). Built-in and system keys are [a-z_]; custom keys
+// are c_<slug>_<8 hex>, so a custom key can never collide with a future system type.
+export const CUSTOM_KEY_RE = /^c_[a-z0-9_]{1,19}_[0-9a-f]{8}$/;
+export const isCustomKey = (key) => typeof key === 'string' && CUSTOM_KEY_RE.test(key);
+export const isTypeKey = (key) =>
+  typeof key === 'string' && key.length <= 30 && (/^[a-z_]{2,30}$/.test(key) || CUSTOM_KEY_RE.test(key));
+
+/** `c_<slug>_<8 hex>` from a label, for a new custom type. */
+export function customKeyFor(label, hex8) {
+  const slug = String(label || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 19).replace(/_+$/, '') || 'type';
+  return `c_${slug}_${hex8}`;
+}
+
+/** Traits are fixed for the life of a type key: true when two definitions' traits are identical. */
+export function sameTraits(a, b) {
+  const canon = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort()) : x));
+  return canon(a?.traits) === canon(b?.traits);
+}
+
 const MAX_FIELD = 20000;
 const MAX_TOTAL = 200000;
 
@@ -142,7 +161,7 @@ export function validateDefinition(def) {
     return { ok: false, errors };
   }
   if (def.schema !== DEFINITION_SCHEMA) err('schema', `must be ${DEFINITION_SCHEMA}`);
-  if (typeof def.key !== 'string' || !/^([a-z_]{2,40}|c_[a-z0-9_]{2,40}_[a-z0-9]{6,12})$/.test(def.key)) err('key', 'must be [a-z_] (built-in, system) or c_<slug>_<uid> (custom)');
+  if (!isTypeKey(def.key)) err('key', 'must be [a-z_] (built-in, system) or c_<slug>_<8 hex> (custom), at most 30 characters');
   text(def.label, 'label', []);
   text(def.summary, 'summary', []);
   if (def.based_on !== null && typeof def.based_on !== 'string') err('based_on', 'must be a type key or null');

@@ -3,7 +3,7 @@ import { api } from '../services/apiClient';
 import InlineStatus from './ui/InlineStatus';
 import { CaseScenario } from '../types';
 import ScenarioStudentText, { ScenarioStudentSettings } from './ScenarioStudentText';
-import { isTeachBackType } from '../teachBack';
+import { activityTypeInfo, useActivityTypeList } from '../services/activityTypeList';
 import { readScenarioSettings } from '../utils/scenarioSettings.js';
 import {
   DndContext,
@@ -211,7 +211,10 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   onClose,
   onScenariosChanged
 }) => {
-  const teachBack = isTeachBackType(activityType);
+  useActivityTypeList();
+  // Teach-back-style fields (situation, saved openings, no character) for types whose AI is the
+  // audience the student picks.
+  const teachBack = activityTypeInfo(activityType).characterFrom === 'persona';
   // Student-visible text in the scenario's settings document (utils/scenarioSettings.js).
   const emptyStudentText: ScenarioStudentSettings = { situation: '', personas: {} };
   const [studentText, setStudentText] = useState<ScenarioStudentSettings>(emptyStudentText);

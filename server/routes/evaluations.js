@@ -35,11 +35,14 @@ const router = express.Router();
  * chat prompt saw it (services/chatPrompt.js#loadChatContext). Plain loadCaseData() has no
  * scenario, so the coach prompt used to name "the case protagonist" instead of the person
  * the transcript shows. Null when the case no longer exists.
- * @param {{ id, case_id, section_id, scenario_id, persona, initial_position_id }} chat
+ * Also returns the behaviour the chat is graded on: the type version it ran on.
+ * @param {{ id, case_id, section_id, scenario_id, persona, initial_position_id, activity_type_version }} chat
+ * @returns {Promise<{ caseData, behaviour }|null>}
  */
-async function gradingCaseData(chat) {
+async function gradingContext(chat) {
   try {
-    return (await loadChatContext(chat)).caseData;
+    const ctx = await loadChatContext(chat);
+    return { caseData: ctx.caseData, behaviour: ctx.behaviour };
   } catch (error) {
     if (error.status === 404) return null;
     throw error;
@@ -204,7 +207,7 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
   try {
     // 1. Look up case_chat details
     const [chatRows] = await pool.execute(
-      `SELECT cc.id, cc.case_id, cc.student_id, cc.section_id, cc.scenario_id, cc.persona, cc.initial_position_id, s.full_name
+      `SELECT cc.id, cc.case_id, cc.student_id, cc.section_id, cc.scenario_id, cc.persona, cc.initial_position_id, cc.activity_type_version, s.full_name
        FROM case_chats cc
        JOIN students s ON cc.student_id = s.id
        WHERE cc.id = ?`,
@@ -244,7 +247,8 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
 
     // Teach-back is judged against the audience the student chose, and against its own
     // criteria unless the assignment names a rubric (a rubric is always passed in here).
-    const activity = activityBehaviour(caseData.activity_type);
+    // The type version the chat ran on (case_chats.activity_type_version).
+    const activity = context.behaviour;
     ({ caseData, rubric } = await activity.prepareEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric }));
     const expectedCriteria = rubric?.criteria?.length || (rubric?.criteria_prompt?.match(/Q\d+\./g) || []).length || 3;
     // Every successful exit goes through here so unverified "student quotes" never ship, and
@@ -394,6 +398,9 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
     });
 
   } catch (error) {
+    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: error.message } });
+    }
     console.error('[Eval run] Error:', error.message);
     console.error('[Eval run] Stack:', error.stack);
     res.status(500).json({ data: null, error: { message: error.message || 'Evaluation failed' } });
@@ -427,7 +434,7 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
     // 2. Get case_chat details
     const [chatRows] = await pool.execute(
       `SELECT cc.id, cc.case_id, cc.student_id, cc.section_id, cc.scenario_id, cc.persona, cc.initial_position_id,
-              s.full_name, c.case_title
+              cc.activity_type_version, s.full_name, c.case_title
        FROM case_chats cc
        JOIN students s ON cc.student_id = s.id
        JOIN cases c ON cc.case_id = c.case_id
@@ -449,12 +456,13 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
 
     // 4. Load case data
     console.log('[Re-evaluate] Step 4: Loading case data...');
-    let caseData = await gradingCaseData(chatRows[0]);
-    if (!caseData) {
+    const graded = await gradingContext(chatRows[0]);
+    if (!graded) {
       return res.status(404).json({ data: null, error: { message: 'Case not found' } });
     }
+    let { caseData } = graded;
     console.log('[Re-evaluate] Step 4: Got case data');
-    const reEvalActivity = activityBehaviour(caseData.activity_type);
+    const reEvalActivity = graded.behaviour;
     ({ caseData, rubric } = await reEvalActivity.prepareEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric, rubricChosen: !!rubric_id }));
 
     // 5. Build evaluation prompt
@@ -519,6 +527,9 @@ router.post('/re-evaluate', verifyToken, requireRole(['admin']), async (req, res
     });
 
   } catch (error) {
+    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: error.message } });
+    }
     console.error('Re-evaluation error:', error.message);
     console.error('Re-evaluation stack:', error.stack);
     res.status(500).json({ data: null, error: { message: error.message || 'Re-evaluation failed' } });
@@ -550,7 +561,7 @@ router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, r
     // Get case_chat details
     console.log('[Preview-prompt] Step 2: Getting case_chat details...');
     const [chatRows] = await pool.execute(
-      `SELECT cc.id, cc.case_id, cc.section_id, cc.scenario_id, cc.persona, cc.initial_position_id, s.full_name
+      `SELECT cc.id, cc.case_id, cc.section_id, cc.scenario_id, cc.persona, cc.initial_position_id, cc.activity_type_version, s.full_name
        FROM case_chats cc
        JOIN students s ON cc.student_id = s.id
        WHERE cc.id = ?`,
@@ -568,9 +579,10 @@ router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, r
     console.log('[Preview-prompt] Step 3: Got rubric:', rubric?.rubric_id);
 
     console.log('[Preview-prompt] Step 4: Loading case data...');
-    let caseData = await gradingCaseData(chatRows[0]);
+    const graded = await gradingContext(chatRows[0]);
+    let caseData = graded?.caseData ?? null;
     console.log('[Preview-prompt] Step 4: Got case data:', !!caseData);
-    const previewActivity = activityBehaviour(caseData?.activity_type);
+    const previewActivity = graded?.behaviour ?? activityBehaviour(null);
     ({ caseData, rubric } = await previewActivity.prepareEvalInputs({ caseChatId: case_chat_id, sectionId: section_id, caseId: case_id, caseData, rubric, rubricChosen: !!rubric_id }));
 
     console.log('[Preview-prompt] Step 5: Building prompt...');
@@ -585,6 +597,9 @@ router.get('/preview-prompt', verifyToken, requireRole(['admin']), async (req, r
 
     res.json({ data: { prompt }, error: null });
   } catch (error) {
+    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: error.message } });
+    }
     console.error('Preview prompt error:', error.message);
     console.error('Preview prompt stack:', error.stack);
     res.status(500).json({ data: null, error: { message: error.message || 'Failed to generate prompt preview' } });

@@ -5,9 +5,10 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api, getApiBaseUrl, getImpersonationId, setImpersonationId } from '../services/apiClient'; // Dashboard with tiles/list view toggle
 import { fetchSectionCaseSetting } from '../services/sectionCaseSettings';
 import { detectProvider } from '../services/llmService';
-import { isTeachBackType, isAudiencePersonaId, crossModePersonaIds, validateChatOptionsForSave } from '../teachBack';
+import { usesAudiencePersonas, isAudiencePersonaId, crossModePersonaIds, validateChatOptionsForSave } from '../teachBack';
 import { DEFAULT_MIN_OPENING_WORDS, minOpeningWords } from '../utils/openingWords.js';
-import { DEFAULT_ACTIVITY_TYPE, getActivityType, listActivityTypes } from '../utils/activityTypes.js';
+import { DEFAULT_ACTIVITY_TYPE } from '../utils/activityTypes.js';
+import { activityTypeInfo, usableActivityTypes, useActivityTypeList } from '../services/activityTypeList';
 import { DownloadCasesModal, InstallCasesModal } from './CasePackages';
 import { PromptManager } from './PromptManager';
 import { SettingsManager } from './SettingsManager';
@@ -45,6 +46,7 @@ import {
   useSemesterFilterState,
 } from './courses/semesterFilter';
 import BackupManager from './BackupManager';
+import ActivityTypeManager from './ActivityTypeManager';
 import DashboardHome from './DashboardHome';
 import WelcomeScreen from './WelcomeScreen';
 import Analytics from './Analytics';
@@ -102,7 +104,7 @@ type ContentSubTab = 'cases' | 'casefiles' | 'caseprep';
 type MonitorSubTab = 'chats' | 'cache' | 'live' | 'ai-usage';
 type ResultsSubTab = 'responses' | 'positions' | 'issues' | 'section-results';
 type SetupSubTab = 'personas' | 'apikeys' | 'teams' | 'rubrics';
-type AdminSubTab = 'instructors' | 'settings' | 'models' | 'prompts' | 'admins' | 'logging' | 'backup' | 'shadow';
+type AdminSubTab = 'instructors' | 'settings' | 'models' | 'prompts' | 'admins' | 'logging' | 'backup' | 'activity_types' | 'shadow';
 type RubricsSubTab = 'criteria' | 'rubrics';
 type FeedbackSubTab = 'mine' | 'inbox' | 'summary';
 
@@ -298,6 +300,8 @@ const SortablePositionItem: React.FC<SortablePositionItemProps> = ({ position, s
 };
 
 const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
+  // Activity type labels, traits and the case form's picker (services/activityTypeList.ts).
+  useActivityTypeList();
   // New workflow-centric navigation state
   const [primaryTab, setPrimaryTab] = useState<PrimaryTab>('home');
   const [homeSubTab, setHomeSubTab] = useState<HomeSubTab>('welcome');
@@ -387,7 +391,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     };
     const ADMIN: Record<AdminSubTab, string> = {
       instructors: 'Instructors', settings: 'Settings', models: 'Models', prompts: 'Prompts',
-      admins: 'Admins', logging: 'Logging', backup: 'Backup', shadow: 'Shadow-Owned',
+      admins: 'Admins', logging: 'Logging', backup: 'Backup', activity_types: 'Activity Types', shadow: 'Shadow-Owned',
     };
 
     const parts: string[] = ['Instructor Dashboard', PRIMARY_LABELS[primaryTab]];
@@ -459,7 +463,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
   const hasAdminAccess = useCallback(() => {
     return hasAccess(user, 'instructors') || hasAccess(user, 'prompts') ||
            hasAccess(user, 'models') || hasAccess(user, 'settings') ||
-           hasAccess(user, 'backups');
+           hasAccess(user, 'backups') || hasAccess(user, 'activity_types');
   }, [user]);
 
   const hasSetupAccess = useCallback(() => {
@@ -2021,7 +2025,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
    * (`activity_type` on case, assignment and version rows).
    */
   const renderActivityTypeBadge = (activityType?: string | null) => {
-    const type = getActivityType(activityType);
+    const type = activityTypeInfo(activityType);
     if (type.id === DEFAULT_ACTIVITY_TYPE) return null;
     return (
       <span
@@ -2041,7 +2045,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
     if (!caseId) return null;
     return sectionCasesList.find((sc: any) => sc.case_id === caseId)?.activity_type ?? null;
   })();
-  const editingTeachBack = isTeachBackType(editingActivityType);
+  // Activities whose AI is an audience the student picks (Teach-back and its clones) offer audiences.
+  const editingTeachBack = usesAudiencePersonas(editingActivityType);
 
   const renderPersonaChatOptionsFields = (disabled = false) => {
     if (!editingChatOptions) return null;
@@ -5988,7 +5993,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
               )}
               {sectionCasesList.map((sc: any) => (
                 <option key={sc.case_id} value={sc.case_id}>
-                  {sc.case_title} ({sc.case_id}){getActivityType(sc.activity_type).id !== DEFAULT_ACTIVITY_TYPE ? ` - ${getActivityType(sc.activity_type).label}` : ''}
+                  {sc.case_title} ({sc.case_id}){activityTypeInfo(sc.activity_type).id !== DEFAULT_ACTIVITY_TYPE ? ` - ${activityTypeInfo(sc.activity_type).label}` : ''}
                 </option>
               ))}
             </select>
@@ -6155,7 +6160,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                 </p>
               ) : (
                 <p className="text-sm text-gray-900">
-                  <strong>{getActivityType(editingActivityType).label}</strong> - {getActivityType(editingActivityType).summary}.
+                  <strong>{activityTypeInfo(editingActivityType).label}</strong> - {activityTypeInfo(editingActivityType).summary}.
                   <span className="block text-xs text-gray-600 mt-0.5">
                     Set on the case under <strong>Content &gt; Cases</strong>, and fixed once the case is assigned.
                   </span>
@@ -6724,7 +6729,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
 
             {/* Advanced Section. Hidden for an activity type without positions: it holds only
                 the position-tracking override. */}
-            <div className={`border-b border-gray-200 ${editingActivityType && !getActivityType(editingActivityType).usesPositions ? 'hidden' : ''}`}>
+            <div className={`border-b border-gray-200 ${editingActivityType && !activityTypeInfo(editingActivityType).usesPositions ? 'hidden' : ''}`}>
               <button
                 type="button"
                 onClick={() => toggleCategory('advanced')}
@@ -7913,7 +7918,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   // (e.g. just Backups) lands on the first one they can open instead.
                   if (adminSubTab === 'instructors' && !hasAccess(user, 'instructors')) {
                     const first = (['settings', 'models', 'prompts'] as AdminSubTab[]).find((t) => hasAccess(user, t));
-                    setAdminSubTab(first ?? (hasAccess(user, 'backups') ? 'backup' : 'instructors'));
+                    setAdminSubTab(first ?? (hasAccess(user, 'backups') ? 'backup' : hasAccess(user, 'activity_types') ? 'activity_types' : 'instructors'));
                   }
                 }}
                 className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
@@ -8369,6 +8374,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   Logging
                 </button>
               )}
+              {hasAccess(user, 'activity_types') && (
+                <button
+                  onClick={() => setAdminSubTab('activity_types')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    adminSubTab === 'activity_types'
+                      ? 'bg-purple-100 text-purple-700'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Activity Types
+                </button>
+              )}
               {hasAccess(user, 'backups') && (
                 <button
                   onClick={() => setAdminSubTab('backup')}
@@ -8523,6 +8540,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <LoggingManager />
           ) : adminSubTab === 'backup' && hasAccess(user, 'backups') ? (
             <BackupManager />
+          ) : adminSubTab === 'activity_types' && hasAccess(user, 'activity_types') ? (
+            <ActivityTypeManager />
           ) : adminSubTab === 'shadow' ? (
             <ShadowOwnershipManager />
           ) : null
@@ -10118,8 +10137,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
                   onChange={(e) => setCaseForm({ ...caseForm, activity_type: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
-                  {listActivityTypes().map((type) => (
-                    <option key={type.id} value={type.id}>{type.label} - {type.summary}</option>
+                  {/* Published, enabled types; a case already on another type keeps showing it. */}
+                  {[...usableActivityTypes(), ...(caseForm.activity_type && !activityTypeInfo(caseForm.activity_type).enabled ? [activityTypeInfo(caseForm.activity_type)] : [])].map((type) => (
+                    <option key={type.id} value={type.id} disabled={!type.enabled}>{type.label} - {type.summary}{type.enabled ? '' : ' (not available)'}</option>
                   ))}
                 </select>
                 <p className="text-xs text-gray-500 mt-1">

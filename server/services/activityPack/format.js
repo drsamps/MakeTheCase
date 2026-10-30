@@ -13,6 +13,8 @@
  *   activities/<key>/originals/*      original files, only when the exporter included them
  *   personas.json                     [{key, suggested_id, kind, name, description, instructions, system}]
  *   rubrics.json                      {rubrics: [...], criteria: [...]}
+ *   activity_types.json               [definition, ...] for types defined as data (not the built-ins),
+ *                                     listed in manifest.activity_types [{key, sha256}] (StudyChat Phase 2)
  *
  * In memory (what export.js builds, zip.js reads and writes, and import.js installs) a
  * package is { manifest, activities, personas, rubrics, criteria, texts, originals } where
@@ -29,6 +31,7 @@
 
 import crypto from 'crypto';
 import { isKnownActivityType, getActivityType } from '../../../utils/activityTypes.js';
+import { validateDefinition } from '../../../utils/activityEngine/validate.js';
 import { KNOWN_CHAT_OPTION_KEYS } from '../chatOptions.js';
 import { CAPTURE_METHODS, SELECTION_MODES } from '../activityDefaults.js';
 import { validateStudentSettings } from '../../../utils/scenarioSettings.js';
@@ -348,13 +351,41 @@ function checkDocument(doc, activity, pack) {
   }
 }
 
-function checkActivity(activity, pack, personaKeys, rubricKeys) {
+/**
+ * The activity type definitions a package carries (activity_types.json): each must pass the same
+ * validator as a definition saved here (utils/activityEngine/validate.js, channels included), match
+ * its manifest checksum, and never use a built-in key (a built-in travels as a token, never as text
+ * that could replace it). Returns them by key.
+ */
+function checkActivityTypes(pack) {
+  const defs = pack.activityTypes === undefined ? [] : list(pack.activityTypes, 'activity types', LIMITS.activities);
+  const listed = pack.manifest.activity_types === undefined ? [] : list(pack.manifest.activity_types, 'the manifest activity type list', LIMITS.activities);
+  if (listed.length !== defs.length) throw invalid('the manifest and activity_types.json disagree');
+  const byKey = new Map();
+  for (const def of defs) {
+    if (!isObject(def) || typeof def.key !== 'string') throw invalid('an activity type has no key');
+    if (isKnownActivityType(def.key)) throw invalid(`the package carries a definition for the built-in type "${def.key}"`);
+    if (byKey.has(def.key)) throw invalid(`two activity types share the key "${def.key}"`);
+    const { ok, errors } = validateDefinition(def);
+    if (!ok) {
+      throw new PackError(422, 'INVALID_ACTIVITY_TYPE',
+        `The activity type "${String(def.label || def.key).slice(0, 80)}" in this package is not valid here: ${errors.slice(0, 5).join('; ')}${errors.length > 5 ? ' …' : ''}`,
+        { activity_type: def.key, errors });
+    }
+    const entry = listed.find((t) => isObject(t) && t.key === def.key);
+    if (!entry || entry.sha256 !== sha256(canonicalJson(def))) throw invalid(`activity type "${def.key}" does not match its checksum (the file is damaged or was edited)`);
+    byKey.set(def.key, def);
+  }
+  return byKey;
+}
+
+function checkActivity(activity, pack, personaKeys, rubricKeys, typeDefs = new Map()) {
   const what = `activity "${activity.title || activity.key}"`;
   uid(activity.uid, `${what} uid`);
   if (typeof activity.suggested_id !== 'string' || !CASE_ID_RE.test(activity.suggested_id)) throw invalid(`${what} has an invalid id`);
   str(activity.title, `${what} title`, { max: 100, required: true });
   str(activity.version_label, `${what} version`, { max: 10 });
-  if (!isKnownActivityType(activity.activity_type)) {
+  if (!isKnownActivityType(activity.activity_type) && !typeDefs.has(activity.activity_type)) {
     throw new PackError(422, 'UNKNOWN_ACTIVITY_TYPE',
       `${what} is a "${activity.activity_type}" activity, which this MakeTheCase server does not have. Update this server, then install the package again.`,
       { activity_type: activity.activity_type });
@@ -457,7 +488,7 @@ function checkActivity(activity, pack, personaKeys, rubricKeys) {
   // and these are the ones that meant on the exporting server (import.js creates them only
   // when the installing server has none of that kind).
   if (!['named', 'all_enabled'].includes(activity.persona_selection)) throw invalid(`${what} has an invalid persona selection`);
-  const kind = getActivityType(activity.activity_type).personaKind;
+  const kind = typeDefs.get(activity.activity_type)?.traits.persona_kind ?? getActivityType(activity.activity_type).personaKind;
   for (const key of list(activity.personas ?? [], `${what} personas`, LIMITS.personas)) {
     const persona = personaKeys.get(key);
     if (!persona) throw invalid(`${what} uses a persona that is not in the package`);
@@ -499,6 +530,8 @@ export function assertValidPack(pack) {
     for (const key of ids) if (!criteriaKeys.has(key)) throw invalid(`rubric "${r.name}" names a criterion that is not in the package`);
   }
 
+  const typeDefs = checkActivityTypes(pack);
+
   const activities = list(pack.activities, 'activities', LIMITS.activities);
   if (activities.length === 0) throw invalid('it contains no activities');
   uniqueKeys(activities, 'activities');
@@ -506,7 +539,7 @@ export function assertValidPack(pack) {
   if (listed.length !== activities.length) throw invalid('the manifest and the activity folders disagree');
   const uids = new Set();
   for (const activity of activities) {
-    checkActivity(activity, pack, personaKeys, rubricKeys);
+    checkActivity(activity, pack, personaKeys, rubricKeys, typeDefs);
     if (uids.has(activity.uid)) throw invalid(`two activities share the id ${activity.uid}`);
     uids.add(activity.uid);
     const entry = listed.find((a) => isObject(a) && a.key === activity.key);

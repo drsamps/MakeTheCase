@@ -24,6 +24,7 @@ const SUPERUSER_FUNCTIONS = [
   'auditlog',  // audit_log viewer
   'feedback_admin', // feedback inbox/summary admin controls + categories/settings management
   'backups',   // Admin > Backup: take/download/delete database dumps
+  'activity_types', // Admin > Activity Types: clone, edit, publish, enable (StudyChat Phase 2)
 ];
 
 /**

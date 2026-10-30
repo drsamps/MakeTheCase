@@ -9,7 +9,7 @@ import { requireChatOwner, requireSelfStudent } from '../middleware/chatOwner.js
 import { resolveSectionModel } from '../services/modelChoice.js';
 import { loadChatContext, buildGreeting, sanitizeStudentName } from '../services/chatPrompt.js';
 import { appendTurns } from '../services/chatTurns.js';
-import { activityBehaviour } from '../services/activityTypes.js';
+import { isTypeUsable } from '../services/activityTypes.js';
 import { chatAttemptStatus } from '../services/chatAttempts.js';
 
 const router = express.Router();
@@ -48,6 +48,16 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
       }
     }
 
+    // The case's activity type must be usable for a NEW chat: known, published and enabled. A
+    // disabled type still serves chats already in progress (activityTypeStore.js).
+    const [typeRows] = await pool.execute('SELECT activity_type FROM cases WHERE case_id = ?', [case_id]);
+    if (typeRows.length && !isTypeUsable(typeRows[0].activity_type)) {
+      return res.status(409).json({
+        data: null,
+        error: { code: 'ACTIVITY_TYPE_UNAVAILABLE', message: 'This activity is not available right now. Please tell your instructor.' },
+      });
+    }
+
     // Chats allowed on this assignment (chat_repeats, allow_repeat, re-chat): services/chatAttempts.js.
     // Checked here as well as on the start screen, so a stale page cannot start one more.
     const attempts = await chatAttemptStatus({
@@ -79,7 +89,7 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
     const greeting = buildGreeting(context, sanitizeStudentName(student_name));
     // The type version this chat runs on (migration 090), and the student copy from it, so the
     // page's wording cannot change mid-chat.
-    const activity = activityBehaviour(context.mode);
+    const activity = context.behaviour;
 
     // If scenario_id provided, get the time limit from the scenario
     let timeLimitMinutes = null;
@@ -126,6 +136,9 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
 
     res.status(201).json({ data: { ...rows[0], greeting, activity: activity.studentView }, error: null });
   } catch (error) {
+    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: error.message } });
+    }
     if (error?.status === 404) {
       return res.status(404).json({ data: null, error: { message: error.message } });
     }

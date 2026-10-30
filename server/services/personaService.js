@@ -1,6 +1,6 @@
 import { pool } from '../db.js';
 import { isAudiencePersonaId } from './teachBack.js';
-import { getActivityType } from '../../utils/activityTypes.js';
+import { typeTraits } from './activityTypeStore.js';
 
 /**
  * True when allowed_personas is unset / blank (all enabled personas allowed).
@@ -25,8 +25,13 @@ export function parseAllowedPersonaIds(allowedPersonasCsv) {
     .filter(Boolean);
 }
 
-/** True when this activity type offers audience personas rather than protagonist personalities. */
-const wantsAudience = (activityType) => getActivityType(activityType).personaKind === 'audience';
+/**
+ * True when this activity type offers audience personas rather than protagonist personalities.
+ * Takes a type key or a definition's traits object (the admin preview of an unpublished draft).
+ * An unknown type offers protagonists, as case chat does.
+ */
+const wantsAudience = (activityType) =>
+  (activityType && typeof activityType === 'object' ? activityType : typeTraits(activityType))?.persona_kind === 'audience';
 
 /**
  * Keep only the personas that belong to this activity, using the `audience-` id prefix

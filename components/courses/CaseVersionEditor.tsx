@@ -3,8 +3,8 @@ import { api } from '../../services/apiClient';
 import HelpTooltip from '../ui/HelpTooltip';
 import { ChatOptionsHelp } from '../../help/dashboard';
 import { formatAllowedPersonas, personasForDefaultDropdown, resolveAllowedPersonasForForm, type PersonaRow } from '../../utils/personas';
-import { crossModePersonaIds, isAudiencePersonaId, isTeachBackType, validateChatOptionsForSave } from '../../teachBack';
-import { getActivityType } from '../../utils/activityTypes.js';
+import { crossModePersonaIds, isAudiencePersonaId, usesAudiencePersonas, validateChatOptionsForSave } from '../../teachBack';
+import { activityTypeInfo, useActivityTypeList } from '../../services/activityTypeList';
 
 /**
  * Edit one course case version ("Main" or a semester copy). Every save is written through to
@@ -74,6 +74,7 @@ const MoveButtons: React.FC<{ disabled: boolean; canUp: boolean; canDown: boolea
 );
 
 const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, initialPart, onClose, onChanged }) => {
+  useActivityTypeList();
   const [version, setVersion] = useState<any>(null);
   const [schema, setSchema] = useState<SchemaField[]>([]);
   const [options, setOptions] = useState<Record<string, any> | null>(null);
@@ -122,7 +123,7 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
     if (vRes.error || !vRes.data) { setError(vRes.error?.message || 'Failed to load version'); return; }
     const v = vRes.data;
     // The fields this case's activity type uses (its definition hides the rest).
-    const schemaRes = await api.get<SchemaField[]>(`/chat-options/schema?activity_type=${encodeURIComponent(getActivityType(v.activity_type).id)}`);
+    const schemaRes = await api.get<SchemaField[]>(`/chat-options/schema?activity_type=${encodeURIComponent(activityTypeInfo(v.activity_type).id)}`);
     setVersion(v);
     setLabel(v.label);
     setSchema(schemaRes.data || []);
@@ -187,7 +188,7 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
   const assignedIds = new Set(assigned.map((s) => s.scenario_id));
   const disabled = !canEdit || busy;
   // The activity type is the case's (cases.activity_type), not a chat option.
-  const activityType = getActivityType(version.activity_type);
+  const activityType = activityTypeInfo(version.activity_type);
 
   // Same check as the section form, because this save is written through to every section
   // that follows the version.
@@ -205,7 +206,7 @@ const CaseVersionEditor: React.FC<Props> = ({ versionId, canEdit, followers, ini
   // offers audiences (audience-*) and case chat offers personalities, never both.
   const renderPersonaFields = () => {
     const fieldDisabled = disabled || useDefaults;
-    const teachBack = isTeachBackType(activityType.id);
+    const teachBack = usesAudiencePersonas(activityType.id);
     const enabledPersonas: PersonaRow[] = (schema.find((f) => f.key === 'allowed_personas')?.options || [])
       .map((o) => ({ persona_id: o.value, persona_name: o.label }))
       .filter((p) => isAudiencePersonaId(p.persona_id) === teachBack);

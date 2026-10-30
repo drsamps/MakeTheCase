@@ -28,8 +28,7 @@
 import { pool } from '../db.js';
 import { getSectionCaseChatOptions } from './chatOptions.js';
 import { resolveAvailablePersonas } from './personaService.js';
-import { activityBehaviour } from './activityTypes.js';
-import { getActivityType, normalizeActivityType } from '../../utils/activityTypes.js';
+import { behaviourForChat, previewBehaviour } from './activityTypes.js';
 import { readScenarioSettings } from '../../utils/scenarioSettings.js';
 
 const MAX_NAME_LENGTH = 40;
@@ -51,10 +50,11 @@ export function sanitizeStudentName(name) {
 
 /**
  * Everything a chat's prompt, greeting and transcript need, from its case_chats row.
- * @param {{ id, case_id, section_id, scenario_id, persona, initial_position_id }} chat
- * @returns {Promise<{ chat, caseData, chatOptions, mode, options }>}
+ * @param {{ id, case_id, section_id, scenario_id, persona, initial_position_id, activity_type_version? }} chat
+ * @param {{ definition?: object }} [opts] - an unpublished definition to preview instead
+ * @returns {Promise<{ chat, caseData, chatOptions, mode, behaviour, options }>}
  */
-export async function loadChatContext(chat) {
+export async function loadChatContext(chat, { definition = null } = {}) {
   // Dynamic import: routes/llm.js imports this module (same pattern as evaluations.js).
   const { loadCaseData } = await import('../routes/llm.js');
   const loaded = await loadCaseData(chat.case_id);
@@ -102,11 +102,16 @@ export async function loadChatContext(chat) {
   }
 
   const chatOptions = (await getSectionCaseChatOptions(chat.section_id, chat.case_id)) || {};
-  const mode = normalizeActivityType(loaded.activity_type);
-  const personas = await resolveAvailablePersonas(chatOptions.allowed_personas, mode);
+  // The behaviour this chat runs on: the type version it recorded at its start (a publish mid-chat
+  // changes nothing for it), or the case's current type for a new chat. An admin preview passes
+  // an unpublished definition. Throws 409 ACTIVITY_TYPE_UNAVAILABLE for an unknown type.
+  const behaviour = definition ? previewBehaviour(definition) : behaviourForChat(chat, loaded.activity_type);
+  const traits = behaviour.definition.traits;
+  const mode = behaviour.definition.key;
+  const personas = await resolveAvailablePersonas(chatOptions.allowed_personas, traits);
   const personaRow = personas.find((p) => p.persona_id === chat.persona);
 
-  if (getActivityType(mode).characterFrom === 'persona' && personaRow?.persona_name) {
+  if (traits.character === 'persona' && personaRow?.persona_name) {
     caseData = { ...caseData, protagonist: personaRow.persona_name, protagonist_role: undefined };
   }
 
@@ -115,7 +120,7 @@ export async function loadChatContext(chat) {
     chatbotPersonality: chatOptions.chatbot_personality || undefined,
     personaData: personaRow ? { instructions: personaRow.instructions || '' } : undefined,
   };
-  return { chat, caseData, chatOptions, mode, options };
+  return { chat, caseData, chatOptions, mode, behaviour, options };
 }
 
 /**
@@ -124,8 +129,8 @@ export async function loadChatContext(chat) {
  * @param {string} studentName - already sanitized
  */
 export function buildChatSystemPrompt(ctx, studentName) {
-  const { chat, caseData, mode, options } = ctx;
-  return activityBehaviour(mode).buildSystemPrompt(studentName, chat.persona, caseData, options);
+  const { chat, caseData, behaviour, options } = ctx;
+  return behaviour.buildSystemPrompt(studentName, chat.persona, caseData, options);
 }
 
 /** The label for the AI's turns in the transcript and the grading copy ("CEO" if unknown). */
@@ -139,5 +144,5 @@ export function protagonistLabel(ctx) {
  * @param {string} studentName - already sanitized
  */
 export function buildGreeting(ctx, studentName) {
-  return activityBehaviour(ctx.mode).buildGreeting(ctx.caseData, studentName, ctx.chat.persona);
+  return ctx.behaviour.buildGreeting(ctx.caseData, studentName, ctx.chat.persona);
 }

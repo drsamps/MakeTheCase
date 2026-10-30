@@ -8,7 +8,7 @@ import {
 } from '../middleware/instructorAccess.js';
 import { DEFAULT_CHAT_OPTIONS, withoutActivityMode } from '../services/chatOptions.js';
 import { activityHiddenOptions } from '../services/activityTypes.js';
-import { isKnownActivityType } from '../../utils/activityTypes.js';
+import { getTypeEntry } from '../services/activityTypeStore.js';
 
 const router = express.Router();
 
@@ -281,7 +281,7 @@ router.get('/schema', async (req, res) => {
   try {
     const schema = await buildSchemaWithPersonas();
     const type = req.query.activity_type;
-    if (type !== undefined && !isKnownActivityType(type)) {
+    if (type !== undefined && !getTypeEntry(type)?.current) {
       return res.status(400).json({ data: null, error: { code: 'UNKNOWN_ACTIVITY_TYPE', message: 'Unknown activity type' } });
     }
     const hidden = new Set(type ? activityHiddenOptions(type) : []);

@@ -51,6 +51,8 @@ import contentRoutes from './routes/content.js';
 import usageRoutes from './routes/usage.js';
 import backupsRoutes from './routes/backups.js';
 import activityPacksRoutes, { versionRoute } from './routes/activityPacks.js';
+import activityTypesRoutes from './routes/activityTypes.js';
+import { loadActivityTypes } from './services/activityTypeStore.js';
 import { startTruncateOldRawUsageJob } from './jobs/truncateOldRawUsage.js';
 import { startPruneModelFailuresJob } from './jobs/pruneModelFailures.js';
 import { startIssueAnalyticsMaintenance } from './jobs/issueAnalyticsMaintenance.js';
@@ -120,6 +122,7 @@ app.use('/api/feedback', feedbackRoutes); // In-app user feedback system
 app.use('/api/content', contentRoutes); // Static markdown content (e.g. instructor welcome screen)
 app.use('/api/usage', usageRoutes); // AI cost-first usage reporting (model_usage table)
 app.use('/api/activity-packs', activityPacksRoutes); // Download cases as a package, install one from another server
+app.use('/api/activity-types', activityTypesRoutes); // Activity types: list, clone, draft, preview, publish (StudyChat Phase 2)
 console.log('✓ Rubrics routes mounted');
 console.log('✓ Case Writer routes mounted at /api/case-writer');
 
@@ -152,6 +155,9 @@ app.use((err, req, res, next) => {
 // Start server
 async function start() {
   await testConnection();
+  // Activity types defined as data, held in memory (services/activityTypeStore.js). Loaded before
+  // the first request so no chat sees only the built-ins.
+  console.log(`✓ Activity types loaded: ${await loadActivityTypes()}`);
   startTruncateOldRawUsageJob();
   startPruneModelFailuresJob();
   startIssueAnalyticsMaintenance();

@@ -2,14 +2,42 @@
 
 The plan is in [StudyChat-plan.md](StudyChat-plan.md); decisions D1–D8 are in its Context section. This file says where the work stands and what to do next. **Update it at the end of every session.**
 
-Last updated: 2026-10-30, on the desktop with MySQL (MSB-SSAMPSON20).
+Last updated: 2026-10-30 (Phase 2), on the desktop with MySQL (MSB-SSAMPSON20).
 
 ## Where things stand
 
 - **Branch:** `studychat`, created from `reading-import` at `3b1c7d9`. `reading-import` is not merged into local `main`, so `studychat` contains its commits too. Nothing is pushed.
 - **Phase 0 (fixes): committed and verified on the dev database** (see "Phase 0 verification" below).
 - **Phase 1 (the engine): committed and verified on the dev database** (see "Phase 1" below). Migration 090 is applied on the dev `ceochat`, not on production.
-- Phases 2–6: not started.
+- **Phase 2 (types as data, admin screen, packages): committed and verified on the dev database** (see "Phase 2" below). Migration 091 is applied on the dev `ceochat`, not on production.
+- Phases 3–6: not started.
+
+### Phase 2: what changed
+
+| Part | Files |
+|---|---|
+| Migration 091: `activity_types` (key, uid, tier builtin/system/custom, enabled, current version, based_on) and `activity_type_versions` (draft / published / retired, definition JSON, content sha256). Rows for the two built-ins | `server/migrations/091_activity_types.sql` |
+| The store: built-ins plus data types in one in-memory registry, loaded before `listen`, reloaded on every write. Clone, save draft (validated; traits fixed once published), discard, publish, restore into draft, enable/disable, delete when unused; package install planning | `server/services/activityTypeStore.js` |
+| Behaviours cached by version; a chat runs and is graded on its recorded version (`behaviourForChat`); unknown or unpublished types throw 409 `ACTIVITY_TYPE_UNAVAILABLE`; a disabled type serves chats in progress but starts none; `activityCacheVersion` returns the version for data types | `server/services/activityTypes.js`, `chatPrompt.js` (`ctx.behaviour`), `llm.js`, `caseChats.js`, `evaluations.js` |
+| Server code reads traits from the store instead of the static table (personas, Issue Analytics, scenarios, chat-option schema, case create/update) | `personaService.js`, `issueAnalytics/common.js`, `scenarios.js`, `chatOptions.js` route, `cases.js` |
+| Routes: list (staff: published types; `?all=1` admin: drafts, usage), detail, clone, draft, preview, publish, restore, enable, delete. Permission `activity_types` (grantable; superusers always) | `server/routes/activityTypes.js`, `middleware/permissions.js`, `utils/permissions.ts`, `InstructorManager.tsx` |
+| Admin > Activity Types: list with usage, Clone, a sectioned form over every text field plus a JSON tab, Preview on a real case/scenario/persona (no AI call), Publish (shows usage), Enable/Disable, History with Restore, Delete | `components/ActivityTypeManager.tsx`, `Dashboard.tsx` |
+| Dashboard reads labels, traits and the case form's type picker from the server list; persona-kind checks use the type's trait, not `teach_back`. The student page reads traits from its activity view | `services/activityTypeList.ts`, `teachBack.ts`, `Dashboard.tsx`, `CaseVersionEditor.tsx`, `ScenarioManager.tsx`, `CasePackages.tsx`, `App.tsx` |
+| Packages carry data types as `activity_types.json` (token `activity_definition:1`, manifest checksum, validated on install, built-in keys refused). Install reuses same content, else creates a disabled draft under its key or a deterministic `c_<slug>_<sha8>`; only an admin may install a package that creates a type; the review shows each definition in full. Copy to a custom type carries its definition | `activityPack/capabilities.js`, `format.js`, `zip.js`, `export.js`, `import.js`, `index.js`, `CasePackages.tsx` |
+| Checks: `check-activity-definitions.js` (17: AI-only and unknown slots, oversize, HTML, unknown/missing keys, unsupported features, key length, traits change); `check-activity-pack.js` +12 (custom type in a package, missing definition, checksum, built-in key, newer schema token; on the DB: instructor refused, admin installs a disabled draft, reinstall reuses, other content gets a new key) | `server/scripts/` |
+
+### Phase 2 verification (2026-10-30, dev `ceochat`)
+
+| Check | Result |
+|---|---|
+| `typecheck`, `npm run build` | 0 errors; builds; no prompt template text in the student bundle |
+| `check-activity-engine.js --db` | 919/919 (built-in output unchanged; versions unchanged: `case_chat@e79517f4eda9`, `teach_back@cc1b4bef6145`) |
+| `check-activity-definitions.js` | 17/17 |
+| `check-activity-pack.js --db` | 50/50 |
+| API, against the running server (26 steps, no AI calls) | list, students refused, built-in locked, clone, validation refusals, draft, preview on a real case, enable refused before publish, publish v1, case refused on a disabled type, case set after enabling, student row carries the custom view, a chat starts on v1, publish v2: the running chat still resolves to v1 and a new chat gets v2, traits change refused, restore v1 into the draft, disabled type refuses new chats, in-use type cannot be deleted, usage counts, unknown type refuses chats while the student list still loads, cleanup through the API |
+| Browser | Admin > Activity Types: clone Teach-back, edit a copy string in the form, save, preview (reporter audience on a real case), publish, enable; the case form's picker lists the new type; as a student, the case shows the audience picker (traits from the view) and ending the chat shows the edited farewell |
+
+**Found while testing:** the registry is in memory, so a row changed directly in the database is not seen until the server restarts (CLAUDE.md says so; every real write goes through the store).
 
 ### Phase 1: what changed
 
@@ -133,19 +161,22 @@ Kept for the record; results are in "Phase 0 verification" above.
 
 Results are in "Phase 1" above. Before production: run migration 090 (`npm run migrate` on the server).
 
-### C. Phase 2 next: type storage, packages, minimal admin flow
+### C. Phase 2 (type storage, packages, minimal admin flow) — DONE 2026-10-30
 
-Follow the plan's Phase 2 section. Notes from Phase 1:
-- `activityBehaviour()` builds behaviours from `BUILTIN_DEFINITIONS` at startup and validates them (`behaviourFor`). Phase 2's `activityTypeStore.js` should produce definitions from the database the same way, cached by version, and resolve a chat by its recorded `activity_type_version` (decision 3 above).
-- Start enforcing `ACTIVITY_TYPE_UNAVAILABLE` there: today an unknown type still falls back to case chat (`normalizeActivityType`).
-- `activityCacheVersion()` must return the version for data types (decision 1).
-- `validate.js` refuses `signals`, `touchpoints`, `chat_options.extra` and any `material` but `activity` ("not supported by this server yet"); lift each with its phase and add its package capability token.
-- The "traits are fixed for a type key" check (refuse a traits change on a published key) belongs to the store; add it to `check-activity-definitions.js`.
+Results are in "Phase 2" above. Before production: run migrations 090 and 091.
+
+### D. Phase 3 next: DEBATE, APPLY, LIKEN2ME
+
+Follow the plan's Phase 3 section. Notes from Phase 2:
+- System types are seeded data rows (`tier = 'system'`). The seed script must write them through the store (or call `loadActivityTypes()` / restart the server afterwards): the registry is in memory.
+- `validate.js` still refuses `signals`, `touchpoints`, `chat_options.extra` and any `material` but `activity` ("not supported by this server yet"). Lift each with its phase, and give it a package capability token (`capabilities.js`, next to `ACTIVITY_DEFINITION_TOKEN`).
+- New slots (`{position}`, `{opposing_position}`, `{goal}`) go in `validate.js` (`ROLE_SLOTS` and the coach list) and in `prompt.js#roleValues`; the built-in goldens must stay unchanged.
+- `ScenarioManager.tsx` still decides its Teach-back fields by `characterFrom === 'persona'`; Phase 3 replaces that with fields by trait.
 - Delete the hand builders (`legacyActivityBuilders.js`, `chatPromptTemplates.js`, `teachBackCoachPrompt.js`, the builder in `promptBuilder.js`) in the release after Phase 1 ships, and drop the "hand" comparisons from the check.
 
-### D. Later phases
+### E. Later phases
 
-3: DEBATE, APPLY, LIKEN2ME. 4: PITCH, ROLEPLAY (signals, touchpoints). 5: full admin editor. 6: DEFEND (minimal). Each phase gets its own migration (next free number: **091**). Open questions for the user are at the end of the plan (LIKEN2ME privacy, multi-sided debates, showing the goal, simulated students).
+4: PITCH, ROLEPLAY (signals, touchpoints). 5: full admin editor. 6: DEFEND (minimal). Each phase gets its own migration (next free number: **092**). Open questions for the user are at the end of the plan (LIKEN2ME privacy, multi-sided debates, showing the goal, simulated students).
 
 ## Practical notes (learned the hard way)
 

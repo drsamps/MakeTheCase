@@ -20,7 +20,9 @@ import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
 import { pool } from '../db.js';
 import { LIMITS, PackError, activityContentHash, assertValidPack, canonicalJson, sha256 } from '../services/activityPack/format.js';
-import { requirementsFor, serverCapabilities, SCENARIO_STUDENT_TEXT_TOKEN, DOCUMENT_TEXT_FORMAT_TOKEN } from '../services/activityPack/capabilities.js';
+import { requirementsFor, serverCapabilities, SCENARIO_STUDENT_TEXT_TOKEN, DOCUMENT_TEXT_FORMAT_TOKEN, ACTIVITY_DEFINITION_TOKEN } from '../services/activityPack/capabilities.js';
+import { BUILTIN_DEFINITIONS } from '../../utils/activityEngine/builtins/index.js';
+import { loadActivityTypes } from '../services/activityTypeStore.js';
 import { openPack, zipPack } from '../services/activityPack/zip.js';
 import { buildPackFile, sealPack, chatOptionsForPackage } from '../services/activityPack/export.js';
 import { inspectPackFile, installPackFile } from '../services/activityPack/index.js';
@@ -423,6 +425,151 @@ await check('a field longer than its database column', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Activity types defined as data (StudyChat Phase 2): activity_types.json
+// ---------------------------------------------------------------------------
+
+console.log('\nActivity types defined as data');
+
+const CUSTOM_KEY = 'c_reporter_0a1b2c3d';
+const customDef = (key = CUSTOM_KEY) => ({ ...structuredClone(BUILTIN_DEFINITIONS.teach_back), key, label: 'Explain to a reporter', based_on: 'teach_back' });
+const withCustomType = (def = customDef()) => (pack) => { pack.activities[1].activity_type = def.key; pack.activityTypes = [def]; };
+
+await check('a package carrying a custom type validates, and requires the definition token instead of a type token', async () => {
+  const pack = fixture();
+  withCustomType()(pack);
+  sealPack(pack);
+  assert.ok(pack.manifest.requires.includes(ACTIVITY_DEFINITION_TOKEN), pack.manifest.requires.join(', '));
+  assert.ok(!pack.manifest.requires.includes(`activity_type:${CUSTOM_KEY}`));
+  assert.equal(pack.manifest.activity_types[0].key, CUSTOM_KEY);
+  const after = await openAndValidate(await zipPack(pack));
+  assert.deepEqual(after.activityTypes, pack.activityTypes);
+});
+
+await check('a package without custom types writes no activity_types.json', async () => {
+  const pack = fixture();
+  assert.equal(pack.manifest.activity_types, undefined);
+  const after = await openAndValidate(await zipPack(pack));
+  assert.deepEqual(after.activityTypes, []);
+});
+
+await check('a custom-type activity without its definition', async () => {
+  const buffer = await zipped((pack) => { pack.activities[1].activity_type = CUSTOM_KEY; });
+  await refuses('UNKNOWN_ACTIVITY_TYPE', () => openAndValidate(buffer));
+});
+
+await check('a carried definition that puts an AI-only slot in a student field', async () => {
+  const def = customDef();
+  def.copy.farewell = 'Bye {first_name}. {scenario_instructions}';
+  const buffer = await zipped(withCustomType(def));
+  const e = await refuses('INVALID_ACTIVITY_TYPE', () => openAndValidate(buffer));
+  assert.ok(e.details.errors.some((x) => x.includes('scenario_instructions')));
+});
+
+await check('a carried definition edited after export (checksum)', async () => {
+  const pack = fixture();
+  withCustomType()(pack);
+  sealPack(pack);
+  pack.activityTypes[0].copy.farewell = 'Edited after export, {first_name}.';
+  await refuses('INVALID_PACK', async () => openAndValidate(await zipPack(pack)), /checksum/);
+});
+
+await check('a carried definition under a built-in key', async () => {
+  // The activity stays a Teach-back, so sealing keeps the (forbidden) definition carried for it.
+  const buffer = await zipped((pack) => { pack.activityTypes = [{ ...structuredClone(BUILTIN_DEFINITIONS.teach_back) }]; });
+  await refuses('INVALID_PACK', () => openAndValidate(buffer), /built-in/);
+});
+
+await check('a package that needs a newer definition schema (missing feature token)', async () => {
+  const pack = fixture();
+  pack.manifest.requires = [...pack.manifest.requires, 'activity_definition:2'];
+  await refuses('REQUIRES_NEWER_SERVER', async () => openPack(await zipPack(pack)), /custom activity types/);
+});
+
+/**
+ * On the database: a package bringing a custom type. An instructor is refused; an admin installs it
+ * as a disabled draft; installing again reuses it; other content under the same key gets a new key.
+ */
+async function customTypeRoundTrip() {
+  console.log('\nCustom activity type on the database');
+  const [[admin]] = await pool.execute('SELECT id FROM admins WHERE superuser = 1 LIMIT 1');
+  const adminReq = { user: { id: admin.id, role: 'admin', superuser: true }, headers: {} };
+  const [[instructor]] = await pool.execute('SELECT id FROM instructors LIMIT 1');
+  const instructorReq = { user: { id: instructor.id, role: 'instructor' }, headers: {} };
+  await loadActivityTypes();
+
+  const packWith = (def) => {
+    const pack = fixture();
+    withCustomType(def)(pack);
+    pack.activities[1].uid = crypto.randomUUID();
+    pack.activities[1].suggested_id = 'zz-pack-type-check';
+    for (const s of pack.activities[1].scenarios) s.uid = crypto.randomUUID();
+    return sealPack(pack);
+  };
+  const only = (pack) => ({ activities: { [pack.activities[0].key]: 'skip' } });
+  const installedCases = [];
+  const typeKeys = new Set();
+  try {
+    const pack = packWith(customDef());
+    const buffer = await zipPack(pack);
+
+    await check('an instructor cannot install a package that brings a new type', async () => {
+      await refuses('ACTIVITY_TYPE_INSTALL_NEEDS_ADMIN', () => inspectPackFile(instructorReq, buffer, only(pack)));
+    });
+
+    let plan;
+    await check('an admin sees the definition in full and a "create" plan under its own key', async () => {
+      plan = await inspectPackFile(adminReq, buffer, only(pack));
+      assert.equal(plan.activity_types.length, 1);
+      assert.equal(plan.activity_types[0].action, 'create');
+      assert.equal(plan.activity_types[0].target_key, CUSTOM_KEY);
+      assert.equal(plan.activity_types[0].definition.prompt.role.join('\n').includes('ROLE & INSTRUCTIONS'), true);
+    });
+
+    await check('install creates the type disabled, as a draft, and the case uses it', async () => {
+      const result = await installPackFile(adminReq, buffer, { ...only(pack), plan_hash: plan.plan_hash });
+      typeKeys.add(CUSTOM_KEY);
+      installedCases.push(...result.installed.map((i) => i.case_id));
+      assert.deepEqual(result.activity_types_created, [CUSTOM_KEY]);
+      const [[t]] = await pool.execute('SELECT tier, enabled, current_version_id FROM activity_types WHERE type_key = ?', [CUSTOM_KEY]);
+      assert.equal(t.tier, 'custom');
+      assert.equal(Number(t.enabled), 0);
+      assert.equal(t.current_version_id, null);
+      const [[v]] = await pool.execute('SELECT status FROM activity_type_versions WHERE type_key = ?', [CUSTOM_KEY]);
+      assert.equal(v.status, 'draft');
+      const [[c]] = await pool.execute('SELECT activity_type FROM cases WHERE case_id = ?', [result.installed[0].case_id]);
+      assert.equal(c.activity_type, CUSTOM_KEY);
+    });
+
+    await check('installing the same package again reuses the type, and an instructor may do that', async () => {
+      const again = packWith(customDef());
+      const p = await inspectPackFile(instructorReq, await zipPack(again), only(again));
+      assert.equal(p.activity_types[0].action, 'reuse');
+      assert.equal(p.activity_types[0].target_key, CUSTOM_KEY);
+    });
+
+    await check('other content under a key used here installs under a new key (never overwrites)', async () => {
+      const changed = customDef();
+      changed.copy.farewell = 'A different farewell, {first_name}.';
+      const other = packWith(changed);
+      const p = await inspectPackFile(adminReq, await zipPack(other), only(other));
+      assert.equal(p.activity_types[0].action, 'new_key');
+      assert.notEqual(p.activity_types[0].target_key, CUSTOM_KEY);
+      assert.match(p.activity_types[0].target_key, /^c_explain_to_a_report_[0-9a-f]{8}$/);
+      assert.equal(p.activities.find((a) => a.key === other.activities[1].key).activity_type, p.activity_types[0].target_key);
+    });
+  } finally {
+    for (const id of installedCases) {
+      await pool.execute('DELETE FROM cases WHERE case_id = ?', [id]);
+      await fs.rm(path.join(CASE_FILES_DIR, id), { recursive: true, force: true });
+    }
+    for (const key of typeKeys) await pool.execute('DELETE FROM activity_types WHERE type_key = ?', [key]);
+    await loadActivityTypes();
+    const [[left]] = await pool.execute('SELECT COUNT(*) AS n FROM activity_types WHERE type_key = ?', [CUSTOM_KEY]);
+    console.log(`      cleanup: ${left.n} test types left`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Round trip on the database
 // ---------------------------------------------------------------------------
 
@@ -558,6 +705,12 @@ if (dbFlag > -1) {
   } catch (e) {
     failed++;
     console.log(`FAIL  round trip: ${e.message}`);
+  }
+  try {
+    await customTypeRoundTrip();
+  } catch (e) {
+    failed++;
+    console.log(`FAIL  custom type round trip: ${e.message}`);
   }
 }
 

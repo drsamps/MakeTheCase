@@ -8,8 +8,7 @@ import { writeScenarioSettings } from '../services/scenarioSettings.js';
 import { draftStudentText } from '../services/scenarioDrafts.js';
 import { resolveAvailablePersonas } from '../services/personaService.js';
 import { buildVisibilityScope, getEffectiveInstructorId } from '../services/resourceAccess.js';
-import { activityBehaviour } from '../services/activityTypes.js';
-import { normalizeActivityType } from '../../utils/activityTypes.js';
+import { activityBehaviour, activityTraits } from '../services/activityTypes.js';
 
 const router = express.Router();
 
@@ -203,8 +202,9 @@ router.post('/:caseId/scenario-drafts', ...canEditCase, async (req, res) => {
 
     const [cases] = await pool.execute('SELECT case_title, activity_type FROM cases WHERE case_id = ?', [caseId]);
     if (cases.length === 0) return res.status(404).json({ data: null, error: { message: 'Case not found' } });
-    const activityType = normalizeActivityType(cases[0].activity_type);
-    if (!activityBehaviour(activityType).savedOpenings) {
+    const activityType = cases[0].activity_type;
+    const traitsOk = Boolean(activityTraits(activityType));
+    if (!traitsOk || !activityBehaviour(activityType).savedOpenings) {
       return res.status(409).json({ data: null, error: { message: 'This activity type has no saved openings to draft.' } });
     }
 

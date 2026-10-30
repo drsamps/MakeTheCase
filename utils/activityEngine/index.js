@@ -23,4 +23,7 @@ export { buildGreeting } from './greeting.js';
 export { buildCoachPrompt } from './grading.js';
 export { copyFor, activityIntroText } from './copy.js';
 export { studentActivityView } from './view.js';
-export { validateDefinition, DEFINITION_SCHEMA, COPY_KEYS, INTRO_KEYS } from './validate.js';
+export {
+  validateDefinition, DEFINITION_SCHEMA, COPY_KEYS, INTRO_KEYS,
+  isTypeKey, isCustomKey, customKeyFor, sameTraits,
+} from './validate.js';

@@ -253,10 +253,14 @@ const App: React.FC = () => {
   const activity: StudentActivityView | null = chatActivity ?? selectedCaseRow?.activity ?? null;
   const copy = <K extends CopyKey>(key: K, ...vars: CopyVars[K] extends Record<string, never> ? [] : [CopyVars[K]]) =>
     copyFor(activity, key, ...vars);
+  // Traits come from the activity's student view (any type, built-in or defined as data); the
+  // static built-in table is only a fallback for a row without one.
+  const fallbackType = getActivityType(selectedActivityType);
   // The AI is the persona the student picks (Teach-back's audience), not the scenario's protagonist.
-  const personaCharacter = getActivityType(selectedActivityType).characterFrom === 'persona';
+  const personaCharacter = activity ? activity.traits.character === 'persona' : fallbackType.characterFrom === 'persona';
+  const personaKind = activity ? activity.traits.persona_kind : fallbackType.personaKind;
   // Whether this activity type tracks a student position at all (utils/activityTypes.js).
-  const activityUsesPositions = getActivityType(selectedActivityType).usesPositions;
+  const activityUsesPositions = activity ? activity.traits.positions !== 'off' : fallbackType.usesPositions;
   const [isLoadingAvailableCases, setIsLoadingAvailableCases] = useState(false);
   const [studentSavedSectionId, setStudentSavedSectionId] = useState<string | null>(null);
   const [enrolledSectionIds, setEnrolledSectionIds] = useState<string[]>([]);
@@ -2138,7 +2142,7 @@ const App: React.FC = () => {
                     availablePersonas.map((p) => (
                       <option key={p.persona_id} value={p.persona_id}>{p.persona_name}</option>
                     ))
-                  ) : getActivityType(selectedActivityType).personaKind !== 'protagonist' ? (
+                  ) : personaKind !== 'protagonist' ? (
                     <option value="">{copy('persona_picker_empty')}</option>
                   ) : (
                     <>

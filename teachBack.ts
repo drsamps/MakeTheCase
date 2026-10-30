@@ -20,8 +20,9 @@
 
 import { parseAllowedPersonaIds } from './utils/personas';
 import { CASE_CHAT, TEACH_BACK } from './utils/activityTypes.js';
+import { usesAudiencePersonas } from './services/activityTypeList';
 
-export { CASE_CHAT, TEACH_BACK };
+export { CASE_CHAT, TEACH_BACK, usesAudiencePersonas };
 
 /**
  * Audience personas are distinguished from case-chat personas by an id prefix rather than
@@ -33,13 +34,10 @@ export const AUDIENCE_PREFIX = 'audience-';
 export const isAudiencePersonaId = (personaId?: string | null): boolean =>
   typeof personaId === 'string' && personaId.startsWith(AUDIENCE_PREFIX);
 
-/** True for a teach-back case. A missing type is case chat, as it was before types existed. */
-export const isTeachBackType = (activityType?: string | null): boolean => activityType === TEACH_BACK;
-
 /** Ids in `allowed_personas` that belong to the OTHER activity, which this one ignores. */
 export const crossModePersonaIds = (chatOptions?: { allowed_personas?: string | null } | null, activityType?: string | null): string[] =>
   (parseAllowedPersonaIds(chatOptions?.allowed_personas) || [])
-    .filter((id) => isAudiencePersonaId(id) !== isTeachBackType(activityType));
+    .filter((id) => isAudiencePersonaId(id) !== usesAudiencePersonas(activityType));
 
 /**
  * An explicit `allowed_personas` list must name at least one persona its activity can use.
@@ -54,9 +52,9 @@ export const validateChatOptionsForSave = (chatOptions?: { allowed_personas?: st
   const allowed = parseAllowedPersonaIds(chatOptions?.allowed_personas);
   if (allowed === null) return null;  // "all enabled" resolves per activity server-side
   if (allowed.length > crossModePersonaIds(chatOptions, activityType).length) return null;
-  return isTeachBackType(activityType)
-    ? 'Teach-back needs at least one audience. Tick an audience under Allowed Audiences, or tick "All enabled".'
-    : 'Case chat needs at least one personality. Tick a persona under Allowed Personas, or tick "All enabled".';
+  return usesAudiencePersonas(activityType)
+    ? 'This activity needs at least one audience. Tick an audience under Allowed Audiences, or tick "All enabled".'
+    : 'This activity needs at least one personality. Tick a persona under Allowed Personas, or tick "All enabled".';
 };
 
 /**

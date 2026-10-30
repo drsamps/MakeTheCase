@@ -8,7 +8,7 @@ import { jsonrepair } from 'jsonrepair';
 import { pool } from '../../db.js';
 import { getActivePrompt } from '../promptService.js';
 import { parseTranscript } from '../../../utils/transcriptFormat.js';
-import { getActivityType } from '../../../utils/activityTypes.js';
+import { typeTraits } from '../activityTypeStore.js';
 
 export const FALLBACK_LEANS = ['for', 'against', 'mixed'];
 export const THEME_TYPES = ['topic', 'argument', 'friction'];
@@ -232,7 +232,7 @@ export async function loadRunContext(run) {
   // Persona-character types (Teach-back): the AI was whichever listener each student picked, not
   // the scenario's placeholder protagonist. Case chat's wording is unchanged, so its cached
   // pass-1 facts stay valid.
-  const personaCharacter = getActivityType(caseRow?.activity_type).characterFrom === 'persona';
+  const personaCharacter = typeTraits(caseRow?.activity_type)?.character === 'persona';
   const scenarioText = personaCharacter
     ? `${scenario?.scenario_name || 'Scenario'}. The student explained the topic to an AI listener they chose; the listener's turns are prompts, not the student's content.`
     : scenario

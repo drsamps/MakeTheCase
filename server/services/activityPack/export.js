@@ -41,7 +41,7 @@ import { loadVersion } from '../caseVersionSync.js';
 import { readCaseDefaults, settingsFromSectionCase, settingsFromVersion } from '../activityDefaults.js';
 import { slugifyTitle } from '../caseIds.js';
 import { getAppVersion, getSchemaLevel } from '../appVersion.js';
-import { getActivityType } from '../../../utils/activityTypes.js';
+import { getTypeEntry } from '../activityTypeStore.js';
 import { MARKDOWN, readingFormatOf } from '../../../utils/readingFormat.js';
 import { minOpeningWords } from '../../../utils/openingWords.js';
 import { requirementsFor } from './capabilities.js';
@@ -55,6 +55,7 @@ import {
   PackError,
   activityContentHash,
   assertValidPack,
+  canonicalJson,
   extensionOf,
   isDocumentRole,
   isScenarioOverrideKey,
@@ -360,7 +361,14 @@ async function collectActivity(req, item, opts, shared) {
   );
   const caseRow = caseRows[0];
   if (!caseRow) throw notFound();
-  const type = getActivityType(caseRow.activity_type);
+  // The case's type must be published here. A type defined as data travels as its current
+  // published definition (activity_types.json); a built-in travels as a token.
+  const entry = getTypeEntry(caseRow.activity_type);
+  if (!entry?.current) {
+    throw new PackError(409, 'ACTIVITY_TYPE_UNAVAILABLE', `"${caseRow.case_title}" uses an activity type that is not published on this server, so it cannot be downloaded.`);
+  }
+  const type = { id: entry.key, personaKind: entry.current.definition.traits.persona_kind };
+  if (entry.tier !== 'builtin') shared.activityTypes.set(entry.key, entry.current.definition);
   const warn = (message) => shared.warnings.push({ activity: caseRow.case_title, message });
 
   const key = uniqueKey(slugifyTitle(caseRow.case_id), shared.activityKeys, 'activity');
@@ -527,6 +535,7 @@ export async function collectPack(req, { items, includeOriginals = false, includ
     criteria: [], criterionById: new Map(), criterionKeys: new Set(),
     texts: new Map(),
     originals: new Map(),
+    activityTypes: new Map(),
     omitted: [],
     warnings: [],
   };
@@ -552,6 +561,7 @@ export async function collectPack(req, { items, includeOriginals = false, includ
     personas: shared.personas,
     rubrics: shared.rubrics,
     criteria: shared.criteria,
+    activityTypes: [...shared.activityTypes.values()],
     texts: shared.texts,
     originals: shared.originals,
     readOriginal: async (activityKey, doc) => shared.originals.get(`${activityKey}/${doc.key}`),
@@ -569,6 +579,14 @@ export async function collectPack(req, { items, includeOriginals = false, includ
  */
 export function sealPack(pack) {
   pack.manifest.requires = requirementsFor(pack.activities);
+  // Only the definitions an activity still uses (Duplicate may have changed a type).
+  const used = new Set(pack.activities.map((a) => a.activity_type));
+  pack.activityTypes = (pack.activityTypes || []).filter((d) => used.has(d.key));
+  if (pack.activityTypes.length) {
+    pack.manifest.activity_types = pack.activityTypes.map((d) => ({ key: d.key, label: d.label, sha256: sha256(canonicalJson(d)) }));
+  } else {
+    delete pack.manifest.activity_types;
+  }
   pack.manifest.activities = pack.activities.map((a) => ({
     key: a.key,
     uid: a.uid,

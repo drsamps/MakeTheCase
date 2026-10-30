@@ -5,7 +5,6 @@ import { chatWithFallback } from '../services/chatFallback.js';
 import { logPromptIfEnabled } from '../services/promptLogger.js';
 import { resolveInstructorForStudentCase, resolveSectionForStudentCase } from '../services/keyResolver.js';
 import { loadChatContext, buildChatSystemPrompt, protagonistLabel, sanitizeStudentName } from '../services/chatPrompt.js';
-import { activityBehaviour } from '../services/activityTypes.js';
 import { listTurns, appendTurns, historyForModel, writeTranscript } from '../services/chatTurns.js';
 import fs from 'fs/promises';
 import path from 'path';
@@ -394,7 +393,7 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       return res.status(400).json({ data: null, error: { message: 'caseChatId and message are required' } });
     }
     const [chats] = await pool.execute(
-      `SELECT id, case_id, section_id, scenario_id, persona, initial_position_id, chat_model, status
+      `SELECT id, case_id, section_id, scenario_id, persona, initial_position_id, chat_model, status, activity_type_version
          FROM case_chats WHERE id = ? AND student_id = ?`,
       [caseChatId, studentId]
     );
@@ -430,7 +429,8 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
     // The model is told it is answering the last message only when the chat then ends ('end'):
     // in 'ask' the student may keep talking, so the protagonist must not close the meeting.
     const isFinalExchange = maxExchanges > 0 && limitAction === 'end' && exchangesBefore + 1 === maxExchanges;
-    const behaviour = activityBehaviour(context.mode);
+    // The type version this chat started on (case_chats.activity_type_version).
+    const behaviour = context.behaviour;
     // A clicked position is the first student message, in exactly the position's wording (the
     // page saves initial_position_id before sending it). Only the model sees the note; the
     // stored turn is the message as sent.
@@ -523,6 +523,9 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
     }
     if (error?.code === 'MODEL_UNPRICED') {
       return res.status(409).json({ data: null, error: { code: error.code, message: 'This model has no pricing configured — please contact your instructor.', modelId: error.modelId } });
+    }
+    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: error.message } });
     }
     if (error?.status === 404) {
       return res.status(404).json({ data: null, error: { message: error.message } });

@@ -86,6 +86,7 @@ const AVAILABLE_PERMISSIONS = [
   { id: 'settings', label: 'Settings' },
   { id: 'instructors', label: 'Instructors' },
   { id: 'backups', label: 'Backups' },
+  { id: 'activity_types', label: 'Activity Types' },
 ];
 
 const InstructorManager: React.FC<InstructorManagerProps> = ({ user, mode }) => {

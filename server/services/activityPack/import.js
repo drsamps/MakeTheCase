@@ -20,6 +20,12 @@
  *   - A document flagged proprietary arrives unconfirmed, so routes/llm.js#loadCaseData keeps
  *     it out of prompts until someone confirms it in Case Files on this server.
  *
+ * ACTIVITY TYPES DEFINED AS DATA (activity_types.json, StudyChat Phase 2). A type with the same
+ * content here is reused; otherwise it is created DISABLED, AS A DRAFT, under its own key or a new
+ * one (activityTypeStore.js#planTypeInstall), and only an admin with the activity_types permission
+ * may install a package that creates one. Its cases cannot start chats until an admin reviews,
+ * publishes and enables the type. The plan returns every definition in full for review.
+ *
  * PACKAGE TEXT IS UNTRUSTED (rule 7). Persona instructions, scenario instructions, arguments,
  * chatbot personality and rubric prompts go into AI prompts as written. The plan returns all
  * of it under `review` so it can be read before anything is installed.
@@ -40,7 +46,9 @@ import { calculateTotalPoints, generateCriteriaPrompt } from '../rubricService.j
 import { createCourseCase } from '../caseVersionSync.js';
 import { writeCaseDefaults } from '../activityDefaults.js';
 import { generateUniqueCaseId } from '../caseIds.js';
-import { getActivityType } from '../../../utils/activityTypes.js';
+import { getActivityType, isKnownActivityType } from '../../../utils/activityTypes.js';
+import { hasPermission } from '../../middleware/permissions.js';
+import { getTypeEntry, installTypeDraft, loadActivityTypes, planTypeInstall } from '../activityTypeStore.js';
 import { isStudentVisibleRole } from '../../../utils/documentRoles.js';
 import { AUDIENCE_ID_PREFIX, PackError, assertValidPack, canonicalJson, extensionOf, impliedTextFormat, sha256 } from './format.js';
 
@@ -265,7 +273,8 @@ export async function planInstall(req, pack, options = {}) {
       if (typeof override === 'string' && override.trim()) title = override.trim().slice(0, 100);
       else if (action === 'copy') title = `${activity.title.slice(0, 93)} (copy)`;
     }
-    const type = getActivityType(activity.activity_type);
+    const carried = (pack.activityTypes || []).find((d) => d.key === activity.activity_type);
+    const type = carried ? { id: carried.key, label: carried.label } : getActivityType(activity.activity_type);
     activityPlans.push({
       key: activity.key,
       uid: activity.uid,
@@ -300,6 +309,37 @@ export async function planInstall(req, pack, options = {}) {
     });
   }
   const installing = pack.activities.filter((a) => activityPlans.find((p) => p.key === a.key).action !== 'skip');
+
+  // Activity types the installed activities use that are defined as data
+  const typeKeysUsed = new Set(installing.map((a) => a.activity_type).filter((t) => !isKnownActivityType(t)));
+  const typePlans = new Map();
+  for (const def of pack.activityTypes || []) {
+    if (!typeKeysUsed.has(def.key)) continue;
+    const p = await planTypeInstall(def);
+    const here = p.action === 'reuse' ? getTypeEntry(p.target_key) : null;
+    typePlans.set(def.key, {
+      key: def.key,
+      label: def.label,
+      summary: def.summary,
+      action: p.action,
+      target_key: p.target_key,
+      sha256: p.sha256,
+      note: p.action === 'reuse'
+        ? (here?.enabled ? null : 'This type is here but not published and enabled, so these activities cannot start chats until an admin does that in Admin > Activity Types.')
+        : 'Installed as a disabled draft. An admin must review, publish and enable it in Admin > Activity Types before students can use these activities.',
+      definition: def,
+    });
+  }
+  const newTypes = [...typePlans.values()].filter((t) => t.action !== 'reuse');
+  if (newTypes.length && !hasPermission(req.user, 'activity_types')) {
+    throw new PackError(403, 'ACTIVITY_TYPE_INSTALL_NEEDS_ADMIN',
+      `This package brings a new activity type (${newTypes.map((t) => `"${String(t.label).slice(0, 60)}"`).join(', ')}). Only an admin with the Activity Types permission can install it. Ask one to install the package first; after that you can install it too.`,
+      { activity_types: newTypes.map((t) => t.key) });
+  }
+  for (const plan of activityPlans) {
+    const t = typePlans.get(plan.activity_type);
+    if (t) plan.activity_type = t.target_key;
+  }
 
   // Personas, criteria and rubrics the installed activities use
   const namedPersonaKeys = new Set(installing.filter((a) => a.persona_selection === 'named').flatMap((a) => a.personas));
@@ -348,6 +388,7 @@ export async function planInstall(req, pack, options = {}) {
     personas: personas.map((p) => ({ key: p.key, action: p.action, target_id: p.target_id })),
     criteria: criteria.map((c) => ({ key: c.key, action: c.action, target_id: c.target_id })),
     rubrics: rubrics.map((r) => ({ key: r.key, action: r.action, target_id: r.target_id, criteria_ids: r.criteria_ids })),
+    activity_types: [...typePlans.values()].map((t) => ({ key: t.key, action: t.action, target_key: t.target_key, sha256: t.sha256 })),
     course_id: course?.course_id ?? null,
   }));
 
@@ -363,6 +404,7 @@ export async function planInstall(req, pack, options = {}) {
     personas,
     criteria,
     rubrics,
+    activity_types: [...typePlans.values()],
     course,
     review: reviewText(pack, installing, personaPlans, rubricPlans, criteriaPlans),
     plan_hash: planHash,
@@ -420,7 +462,7 @@ async function installActivity(conn, req, pack, activity, plan, { personaIdMap, 
     `INSERT INTO cases (case_id, case_title, case_version, activity_type, enabled, created_by_type, created_by,
                         is_shared, visibility, activity_uid, origin)
      VALUES (?, ?, ?, ?, 1, ?, ?, 0, 'private', ?, ?)`,
-    [caseId, plan.title, activity.version_label ?? null, activity.activity_type, owner.type, owner.id,
+    [caseId, plan.title, activity.version_label ?? null, plan.activity_type, owner.type, owner.id,
      fresh ? crypto.randomUUID() : activity.uid, JSON.stringify(origin)]
   );
 
@@ -618,6 +660,14 @@ export async function executeInstall(req, pack, options = {}) {
       rubricsCreated.push({ rubric_id: result.insertId, rubric_name: rubric.name });
     }
 
+    // Activity types defined as data: created disabled, as drafts (reused ones need nothing)
+    const typesCreated = [];
+    for (const t of plan.activity_types) {
+      if (t.action === 'reuse') continue;
+      await installTypeDraft(conn, t.definition, t.target_key, { id: owner.id, type: owner.type }, `Installed from an activity package (${pack.manifest.exported_from?.app_version || 'unknown version'})`);
+      typesCreated.push(t.target_key);
+    }
+
     // Activities
     const installed = [];
     for (const activityPlan of toInstall) {
@@ -642,7 +692,8 @@ export async function executeInstall(req, pack, options = {}) {
     }
 
     await conn.commit();
-    return { installed, personas_created: personasCreated, criteria_created: criteriaCreated, rubrics_created: rubricsCreated, course: plan.course };
+    if (typesCreated.length) await loadActivityTypes();
+    return { installed, activity_types_created: typesCreated, personas_created: personasCreated, criteria_created: criteriaCreated, rubrics_created: rubricsCreated, course: plan.course };
   } catch (error) {
     try { await conn.rollback(); } catch { /* the connection is gone; nothing was committed */ }
     for (const dir of createdDirs) {

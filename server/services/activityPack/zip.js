@@ -42,6 +42,8 @@ export async function zipPack(pack) {
   zip.file('manifest.json', jsonBuffer(pack.manifest));
   zip.file('personas.json', jsonBuffer(pack.personas));
   zip.file('rubrics.json', jsonBuffer({ rubrics: pack.rubrics, criteria: pack.criteria }));
+  // Types defined as data travel as definitions (format.js#checkActivityTypes); built-ins never do.
+  if (pack.activityTypes?.length) zip.file('activity_types.json', jsonBuffer(pack.activityTypes));
   for (const activity of pack.activities) {
     const dir = `activities/${activity.key}/`;
     zip.file(`${dir}activity.json`, jsonBuffer(activity));
@@ -166,6 +168,10 @@ export async function openPack(buffer) {
   const personas = await readJson('personas.json', 'personas.json');
   const rubricsFile = await readJson('rubrics.json', 'rubrics.json');
   if (!rubricsFile || typeof rubricsFile !== 'object' || Array.isArray(rubricsFile)) throw invalid('rubrics.json is not an object');
+  // Only when the manifest lists definitions: a package without them has no such file.
+  const activityTypes = Array.isArray(manifest.activity_types) && manifest.activity_types.length
+    ? await readJson('activity_types.json', 'activity_types.json')
+    : [];
 
   if (!Array.isArray(manifest.activities)) throw invalid('the manifest has no activity list');
   if (manifest.activities.length > LIMITS.activities) throw tooLarge(`it holds more than ${LIMITS.activities} activities`);
@@ -211,6 +217,7 @@ export async function openPack(buffer) {
     personas,
     rubrics: rubricsFile.rubrics,
     criteria: rubricsFile.criteria,
+    activityTypes,
     texts,
     readOriginal,
   };

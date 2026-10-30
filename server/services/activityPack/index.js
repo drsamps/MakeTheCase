@@ -28,7 +28,7 @@
  *      through the sanitized Markdown renderers.
  */
 
-import { isKnownActivityType } from '../../../utils/activityTypes.js';
+import { getTypeEntry, isTypeUsable } from '../activityTypeStore.js';
 import { PackError, assertValidPack } from './format.js';
 import { openPack } from './zip.js';
 import { buildPackFile, collectPack, exportOptions, loadSettingsChoice, sealPack } from './export.js';
@@ -65,8 +65,8 @@ export async function installPackFile(req, buffer, options = {}) {
  * @returns {Promise<{case_id: string, case_title: string}>}
  */
 export async function duplicateCase(req, caseId, { title = null, activityType = null } = {}) {
-  if (activityType !== null && activityType !== undefined && !isKnownActivityType(activityType)) {
-    throw new PackError(400, 'INVALID_REQUEST', `Unknown activity type: ${activityType}`);
+  if (activityType !== null && activityType !== undefined && !isTypeUsable(activityType)) {
+    throw new PackError(400, 'INVALID_REQUEST', `Unknown or unavailable activity type: ${activityType}`);
   }
   const pack = await collectPack(req, {
     items: [{ case_id: caseId, settings: { source: 'defaults' } }],
@@ -79,6 +79,11 @@ export async function duplicateCase(req, caseId, { title = null, activityType = 
     activity.settings = null;
     activity.personas = [];
     activity.persona_selection = 'all_enabled';
+    // A type defined as data travels as its definition; installing it here reuses this server's.
+    const entry = getTypeEntry(activityType);
+    if (entry.tier !== 'builtin' && !pack.activityTypes.some((d) => d.key === activityType)) {
+      pack.activityTypes.push(entry.current.definition);
+    }
     sealPack(pack);
   }
   const result = await executeInstall(req, pack, {

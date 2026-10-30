@@ -15,7 +15,8 @@ import {
   readCaseDefaults,
   writeCaseDefaults,
 } from '../services/activityDefaults.js';
-import { DEFAULT_ACTIVITY_TYPE, isKnownActivityType } from '../../utils/activityTypes.js';
+import { DEFAULT_ACTIVITY_TYPE } from '../../utils/activityTypes.js';
+import { isTypeUsable } from '../services/activityTypeStore.js';
 import { PackError, duplicateCase, loadSettingsChoice } from '../services/activityPack/index.js';
 import multer from 'multer';
 import path from 'path';
@@ -178,8 +179,10 @@ router.post('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
         error: { message: 'case_id and case_title are required' }
       });
     }
-    if (!isKnownActivityType(activityType)) {
-      return res.status(400).json({ data: null, error: { message: `Unknown activity type: ${activityType}` } });
+    // A case may be set only to a type that can run chats: known, published and enabled
+    // (services/activityTypeStore.js). The built-ins always are.
+    if (!isTypeUsable(activityType)) {
+      return res.status(400).json({ data: null, error: { code: 'ACTIVITY_TYPE_UNAVAILABLE', message: `Unknown or unavailable activity type: ${activityType}` } });
     }
 
     // Check if case_id already exists
@@ -246,8 +249,8 @@ router.patch('/:id', verifyToken, requireAdminOrInstructor, requireCaseAccess('i
     // other. A case used as a different type is a duplicate of the case.
     let typeChanged = false;
     if (updates.activity_type !== undefined) {
-      if (!isKnownActivityType(updates.activity_type)) {
-        return res.status(400).json({ data: null, error: { message: `Unknown activity type: ${updates.activity_type}` } });
+      if (!isTypeUsable(updates.activity_type)) {
+        return res.status(400).json({ data: null, error: { code: 'ACTIVITY_TYPE_UNAVAILABLE', message: `Unknown or unavailable activity type: ${updates.activity_type}` } });
       }
       const [current] = await pool.execute('SELECT activity_type FROM cases WHERE case_id = ?', [id]);
       if (current.length > 0 && current[0].activity_type !== updates.activity_type) {
