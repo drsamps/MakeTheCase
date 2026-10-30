@@ -4,9 +4,10 @@
 
 # MakeTheCase - AI-Powered Case Study Teaching Tool
 
-An interactive business case study simulator where students chat with AI-powered case protagonists to practice case analysis and strategic thinking.
+A tool for **StudyChat activities**: a student studies something, chats with an AI to accomplish a learning goal, and an AI supervisor grades the conversation against a rubric. Chatting with an AI-powered case protagonist is one such activity; the others include explaining the reading back to a listener, debating, applying a concept for a client, pitching, role play, and defending submitted work.
 
 ## Features
+- 🎓 **Eight Activity Types** - Case chat, Teach-back, Debate, Apply, Liken to Me, Pitch, Role Play and Defend, with new types authorable as data rather than code
 - 📚 **Multi-Case Support** - Upload and manage multiple business cases
 - 🎭 **Dynamic Protagonists** - Each case has its own protagonist personality
 - ⚙️ **Configurable Chat Options** - Control hints, feedback, and personas per section-case
@@ -15,6 +16,8 @@ An interactive business case study simulator where students chat with AI-powered
 - 🤖 **Multi-Provider AI** - Works with Google Gemini, OpenAI, and Anthropic
 
 ## Documentation
+- **[studychat-guide.md](docs/studychat-guide.md)** - Designing StudyChat activities: the guide for instructors and TAs
+- **[studychat-activity-design.md](docs/studychat-activity-design.md)** - The full reference behind that guide
 - **[ABOUT_THIS_APP.md](docs/ABOUT_THIS_APP.md)** - Complete app overview and features
 - **[CASE_MANAGEMENT_GUIDE.md](docs/CASE_MANAGEMENT_GUIDE.md)** - How to create and manage multiple cases
 
