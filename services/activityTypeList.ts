@@ -27,6 +27,8 @@ export interface ActivityTypeInfo {
   twoSided: boolean;
   /** The AI sees the argument framework, so position arguments are worth writing. */
   aiSeesArguments: boolean;
+  /** The AI can signal that the goal was reached (the End When the Goal Is Reached option). */
+  signalsComplete: boolean;
   /** Students write about their own lives (LIKEN2ME). */
   personal: boolean;
   /** Student wording for a scenario on the start screen, with slots; null until the list loads. */
@@ -51,6 +53,7 @@ const fromBuiltin = (t: (typeof ACTIVITY_TYPES)[keyof typeof ACTIVITY_TYPES]): A
   savedOpenings: t.personaKind === 'audience',
   captureMethods: ['explicit', 'ai_inferred', 'instructor_manual', 'none'],
   twoSided: false,
+  signalsComplete: false,
   aiSeesArguments: t.personaKind !== 'audience',
   personal: false,
   startRow: null,
@@ -68,7 +71,7 @@ const listeners = new Set<(rev: number) => void>();
 
 interface ServerType {
   key: string; label: string; summary: string; tier: ActivityTypeInfo['tier']; enabled: boolean;
-  traits: { character: ActivityTypeInfo['characterFrom']; persona_kind: ActivityTypeInfo['personaKind']; positions: string; capture_methods: string[]; two_sided?: boolean; ai_sees_arguments?: boolean; personal?: boolean };
+  traits: { character: ActivityTypeInfo['characterFrom']; persona_kind: ActivityTypeInfo['personaKind']; positions: string; capture_methods: string[]; two_sided?: boolean; ai_sees_arguments?: boolean; personal?: boolean; signals_complete?: boolean };
   saved_openings: boolean;
   start_row?: string;
   labels?: { ai_character?: string; question?: string };
@@ -91,6 +94,7 @@ export function loadActivityTypeList(force = false): Promise<void> {
         savedOpenings: Boolean(t.saved_openings),
         captureMethods: t.traits.capture_methods,
         twoSided: Boolean(t.traits.two_sided),
+        signalsComplete: Boolean(t.traits.signals_complete),
         aiSeesArguments: Boolean(t.traits.ai_sees_arguments),
         personal: Boolean(t.traits.personal),
         startRow: t.start_row ?? null,
@@ -114,7 +118,7 @@ export function activityTypeInfo(key?: string | null): ActivityTypeInfo {
   return types.get(id) ?? {
     id, label: 'Unknown type', summary: 'This server has no published activity type with this key', personaKind: 'protagonist',
     characterFrom: 'scenario', usesPositions: true, savedOpenings: false,
-    captureMethods: ['explicit', 'ai_inferred', 'instructor_manual', 'none'], twoSided: false, aiSeesArguments: true, personal: false, startRow: null, aiCharacter: 'Protagonist', questionLabel: 'Chat Question', enabled: false, tier: 'custom', known: false,
+    captureMethods: ['explicit', 'ai_inferred', 'instructor_manual', 'none'], twoSided: false, signalsComplete: false, aiSeesArguments: true, personal: false, startRow: null, aiCharacter: 'Protagonist', questionLabel: 'Chat Question', enabled: false, tier: 'custom', known: false,
   };
 }
 

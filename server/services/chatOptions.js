@@ -40,6 +40,7 @@ export const DEFAULT_CHAT_OPTIONS = {
   allow_finish_button: false,
   restart_chat: false,
   allow_exit: false,
+  end_on_goal: false,            // Types whose AI can signal its goal: wrap up at once instead of offering Finish / Keep talking
   require_minimum_exchanges: 0,  // 0 = no minimum, N = require N exchanges before "time is up"
   max_exchanges: 0,              // 0 = no limit, N = the chat wraps up after the AI answers N student messages
   max_exchanges_action: 'end',   // at the limit: 'end' wraps up; 'ask' lets the student finish or keep talking

@@ -66,6 +66,7 @@ function makeBehaviour(def, version) {
     finalTurnNote: templateText(def.prompt.final_turn_note),
     positionPickNote: templateText(def.prompt.position_pick_note),
     openingWordFloor: Boolean(def.traits.opening_word_floor),
+    signals: def.traits.signals,
     savedOpenings: Boolean(def.greeting.saved_openings),
   });
 }

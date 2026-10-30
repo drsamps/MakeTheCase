@@ -34,7 +34,7 @@ import { isKnownActivityType, getActivityType } from '../../../utils/activityTyp
 import { validateDefinition } from '../../../utils/activityEngine/validate.js';
 import { KNOWN_CHAT_OPTION_KEYS } from '../chatOptions.js';
 import { CAPTURE_METHODS, SELECTION_MODES } from '../activityDefaults.js';
-import { validateStudentSettings } from '../../../utils/scenarioSettings.js';
+import { validateStudentSettings, validateAiSettings } from '../../../utils/scenarioSettings.js';
 import { MARKDOWN, PLAIN_TEXT, readingFormatOf } from '../../../utils/readingFormat.js';
 import { DOCUMENT_ROLES, isDocumentRole } from '../../../utils/documentRoles.js';
 
@@ -233,17 +233,21 @@ export function assertChatOptions(chatOptions, what) {
  * these keys and assertScenarioOverride() refuses any other, as for chat options.
  */
 export const SCENARIO_POSITION_KEYS = ['position_tracking_enabled', 'position_capture_method', 'position_options', 'position_labels', 'track_position_change'];
-export const SCENARIO_SETTINGS_SUBTREES = ['student'];
+export const SCENARIO_SETTINGS_SUBTREES = ['student', 'ai'];
 export const isScenarioOverrideKey = (key) =>
   KNOWN_CHAT_OPTION_KEYS.has(key) || SCENARIO_POSITION_KEYS.includes(key) || SCENARIO_SETTINGS_SUBTREES.includes(key);
 
 function assertScenarioOverride(override, what) {
   if (!isObject(override)) throw invalid(`${what} must be an object`);
   if (Buffer.byteLength(JSON.stringify(override), 'utf8') > TEXT_BYTES) throw invalid(`${what} is too large`);
-  const { position_tracking_enabled, position_capture_method, position_options, position_labels, track_position_change, student, ...chatOptions } = override;
+  const { position_tracking_enabled, position_capture_method, position_options, position_labels, track_position_change, student, ai, ...chatOptions } = override;
   assertChatOptions(chatOptions, what);
   if (student !== undefined && student !== null) {
     const { error } = validateStudentSettings(student);
+    if (error) throw invalid(`${what}: ${error}`);
+  }
+  if (ai !== undefined && ai !== null) {
+    const { error } = validateAiSettings(ai);
     if (error) throw invalid(`${what}: ${error}`);
   }
   bool(position_tracking_enabled, `${what}.position_tracking_enabled`);

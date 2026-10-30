@@ -640,6 +640,34 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
     // as some MySQL versions have issues with prepared statements and LIMIT.
     const [studentRows] = await pool.query(studentsQuery, [...params, parsedLimit, parsedOffset]);
 
+    // Touchpoint coverage across everything these filters match (not just this page). Keyed by
+    // the snapshot saved at grading, so a renamed touchpoint keeps its old results.
+    const [touchpointRows] = await pool.query(
+      `SELECT c.case_id, c.case_title, e.touchpoints
+         FROM students s
+         LEFT JOIN student_sections ss ON s.id = ss.student_id
+         JOIN sections sec ON (ss.section_id = sec.section_id OR s.section_id = sec.section_id)
+         JOIN section_cases sc ON sec.section_id = sc.section_id
+         JOIN cases c ON sc.case_id = c.case_id
+         JOIN case_chats cc ON s.id = cc.student_id AND c.case_id = cc.case_id AND (cc.section_id = sec.section_id OR cc.section_id IS NULL)
+         JOIN evaluations e ON e.case_chat_id = cc.id AND e.touchpoints IS NOT NULL
+         LEFT JOIN rubrics r ON e.rubric_id = r.rubric_id
+         ${whereClause}
+         LIMIT 5000`,
+      params
+    );
+    const coverage = new Map();
+    for (const row of touchpointRows) {
+      const list = typeof row.touchpoints === 'string' ? JSON.parse(row.touchpoints) : row.touchpoints;
+      for (const t of Array.isArray(list) ? list : []) {
+        const id = `${row.case_id}:${t.key}`;
+        const entry = coverage.get(id) || { case_id: row.case_id, case_title: row.case_title, key: t.key, label: t.label, hits: 0, chats: 0 };
+        entry.chats += 1;
+        if (t.hit) entry.hits += 1;
+        coverage.set(id, entry);
+      }
+    }
+
     // A personal activity hides names by default (services/personalActivity.js).
     const showPersonal = req.query.show_personal === '1';
     const hides = (row) => !showPersonal && isPersonalType(row.activity_type);
@@ -691,6 +719,7 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
           modelBreakdown
         },
         students,
+        touchpoint_coverage: [...coverage.values()],
         total: parseInt(totalRecords),
         limit: parsedLimit,
         offset: parsedOffset

@@ -9,11 +9,11 @@
 
 import { pool } from '../db.js';
 
-const SUBTREES = new Set(['student']);
+const SUBTREES = new Set(['student', 'ai']);
 
 /**
  * @param {number|string} scenarioId
- * @param {'student'} subtree
+ * @param {'student'|'ai'} subtree
  * @param {object|null} value - already validated; null removes the subtree
  * @param {import('mysql2/promise').PoolConnection} [conn]
  */

@@ -103,6 +103,29 @@ export async function typeCriteriaInputs({ sectionId, caseId, caseData, rubric, 
 }
 
 /**
+ * What grading reported about the scenario's touchpoints, ready to save: one entry per touchpoint
+ * the scenario has, with its key and label SNAPSHOTTED so a later rename changes no result.
+ * Evidence that is not verbatim from a student turn is dropped; a key the scenario does not have
+ * is ignored. Null when the scenario has no touchpoints.
+ */
+export function settleTouchpoints(reported, touchpoints, transcript, caseData = {}) {
+  if (!Array.isArray(touchpoints) || touchpoints.length === 0) return null;
+  const text = String(transcript ?? '');
+  const { turns } = parseTranscript(text, {
+    studentNames: ['Student'],
+    protagonistNames: [caseData?.protagonist].filter(Boolean),
+  });
+  const isPositionText = positionTextMatcher([caseData?.picked_position]);
+  const byKey = new Map((Array.isArray(reported) ? reported : []).filter((r) => r && typeof r === 'object').map((r) => [r.key, r]));
+  return touchpoints.map((t) => {
+    const r = byKey.get(t.key);
+    const quote = typeof r?.evidence === 'string' && r.evidence.trim() ? r.evidence.trim() : null;
+    const verified = quote && verifyQuote(text, turns, quote) && !isPositionText(quote);
+    return { key: t.key, label: t.label, hit: r?.hit === true, ...(verified ? { evidence: quote } : {}) };
+  });
+}
+
+/**
  * Drop any `evidence` that is not verbatim from one of the student's own turns. The
  * evaluation screen shows it in quotation marks as the student's words, so a paraphrase, a
  * fabricated quote, a line lifted from the listener or the wording of a clicked position

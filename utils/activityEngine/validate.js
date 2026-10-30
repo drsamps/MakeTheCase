@@ -94,6 +94,9 @@ export const COPY_KEYS = {
  */
 export const OPTIONAL_COPY_KEYS = {
   personal_notice: [],
+  goal_reached_bar: [],
+  goal_finish_button: [],
+  goal_keep_button: [],
 };
 
 /** Optional intro bar phrases: the goal line, and the side the server assigned. */
@@ -202,10 +205,9 @@ export function validateDefinition(def) {
     if (keysOnly(t.ai_sees, 'traits.ai_sees', ['case', 'supplementary', 'teaching_note', 'arguments', 'touchpoints'])) {
       for (const [k, v] of Object.entries(t.ai_sees)) bool(v, `traits.ai_sees.${k}`);
       if (t.ai_sees.case !== true) err('traits.ai_sees.case', 'must be true');
-      if (t.ai_sees.touchpoints) err('traits.ai_sees.touchpoints', 'not supported by this server yet');
     }
     if (keysOnly(t.signals, 'traits.signals', ['complete', 'touchpoints'])) {
-      for (const [k, v] of Object.entries(t.signals)) { bool(v, `traits.signals.${k}`); if (v) err(`traits.signals.${k}`, 'not supported by this server yet'); }
+      for (const [k, v] of Object.entries(t.signals)) bool(v, `traits.signals.${k}`);
     }
     if (keysOnly(t.grading_extras, 'traits.grading_extras', ['evidence', 'eval_inputs'])) {
       bool(t.grading_extras.evidence, 'traits.grading_extras.evidence');
@@ -287,6 +289,7 @@ export function validateDefinition(def) {
     for (const [k, vars] of Object.entries(COPY_KEYS)) plural(c[k], `copy.${k}`, vars);
     for (const [k, vars] of Object.entries(OPTIONAL_COPY_KEYS)) if (k in c) plural(c[k], `copy.${k}`, vars);
     if (t?.personal && !c.personal_notice) err('copy.personal_notice', 'a personal type must tell students before the chat');
+    if (t?.signals?.complete && !c.goal_reached_bar) err('copy.goal_reached_bar', 'a type that can signal its goal must word the Finish offer');
     if (c.intro !== null && keysOnly(c.intro, 'copy.intro', [...Object.keys(INTRO_KEYS), ...Object.keys(OPTIONAL_INTRO_KEYS)], Object.keys(INTRO_KEYS))) {
       for (const [k, vars] of Object.entries(INTRO_KEYS)) plural(c.intro[k], `copy.intro.${k}`, vars);
       for (const [k, vars] of Object.entries(OPTIONAL_INTRO_KEYS)) if (k in c.intro) plural(c.intro[k], `copy.intro.${k}`, vars);

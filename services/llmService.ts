@@ -17,6 +17,9 @@ export interface LLMChatReply {
   backup: boolean;
   /** Student messages the AI has answered in this chat, this one included (server count). */
   exchangesUsed?: number;
+  /** Types whose AI can signal its goal: this reply signalled it, and whether it ever has. */
+  goalSignalled?: boolean;
+  goalReached?: boolean;
 }
 
 export interface LLMChatSession {
@@ -64,6 +67,8 @@ export const createChatSession = (
       modelId: result.data?.meta?.model_id || modelId,
       backup: Boolean(result.data?.meta?.backup),
       exchangesUsed: typeof result.data?.meta?.exchanges_used === 'number' ? result.data.meta.exchanges_used : undefined,
+      goalSignalled: Boolean(result.data?.meta?.goal_signalled),
+      goalReached: Boolean(result.data?.meta?.goal_reached),
     };
   },
 });

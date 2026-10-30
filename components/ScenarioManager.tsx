@@ -222,6 +222,8 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
   // Student-visible text in the scenario's settings document (utils/scenarioSettings.js).
   const emptyStudentText: ScenarioStudentSettings = { situation: '', personas: {} };
   const [studentText, setStudentText] = useState<ScenarioStudentSettings>(emptyStudentText);
+  // What the instructor is tracking (scenario settings, `ai` subtree): never sent to students.
+  const [touchpoints, setTouchpoints] = useState<{ key: string; label: string; description: string }[]>([]);
   const [scenarios, setScenarios] = useState<CaseScenario[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -326,6 +328,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
     setEditingScenario(null);
     setFormData(defaultFormData);
     setStudentText(emptyStudentText);
+    setTouchpoints([]);
     setPositions([]);
     setShowForm(true);
   };
@@ -347,6 +350,7 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       enabled: scenario.enabled
     });
     setStudentText(readScenarioSettings(scenario.chat_options_override).student);
+    setTouchpoints(readScenarioSettings(scenario.chat_options_override).ai.touchpoints);
     setPositions([]);
     fetchPositions(scenario.id);
     setShowForm(true);
@@ -377,6 +381,14 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
       enabled: formData.enabled,
       // Merged into chat_options_override on the server; sent only by the saved-openings editor.
       ...(savedOpenings && { student_settings: studentText }),
+      ai_settings: {
+        // A key is made once from the label and then kept, so results survive a reworded label.
+        touchpoints: touchpoints.filter((t) => t.label.trim()).map((t, i) => ({
+          key: t.key || `${t.label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30) || 'point'}_${i + 1}`,
+          label: t.label.trim(),
+          description: t.description.trim(),
+        })),
+      },
     };
 
     setIsSaving(true);
@@ -943,6 +955,32 @@ export const ScenarioManager: React.FC<ScenarioManagerProps> = ({
                   rows={3}
                   placeholder="Optional instructions included in the AI prompt for this scenario..."
                 />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Touchpoints
+                    <span className="text-gray-400 font-normal ml-1">(not shown to student; optional)</span>
+                  </label>
+                  <button type="button" onClick={() => setTouchpoints([...touchpoints, { key: '', label: '', description: '' }])}
+                    disabled={touchpoints.length >= 20}
+                    className="px-2 py-1 text-xs border rounded hover:bg-gray-50 disabled:opacity-50">+ Add touchpoint</button>
+                </div>
+                <p className="text-xs text-gray-500 mb-2">Points you want to know whether students touched on. Grading reports them in Results.</p>
+                {touchpoints.map((t, i) => (
+                  <div key={t.key || i} className="flex gap-2 mb-2">
+                    <input type="text" value={t.label} maxLength={120} placeholder="e.g., Carrying cost"
+                      onChange={(e) => setTouchpoints(touchpoints.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))}
+                      className="w-1/3 border rounded-lg px-3 py-1.5 text-sm" />
+                    <input type="text" value={t.description} maxLength={500} placeholder="What counts (optional)"
+                      onChange={(e) => setTouchpoints(touchpoints.map((x, j) => (j === i ? { ...x, description: e.target.value } : x)))}
+                      className="flex-1 border rounded-lg px-3 py-1.5 text-sm" />
+                    <button type="button" aria-label={`Remove touchpoint ${t.label}`}
+                      onClick={() => setTouchpoints(touchpoints.filter((_, j) => j !== i))}
+                      className="px-2 text-sm text-red-600 hover:text-red-800">&times;</button>
+                  </div>
+                ))}
               </div>
 
               <div className="grid grid-cols-2 gap-4">

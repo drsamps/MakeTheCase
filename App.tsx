@@ -195,6 +195,11 @@ const App: React.FC = () => {
   const [exchangesUsed, setExchangesUsed] = useState<number>(0);
   // Maximum Responses with "ask": the student has reached the limit and must choose.
   const [limitChoicePending, setLimitChoicePending] = useState(false);
+  // The AI signalled the goal was reached (types with signals): offer Finish / Keep talking.
+  const [goalOffered, setGoalOffered] = useState(false);
+  const goalDeclinedRef = useRef(false);
+  // POST /case-chats/:id/complete, awaited before grading (the server's gate reads its reason).
+  const completionRef = useRef<Promise<unknown> | null>(null);
   // ...and chose "Keep talking": no further limit for this chat.
   const [continuedPastLimit, setContinuedPastLimit] = useState(false);
   const [currentCaseChatId, setCurrentCaseChatId] = useState<string | null>(null);
@@ -906,9 +911,17 @@ const App: React.FC = () => {
   // evaluation. Every way a chat ends comes here: the "time is up" phrase and the Finish
   // button (after the minimum check), the timer (a hard end) and Maximum Responses (no
   // student message to add: the AI has just answered the last one).
-  const wrapUpChat = (finalUserMessage: Message | null) => {
+  const wrapUpChat = (finalUserMessage: Message | null, reason: 'student' | 'goal' | 'max_exchanges' | 'time') => {
     const finalTurn = finalUserMessage ? [finalUserMessage] : [];
     setLimitChoicePending(false);
+    setGoalOffered(false);
+    if (currentCaseChatId) {
+      completionRef.current = fetch(`${getApiBaseUrl()}/case-chats/${currentCaseChatId}/complete`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ reason }),
+      }).catch((err) => console.error('Failed to record how the chat ended:', err));
+    }
 
     // Check chat options to determine next phase
     const askForFeedback = chatOptions?.ask_for_feedback ?? false;
@@ -946,7 +959,7 @@ const App: React.FC = () => {
   // A minimum above the maximum could never be met once the student keeps talking; cap it.
   const minExchangesSetting = chatOptions?.require_minimum_exchanges ?? 0;
   const effectiveMinExchanges = maxExchanges > 0 ? Math.min(minExchangesSetting, maxExchanges) : minExchangesSetting;
-  const afterAnsweredExchange = (serverCount?: number) => {
+  const afterAnsweredExchange = (serverCount?: number, reply?: LLMChatReply) => {
     // A reply that lands after the chat has already wrapped up (the timer ran out while it was
     // in flight) must not wrap it up a second time.
     if (conversationPhaseRef.current !== ConversationPhase.CHATTING) return;
@@ -954,13 +967,25 @@ const App: React.FC = () => {
     setExchangesUsed(used);
     if (maxExchanges > 0 && used >= maxExchanges && !continuedPastLimit) {
       if (chatOptions?.max_exchanges_action === 'ask') setLimitChoicePending(true);
-      else wrapUpChat(null);
+      else { wrapUpChat(null, 'max_exchanges'); return; }
+    }
+    // The AI's signal only offers Finish, and never below the minimum. A new signal re-offers
+    // after "Keep talking"; a goal reached earlier is offered once the minimum is met.
+    if (reply?.goalSignalled) goalDeclinedRef.current = false;
+    if (reply?.goalReached && !goalDeclinedRef.current && used >= effectiveMinExchanges) {
+      if (chatOptions?.end_on_goal) wrapUpChat(null, 'goal');
+      else setGoalOffered(true);
     }
   };
 
   const handleKeepTalking = () => {
     setLimitChoicePending(false);
     setContinuedPastLimit(true);
+  };
+
+  const handleKeepTalkingPastGoal = () => {
+    goalDeclinedRef.current = true;
+    setGoalOffered(false);
   };
 
   // The chat timer starts with the student's first message, typed or a clicked position. The
@@ -994,7 +1019,7 @@ const App: React.FC = () => {
               setMessages(prev => [...prev, { role: MessageRole.USER, at: Date.now(), content: userMessage }, ceoWarning]);
               return;
             }
-            wrapUpChat({ role: MessageRole.USER, at: Date.now(), content: userMessage });
+            wrapUpChat({ role: MessageRole.USER, at: Date.now(), content: userMessage }, 'student');
             return;
         }
         
@@ -1059,7 +1084,7 @@ const App: React.FC = () => {
             setLastReply(response);
             const modelMessage: Message = { role: MessageRole.MODEL, at: Date.now(), content: response.text };
             setMessages((prev) => [...prev, modelMessage]);
-            afterAnsweredExchange(response.exchangesUsed);
+            afterAnsweredExchange(response.exchangesUsed, response);
             // No transcript save here: the server records the exchange and writes the transcript.
         } catch (e) {
             console.error("Failed to send message:", e);
@@ -1067,7 +1092,7 @@ const App: React.FC = () => {
             const code = (e as { code?: string })?.code;
             if (code === 'EXCHANGE_LIMIT_REACHED') {
                 setMessages((prev) => prev.slice(0, -1));
-                wrapUpChat(null);
+                wrapUpChat(null, 'max_exchanges');
                 return;
             }
             if (code === 'MESSAGE_TOO_LONG') {
@@ -1108,7 +1133,7 @@ const App: React.FC = () => {
                     setError(null);
                     // After the messages, as on the normal path: a wrap-up adds its question
                     // after the reply instead of being sliced off as the "interrupted" message.
-                    afterAnsweredExchange(retryResponse.exchangesUsed);
+                    afterAnsweredExchange(retryResponse.exchangesUsed, retryResponse);
                 } catch (retryError) {
                     console.error("Retry failed:", retryError);
                     // Update the error message to indicate continued failure
@@ -1285,14 +1310,14 @@ const App: React.FC = () => {
         };
         setMessages(prev => [...prev, modelMessage]);
         // The server counts the position as an answered response, so the page does too.
-        afterAnsweredExchange(response.exchangesUsed);
+        afterAnsweredExchange(response.exchangesUsed, response);
       } catch (err) {
         console.error('Failed to get AI response:', err);
         // Limits the server enforces, handled as in handleSendMessage. Nothing was recorded.
         const code = (err as { code?: string })?.code;
         if (code === 'EXCHANGE_LIMIT_REACHED') {
           setMessages(prev => prev.slice(0, -1));
-          wrapUpChat(null);
+          wrapUpChat(null, 'max_exchanges');
           return;
         }
         if (code === 'MESSAGE_TOO_LONG') {
@@ -1317,6 +1342,7 @@ const App: React.FC = () => {
     setConversationPhase(ConversationPhase.EVALUATION_LOADING);
     setError(null);
     try {
+      await completionRef.current;
       // The server grades its own copy of the conversation and saves the evaluation and the
       // transcript; the browser sends only the student's feedback answers and their consent to
       // share the transcript with the developers (instructors see transcripts regardless).
@@ -1506,6 +1532,9 @@ const App: React.FC = () => {
     setAvailablePersonas([]);
     setCurrentCaseChatId(null);
     setChatActivity(null);
+    setGoalOffered(false);
+    goalDeclinedRef.current = false;
+    completionRef.current = null;
     setChatGoal(null);
     setAssignedPosition(null);
     setSelectedInitialPositionId(null);
@@ -1640,6 +1669,9 @@ const App: React.FC = () => {
     setConversationPhase(ConversationPhase.PRE_CHAT);
     setCurrentCaseChatId(null);
     setChatActivity(null);
+    setGoalOffered(false);
+    goalDeclinedRef.current = false;
+    completionRef.current = null;
     setChatGoal(null);
     setAssignedPosition(null);
     setHintsUsed(0);
@@ -2258,7 +2290,7 @@ const App: React.FC = () => {
               // Auto-submit "time is up" when timer expires (only if timeout_chat is enabled)
               // A time limit is a hard end, so it skips the minimum-exchanges check.
               if (chatOptions?.timeout_chat && conversationPhase === ConversationPhase.CHATTING) {
-                wrapUpChat({ role: MessageRole.USER, at: Date.now(), content: "time is up" });
+                wrapUpChat({ role: MessageRole.USER, at: Date.now(), content: "time is up" }, 'time');
               }
             }}
           />
@@ -2420,6 +2452,26 @@ const App: React.FC = () => {
                 )}
               </div>
             )}
+            {/* The AI signalled the goal was reached: finish now or keep talking */}
+            {goalOffered && !limitChoicePending && conversationPhase === ConversationPhase.CHATTING && (
+              <div className="p-4 bg-green-50 border-t border-green-200 text-center">
+                <p className="text-sm font-medium text-gray-700 mb-3">{renderBold(copy('goal_reached_bar'))}</p>
+                <div className="flex justify-center gap-3">
+                  <button
+                    onClick={() => wrapUpChat(null, 'goal')}
+                    className="px-4 py-2 text-sm font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+                  >
+                    {copy('goal_finish_button') || 'Finish and get my evaluation'}
+                  </button>
+                  <button
+                    onClick={handleKeepTalkingPastGoal}
+                    className="px-4 py-2 text-sm font-medium text-green-700 bg-white border border-green-300 rounded-lg hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+                  >
+                    {copy('goal_keep_button') || 'Keep talking'}
+                  </button>
+                </div>
+              </div>
+            )}
             {/* Maximum Responses reached with "ask": finish now or keep talking */}
             {limitChoicePending && conversationPhase === ConversationPhase.CHATTING ? (
               <div className="p-4 bg-blue-50 border-t border-blue-200 text-center">
@@ -2428,7 +2480,7 @@ const App: React.FC = () => {
                 </p>
                 <div className="flex justify-center gap-3">
                   <button
-                    onClick={() => wrapUpChat(null)}
+                    onClick={() => wrapUpChat(null, 'max_exchanges')}
                     className="px-4 py-2 text-sm font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
                   >
                     Finish and get my evaluation

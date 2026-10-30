@@ -10,6 +10,8 @@ import { resolveSectionModel } from '../services/modelChoice.js';
 import { inferPositionsFromChat, shouldInferPositions } from '../services/positionInference.js';
 import { activityBehaviour, studentActivityViewFor } from '../services/activityTypes.js';
 import { chatAttemptStatus } from '../services/chatAttempts.js';
+import { assertGradable, CompletionError } from '../services/chatCompletion.js';
+import { settleTouchpoints } from '../services/teachBack.js';
 import { stripTurnTiming } from '../../utils/transcriptFormat.js';
 import { getDefaultRubric, getRubricById } from '../services/rubricService.js';
 import { evaluateWithLLM } from '../services/llmRouter.js';
@@ -207,7 +209,7 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
   try {
     // 1. Look up case_chat details
     const [chatRows] = await pool.execute(
-      `SELECT cc.id, cc.case_id, cc.student_id, cc.section_id, cc.scenario_id, cc.persona, cc.initial_position_id, cc.activity_type_version, s.full_name
+      `SELECT cc.id, cc.case_id, cc.student_id, cc.section_id, cc.scenario_id, cc.persona, cc.initial_position_id, cc.activity_type_version, cc.completion_reason, s.full_name
        FROM case_chats cc
        JOIN students s ON cc.student_id = s.id
        WHERE cc.id = ?`,
@@ -228,6 +230,15 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
     const turns = await listTurns(case_chat_id);
     if (!turns.some((t) => t.role === 'student')) {
       return res.status(400).json({ data: null, error: { message: 'There is no conversation to evaluate yet.' } });
+    }
+    // The minimum, on the server: a stale page or a direct request cannot be graded early.
+    try {
+      assertGradable(chatRows[0], context.chatOptions, turns.filter((t) => t.role === 'student').length);
+    } catch (gateError) {
+      if (gateError instanceof CompletionError) {
+        return res.status(gateError.status).json({ data: null, error: { code: gateError.code, message: gateError.message, ...gateError.details } });
+      }
+      throw gateError;
     }
     const chatHistory = historyForGrading(turns, protagonistLabel(context));
     const freeHints = context.chatOptions.free_hints ?? 1;
@@ -254,17 +265,21 @@ router.post('/run', verifyToken, requireRole(['student']), async (req, res) => {
     // Every successful exit goes through here so unverified "student quotes" never ship, and
     // so the saved evaluation is exactly what the student is shown.
     const sendResult = async (data) => {
-      const result = activity.finishEvaluation(data, chatHistory, caseData);
+      // Touchpoints are for the instructor (AI-only): saved with their labels, never sent back.
+      const { touchpoints: rawTouchpoints, ...graded } = data;
+      const touchpoints = settleTouchpoints(rawTouchpoints, caseData.touchpoints, chatHistory, caseData);
+      const result = activity.finishEvaluation(graded, chatHistory, caseData);
       const { helpful, liked, improve } = cleanFeedback(feedback);
       const evaluationId = uuidv4();
       await pool.execute(
-        `INSERT INTO evaluations (id, student_id, case_id, case_chat_id, score, summary, criteria, helpful, liked, improve, super_model, allow_rechat, rubric_id, activity_type_version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?)`,
+        `INSERT INTO evaluations (id, student_id, case_id, case_chat_id, score, summary, criteria, helpful, liked, improve, super_model, allow_rechat, rubric_id, activity_type_version, touchpoints)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?, ?)`,
         [evaluationId, student_id, case_id, case_chat_id, result.totalScore ?? 0, result.summary || null,
-         result.criteria ? JSON.stringify(result.criteria) : null, helpful, liked, improve, modelId, result.rubric_id || null, activity.version]
+         result.criteria ? JSON.stringify(result.criteria) : null, helpful, liked, improve, modelId, result.rubric_id || null, activity.version,
+         touchpoints ? JSON.stringify(touchpoints) : null]
       );
       await pool.execute(
-        `UPDATE case_chats SET status = 'completed', end_time = CURRENT_TIMESTAMP WHERE id = ?`,
+        `UPDATE case_chats SET status = 'completed', end_time = CURRENT_TIMESTAMP, completion_reason = COALESCE(completion_reason, 'student') WHERE id = ?`,
         [case_chat_id]
       );
       // Same rule the browser used: save when auto-save is on (the default), the assignment

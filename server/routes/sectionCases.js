@@ -19,8 +19,8 @@ import {
   linkSectionToVersion,
 } from '../services/caseVersionSync.js';
 import { parseDateInput } from '../utils/dateInput.js';
-import { studentScenarioSettings } from '../../utils/scenarioSettings.js';
-import { studentActivityViewFor } from '../services/activityTypes.js';
+import { studentScenarioSettings, readScenarioSettings } from '../../utils/scenarioSettings.js';
+import { studentActivityViewFor, activityTraits } from '../services/activityTypes.js';
 import { assertCaptureAllowed, assertSectionCaseCanAssign, PositionRuleError } from '../services/positionRules.js';
 import { isPersonalType, hiddenNameFor } from '../services/personalActivity.js';
 
@@ -1560,7 +1560,7 @@ router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireAdminOr
 
     // Get chat data for each student for this case
     const [chats] = await pool.execute(
-      `SELECT cc.student_id, cc.id as chat_id, cc.status, cc.start_time, cc.end_time,
+      `SELECT cc.student_id, cc.id as chat_id, cc.status, cc.start_time, cc.end_time, cc.scenario_id,
               cc.initial_position, cc.final_position, cc.initial_position_id, cc.final_position_id,
               sp_initial.position_name as initial_position_name,
               sp_final.position_name as final_position_name,
@@ -1590,6 +1590,29 @@ router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireAdminOr
     const [liveTypeRows] = await pool.execute('SELECT activity_type FROM cases WHERE case_id = ?', [caseId]);
     const personalActivity = isPersonalType(liveTypeRows[0]?.activity_type);
     const hideNames = personalActivity && req.query.show_personal !== '1';
+
+    // Live touchpoints: what the AI has signalled so far, for types that use the signal channel.
+    // chat_turns.signals is never in a turn's content, so this is the only place it surfaces.
+    const liveTraits = activityTraits(liveTypeRows[0]?.activity_type);
+    const liveTouchpoints = new Map();
+    if (liveTraits?.signals?.touchpoints) {
+      const [scenarioRows] = await pool.execute('SELECT id, chat_options_override FROM case_scenarios WHERE case_id = ?', [caseId]);
+      const labels = new Map(scenarioRows.map((s) => [s.id, readScenarioSettings(s.chat_options_override).ai.touchpoints]));
+      for (const chat of studentChatMap.values()) {
+        const defined = labels.get(chat.scenario_id) || [];
+        if (!defined.length) continue;
+        const [turnRows] = await pool.execute(
+          'SELECT signals FROM chat_turns WHERE case_chat_id = ? AND signals IS NOT NULL',
+          [chat.chat_id]
+        );
+        const hit = new Set();
+        for (const t of turnRows) {
+          const parsed = typeof t.signals === 'string' ? JSON.parse(t.signals) : t.signals;
+          (parsed?.touchpoints || []).forEach((key) => hit.add(key));
+        }
+        liveTouchpoints.set(chat.student_id, defined.map((t) => ({ key: t.key, label: t.label, hit: hit.has(t.key) })));
+      }
+    }
 
     // Build student list with status
     const studentData = students.map(student => {
@@ -1627,6 +1650,7 @@ router.get('/:sectionId/cases/:caseId/live-session', verifyToken, requireAdminOr
         email: hideNames ? null : student.email,
         names_hidden: hideNames || undefined,
         personal_activity: personalActivity || undefined,
+        touchpoints: liveTouchpoints.get(student.student_id) || undefined,
         status: sessionStatus,
         chat_id: chat?.chat_id || null,
         start_time: chat?.start_time || null,

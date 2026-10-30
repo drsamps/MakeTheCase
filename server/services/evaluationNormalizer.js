@@ -94,7 +94,8 @@ export function normalizeEvaluationResult(raw, rubric = null) {
   const maxScore = rubric?.total_points ?? 15;
   const rubric_id = rubric?.rubric_id;
 
-  return { criteria, totalScore, maxScore, summary, hints, rubric_id };
+  // Only when reported, so a result with no touchpoints keeps exactly this shape.
+  return { criteria, totalScore, maxScore, summary, hints, rubric_id, ...(Array.isArray(raw?.touchpoints) ? { touchpoints: raw.touchpoints } : {}) };
 }
 
 /**

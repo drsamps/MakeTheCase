@@ -106,6 +106,8 @@ export function chatOptionsForPackage(effective) {
     delete chatOptions.min_opening_words;
     chatOptions.teach_back_min_words = floor;
   }
+  // Off is the default: left out, so an older installer can still take the package.
+  if (!chatOptions.end_on_goal) delete chatOptions.end_on_goal;
   return chatOptions;
 }
 

@@ -14,6 +14,7 @@ import { MARKDOWN, readingFormatOf, textFormatOfConversion } from '../../utils/r
 import { isStudentVisibleRole } from '../../utils/documentRoles.js';
 // The page counts with the same helper.
 import { countWords, minOpeningWords } from '../../utils/openingWords.js';
+import { extractSignals, neutralizeSignalTags } from '../../utils/activityEngine/signals.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -395,7 +396,7 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       return res.status(400).json({ data: null, error: { message: 'caseChatId and message are required' } });
     }
     const [chats] = await pool.execute(
-      `SELECT id, case_id, section_id, scenario_id, persona, initial_position_id, chat_model, status, activity_type_version
+      `SELECT id, case_id, section_id, scenario_id, persona, initial_position_id, chat_model, status, activity_type_version, goal_reached_at
          FROM case_chats WHERE id = ? AND student_id = ?`,
       [caseChatId, studentId]
     );
@@ -458,7 +459,10 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
         return res.status(400).json({ data: null, error: { code: 'OPENING_TOO_SHORT', min_words: minWords, message: `Please start with an explanation of at least ${minWords} words.` } });
       }
     }
-    const modelMessage = message
+    // A type with signals: a student cannot plant a block in the conversation (signals.js).
+    const usesSignals = Boolean(behaviour.signals?.complete || behaviour.signals?.touchpoints);
+    const studentText = usesSignals ? neutralizeSignalTags(message) : message;
+    const modelMessage = studentText
       + (isPositionPick ? behaviour.positionPickNote : '')
       + (isFinalExchange ? behaviour.finalTurnNote : '');
     const systemPrompt = buildChatSystemPrompt(context, sanitizeStudentName(studentName));
@@ -474,7 +478,7 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
 
     const startTime = Date.now();
     // Falls back to the ranked default models when modelId is rate-limited or times out.
-    const { text, meta, modelIdUsed, backup } = await chatWithFallback({
+    const { text: rawText, meta, modelIdUsed, backup } = await chatWithFallback({
       modelId,
       systemPrompt,
       history,
@@ -489,11 +493,24 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       recordBackupReply(caseChatId, studentId, modelIdUsed);
     }
 
+    // Cut the signal block out BEFORE anything is stored or shown. Only types with signals are
+    // parsed, so another type's reply is kept exactly as the model wrote it. A signal only offers
+    // Finish (signals.js); a reply that was nothing but a signal still shows something.
+    let text = rawText;
+    let signals = null;
+    if (usesSignals) {
+      ({ text, signals } = extractSignals(rawText, behaviour.signals, (context.caseData.touchpoints || []).map((t) => t.key)));
+      if (!text) text = '...';
+      if (signals?.complete && !chat.goal_reached_at) {
+        await pool.execute('UPDATE case_chats SET goal_reached_at = COALESCE(goal_reached_at, CURRENT_TIMESTAMP) WHERE id = ?', [caseChatId]);
+      }
+    }
+
     // Only answered exchanges join the conversation: a failed turn leaves no trace, and the
     // student simply sends again.
     await appendTurns(caseChatId, [
-      { role: 'student', content: message, at: askedAt },
-      { role: 'protagonist', content: text },
+      { role: 'student', content: studentText, at: askedAt },
+      { role: 'protagonist', content: text, signals },
     ]);
     if (context.chatOptions.auto_save_transcript !== false) {
       writeTranscript(caseChatId, { protagonistName: protagonistLabel(context) })
@@ -510,12 +527,16 @@ router.post('/chat', verifyToken, requireRole(['student']), async (req, res) => 
       history,
       currentMessage: modelMessage, // what the model received, final-turn note included
       currentMessageAt: askedAt.getTime(),
-      response: text,
+      response: rawText,
       meta,
       durationMs
     }).catch(() => {}); // Fire and forget - errors handled internally
 
-    res.json({ data: { text, meta: { ...meta, model_id: modelIdUsed, backup, exchanges_used: exchangesBefore + 1 } }, error: null });
+    res.json({ data: { text, meta: {
+      ...meta, model_id: modelIdUsed, backup, exchanges_used: exchangesBefore + 1,
+      // Whether to offer Finish; the touchpoints a signal named stay on the server.
+      ...(usesSignals ? { goal_signalled: Boolean(signals?.complete), goal_reached: Boolean(signals?.complete || chat.goal_reached_at) } : {}),
+    } }, error: null });
   } catch (error) {
     if (error?.code === 'INSTRUCTOR_SETUP_INCOMPLETE') {
       return res.status(409).json({ data: null, error: { code: error.code, message: "This section isn't ready yet — your instructor still needs to finish setup.", provider: error.provider } });

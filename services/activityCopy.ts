@@ -63,6 +63,9 @@ export interface CopyVars {
   status_not_met: Record<string, never>;
   // Optional keys (validate.js#OPTIONAL_COPY_KEYS): '' for a type without them.
   personal_notice: Record<string, never>;
+  goal_reached_bar: Record<string, never>;
+  goal_finish_button: Record<string, never>;
+  goal_keep_button: Record<string, never>;
 }
 export type CopyKey = keyof CopyVars;
 

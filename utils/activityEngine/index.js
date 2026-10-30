@@ -9,6 +9,7 @@
  *   grading.js    coach prompt (platform task list and JSON contract)
  *   copy.js       student copy and the intro bar (the only module the student page imports)
  *   view.js       studentActivityView(): the whitelist a student receives
+ *   signals.js    the signal channel and the touchpoint guide
  *   validate.js   schema v1, channels and slots (fail closed)
  *   builtins/     case_chat.json, teach_back.json (locked; byte-for-byte goldens)
  *
@@ -23,6 +24,7 @@ export { buildGreeting } from './greeting.js';
 export { buildCoachPrompt } from './grading.js';
 export { copyFor, activityIntroText } from './copy.js';
 export { studentActivityView } from './view.js';
+export { extractSignals, neutralizeSignalTags } from './signals.js';
 export {
   validateDefinition, DEFINITION_SCHEMA, COPY_KEYS, INTRO_KEYS,
   isTypeKey, isCustomKey, customKeyFor, sameTraits,

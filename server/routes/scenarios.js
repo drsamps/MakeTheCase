@@ -3,7 +3,7 @@ import { pool } from '../db.js';
 import { verifyToken } from '../middleware/auth.js';
 import { requireAdminOrInstructor, requireCaseAccess, requireCaseReadAccess } from '../middleware/instructorAccess.js';
 import scenarioPositionsRoutes from './scenarioPositions.js';
-import { parseScenarioOverride, validateStudentSettings } from '../../utils/scenarioSettings.js';
+import { parseScenarioOverride, validateStudentSettings, validateAiSettings } from '../../utils/scenarioSettings.js';
 import { writeScenarioSettings } from '../services/scenarioSettings.js';
 import { draftStudentText } from '../services/scenarioDrafts.js';
 import { resolveAvailablePersonas } from '../services/personaService.js';
@@ -91,7 +91,7 @@ router.post('/:caseId/scenarios', ...canEditCase, async (req, res) => {
       scenario_name, protagonist, protagonist_initials, protagonist_role,
       chat_topic, chat_question, prompt_instructions, chat_time_limit, chat_time_warning,
       arguments_for, arguments_against, chat_options_override,
-      sort_order, enabled, student_settings
+      sort_order, enabled, student_settings, ai_settings
     } = req.body;
 
     // Student-visible text (situation, per-audience intro and opening) is a subtree of
@@ -99,6 +99,10 @@ router.post('/:caseId/scenarios', ...canEditCase, async (req, res) => {
     const studentSettings = validateStudentSettings(student_settings);
     if (studentSettings.error) {
       return res.status(400).json({ data: null, error: { message: studentSettings.error } });
+    }
+    const aiSettings = validateAiSettings(ai_settings);
+    if (aiSettings.error) {
+      return res.status(400).json({ data: null, error: { message: aiSettings.error } });
     }
 
     // Validate required fields
@@ -146,7 +150,7 @@ router.post('/:caseId/scenarios', ...canEditCase, async (req, res) => {
           arguments_against || null,
           // `student` arrives only as student_settings (validated), never inside this.
           (() => {
-            const { student, ...rest } = chat_options_override && typeof chat_options_override === 'object' ? chat_options_override : {};
+            const { student, ai, ...rest } = chat_options_override && typeof chat_options_override === 'object' ? chat_options_override : {};
             return Object.keys(rest).length > 0 ? JSON.stringify(rest) : null;
           })(),
           finalSortOrder,
@@ -156,6 +160,9 @@ router.post('/:caseId/scenarios', ...canEditCase, async (req, res) => {
       insertId = result.insertId;
       if (student_settings !== undefined) {
         await writeScenarioSettings(insertId, 'student', studentSettings.value, conn);
+      }
+      if (ai_settings !== undefined) {
+        await writeScenarioSettings(insertId, 'ai', aiSettings.value, conn);
       }
       await conn.commit();
     } catch (err) {
@@ -311,7 +318,7 @@ router.patch('/:caseId/scenarios/reorder', ...canEditCase, async (req, res) => {
 router.patch('/:caseId/scenarios/:id', ...canEditCase, async (req, res) => {
   try {
     const { caseId, id } = req.params;
-    const { student_settings, ...updates } = req.body;
+    const { student_settings, ai_settings, ...updates } = req.body;
 
     // Written separately, as a merge into chat_options_override (services/scenarioSettings.js),
     // so it can never replace the rest of that document.
@@ -319,6 +326,11 @@ router.patch('/:caseId/scenarios/:id', ...canEditCase, async (req, res) => {
     const studentSettings = validateStudentSettings(student_settings);
     if (studentSettings.error) {
       return res.status(400).json({ data: null, error: { message: studentSettings.error } });
+    }
+    const hasAiSettings = ai_settings !== undefined;
+    const aiSettings = validateAiSettings(ai_settings);
+    if (aiSettings.error) {
+      return res.status(400).json({ data: null, error: { message: aiSettings.error } });
     }
 
     // Check if scenario exists
@@ -346,9 +358,9 @@ router.patch('/:caseId/scenarios/:id', ...canEditCase, async (req, res) => {
         if (key === 'enabled') {
           params.push(value ? 1 : 0);
         } else if (key === 'chat_options_override') {
-          // The `student` subtree is never written this way; it is kept from the stored value
-          // below (or replaced by student_settings).
-          const { student, ...rest } = value && typeof value === 'object' ? value : {};
+          // The `student` and `ai` subtrees are never written this way; they are kept from the
+          // stored value below (or replaced by student_settings / ai_settings).
+          const { student, ai, ...rest } = value && typeof value === 'object' ? value : {};
           params.push(value && Object.keys(rest).length > 0 ? JSON.stringify(rest) : null);
         } else if (key === 'chat_time_limit' || key === 'chat_time_warning' || key === 'sort_order') {
           params.push(value ?? 0);
@@ -358,28 +370,35 @@ router.patch('/:caseId/scenarios/:id', ...canEditCase, async (req, res) => {
       }
     }
 
-    if (setClauses.length === 0 && !hasStudentSettings) {
+    if (setClauses.length === 0 && !hasStudentSettings && !hasAiSettings) {
       return res.status(400).json({ data: null, error: { message: 'No valid fields to update' } });
     }
 
     params.push(id);
 
-    // A whole chat_options_override sent without student_settings keeps the stored student text.
-    const keepStudent = 'chat_options_override' in updates && !hasStudentSettings;
+    // A whole chat_options_override sent without student_settings keeps the stored student text,
+    // and the same for ai_settings.
+    const wholeColumn = 'chat_options_override' in updates;
 
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
       let storedStudent = null;
-      if (keepStudent) {
+      let storedAi = null;
+      if (wholeColumn) {
         const [current] = await conn.execute('SELECT chat_options_override FROM case_scenarios WHERE id = ? FOR UPDATE', [id]);
-        storedStudent = validateStudentSettings(parseScenarioOverride(current[0]?.chat_options_override)?.student).value;
+        const stored = parseScenarioOverride(current[0]?.chat_options_override);
+        if (!hasStudentSettings) storedStudent = validateStudentSettings(stored?.student).value;
+        if (!hasAiSettings) storedAi = validateAiSettings(stored?.ai).value;
       }
       if (setClauses.length > 0) {
         await conn.execute(`UPDATE case_scenarios SET ${setClauses.join(', ')} WHERE id = ?`, params);
       }
       if (hasStudentSettings || storedStudent) {
         await writeScenarioSettings(id, 'student', hasStudentSettings ? studentSettings.value : storedStudent, conn);
+      }
+      if (hasAiSettings || storedAi) {
+        await writeScenarioSettings(id, 'ai', hasAiSettings ? aiSettings.value : storedAi, conn);
       }
       await conn.commit();
     } catch (err) {

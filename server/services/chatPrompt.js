@@ -114,6 +114,9 @@ export async function loadChatContext(chat, { definition = null } = {}) {
         // Student-visible scenario text (utils/scenarioSettings.js): the audience's situation and
         // each audience's saved opening. Read by the teach-back greeting and system prompt.
         scenario_student: readScenarioSettings(scenario.chat_options_override).student,
+        // AI-only: what the instructor is tracking. In the prompt only if the type's AI sees them;
+        // the grader checks them on every type.
+        touchpoints: readScenarioSettings(scenario.chat_options_override).ai.touchpoints,
       };
     }
   }

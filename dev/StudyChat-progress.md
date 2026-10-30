@@ -11,6 +11,41 @@ Last updated: 2026-10-30 (Phase 2), on the desktop with MySQL (MSB-SSAMPSON20).
 - **Phase 1 (the engine): committed and verified on the dev database** (see "Phase 1" below). Migration 090 is applied on the dev `ceochat`, not on production.
 - **Phase 2 (types as data, admin screen, packages): committed and verified on the dev database** (see "Phase 2" below). Migration 091 is applied on the dev `ceochat`, not on production.
 - **Phase 3 (DEBATE, APPLY, LIKEN2ME): committed and verified on the dev database** (see "Phase 3" below). Migration 092 is applied on the dev `ceochat`, not on production. Run `npm run seed-activity-types` after migrating, then restart the server.
+- **Phase 4 (signals, touchpoints, PITCH, ROLEPLAY): committed and verified on the dev database** (see "Phase 4" below). Migration 093 is applied on the dev `ceochat`, not on production.
+
+### Phase 4: what changed
+
+| Part | Files |
+|---|---|
+| Migration 093: `case_chats.completion_reason`, `case_chats.goal_reached_at`, `chat_turns.signals`, `evaluations.touchpoints` | `server/migrations/093_signals_and_touchpoints.sql` |
+| Signal channel: the block is cut out of a reply before it is stored or shown; malformed blocks dropped; stray tags removed; a student's planted tag neutralised; only types with `traits.signals` are parsed | `utils/activityEngine/signals.js`, `routes/llm.js`, `chatTurns.js` |
+| Server-side end of chat: `POST /case-chats/:id/complete` checks each reason is true (minimum for `student` and `goal`; a real limit for `max_exchanges`; a limit that has passed for `time`). **`/evaluations/run` now refuses below the minimum when no reason is recorded.** Cancel, kill and grading record a reason too | `services/chatCompletion.js`, `caseChats.js`, `evaluations.js` |
+| Page: every end path passes its reason; the Goal-reached bar (Finish / Keep talking), which never appears below the minimum; option `end_on_goal`, offered only on types that can signal | `App.tsx`, `services/llmService.ts`, `chatOptions.js`, `routes/chatOptions.js` |
+| Touchpoints: `ai` subtree of the scenario settings (`validateAiSettings`, one writer, kept across whole-column writes), never sent to students; a scenario editor section. In the chat prompt only if `ai_sees.touchpoints`. **Graded on every type that has them**, and the built-in prompts are unchanged unless a scenario has some. Saved with key and label snapshots, evidence verified verbatim, never returned to the student | `utils/scenarioSettings.js`, `scenarios.js`, `ScenarioManager.tsx`, `prompt.js`, `grading.js`, `teachBack.js#settleTouchpoints`, `evaluationNormalizer.js` |
+| Coverage in Results (across all filtered rows, not one page); live checklist in Monitor; a run's Issue Analytics seeds them as unselected, unscanned instructor themes (re-scan is billed only when pressed) | `analytics.js`, `Analytics.tsx`, `sectionCases.js`, `LiveSessionMonitor.tsx`, `issueAnalytics/runner.js` |
+| Packages: tokens `signals:complete`, `signals:touchpoints`, `touchpoints:ai_sees`, `scenario_settings:ai`, `chat_option:end_on_goal`. `end_on_goal` off is left out, so packages of existing types still install on older servers | `activityPack/capabilities.js`, `format.js`, `export.js` |
+| System types `pitch`, `roleplay` | `server/scripts/seeds/systemActivityTypes.js` |
+
+### Phase 4 verification (2026-10-30, dev `ceochat`)
+
+| Check | Result |
+|---|---|
+| `typecheck`, `npm run build` | 0 errors; builds; no prompt template or signal text in the student bundle |
+| `check-activity-engine.js --db` | 919/919; built-in versions unchanged |
+| `check-activity-definitions.js` | 35/35 (signal parsing, stray tags, planted tags, a built-in's prompt unchanged by touchpoints) |
+| `check-activity-pack.js --db` | 50/50 |
+| API, against the running server (40 steps, real gpt-5-mini) | a student told the model to emit the block: nothing reached the reply or stored turns; below the minimum, `goal`, `student`, a false `time` and a false `max_exchanges` are all refused, and so is `/evaluations/run`; another student gets 404; the first reason stands; the model reported touchpoints live; grading saved them with labels and verbatim evidence and did not return them to the student; Results coverage; instructor themes seeded; case chat has no signal fields but its touchpoints are detected at grading; cancel records its reason; package tokens |
+| Browser | Pitch intro bar and greeting; Goal-reached bar appears after a reply once the goal is reached; Finish records `goal` and moves to the evaluation button |
+
+**Found while testing, fixed:** the model ignored my first wording of the signal rule on every turn, so the live checklist stayed empty. I rewrote it as a check before every reply, and it then reported touchpoints on all three turns. Also, the Pitch greeting ran on after the bolded topic.
+
+### Phase 4: decisions for your review
+
+1. **The grading gate is a behaviour change for every type:** `/evaluations/run` refuses a chat below Minimum Exchanges with no recorded reason. A page loaded before this deploys and ended by the timer below the minimum would get an error until refreshed.
+2. **A goal signal below the minimum** waits: the bar appears as soon as the minimum is met. The plan's "page refresh still shows the bar" isn't done: the student page has no way to resume a chat after a refresh today, so `goal_reached_at` is stored but nothing reads it on reload.
+3. **A touchpoint hit whose quote can't be verified** stays a hit with no evidence (the same rule as criterion evidence).
+4. **Re-evaluate does not update saved touchpoints.** Re-evaluate saves no result, and the admin edit of an evaluation leaves touchpoints as they were.
+5. **The model's touchpoint signals are noisy.** It repeated `carrying_cost` on a later turn; the checklist only needs "ever hit", so this is harmless. It reports what the student raised, as judged by the same model, so treat Monitor as a live hint and Results as the record.
 
 ### Phase 3: what changed
 

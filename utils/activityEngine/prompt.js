@@ -13,6 +13,7 @@
 
 import { renderOnce, withWrappers } from './render.js';
 import { personaText, situationText, hintForm } from './resolvers.js';
+import { signalInstructions, touchpointGuide } from './signals.js';
 
 function documentsBlock(def, caseData) {
   const docs = def.prompt.documents;
@@ -63,7 +64,7 @@ ${content}</context>
 <context type="case" file="case.md">
 ${caseData.case_content}
 </context>
-=== ${c.end} ===${supplementary}${teachingNote}${args}
+=== ${c.end} ===${supplementary}${teachingNote}${args}${sees.touchpoints ? touchpointGuide(caseData.touchpoints) : ''}
 `;
 }
 
@@ -123,5 +124,6 @@ function roleValues(def, studentName, personaId, caseData, options) {
  * @param {{ personaData?: { instructions }, chatbotPersonality?, freeHints? }} options
  */
 export function buildSystemPrompt(def, studentName, personaId, caseData, options = {}) {
-  return documentsBlock(def, caseData) + renderOnce(def.prompt.role, roleValues(def, studentName, personaId, caseData, options));
+  return documentsBlock(def, caseData) + renderOnce(def.prompt.role, roleValues(def, studentName, personaId, caseData, options))
+    + signalInstructions(def.traits.signals, def.traits.ai_sees.touchpoints ? caseData.touchpoints : []);
 }

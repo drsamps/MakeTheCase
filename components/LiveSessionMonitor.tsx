@@ -21,6 +21,8 @@ interface LiveStudent {
   /** A personal activity's row with the student's identity hidden (services/personalActivity.js). */
   names_hidden?: boolean;
   personal_activity?: boolean;
+  /** Live checklist, for types whose AI signals touchpoints. */
+  touchpoints?: { key: string; label: string; hit: boolean }[];
   status: 'not_started' | 'in_progress' | 'completed' | 'abandoned';
   chat_id: string | null;
   start_time: string | null;
@@ -474,6 +476,15 @@ const LiveSessionMonitor: React.FC<LiveSessionMonitorProps> = ({ sections, initi
                     <td className="px-4 py-3">
                       <div className="text-sm font-medium text-gray-900">{student.student_name}</div>
                       <div className="text-xs text-gray-500">{student.email}</div>
+                      {student.touchpoints && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {student.touchpoints.map((t) => (
+                            <span key={t.key} className={`px-1.5 py-0.5 text-[11px] rounded ${t.hit ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-500'}`}>
+                              {t.hit ? '✓ ' : ''}{t.label}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </td>
                     {multiSection && (
                       <td className="px-4 py-3 text-sm text-gray-600" title={sectionTitle(student.section_id)}>

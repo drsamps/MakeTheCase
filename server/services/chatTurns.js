@@ -23,7 +23,8 @@ export async function listTurns(caseChatId) {
 /**
  * Append turns in order. Locks the chat row so two requests for the same chat (a double
  * send) cannot take the same turn_index.
- * @param {{ role: 'student'|'protagonist', content: string, at?: Date }[]} turns
+ * @param {{ role: 'student'|'protagonist', content: string, at?: Date, signals?: object|null }[]} turns
+ *   signals: what the AI signalled with this reply (utils/activityEngine/signals.js), never in content
  */
 export async function appendTurns(caseChatId, turns) {
   const conn = await pool.getConnection();
@@ -37,8 +38,8 @@ export async function appendTurns(caseChatId, turns) {
     let index = Number(next);
     for (const t of turns) {
       await conn.execute(
-        'INSERT INTO chat_turns (case_chat_id, turn_index, role, content, created_at) VALUES (?, ?, ?, ?, ?)',
-        [caseChatId, index++, t.role, t.content, t.at || new Date()]
+        'INSERT INTO chat_turns (case_chat_id, turn_index, role, content, created_at, signals) VALUES (?, ?, ?, ?, ?, ?)',
+        [caseChatId, index++, t.role, t.content, t.at || new Date(), t.signals ? JSON.stringify(t.signals) : null]
       );
     }
     await conn.commit();

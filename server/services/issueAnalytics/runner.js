@@ -20,6 +20,7 @@
  */
 
 import crypto from 'node:crypto';
+import { readScenarioSettings } from '../../../utils/scenarioSettings.js';
 import { pool } from '../../db.js';
 import { generateOutlineWithLLM } from '../llmRouter.js';
 import { getWeeklyUsage, UsageCostCapExceededError, UnpricedModelBlockedError } from '../usageGuard.js';
@@ -400,6 +401,22 @@ async function cluster(run, ctx, vendor, job) {
       [run.id, label, clip(th.description, 2000) || null, type, order++]
     );
     await insertMentions(run.id, ins.insertId, keys.map(k => items.get(k)));
+  }
+  // The scenario's touchpoints become instructor themes the first time a run finishes. They have
+  // no students until the instructor presses Re-scan (billed then, never here).
+  if (run.scenario_id) {
+    const [scenarioRows] = await pool.execute('SELECT chat_options_override FROM case_scenarios WHERE id = ?', [run.scenario_id]);
+    const { touchpoints } = readScenarioSettings(scenarioRows[0]?.chat_options_override).ai;
+    const [existing] = await pool.execute("SELECT label FROM issue_analysis_themes WHERE run_id = ? AND origin = 'instructor'", [run.id]);
+    const taken = new Set(existing.map((t) => t.label));
+    for (const t of touchpoints) {
+      if (taken.has(t.label)) continue;
+      await pool.execute(
+        `INSERT INTO issue_analysis_themes (run_id, label, description, theme_type, origin, selected, sort_order)
+         VALUES (?, ?, ?, 'topic', 'instructor', 0, ?)`,
+        [run.id, clip(t.label, 200), clip(t.description, 2000) || null, order + 1000]
+      );
+    }
   }
   if (order < run.theme_target_min) {
     const shortfall = `Found ${order} distinct theme${order === 1 ? '' : 's'}, fewer than the ${run.theme_target_min} requested: the transcripts did not support more without near-duplicates.`;

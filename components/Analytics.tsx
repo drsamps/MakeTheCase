@@ -291,6 +291,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
   const [isAnonymizing, setIsAnonymizing] = useState(false);
   // Personal activities (LIKEN2ME) hide names until the instructor asks. Deliberately not remembered.
   const [showPersonalNames, setShowPersonalNames] = useState(false);
+  const [touchpointCoverage, setTouchpointCoverage] = useState<{ case_id: string; case_title: string; key: string; label: string; hits: number; chats: number }[]>([]);
   const [autoAnonymize, setAutoAnonymize] = useState(false); // Setting for auto-anonymize
 
   // Re-evaluation modal state
@@ -444,6 +445,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
       if (response.data) {
         setSummary(response.data.summary);
         setStudents(response.data.students);
+        setTouchpointCoverage(response.data.touchpoint_coverage || []);
         setTotalRecords(response.data.total);
       }
     } catch (error) {
@@ -1439,6 +1441,26 @@ const Analytics: React.FC<AnalyticsProps> = ({ onNavigate, initialSectionId, ini
               onPageChange={setCurrentPage}
               onPageSizeChange={handlePageSizeChange}
             />
+          )}
+
+          {touchpointCoverage.length > 0 && (
+            <details className="px-4 py-2 text-sm border-b border-gray-200 bg-white">
+              <summary className="cursor-pointer font-medium text-gray-700">Touchpoint coverage ({touchpointCoverage.length})</summary>
+              <table className="mt-2 text-sm">
+                <thead className="text-xs text-gray-500 text-left">
+                  <tr><th className="pr-4 py-1">Case</th><th className="pr-4">Touchpoint</th><th className="pr-4">Students who raised it</th></tr>
+                </thead>
+                <tbody>
+                  {touchpointCoverage.map((t) => (
+                    <tr key={`${t.case_id}:${t.key}`} className="border-t border-gray-100">
+                      <td className="pr-4 py-1 text-gray-600">{t.case_title}</td>
+                      <td className="pr-4 font-medium text-gray-900">{t.label}</td>
+                      <td className="pr-4 text-gray-700">{t.hits} of {t.chats} graded chat{t.chats === 1 ? '' : 's'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
           )}
 
           {students.some(s => s.personal_activity) && (

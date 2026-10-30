@@ -152,6 +152,14 @@ const BASE_CHAT_OPTIONS_SCHEMA = [
     category: 'chat_control'
   },
   {
+    key: 'end_on_goal',
+    label: 'End When the Goal Is Reached',
+    type: 'boolean',
+    default: false,
+    description: 'When the AI signals that the goal was reached, wrap up at once instead of offering Finish / Keep talking. Minimum exchanges still apply.',
+    category: 'chat_control'
+  },
+  {
     key: 'allow_finish_button',
     label: 'Allow Finish Button',
     type: 'boolean',
@@ -285,6 +293,8 @@ router.get('/schema', async (req, res) => {
       return res.status(400).json({ data: null, error: { code: 'UNKNOWN_ACTIVITY_TYPE', message: 'Unknown activity type' } });
     }
     const hidden = new Set(type ? activityHiddenOptions(type) : []);
+    // Only a type whose AI can signal its goal has this option to set.
+    if (!type || !getTypeEntry(type)?.current?.definition.traits.signals.complete) hidden.add('end_on_goal');
     res.json({ data: schema.filter((f) => !hidden.has(f.key)), error: null });
   } catch (error) {
     console.error('Error building chat options schema:', error);

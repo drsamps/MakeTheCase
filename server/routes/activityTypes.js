@@ -68,6 +68,7 @@ function summaryOf(entry) {
       capture_methods: def.traits.capture_methods,
       personal: Boolean(def.traits.personal),
       two_sided: Boolean(def.traits.two_sided),
+      signals_complete: Boolean(def.traits.signals.complete),
       ai_sees_arguments: Boolean(def.traits.ai_sees.arguments),
     },
     saved_openings: Boolean(def.greeting.saved_openings),

@@ -74,6 +74,16 @@ export function buildCoachPrompt(def, chatHistory, studentName, caseData = {}, f
     : headingCount === 1 ? '<the headed section above>'
       : `<the ${numberWord(headingCount)} headed sections above>`;
 
+  // Touchpoints are detected at grading on every type that has them. Only when the scenario has
+  // some, so a chat without touchpoints gets the same prompt, byte for byte.
+  const touchpoints = caseData.touchpoints || [];
+  const touchpointSchema = touchpoints.length
+    ? ',\n  "touchpoints": [ { "key": "<key>", "hit": true | false, "evidence": "<verbatim student quote, or omit>" } ]'
+    : '';
+  const touchpointTask = touchpoints.length
+    ? `\n\n**Touchpoints:** The instructor is tracking whether the student touched on each point below. These are for the instructor and do not change the score. Report every key once in "touchpoints": "hit" is true only if a STUDENT message raised the point; "evidence" is a short quote taken VERBATIM from one of the student's own messages.\n${touchpoints.map((t) => `- ${t.key}: ${t.label}${t.description ? ` (${t.description})` : ''}`).join('\n')}`
+    : '';
+
   const staticContent = `
 === ${doc.heading} ===
 <context type="case" file="case.md">
@@ -103,10 +113,10 @@ ${summaryInstruction(g.summary_headings)}
   ],
   "totalScore": <integer, sum of criteria scores after hint penalties>,
   "summary": "${summarySchema}",
-  "hints": <integer, number of hints requested>
+  "hints": <integer, number of hints requested>${touchpointSchema}
 }
 \`\`\`
-IMPORTANT: "score" and "totalScore" MUST be integers (not strings, not "4/5", not null). Each criterion in the "criteria" array MUST have numeric "score" and "max_score" fields.
+IMPORTANT: "score" and "totalScore" MUST be integers (not strings, not "4/5", not null). Each criterion in the "criteria" array MUST have numeric "score" and "max_score" fields.${touchpointTask}
 
 === END EVALUATION RUBRIC ===
 `;

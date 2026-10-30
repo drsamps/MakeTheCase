@@ -54,6 +54,10 @@ export const ACTIVITY_DEFINITION_TOKEN = `activity_definition:${DEFINITION_SCHEM
 
 // A case with a learning goal (cases.goal, StudyChat Phase 3). An older installer would drop it.
 export const ACTIVITY_GOAL_TOKEN = 'activity:goal';
+// A scenario carrying touchpoints (utils/scenarioSettings.js, `ai` subtree). Phase 4.
+export const SCENARIO_AI_TOKEN = 'scenario_settings:ai';
+// Settings with the option on. Off is the default and is left out of packages (export.js).
+export const END_ON_GOAL_TOKEN = 'chat_option:end_on_goal';
 
 /**
  * One token per engine feature a carried definition uses, written only when one does: the installer
@@ -64,6 +68,9 @@ const FEATURE_TOKENS = {
   'positions:assigned': { words: 'assigned positions', uses: (d) => d.traits.capture_methods.includes('assigned') },
   'positions:two_sided': { words: 'two-sided activities', uses: (d) => Boolean(d.traits.two_sided) },
   'trait:personal': { words: 'activities about personal content', uses: (d) => Boolean(d.traits.personal) },
+  'signals:complete': { words: 'activities whose AI can signal the goal was reached', uses: (d) => Boolean(d.traits.signals.complete) },
+  'signals:touchpoints': { words: 'live touchpoint tracking', uses: (d) => Boolean(d.traits.signals.touchpoints) },
+  'touchpoints:ai_sees': { words: 'touchpoints shown to the AI', uses: (d) => Boolean(d.traits.ai_sees.touchpoints) },
   'grading:type_criteria': { words: "grading on a type's own criteria", uses: (d) => d.traits.grading_extras.eval_inputs === 'type_criteria' },
 };
 
@@ -72,7 +79,7 @@ export const isBuiltinActivityType = (activityType) => isKnownActivityType(activ
 
 /** Every `requires` token this server understands. */
 export function serverCapabilities() {
-  return [...listActivityTypes().map((type) => activityTypeToken(type.id)), ACTIVITY_DEFINITION_TOKEN, SCENARIO_STUDENT_TEXT_TOKEN, DOCUMENT_TEXT_FORMAT_TOKEN, ACTIVITY_GOAL_TOKEN, ...Object.keys(FEATURE_TOKENS)];
+  return [...listActivityTypes().map((type) => activityTypeToken(type.id)), ACTIVITY_DEFINITION_TOKEN, SCENARIO_STUDENT_TEXT_TOKEN, DOCUMENT_TEXT_FORMAT_TOKEN, ACTIVITY_GOAL_TOKEN, SCENARIO_AI_TOKEN, END_ON_GOAL_TOKEN, ...Object.keys(FEATURE_TOKENS)];
 }
 
 const usesScenarioStudentText = (activity) =>
@@ -90,6 +97,8 @@ export function requirementsFor(activities, definitions = []) {
   if (activities.some(usesScenarioStudentText)) tokens.push(SCENARIO_STUDENT_TEXT_TOKEN);
   if (activities.some(usesStatedTextFormat)) tokens.push(DOCUMENT_TEXT_FORMAT_TOKEN);
   if (activities.some((a) => a.goal)) tokens.push(ACTIVITY_GOAL_TOKEN);
+  if (activities.some((a) => (a.scenarios || []).some((s) => s.chat_options_override?.ai))) tokens.push(SCENARIO_AI_TOKEN);
+  if (activities.some((a) => a.settings?.chat_options?.end_on_goal)) tokens.push(END_ON_GOAL_TOKEN);
   for (const [token, feature] of Object.entries(FEATURE_TOKENS)) {
     if (definitions.some(feature.uses)) tokens.push(token);
   }
@@ -102,6 +111,8 @@ function describeToken(token) {
   if (token === SCENARIO_STUDENT_TEXT_TOKEN) return 'saved openings and intro text on scenarios';
   if (token === DOCUMENT_TEXT_FORMAT_TOKEN) return 'documents formatted in the Case Files editor';
   if (token === ACTIVITY_GOAL_TOKEN) return 'learning goals on activities';
+  if (token === SCENARIO_AI_TOKEN) return 'touchpoints on scenarios';
+  if (token === END_ON_GOAL_TOKEN) return 'ending a chat when its goal is reached';
   if (FEATURE_TOKENS[token]) return FEATURE_TOKENS[token].words;
   if (kind === 'activity_definition') return `custom activity types (definition schema ${value})`;
   if (kind === 'activity_type') {

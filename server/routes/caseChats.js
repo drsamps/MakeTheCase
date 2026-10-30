@@ -12,6 +12,7 @@ import { appendTurns } from '../services/chatTurns.js';
 import { isTypeUsable } from '../services/activityTypes.js';
 import { typeTraits } from '../services/activityTypeStore.js';
 import { assignSide } from '../services/sideAssignment.js';
+import { assertCanComplete, recordCompletionReason, CompletionError } from '../services/chatCompletion.js';
 import { chatAttemptStatus } from '../services/chatAttempts.js';
 
 const router = express.Router();
@@ -195,6 +196,38 @@ router.post('/', verifyToken, requireRole(['student']), async (req, res) => {
   }
 });
 
+// POST /api/case-chats/:id/complete - The student's chat is ending, and why: { reason }
+// (student | goal | max_exchanges | time). Enforces the minimum on the server and records
+// completion_reason; grading itself is /api/evaluations/run. See services/chatCompletion.js.
+router.post('/:id/complete', requireChatOwner('id'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+    const [rows] = await pool.execute(
+      `SELECT id, case_id, section_id, scenario_id, persona, initial_position_id, activity_type_version, status,
+              time_limit_minutes, time_started, goal_reached_at, completion_reason
+         FROM case_chats WHERE id = ?`,
+      [id]
+    );
+    const chat = rows[0];
+    if (!chat) return res.status(404).json({ data: null, error: { message: 'Chat not found' } });
+    const context = await loadChatContext(chat);
+    const [[{ used }]] = await pool.execute("SELECT COUNT(*) AS used FROM chat_turns WHERE case_chat_id = ? AND role = 'student'", [id]);
+    assertCanComplete(chat, reason, context.chatOptions, Number(used));
+    await recordCompletionReason(id, reason);
+    res.json({ data: { completion_reason: chat.completion_reason || reason }, error: null });
+  } catch (error) {
+    if (error instanceof CompletionError) {
+      return res.status(error.status).json({ data: null, error: { code: error.code, message: error.message, ...error.details } });
+    }
+    if (error?.code === 'ACTIVITY_TYPE_UNAVAILABLE') {
+      return res.status(409).json({ data: null, error: { code: error.code, message: error.message } });
+    }
+    console.error('Error completing chat:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 // PATCH /api/case-chats/:id/activity - Update last_activity timestamp (heartbeat)
 router.patch('/:id/activity', requireChatOwner('id'), async (req, res) => {
   try {
@@ -255,6 +288,10 @@ router.patch('/:id/status', requireChatOwner('id'), async (req, res) => {
     // Set end_time for terminal states
     if (['abandoned', 'canceled', 'killed', 'completed'].includes(status)) {
       updates.push('end_time = CURRENT_TIMESTAMP');
+    }
+    if (status === 'canceled' || status === 'killed') {
+      updates.push('completion_reason = COALESCE(completion_reason, ?)');
+      params.push(status === 'killed' ? 'instructor' : 'canceled');
     }
 
     if (hints_used !== undefined) {
@@ -786,7 +823,7 @@ router.patch('/:id/kill', verifyToken, requireRole(['admin']), async (req, res) 
     }
 
     await pool.execute(
-      `UPDATE case_chats SET status = 'killed', end_time = CURRENT_TIMESTAMP WHERE id = ?`,
+      `UPDATE case_chats SET status = 'killed', end_time = CURRENT_TIMESTAMP, completion_reason = COALESCE(completion_reason, 'instructor') WHERE id = ?`,
       [id]
     );
 

@@ -23,7 +23,14 @@
  *     intro    one playful line about this audience, shown in the intro bar above the chat
  *     opening  the AI's first message, the same for every student; `{studentName}` is replaced
  *              with the student's first name when the chat starts
+ *
+ * The `ai` subtree (never sent to students):
+ *   touchpoints  [{ key, label, description }]: what the instructor is tracking. `key` is stable,
+ *                so results keep meaning when a label is reworded. See validateAiSettings().
  */
+
+export const AI_SETTINGS_LIMITS = { touchpoints: 20, label: 120, description: 500 };
+const TOUCHPOINT_KEY_RE = /^[a-z0-9_]{1,40}$/;
 
 export const STUDENT_NAME_TOKEN = '{studentName}';
 
@@ -74,13 +81,55 @@ function normaliseStudent(raw) {
   return student;
 }
 
+/** The `ai` subtree, normalised: well-formed touchpoints only. */
+function normaliseAi(raw) {
+  const list = isObject(raw) && Array.isArray(raw.touchpoints) ? raw.touchpoints : [];
+  const seen = new Set();
+  const touchpoints = [];
+  for (const t of list) {
+    if (!isObject(t) || !TOUCHPOINT_KEY_RE.test(t.key || '') || seen.has(t.key) || !cleanText(t.label)) continue;
+    seen.add(t.key);
+    touchpoints.push({ key: t.key, label: cleanText(t.label), description: cleanText(t.description) });
+  }
+  return { touchpoints };
+}
+
 /**
  * A scenario's settings, read leniently (what is stored was validated on the way in).
- * @returns {{ student: { situation: string, personas: Record<string, { intro?: string, opening?: string }> } }}
+ * @returns {{ student: { situation: string, personas: Record<string, { intro?: string, opening?: string }> }, ai: { touchpoints: { key: string, label: string, description: string }[] } }}
  */
 export function readScenarioSettings(override) {
   const parsed = parseScenarioOverride(override);
-  return { student: normaliseStudent(parsed?.student) };
+  return { student: normaliseStudent(parsed?.student), ai: normaliseAi(parsed?.ai) };
+}
+
+/**
+ * Check an `ai` subtree before it is stored. Same contract as validateStudentSettings(): a key it
+ * does not know is refused.
+ */
+export function validateAiSettings(raw) {
+  if (raw === null || raw === undefined) return { value: null, error: null };
+  if (!isObject(raw)) return { value: null, error: 'AI settings must be an object.' };
+  const unknown = Object.keys(raw).filter((k) => k !== 'touchpoints');
+  if (unknown.length > 0) return { value: null, error: `Unknown AI setting: ${unknown.join(', ')}.` };
+  const list = raw.touchpoints ?? [];
+  if (!Array.isArray(list)) return { value: null, error: 'Touchpoints must be a list.' };
+  if (list.length > AI_SETTINGS_LIMITS.touchpoints) return { value: null, error: `At most ${AI_SETTINGS_LIMITS.touchpoints} touchpoints.` };
+  const seen = new Set();
+  for (const t of list) {
+    if (!isObject(t)) return { value: null, error: 'Each touchpoint must be an object.' };
+    const extra = Object.keys(t).filter((k) => !['key', 'label', 'description'].includes(k));
+    if (extra.length > 0) return { value: null, error: `Unknown touchpoint setting: ${extra.join(', ')}.` };
+    if (!TOUCHPOINT_KEY_RE.test(t.key || '')) return { value: null, error: `"${String(t.key).slice(0, 40)}" is not a touchpoint key (lowercase letters, digits, underscores).` };
+    if (seen.has(t.key)) return { value: null, error: `The touchpoint key "${t.key}" is used twice.` };
+    seen.add(t.key);
+    if (!cleanText(t.label)) return { value: null, error: `The touchpoint "${t.key}" needs a label.` };
+    if (cleanText(t.label).length > AI_SETTINGS_LIMITS.label) return { value: null, error: `The label of "${t.key}" is longer than ${AI_SETTINGS_LIMITS.label} characters.` };
+    if (t.description !== undefined && t.description !== null && typeof t.description !== 'string') return { value: null, error: `The description of "${t.key}" must be text.` };
+    if (cleanText(t.description).length > AI_SETTINGS_LIMITS.description) return { value: null, error: `The description of "${t.key}" is longer than ${AI_SETTINGS_LIMITS.description} characters.` };
+  }
+  const ai = normaliseAi(raw);
+  return { value: ai.touchpoints.length ? ai : null, error: null };
 }
 
 /** The part of a scenario's settings a student may see (sectionCases.js#forStudent). */
