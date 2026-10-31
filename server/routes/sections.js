@@ -58,8 +58,9 @@ router.get('/', verifyToken, requireAdminOrInstructor, async (req, res) => {
              i.full_name as primary_instructor_name,
              (SELECT COUNT(DISTINCT s2.id)
               FROM students s2
-              WHERE s2.section_id = s.section_id
-                 OR EXISTS (SELECT 1 FROM student_sections ss WHERE ss.student_id = s2.id AND ss.section_id = s.section_id)
+              WHERE s2.preview_for IS NULL
+                AND (s2.section_id = s.section_id
+                 OR EXISTS (SELECT 1 FROM student_sections ss WHERE ss.student_id = s2.id AND ss.section_id = s.section_id))
              ) as student_count,
              (SELECT COUNT(*) FROM section_cases sc2 WHERE sc2.section_id = s.section_id) as case_count,
              (SELECT COUNT(*) FROM section_cases sc3 WHERE sc3.section_id = s.section_id AND sc3.active = TRUE) as active_case_count
@@ -122,6 +123,7 @@ router.get('/orphaned', verifyToken, requireRole(['admin']), async (req, res) =>
       FROM sections s
       LEFT JOIN semesters sem ON s.semester_id = sem.id
       LEFT JOIN student_sections ss ON s.section_id = ss.section_id
+        AND ss.student_id NOT IN (SELECT ps.id FROM students ps WHERE ps.preview_for IS NOT NULL)
       LEFT JOIN section_cases sc ON s.section_id = sc.section_id
       WHERE s.course_id IS NULL
       GROUP BY s.section_id, s.section_title, s.year_term, s.semester_id, sem.semester_code, sem.start_date, s.enabled, s.created_at
@@ -399,6 +401,7 @@ router.get('/:id/students', verifyToken, requireAdminOrInstructor, requireSectio
     // Get students from junction table with student details
     const [rows] = await pool.execute(
       `SELECT s.id, s.full_name, s.first_name, s.last_name, s.email, s.created_at,
+              (s.preview_for IS NOT NULL) AS is_preview,
               ss.enrolled_at, ss.enrolled_by, ss.is_primary
        FROM student_sections ss
        JOIN students s ON ss.student_id = s.id

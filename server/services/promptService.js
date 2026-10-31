@@ -310,6 +310,7 @@ const GLOBAL_ONLY_KEYS = new Set([
   'max_log_files',
   'log_with_full_case_context',
   'default_model_id',
+  'allow_student_self_register',
 ]);
 function isGlobalOnly(key) {
   return GLOBAL_ONLY_KEYS.has(key) || key.startsWith('active_prompt_');

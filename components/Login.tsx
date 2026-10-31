@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../services/apiClient';
+import PasswordInput from './ui/PasswordInput';
 
 interface LoginProps {
   onLoginSuccess: () => void;
@@ -65,12 +66,13 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
             <label htmlFor="password" className="block text-sm font-medium text-gray-700">
               Password
             </label>
-            <input
+            <PasswordInput
               id="password"
-              type="password"
+              autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-2 mt-1 text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              wrapperClassName="mt-1"
+              className="px-4 py-2 text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
               placeholder="••••••••"
               required
             />

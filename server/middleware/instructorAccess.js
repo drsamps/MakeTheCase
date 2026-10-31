@@ -234,6 +234,23 @@ export async function isPrimaryInstructorForSection(instructorId, sectionId) {
 }
 
 /**
+ * Can this staff member manage students in a section? Admins (not acting as an
+ * instructor) always can; an instructor can as the section's primary instructor or as
+ * a TA with can_manage_students. Takes plain values so it also works for a preview
+ * student's owner, where there is no staff request to read.
+ * @param {{ isAdmin: boolean, instructorId: string|null }} who
+ * @param {string} sectionId
+ * @returns {Promise<boolean>}
+ */
+export async function canManageStudentsAs({ isAdmin, instructorId }, sectionId) {
+  if (isAdmin) return true;
+  if (!instructorId) return false;
+  if (await isPrimaryInstructorForSection(instructorId, sectionId)) return true;
+  const perms = await getTAPermissions(instructorId, sectionId);
+  return Boolean(perms?.canManageStudents);
+}
+
+/**
  * @deprecated Use `canAccessResource(req, 'case', caseId, action)` from
  * services/resourceAccess.js, which honors the visibility enum + team shares
  * + admin impersonation. This wrapper exists only for legacy call sites that

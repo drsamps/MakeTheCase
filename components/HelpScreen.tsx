@@ -4,7 +4,7 @@ import MarkdownPreview from './caseWriter/MarkdownPreview';
 import {
   ActivityTypesHelp, ApiKeysHelp, CaseFilesHelp, CasePackagesHelp, ChatOptionsHelp,
   CourseAssignmentsHelp, IssueAnalyticsHelp, PersonasHelp, PositionAnalyticsHelp, ResultsHelp,
-  TeachBackHelp, TeamsHelp, VisibilityHelp,
+  StudentSignInHelp, TeachBackHelp, TeamsHelp, VisibilityHelp,
 } from '../help/dashboard';
 
 interface GuideInfo {
@@ -27,6 +27,7 @@ const TOPICS: { title: string; where: string; Body: React.FC }[] = [
   { title: 'Position analytics', where: 'Results → Positions', Body: PositionAnalyticsHelp },
   { title: 'Issue analytics', where: 'Results → Issue Analytics', Body: IssueAnalyticsHelp },
   { title: 'Teams', where: 'Setup → Teams', Body: TeamsHelp },
+  { title: 'Student sign-in and Student view', where: 'Students, and Student view in the header', Body: StudentSignInHelp },
   { title: 'Sharing and visibility', where: 'Personas, rubrics, cases and Case Writer projects', Body: VisibilityHelp },
   { title: 'API keys', where: 'Setup → API Keys', Body: ApiKeysHelp },
 ];

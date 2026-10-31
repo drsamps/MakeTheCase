@@ -2,6 +2,7 @@ import express from 'express';
 import { pool } from '../db.js';
 import { isPersonalType, hiddenNameFor } from '../services/personalActivity.js';
 import { verifyToken } from '../middleware/auth.js';
+import { notPreviewChatSql } from '../services/previewStudents.js';
 import {
   requireAdminOrInstructor,
   getAccessibleSectionIds
@@ -76,7 +77,8 @@ function parseSectionIds(req) {
 async function buildPositionsScope(req, baseConditions) {
   const { case_id, scenario_id } = req.query;
   const semesterId = parseSemesterId(req);
-  const whereConditions = [...baseConditions];
+  // Student view (preview) chats never count in Positions.
+  const whereConditions = [...baseConditions, notPreviewChatSql('cc')];
   const params = [];
 
   const requestedSectionIds = parseSectionIds(req);
@@ -327,7 +329,8 @@ router.get('/results', verifyToken, requireAdminOrInstructor, async (req, res) =
     const sortColumn = validSortColumns[sort_by] || 'cc.end_time';
 
     // Build WHERE clause for filtering
-    let whereConditions = ['sec.enabled = TRUE'];
+    // Student view (preview) students never count in Results.
+    let whereConditions = ['sec.enabled = TRUE', 's.preview_for IS NULL'];
     let params = [];
 
     if (sectionIdList) {
@@ -819,7 +822,7 @@ router.get('/filters', verifyToken, requireAdminOrInstructor, async (req, res) =
       SELECT cs.case_id, cs.id AS scenario_id, cs.scenario_name, cs.protagonist,
              cs.protagonist_role, cs.chat_question,
              (SELECT COUNT(*) FROM case_chats cc
-               WHERE cc.scenario_id = cs.id
+               WHERE cc.scenario_id = cs.id AND ${notPreviewChatSql('cc')}
     `;
     const scenarioParams = [];
     if (scopedSectionIds !== null) {
@@ -841,6 +844,7 @@ router.get('/filters', verifyToken, requireAdminOrInstructor, async (req, res) =
       FROM case_chats cc
       WHERE (cc.initial_position IS NOT NULL OR cc.initial_position_id IS NOT NULL
              OR cc.final_position IS NOT NULL OR cc.final_position_id IS NOT NULL)
+        AND ${notPreviewChatSql('cc')}
     `;
     const positionDataParams = [];
     if (scopedSectionIds !== null) {
@@ -857,7 +861,7 @@ router.get('/filters', verifyToken, requireAdminOrInstructor, async (req, res) =
       SELECT DISTINCT cc.chat_model, m.model_name
       FROM case_chats cc
       LEFT JOIN models m ON m.model_id = cc.chat_model
-      WHERE cc.chat_model IS NOT NULL
+      WHERE cc.chat_model IS NOT NULL AND ${notPreviewChatSql('cc')}
     `;
     const chatModelsParams = [];
     if (scopedSectionIds !== null) {

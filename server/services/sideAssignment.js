@@ -64,6 +64,7 @@ export async function assignSide(conn, { sectionCaseId, sectionId, caseId, scena
   const [counts] = await conn.execute(
     `SELECT initial_position_id AS position_id, COUNT(DISTINCT student_id) AS n FROM case_chats
       WHERE section_id = ? AND case_id = ? AND scenario_id = ? AND position_method = 'assigned'
+        AND student_id NOT IN (SELECT ps.id FROM students ps WHERE ps.preview_for IS NOT NULL)
       GROUP BY initial_position_id`,
     [sectionId, caseId, scenarioId]
   );

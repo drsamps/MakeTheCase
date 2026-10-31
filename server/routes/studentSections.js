@@ -1,24 +1,63 @@
 import express from 'express';
 import { pool } from '../db.js';
 import { verifyToken } from '../middleware/auth.js';
+import { previewOwnerManagesSection, closedSectionsForPreview } from '../services/previewStudents.js';
+import { canManageStudentsAs } from '../middleware/instructorAccess.js';
 
 const router = express.Router();
 
+// GET /api/student-sections/preview-sections - Student view only: sections closed to new
+// students that the preview student's owner manages, so the instructor can still preview them.
+router.get('/preview-sections', verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') return res.json({ data: [], error: null });
+    const [rows] = await pool.execute('SELECT preview_for FROM students WHERE id = ?', [req.user.id]);
+    const previewFor = rows[0]?.preview_for;
+    if (!previewFor) return res.json({ data: [], error: null });
+    res.json({ data: await closedSectionsForPreview(previewFor), error: null });
+  } catch (error) {
+    console.error('Error fetching preview sections:', error);
+    res.status(500).json({ data: null, error: { message: error.message } });
+  }
+});
+
 // POST /api/student-sections/enroll - Student self-enrollment
-// Checks accept_new_students before allowing new enrollment
+// Checks accept_new_students before allowing new enrollment.
+// - A student always enrolls themselves (student_id in the body is ignored for students);
+//   staff may pass student_id only for a section where they can manage students.
+// - Email-account students (password, no NetID) may join only sections with an enrollment key.
+// - A preview student (Student view) may also join a closed section its owner manages.
 router.post('/enroll', verifyToken, async (req, res) => {
   try {
-    const { student_id, section_id, enrollment_key } = req.body;
+    const { section_id, enrollment_key } = req.body;
+    const student_id = req.user.role === 'student' ? req.user.id : req.body.student_id;
 
     if (!student_id || !section_id) {
       return res.status(400).json({ data: null, error: { message: 'student_id and section_id are required' } });
     }
 
+    // Staff enrolling someone else must be able to manage students in that section.
+    if (req.user.role !== 'student') {
+      const isStaff = req.user.role === 'admin' || req.user.role === 'instructor';
+      const allowed = isStaff && await canManageStudentsAs({
+        isAdmin: req.user.role === 'admin' && !req.effectiveInstructorId,
+        instructorId: req.user.role === 'instructor' ? req.user.id : (req.effectiveInstructorId || null),
+      }, section_id);
+      if (!allowed) {
+        return res.status(403).json({ data: null, error: { message: 'You cannot manage students in this section' } });
+      }
+    }
+
     // Check if student exists
-    const [student] = await pool.execute('SELECT id FROM students WHERE id = ?', [student_id]);
+    const [student] = await pool.execute(
+      'SELECT id, password_hash IS NOT NULL AS has_password, preview_for FROM students WHERE id = ?',
+      [student_id]
+    );
     if (student.length === 0) {
       return res.status(404).json({ data: null, error: { message: 'Student not found' } });
     }
+    const previewFor = student[0].preview_for || null;
+    const isEmailStudent = Boolean(student[0].has_password) && !previewFor && !String(student_id).startsWith('cas:');
 
     // Check if section exists and get its accept_new_students status
     const [section] = await pool.execute(
@@ -53,8 +92,17 @@ router.post('/enroll', verifyToken, async (req, res) => {
     }
 
     // If not already enrolled, check if section accepts new students
-    if (!section[0].accept_new_students) {
+    if (!section[0].accept_new_students
+        && !(previewFor && await previewOwnerManagesSection(previewFor, section_id))) {
       return res.status(403).json({ data: null, error: { message: 'Section is not accepting new students' } });
+    }
+
+    // Email-account students can join only sections protected by an enrollment key.
+    if (isEmailStudent && !section[0].enrollment_key) {
+      return res.status(403).json({
+        data: null,
+        error: { message: 'This section can only be joined with your instructor\'s help. Ask your instructor to add you.' }
+      });
     }
 
     // Enforce enrollment key for self-enrollments only. Instructor-added rows

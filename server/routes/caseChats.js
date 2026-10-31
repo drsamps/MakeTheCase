@@ -15,6 +15,7 @@ import { assignSide, offeredPositions } from '../services/sideAssignment.js';
 import { latestSubmission } from '../services/studentSubmissions.js';
 import { assertCanComplete, recordCompletionReason, CompletionError } from '../services/chatCompletion.js';
 import { chatAttemptStatus } from '../services/chatAttempts.js';
+import { notPreviewChatSql } from '../services/previewStudents.js';
 
 const router = express.Router();
 
@@ -435,6 +436,7 @@ router.get('/', verifyToken, requireRole(['admin', 'instructor']), async (req, r
     let query = `
       SELECT cc.*,
              s.full_name as student_name,
+             (s.preview_for IS NOT NULL) AS is_preview,
              c.case_title,
              sec.section_title
       FROM case_chats cc
@@ -602,6 +604,7 @@ router.get('/analytics/positions', verifyToken, requireRole(['admin']), async (r
       LEFT JOIN students s ON cc.student_id = s.id
       WHERE cc.section_id = ? AND cc.case_id = ?
         AND cc.initial_position IS NOT NULL
+        AND ${notPreviewChatSql('cc')}
     `;
     const params = [section_id, case_id];
 
@@ -690,16 +693,16 @@ router.get('/position-summaries', verifyToken, requireRole(['admin']), async (re
     const [casesWithChats] = await pool.execute(`
       SELECT DISTINCT cc.case_id
       FROM case_chats cc
-      WHERE cc.status = 'completed'
+      WHERE cc.status = 'completed' AND ${notPreviewChatSql('cc')}
     `);
 
     const summaries = {};
 
     for (const { case_id } of casesWithChats) {
       const [rows] = await pool.execute(`
-        SELECT initial_position, final_position
-        FROM case_chats
-        WHERE case_id = ? AND status = 'completed'
+        SELECT cc.initial_position, cc.final_position
+        FROM case_chats cc
+        WHERE cc.case_id = ? AND cc.status = 'completed' AND ${notPreviewChatSql('cc')}
       `, [case_id]);
 
       if (rows.length === 0) {
@@ -774,6 +777,7 @@ router.get('/responses', verifyToken, requireRole(['admin']), async (req, res) =
       LEFT JOIN sections sec ON cc.section_id = sec.section_id
       LEFT JOIN evaluations e ON cc.evaluation_id = e.id
       WHERE cc.case_id = ? AND cc.status = 'completed'
+        AND ${notPreviewChatSql('cc')}
     `;
     const params = [case_id];
 

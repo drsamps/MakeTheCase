@@ -12,6 +12,7 @@
  */
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../services/apiClient';
+import PasswordInput from './ui/PasswordInput';
 
 type Provider = 'openai' | 'anthropic' | 'google' | 'openrouter';
 
@@ -222,13 +223,13 @@ const ApiKeysManager: React.FC = () => {
 
                 {allowed && (
                   <div className="flex gap-2">
-                    <input
-                      type="password"
+                    <PasswordInput
                       autoComplete="off"
                       placeholder={stored ? `…${stored.key_hint} — paste new key to rotate` : 'Paste API key'}
                       value={drafts[p]}
                       onChange={e => setDrafts(prev => ({ ...prev, [p]: e.target.value }))}
-                      className="flex-1 text-sm border border-gray-300 rounded px-3 py-1.5 font-mono"
+                      wrapperClassName="flex-1"
+                      className="text-sm border border-gray-300 rounded px-3 py-1.5 font-mono"
                     />
                     <button
                       onClick={() => handleSave(p)}
