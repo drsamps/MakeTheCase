@@ -23,6 +23,8 @@ import CaseWriterShell from './components/caseWriter/CaseWriterShell';
 import ResizablePanes from './components/ResizablePanes';
 import ChatTimer from './components/ChatTimer';
 import FeedbackWidget from './components/feedback/FeedbackWidget';
+import StudentEmailLogin from './components/StudentEmailLogin';
+import { useLongPress } from './hooks/useLongPress';
 
 interface Model {
     model_id: string;
@@ -156,6 +158,12 @@ const App: React.FC = () => {
   const [view, setView] = useState<'student' | 'admin' | 'evaluation' | 'case-writer'>('student');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [sessionUser, setSessionUser] = useState<any>(null);
+  // Hidden email/password sign-in for students without a BYU NetID
+  // (Ctrl/Cmd-click or long-press the NetID button).
+  const [showEmailLogin, setShowEmailLogin] = useState(false);
+  const netIdLongPress = useLongPress(() => setShowEmailLogin(true));
+  // Student view: closed sections the preview student's owner manages (empty for real students).
+  const [previewSectionIds, setPreviewSectionIds] = useState<string[]>([]);
   const [viewingEvaluationId, setViewingEvaluationId] = useState<string | null>(null);
   const [viewingEvaluationData, setViewingEvaluationData] = useState<EvaluationResult | null>(null);
   const [viewingEvaluationActivity, setViewingEvaluationActivity] = useState<StudentActivityView | null>(null);
@@ -527,6 +535,14 @@ const App: React.FC = () => {
 
     fetchMissingEnrolledSections();
   }, [enrolledSectionIds, sections, view, conversationPhase]);
+
+  // Student view: closed sections the instructor previewing can still join.
+  useEffect(() => {
+    if (!sessionUser?.preview) { setPreviewSectionIds([]); return; }
+    api.get<any[]>('/student-sections/preview-sections').then(({ data }) => {
+      setPreviewSectionIds((data || []).map((s: any) => s.section_id));
+    });
+  }, [sessionUser?.id, sessionUser?.preview]);
 
   // Fetch student's saved section(s) when they log in
   useEffect(() => {
@@ -1788,22 +1804,49 @@ const App: React.FC = () => {
               Make The Case
             </h1>
             <p className="mt-2 text-gray-600">
-              Click below to sign in with your BYU NetID to chat with cases as assigned by your{' '}
-              <a
-                href="#/admin"
-                className="text-gray-600 no-underline hover:no-underline"
-              >instructor</a>.
+              {showEmailLogin ? (
+                'Sign in with the email and password your instructor gave you.'
+              ) : (
+                <>
+                  Click below to sign in with your BYU NetID to chat with cases as assigned by your{' '}
+                  <a
+                    href="#/admin"
+                    className="text-gray-600 no-underline hover:no-underline"
+                  >instructor</a>.
+                </>
+              )}
             </p>
           </div>
+          {showEmailLogin ? (
+            <StudentEmailLogin
+              onBack={() => setShowEmailLogin(false)}
+              onSignedIn={async () => {
+                const { data: { session } } = await api.auth.getSession();
+                setSessionUser(session?.user || null);
+                setShowEmailLogin(false);
+              }}
+            />
+          ) : (
           <div className="space-y-4">
+            {/* Ctrl/Cmd-click or long-press opens the email/password form for students
+                without a BYU NetID; a plain click or tap goes to BYU CAS. */}
             <button
-              onClick={() => api.auth.beginCasLogin('student')}
-              className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+              {...netIdLongPress.handlers}
+              onClick={netIdLongPress.wrapClick((e) => {
+                if (e.ctrlKey || e.metaKey) {
+                  setShowEmailLogin(true);
+                  return;
+                }
+                api.auth.beginCasLogin('student');
+              })}
+              style={{ WebkitTouchCallout: 'none' }}
+              className="w-full px-4 py-2 font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 select-none"
             >
               Click to login with BYU NetID
             </button>
             {error && <p className="text-sm text-red-600 text-center">{error}</p>}
           </div>
+          )}
         </div>
       </div>
     );
@@ -1890,6 +1933,7 @@ const App: React.FC = () => {
               const activeInSections = sections.filter(sec => activeEnrolledIds.includes(sec.section_id));
               const isMultiActive = activeInSections.length > 1;
               const isSectionLocked = !isMultiActive && !!studentSavedSectionId;
+              const isEmailStudent = Boolean(sessionUser?.id) && !String(sessionUser.id).startsWith('cas:') && !sessionUser?.preview;
               return (
                 <div>
                   <label htmlFor="section" className="block text-sm font-medium text-gray-700">Your Course Section</label>
@@ -1921,11 +1965,15 @@ const App: React.FC = () => {
                       .filter(sec =>
                         isMultiActive
                           ? activeEnrolledIds.includes(sec.section_id)
-                          : enrolledSectionIds.includes(sec.section_id) || sec.accept_new_students
+                          : enrolledSectionIds.includes(sec.section_id)
+                            || previewSectionIds.includes(sec.section_id)
+                            // Email-account students (no NetID) can join only sections with a key.
+                            || (sec.accept_new_students && (!isEmailStudent || sec.requires_enrollment_key))
                       )
                       .map((sec) => (
                         <option key={sec.section_id} value={sec.section_id}>
                           {sec.section_title} ({sec.year_term}){enrolledSectionIds.includes(sec.section_id) ? ' ✓' : ''}
+                          {!enrolledSectionIds.includes(sec.section_id) && !sec.accept_new_students && previewSectionIds.includes(sec.section_id) ? ' (closed to students — preview only)' : ''}
                         </option>
                       ))}
                   </select>

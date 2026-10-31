@@ -27,6 +27,7 @@ export { default as CaseFilesHelp } from './CaseFilesHelp';
 export { default as CasePackagesHelp } from './CasePackagesHelp';
 
 export { default as ActivityTypesHelp } from './ActivityTypesHelp';
+export { default as StudentSignInHelp } from './StudentSignInHelp';
 
 // Future help content exports:
 // export { default as AssignmentsHelp } from './AssignmentsHelp';

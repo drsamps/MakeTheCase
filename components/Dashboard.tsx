@@ -4,6 +4,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api, getApiBaseUrl, getImpersonationId, setImpersonationId } from '../services/apiClient'; // Dashboard with tiles/list view toggle
 import { fetchSectionCaseSetting } from '../services/sectionCaseSettings';
+import StudentViewMenu from './StudentViewMenu';
 import { detectProvider } from '../services/llmService';
 import { usesAudiencePersonas, isAudiencePersonaId, crossModePersonaIds, validateChatOptionsForSave } from '../teachBack';
 import { DEFAULT_MIN_OPENING_WORDS, minOpeningWords } from '../utils/openingWords.js';
@@ -7496,7 +7497,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
             <tbody className="divide-y divide-gray-200">
               {sortedCaseChatsList.map((chat) => (
                 <tr key={chat.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 text-sm font-medium text-gray-900">{chat.student_name || 'Unknown'}</td>
+                  <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                    {chat.student_name || 'Unknown'}
+                    {Boolean((chat as any).is_preview) && (
+                      <span className="ml-2 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800" title="An instructor's Student view chat; left out of Results and analytics">Student view</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-sm text-gray-700">{chat.case_title || chat.case_id}</td>
                   <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap" title={chat.section_title || undefined}>{chat.section_id || chat.section_title || '-'}</td>
                   <td className="px-4 py-3">
@@ -7727,16 +7733,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onLogout, user }) => {
           >
             Case Writer
           </a>
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              window.open('#', 'student');
-            }}
-            className="text-sm font-medium text-gray-600 hover:text-gray-900 p-2 rounded-md hover:bg-gray-100 transition-colors"
-          >
-            to student screen
-          </a>
+          <StudentViewMenu />
           <button onClick={onLogout} className="flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors p-2 rounded-md hover:bg-gray-100">
             <span>Sign Out</span>
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">

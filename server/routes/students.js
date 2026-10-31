@@ -7,8 +7,7 @@ import {
   requireAdminOrInstructor,
   requireSuperuser,
   getAccessibleSectionIds,
-  isPrimaryInstructorForSection,
-  getTAPermissions
+  canManageStudentsAs
 } from '../middleware/instructorAccess.js';
 
 const router = express.Router();
@@ -22,12 +21,10 @@ function callerInstructorId(req) {
 }
 
 async function canManageStudentsInSection(req, sectionId) {
-  if (req.user.role === 'admin' && !req.effectiveInstructorId) return true;
-  const instructorId = callerInstructorId(req);
-  if (!instructorId) return false;
-  if (await isPrimaryInstructorForSection(instructorId, sectionId)) return true;
-  const perms = await getTAPermissions(instructorId, sectionId);
-  return Boolean(perms?.canManageStudents);
+  return canManageStudentsAs(
+    { isAdmin: req.user.role === 'admin' && !req.effectiveInstructorId, instructorId: callerInstructorId(req) },
+    sectionId
+  );
 }
 
 async function studentVisibleToCaller(req, studentId) {
@@ -74,6 +71,7 @@ router.get('/', requireAdminOrInstructor, async (req, res) => {
     let query = `
       SELECT s.id, s.created_at, s.first_name, s.last_name, s.full_name, s.email,
              s.favorite_persona, s.section_id, s.finished_at,
+             (s.preview_for IS NOT NULL) AS is_preview, (s.password_hash IS NOT NULL) AS has_password,
              GROUP_CONCAT(DISTINCT ss.section_id) AS section_ids_csv
       FROM students s
       LEFT JOIN student_sections ss ON ss.student_id = s.id
@@ -98,7 +96,7 @@ router.get('/', requireAdminOrInstructor, async (req, res) => {
     if (whereClauses.length > 0) {
       query += ' WHERE ' + whereClauses.join(' AND ');
     }
-    query += ' GROUP BY s.id, s.created_at, s.first_name, s.last_name, s.full_name, s.email, s.favorite_persona, s.section_id, s.finished_at';
+    query += ' GROUP BY s.id, s.created_at, s.first_name, s.last_name, s.full_name, s.email, s.favorite_persona, s.section_id, s.finished_at, s.preview_for, s.password_hash';
     query += ' ORDER BY s.created_at DESC';
 
     const [rows] = await pool.execute(query, params);
@@ -112,6 +110,8 @@ router.get('/', requireAdminOrInstructor, async (req, res) => {
       favorite_persona: r.favorite_persona,
       section_id: r.section_id,
       finished_at: r.finished_at,
+      is_preview: Boolean(r.is_preview),
+      has_password: Boolean(r.has_password),
       section_ids: r.section_ids_csv ? r.section_ids_csv.split(',') : []
     }));
     res.json({ data, error: null });
@@ -202,15 +202,28 @@ router.post('/', requireAdminOrInstructor, async (req, res) => {
       return res.status(400).json({ data: null, error: { message: 'Student with this ID already exists' } });
     }
 
+    const cleanEmail = typeof email === 'string' && email.trim() ? email.trim().toLowerCase() : null;
     let password_hash = null;
     if (password) {
+      // An email-and-password student signs in with their email, so it is required.
+      if (!cleanEmail) {
+        return res.status(400).json({ data: null, error: { message: 'An email is required when you set a password (the student signs in with it).' } });
+      }
       password_hash = await bcrypt.hash(password, 10);
     }
 
     await pool.execute(
       'INSERT INTO students (id, first_name, last_name, full_name, email, password_hash, favorite_persona, section_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [studentId, first_name || '', last_name || '', full_name, email, password_hash, favorite_persona || null, section_id || null]
+      [studentId, first_name || '', last_name || '', full_name, cleanEmail, password_hash, favorite_persona || null, section_id || null]
     );
+    // Enroll in the first section too (the student page reads student_sections).
+    if (section_id) {
+      await pool.execute(
+        `INSERT IGNORE INTO student_sections (student_id, section_id, enrolled_by, is_primary)
+         VALUES (?, ?, 'instructor', 1)`,
+        [studentId, section_id]
+      );
+    }
 
     const [rows] = await pool.execute(
       'SELECT id, created_at, first_name, last_name, full_name, email, favorite_persona, section_id, finished_at FROM students WHERE id = ?',
@@ -219,6 +232,9 @@ router.post('/', requireAdminOrInstructor, async (req, res) => {
 
     res.status(201).json({ data: rows[0], error: null });
   } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY' && /email/i.test(error.message)) {
+      return res.status(409).json({ data: null, error: { message: 'Another student already has this email address.' } });
+    }
     console.error('Error creating student:', error);
     res.status(500).json({ data: null, error: { message: error.message } });
   }

@@ -35,6 +35,9 @@ function getActiveToken(): string | null {
   return studentAuthToken;
 }
 
+/** Fired on window whenever setAuthToken stores or clears a token in this tab. */
+export const AUTH_TOKEN_EVENT = 'mtc-auth-token';
+
 export function setAuthToken(token: string | null, role?: 'admin' | 'instructor' | 'student') {
   // Determine role from context if not specified
   const effectiveRole = role || (isAdminContext() ? 'admin' : 'student');
@@ -61,6 +64,9 @@ export function setAuthToken(token: string | null, role?: 'admin' | 'instructor'
   if (activeToken) {
     localStorage.setItem('auth_token', activeToken);
   }
+
+  // Same-tab listeners (the Student view badge); other tabs get the 'storage' event.
+  window.dispatchEvent(new Event(AUTH_TOKEN_EVENT));
 }
 
 // Admin-only impersonation header. When an admin selects "View as <instructor>"
@@ -184,6 +190,24 @@ async function apiFetch<T>(
 
 // ==================== Auth API ====================
 
+async function studentAuthPost(path: string, body: object, fallback: string) {
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.token) {
+      return { error: { message: normalizeApiError(result.error, fallback) } };
+    }
+    setAuthToken(result.token, 'student');
+    return { error: null };
+  } catch (err) {
+    return { error: { message: (err as Error).message || fallback } };
+  }
+}
+
 export const auth = {
   async signInWithPassword({ email, password }: { email: string; password: string }) {
     const response = await fetch(`${API_BASE}/auth/login`, {
@@ -208,6 +232,97 @@ export const auth = {
       },
       error: null,
     };
+  },
+
+  // Email/password sign-in for students without a BYU NetID (hidden form on the student page).
+  async studentSignInWithPassword({ email, password }: { email: string; password: string }) {
+    return studentAuthPost('/auth/student-login', { email, password }, 'Sign-in failed');
+  },
+
+  // Self-registration (only when the admin setting allows it, only into a keyed section).
+  async studentRegister(body: {
+    first_name: string; last_name: string; email: string; password: string;
+    section_id: string; enrollment_key: string;
+  }) {
+    return studentAuthPost('/auth/student-register', body, 'Could not create the account');
+  },
+
+  async studentSignupEnabled(): Promise<boolean> {
+    try {
+      const response = await fetch(`${API_BASE}/auth/student-signup`);
+      if (!response.ok) return false;
+      const result = await response.json();
+      return Boolean(result.enabled);
+    } catch {
+      return false;
+    }
+  },
+
+  /**
+   * Dashboard > Student view: open the student page in its own tab, signed in as the
+   * caller's preview student. fresh=true starts over as a brand-new student.
+   * The tab is opened before the request so popup blockers allow it.
+   */
+  async openStudentView(fresh = false): Promise<{ error: { message: string } | null }> {
+    const win = window.open('', 'student');
+    // window.open returns an existing tab named 'student' if one is open; on failure, close
+    // only a blank tab we just opened, never the student page someone already had open.
+    const closeIfBlank = () => {
+      try { if (win && win.location.href === 'about:blank') win.close(); } catch { /* ignore */ }
+    };
+    try {
+      const response = await fetch(`${API_BASE}/auth/student-view`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ fresh }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.token) {
+        closeIfBlank();
+        return { error: { message: normalizeApiError(result.error, 'Could not open Student view') } };
+      }
+      const params = new URLSearchParams({
+        token: result.token,
+        role: 'student',
+        fullName: result.user?.full_name || '',
+      });
+      const target = `${window.location.pathname}?${params.toString()}#`;
+      if (win) win.location.href = target;
+      else window.location.href = target;
+      return { error: null };
+    } catch (err) {
+      closeIfBlank();
+      return { error: { message: (err as Error).message || 'Could not open Student view' } };
+    }
+  },
+
+  /**
+   * From inside Student view (student tab): start over as a new student. Uses the
+   * dashboard's sign-in kept in this browser; the caller reloads afterwards.
+   */
+  async restartStudentView(): Promise<{ error: { message: string } | null }> {
+    const staffToken = localStorage.getItem('admin_auth_token');
+    if (!staffToken) {
+      return { error: { message: 'Sign in to the instructor dashboard again, then use Student view.' } };
+    }
+    try {
+      const response = await fetch(`${API_BASE}/auth/student-view`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${staffToken}` },
+        body: JSON.stringify({ fresh: true }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.token) {
+        const msg = response.status === 401
+          ? 'Your dashboard sign-in has expired. Sign in to the dashboard again, then use Student view.'
+          : normalizeApiError(result.error, 'Could not start over');
+        return { error: { message: msg } };
+      }
+      setAuthToken(result.token, 'student');
+      return { error: null };
+    } catch (err) {
+      return { error: { message: (err as Error).message || 'Could not start over' } };
+    }
   },
 
   async beginCasLogin(role?: 'student' | 'admin') {

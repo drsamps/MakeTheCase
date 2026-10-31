@@ -167,6 +167,7 @@ router.get('/:id', verifyToken, requireAdminOrInstructor, requireCourseAccess('i
       LEFT JOIN semesters sem ON sem.id = s.semester_id
       LEFT JOIN instructors si ON si.id = s.primary_instructor_id
       LEFT JOIN student_sections ss ON s.section_id = ss.section_id
+        AND ss.student_id NOT IN (SELECT ps.id FROM students ps WHERE ps.preview_for IS NOT NULL)
       LEFT JOIN section_cases sc ON s.section_id = sc.section_id
       WHERE s.course_id = ?
       GROUP BY s.section_id, s.section_number, s.section_title, s.year_term,

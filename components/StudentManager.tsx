@@ -3,6 +3,9 @@ import { api } from '../services/apiClient';
 import { personLabel } from '../utils/confirmLabels';
 import { SemesterScopeNote, useSemesterFilter } from './courses/semesterFilter';
 import StudentSubmissionModal from './StudentSubmissionModal';
+import HelpTooltip from './ui/HelpTooltip';
+import { StudentSignInHelp } from '../help/dashboard';
+import PasswordInput from './ui/PasswordInput';
 
 interface Student {
   id: string;
@@ -15,6 +18,8 @@ interface Student {
   favorite_persona: string | null;
   created_at: string;
   finished_at: string | null;
+  is_preview?: boolean;
+  has_password?: boolean;
 }
 
 interface Section {
@@ -335,9 +340,10 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
           await api.delete(`/students/${editingStudent.id}/sections/${sectionId}`);
         }
       } else {
-        // Create new student
-        if (!formData.id) {
-          setError('Student ID is required for new students');
+        // Create new student. A blank Student ID makes the server assign one (non-BYU
+        // students who sign in with email and password).
+        if (!formData.id && !formData.password) {
+          setError('Enter a Student ID (cas:netid for BYU students), or an email and password for a student without a NetID.');
           return;
         }
         // Create student with first section as primary (for backward compat)
@@ -352,9 +358,10 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
         }
 
         // Add additional sections if more than one selected
+        const newId = (response.data as any)?.id || formData.id;
         if (formData.section_ids.length > 1) {
           for (let i = 1; i < formData.section_ids.length; i++) {
-            await api.post(`/students/${formData.id}/sections`, {
+            await api.post(`/students/${newId}/sections`, {
               section_id: formData.section_ids[i],
               is_primary: false
             });
@@ -419,7 +426,12 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
       {/* Header */}
       <div className="mb-6 flex justify-between items-center">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Student Management</h2>
+          <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+            Student Management
+            <HelpTooltip title="Student sign-in and Student view">
+              <StudentSignInHelp />
+            </HelpTooltip>
+          </h2>
           <p className="text-sm text-gray-500 mt-1">
             Manage student accounts and access
           </p>
@@ -635,7 +647,15 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm font-medium text-gray-900">{student.full_name}</div>
+                    <div className="text-sm font-medium text-gray-900">
+                      {student.full_name}
+                      {student.is_preview && (
+                        <span className="ml-2 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800" title="An instructor's Student view account">Student view</span>
+                      )}
+                      {!student.is_preview && student.has_password && (
+                        <span className="ml-2 inline-block rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-700" title="Signs in with email and password (no BYU NetID)">Email sign-in</span>
+                      )}
+                    </div>
                     {shouldShowBothNames(student) && (
                       <div className="text-xs text-gray-500">
                         {student.first_name} {student.last_name}
@@ -698,20 +718,19 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Student ID {!editingStudent && <span className="text-red-500">*</span>}
+                  Student ID
                 </label>
                 <input
                   type="text"
                   value={formData.id}
                   onChange={(e) => setFormData({ ...formData, id: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
-                  required={!editingStudent}
                   disabled={!!editingStudent}
-                  placeholder="e.g., cas:netid or uuid"
+                  placeholder="e.g., cas:netid"
                 />
                 {!editingStudent && (
                   <p className="text-xs text-gray-500 mt-1">
-                    For CAS users, use format: cas:netid
+                    BYU students: cas:netid. Leave blank for a student without a NetID who signs in with email and password.
                   </p>
                 )}
               </div>
@@ -770,8 +789,8 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Password {editingStudent && <span className="text-gray-500">(leave blank to keep current)</span>}
                 </label>
-                <input
-                  type="password"
+                <PasswordInput
+                  autoComplete="new-password"
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
@@ -857,8 +876,8 @@ const StudentManager: React.FC<StudentManagerProps> = ({ initialSectionFilter })
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   New Password <span className="text-red-500">*</span>
                 </label>
-                <input
-                  type="password"
+                <PasswordInput
+                  autoComplete="new-password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"

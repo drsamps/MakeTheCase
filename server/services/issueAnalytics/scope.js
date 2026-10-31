@@ -146,7 +146,8 @@ export async function loadScopeChats(scope) {
                                           ORDER BY t2.created_at DESC, t2.id DESC LIMIT 1)
      WHERE cc.case_id = ?
        AND cc.section_id IN (${scope.sectionIds.map(() => '?').join(',')})
-       AND cc.status = 'completed'`;
+       AND cc.status = 'completed'
+       AND st.preview_for IS NULL`; // Student view (preview) chats are never analysed
   if (scope.pinScenario) {
     sql += ' AND cc.scenario_id = ?';
     params.push(scope.scenarioId);
